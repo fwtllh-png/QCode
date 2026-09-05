@@ -181,6 +181,12 @@ Family 分布在 `reducer_sampling.go`、`reducer_tool.go`、
 `reducer_interaction.go`、`reducer_context.go`、
 `reducer_verification.go` 和 `reducer_terminal.go`。
 
+Engine 对外发布的 `State` 是 Kernel `Phase` 的呈现细化，不是第二套权威状态机：
+采样拆分为 Compaction 与传输细节，工具执行拆分为准备、运行与回填。两套词汇的
+合法共存关系由 `internal/runtime/agent/engine` 中的单一映射表声明；映射表必须
+覆盖两侧全部常量（源码级完整性测试锁定），事件发射点按该表校验，违规记录为
+Terminal Secondary Issue 而不改写业务终态。
+
 ## Runtime 协议
 
 协议定义位于 `internal/runtime/protocol`，生成后的公开 Schema 位于

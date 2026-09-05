@@ -29,6 +29,7 @@ type turnEmitter struct {
 	releaseReported bool
 	cancelReason    func() string
 	decision        func() (turnkernel.TerminalDecision, bool)
+	phase           func() turnkernel.Phase
 }
 
 func newTurnEmitter(turn uint64, emit func(Event) error) *turnEmitter {
@@ -41,7 +42,23 @@ func (h *turnEmitter) setTerminalDecision(source func() (turnkernel.TerminalDeci
 	h.decision = source
 }
 
+func (h *turnEmitter) setPhase(source func() turnkernel.Phase) { h.phase = source }
+
+// checkStatePhase validates a host state against the authoritative kernel
+// phase using the phaseStates declaration. A mismatch is a projection
+// invariant violation, not a business failure: the event is still emitted and
+// the violation is recorded so the terminal envelope exposes the drift.
+func (h *turnEmitter) checkStatePhase(state State) {
+	if h.phase == nil {
+		return
+	}
+	if phase := h.phase(); !stateAllowedForPhase(state, phase) {
+		h.addSecondary("state_phase_consistency", statePhaseMismatch(state, phase))
+	}
+}
+
 func (h *turnEmitter) send(state State, event Event) error {
+	h.checkStatePhase(state)
 	event.State, event.Turn = state, h.turn
 	terminal := state == Completed || state == Failed || state == Canceled
 	if terminal {

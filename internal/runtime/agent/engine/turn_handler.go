@@ -344,6 +344,7 @@ func (s *Scope) Run(ctx context.Context) (result Result, resultErr error) {
 		return e.cancellationReason()
 	})
 	terminal.setTerminalDecision(kernel.TerminalDecision)
+	terminal.setPhase(kernel.Phase)
 	terminal.setRelease(releaseCoordinator)
 	send := terminal.send
 	defer terminal.finish(ctx, &result, &resultErr)
