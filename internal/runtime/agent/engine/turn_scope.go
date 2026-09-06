@@ -20,6 +20,12 @@ import (
 
 // Scope owns one frozen TurnSpec and its execution lifetime. Session state
 // remains on Engine and is applied only after the terminal commit succeeds.
+//
+// s.mu ranks directly below Engine.mu in the lock hierarchy documented on
+// Engine: it may be held while acquiring Engine.scopeMu (for example
+// advanceTokenWindow resolving capacity) or Engine.planMu (projectWorldState
+// reading the current plan), and must never be acquired while any other
+// Engine lock is held.
 type Scope struct {
 	engine          *Engine
 	spec            TurnSpec

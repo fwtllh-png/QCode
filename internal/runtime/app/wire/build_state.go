@@ -59,6 +59,9 @@ type runtimeBuildState struct {
 
 type buildModule interface {
 	Name() string
+	// Contract declares the buildState domains this module writes and reads.
+	// validateModuleContracts enforces the declarations before any Build runs.
+	Contract() ModuleContract
 	Build(context.Context, *buildState) error
 }
 
@@ -67,6 +70,9 @@ func buildModules(
 	state *buildState,
 	modules ...buildModule,
 ) error {
+	if err := validateModuleContracts(modules); err != nil {
+		return err
+	}
 	for _, module := range modules {
 		if err := ctx.Err(); err != nil {
 			return err

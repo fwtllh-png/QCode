@@ -57,6 +57,24 @@ func (noopMetrics) Evidence(int, int)             {}
 func (noopMetrics) Compaction(int)                {}
 func (noopMetrics) TurnKernelObserver(bool, bool) {}
 
+// Engine owns session-level state shared across turns.
+//
+// Lock hierarchy (acquire in this order only; releasing before acquiring a
+// lower lock is always fine):
+//
+//	e.mu  >  scope.mu (Scope)  >  e.scopeMu  >  e.planMu  >  { e.checkpointMu, e.prefixMu }
+//
+// The nesting chain e.mu > scope.mu > e.scopeMu > e.planMu is exercised by
+// ExportContextSnapshot/AdvanceTokenWindow (e.mu held through
+// buildContextSnapshot/advanceTokenWindow), which read scope state while
+// resolving capacity through runningScope (scopeMu) and currentPlan (planMu);
+// Fork acquires the same chain inline. e.checkpointMu and e.prefixMu are leaf
+// locks: they are never held while acquiring any other Engine or Scope lock.
+// LockContractTest fails when a same-function nesting violates this order.
+//
+// External authority locks (RuntimeKernel, Guard, Workspace Journal, event
+// sinks) sit below the Engine locks: Engine locks may be held across calls
+// into them, but their callbacks must never re-enter an Engine or Scope lock.
 type Engine struct {
 	mu              sync.Mutex
 	scopeMu         sync.Mutex

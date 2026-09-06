@@ -15,11 +15,14 @@ import (
 )
 
 type buildModuleFunc struct {
-	name string
-	fn   func(context.Context, *buildState) error
+	name     string
+	contract ModuleContract
+	fn       func(context.Context, *buildState) error
 }
 
 func (m buildModuleFunc) Name() string { return m.name }
+
+func (m buildModuleFunc) Contract() ModuleContract { return m.contract }
 
 func (m buildModuleFunc) Build(
 	ctx context.Context,

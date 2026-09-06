@@ -68,7 +68,10 @@ config -> provider -> persistence -> platform -> builtin tools
        -> background services
 ```
 
-每个 Module 只拥有一个构造边界，并仅向后续 Module 暴露必要结果。Runtime、Engine 和
+每个 Module 只拥有一个构造边界，并仅向后续 Module 暴露必要结果。模块序列的数据依赖
+由显式 Module Contract 声明并在任何构造前校验：每个 buildState 域只有一个写入者，
+读取必须由序列中更早的模块写入；违反声明的重排会在构造期以模块名和域名失败。
+Runtime、Engine 和
 Session Service 都不得持有 `buildState`。Persistence 拥有 Content、Job Log 和
 SQLite 基础；Platform 拥有 Process、Sandbox 与 Repository Index；Orchestration
 拥有 Subagent、Admission/Budget、Child Worktree/Toolset 与 Chat Merge 构造。
