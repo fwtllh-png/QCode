@@ -5,14 +5,14 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"unicode"
 	"unicode/utf8"
-
-	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
 )
 
 const (
@@ -753,4 +753,195 @@ func sameWorkspaceRoot(left, right string) bool {
 	rightPhysical, rightPhysicalErr := filepath.EvalSymlinks(rightAbsolute)
 	return leftErr == nil && rightErr == nil && (filepath.Clean(leftAbsolute) == filepath.Clean(rightAbsolute) ||
 		leftPhysicalErr == nil && rightPhysicalErr == nil && filepath.Clean(leftPhysical) == filepath.Clean(rightPhysical))
+}
+
+func (r *SessionService) UpdateSessionLifecycle(
+	ctx context.Context,
+	sessionID string,
+	expectedRevision uint64,
+	patch protocol.SessionLifecyclePatch,
+) (protocol.SessionLifecycleUpdate, error) {
+	r.mutationMu.Lock()
+	defer r.mutationMu.Unlock()
+	if r.sessionLifecycle == nil {
+		return protocol.SessionLifecycleUpdate{}, runtimeProblem(protocol.CodeUnavailable, "session lifecycle is unavailable", nil)
+	}
+	current, err := r.SessionStatus(ctx, sessionID)
+	if err != nil {
+		return protocol.SessionLifecycleUpdate{}, err
+	}
+	if patch.Archived != nil && *patch.Archived {
+		if err := ensureSessionQuiescent(current, "archive"); err != nil {
+			return protocol.SessionLifecycleUpdate{}, err
+		}
+	}
+	updated, err := r.sessionLifecycle.UpdateLifecycle(
+		ctx,
+		sessionID,
+		expectedRevision,
+		patch,
+	)
+	if err != nil {
+		return protocol.SessionLifecycleUpdate{}, err
+	}
+	updated, err = r.projectSessionActivity(ctx, updated)
+	if err != nil {
+		return protocol.SessionLifecycleUpdate{}, err
+	}
+	return protocol.SessionLifecycleUpdate{
+		Session: updated,
+	}, nil
+}
+
+func (r *SessionService) DeleteSession(
+	ctx context.Context,
+	sessionID string,
+	expectedRevision uint64,
+) (protocol.SessionDeleteResult, error) {
+	return r.deleteSession(ctx, sessionID, expectedRevision, false)
+}
+
+func (r *SessionService) DiscardSession(
+	ctx context.Context,
+	sessionID string,
+	expectedRevision uint64,
+) (protocol.SessionDeleteResult, error) {
+	return r.deleteSession(ctx, sessionID, expectedRevision, true)
+}
+
+func (r *SessionService) deleteSession(
+	ctx context.Context,
+	sessionID string,
+	expectedRevision uint64,
+	discard bool,
+) (protocol.SessionDeleteResult, error) {
+	r.mutationMu.Lock()
+	defer r.mutationMu.Unlock()
+	if r.sessionLifecycle == nil {
+		return protocol.SessionDeleteResult{}, runtimeProblem(protocol.CodeUnavailable, "session lifecycle is unavailable", nil)
+	}
+	current, err := r.SessionStatus(ctx, sessionID)
+	if err != nil {
+		return protocol.SessionDeleteResult{}, err
+	}
+	threadIDs, err := r.sessionLifecycle.ThreadIDs(ctx, sessionID)
+	if err != nil {
+		return protocol.SessionDeleteResult{}, err
+	}
+	if discard {
+		for _, threadID := range threadIDs {
+			if _, active := r.active.LookupThread(threadID); active {
+				return protocol.SessionDeleteResult{}, sessionBusyProblem(
+					"cannot discard session while a turn is active",
+					current,
+				)
+			}
+		}
+		if r.OperationService.hasPendingSession(sessionID) {
+			return protocol.SessionDeleteResult{}, sessionBusyProblem(
+				"cannot discard session while a turn is recovering",
+				current,
+			)
+		}
+	} else if err := ensureSessionQuiescent(current, "delete"); err != nil {
+		return protocol.SessionDeleteResult{}, err
+	}
+	if err := r.reclaimSessionWorkspaceDrafts(ctx, threadIDs); err != nil {
+		return protocol.SessionDeleteResult{}, err
+	}
+	if current.Isolation == SessionIsolationWorktree {
+		if r.sessionWorkspaces == nil {
+			return protocol.SessionDeleteResult{}, runtimeProblem(protocol.CodeUnavailable, "isolated Chat workspaces are unavailable", nil)
+		}
+		if _, err := r.sessionWorkspaces.Restore(
+			ctx,
+			current.SessionID,
+			current.ThreadID,
+		); err != nil {
+			return protocol.SessionDeleteResult{}, err
+		}
+		if !discard {
+			plan, err := r.sessionWorkspaces.PlanMerge(
+				ctx,
+				current.SessionID,
+				current.ThreadID,
+			)
+			if err != nil && !errors.Is(err, ErrSessionWorkspaceClean) {
+				return protocol.SessionDeleteResult{}, runtimeProblem(
+					protocol.CodeConflict,
+					"cannot delete session while its isolated worktree has unresolved changes",
+					err,
+				)
+			}
+			if err == nil && len(plan.Files) != 0 {
+				return protocol.SessionDeleteResult{}, runtimeProblem(protocol.CodeConflict, "cannot delete session with unmerged worktree changes", nil)
+			}
+		}
+	}
+	var result protocol.SessionDeleteResult
+	if discard {
+		store, ok := r.sessionLifecycle.(sessionDiscardStore)
+		if !ok {
+			return protocol.SessionDeleteResult{}, runtimeProblem(
+				protocol.CodeUnavailable,
+				"discarding a session is unavailable",
+				nil,
+			)
+		}
+		result, err = store.DiscardLifecycle(ctx, sessionID, expectedRevision)
+	} else {
+		result, err = r.sessionLifecycle.DeleteLifecycle(
+			ctx,
+			sessionID,
+			expectedRevision,
+		)
+	}
+	if err != nil {
+		return protocol.SessionDeleteResult{}, err
+	}
+	if manager, ok := r.engine.(*ThreadManager); ok && manager != nil {
+		for _, threadID := range threadIDs {
+			manager.Release(threadID)
+		}
+	}
+	if discard {
+		r.clearSessionInteractions(threadIDs)
+	}
+	r.TurnQueueService.clearThreads(threadIDs)
+	if current.Isolation == SessionIsolationWorktree {
+		if discardErr := r.sessionWorkspaces.Discard(
+			ctx,
+			current.SessionID,
+			current.ThreadID,
+		); discardErr != nil {
+			r.logger.Error(
+				"discard deleted Session worktree",
+				"session_id", current.SessionID,
+				"thread_id", current.ThreadID,
+				"error", discardErr,
+			)
+		}
+	}
+	return result, nil
+}
+
+func (r *SessionService) clearSessionInteractions(threadIDs []protocol.ThreadID) {
+	threads := make(map[protocol.ThreadID]struct{}, len(threadIDs))
+	for _, threadID := range threadIDs {
+		threads[threadID] = struct{}{}
+	}
+	r.EventService.mu.Lock()
+	defer r.EventService.mu.Unlock()
+	for requestID, approval := range r.approvals {
+		if _, ok := threads[approval.ThreadID]; ok {
+			delete(r.approvals, requestID)
+			delete(r.approvalItems, eventItemOwner(approval.TurnID, requestID))
+		}
+	}
+	for requestID, input := range r.inputs {
+		if _, ok := threads[input.ThreadID]; ok {
+			delete(r.inputs, requestID)
+			delete(r.inputItems, eventItemOwner(input.TurnID, requestID))
+		}
+	}
 }

@@ -224,23 +224,26 @@ Runtime.SubmitWithKey
 
 1. `internal/runtime/app/runtime.go`
    - `Runtime.Submit` / `SubmitWithKey`；
+   - `Runtime.loop`。
+2. `internal/runtime/app/operation_queue.go`
    - `OperationService.SubmitWithKey`；
-   - `Runtime.loop`；
-   - `TurnService.Start` / `run`。
-2. `internal/runtime/app/operation_dispatch.go`
+   - `OperationService.accept` / `commit`。
+3. `internal/runtime/app/turn_service.go`
+   - `TurnService.Start` / `run` / `Cancel`。
+4. `internal/runtime/app/operation_dispatch.go`
    - `OperationOutcome`；
    - `operationDispatcher.Dispatch`；
    - `OperationService.Apply`。
-3. `internal/runtime/app/active_turn_registry.go`
+5. `internal/runtime/app/active_turn_registry.go`
    - Thread/Turn Reservation；
    - Control Binding；
    - Token-fenced Release。
-4. `internal/runtime/app/extension/engine_adapter.go`
+6. `internal/runtime/app/extension/engine_adapter.go`
    - Application Port 到 Agent Engine 的适配；
    - Editor Context 解析；
    - Receipt 创建；
    - Engine Event 到 Protocol Event 的映射。
-5. `internal/runtime/app/thread_manager.go`
+7. `internal/runtime/app/thread_manager.go`
    - 每个 Thread 的 Engine 所有权；
    - Session Profile、Pending Interaction 和 Child Engine。
 

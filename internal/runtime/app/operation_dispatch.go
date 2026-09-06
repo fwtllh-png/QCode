@@ -3,7 +3,6 @@ package app
 import (
 	"errors"
 	"fmt"
-
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
 )
 
@@ -166,4 +165,91 @@ func validateOperationOutcome(outcome OperationOutcome) error {
 		outcome.Kind,
 		outcome.Problem != nil,
 	)
+}
+
+func (r SteerTurnHandler) run(operation protocol.Operation, payload *protocol.SteerTurnPayload) (*AsyncTurn, error) {
+	phase := r.turnPhase(payload.ThreadID, payload.TurnID)
+	disposition := RoutePending(phase, PendingItem{Source: SourceSteer})
+	switch disposition {
+	case DispositionInjectCurrent:
+		return nil, r.invoke(operation, func(sink EngineSink) error {
+			return r.engine.SteerTurn(r.ctx, payload, sink)
+		})
+	case DispositionStartNewTurn:
+		turnID, err := protocol.NewTurnID()
+		if err != nil {
+			return nil, err
+		}
+		itemID, err := protocol.NewItemID()
+		if err != nil {
+			return nil, err
+		}
+		start := &protocol.StartTurnPayload{
+			ThreadID: payload.ThreadID, TurnID: turnID, ItemID: itemID, Prompt: payload.Prompt,
+		}
+		outcome := (StartTurnHandler{r.Runtime}).Handle(operation, start)
+		if outcome.Problem != nil {
+			return nil, outcome.Problem
+		}
+		return outcome.Async, nil
+	default:
+		return nil, fmt.Errorf(
+			"pending-work rejected steer: %s", ExplainPending(phase, PendingItem{Source: SourceSteer}, disposition),
+		)
+	}
+}
+
+func (r ApprovalHandler) Handle(operation protocol.Operation, payload *protocol.ApprovalDecisionPayload) OperationOutcome {
+	r.EventService.mu.Lock()
+	pending, known := r.approvals[payload.RequestID]
+	r.EventService.mu.Unlock()
+	if known {
+		proxied := *payload
+		proxied.ThreadID = pending.ThreadID
+		proxied.TurnID = pending.TurnID
+		payload = &proxied
+		operation.Payload = payload
+	}
+	phase := r.turnPhase(payload.ThreadID, payload.TurnID)
+	if known {
+		phase = PhaseAwaitingApproval
+	}
+	disposition := RoutePending(phase, PendingItem{Source: SourceApproval})
+	if disposition != DispositionResumePaused {
+		return finishOutcome(fmt.Errorf(
+			"pending-work rejected approval: %s",
+			ExplainPending(phase, PendingItem{Source: SourceApproval}, disposition),
+		))
+	}
+	return finishOutcome(r.invoke(operation, func(sink EngineSink) error {
+		return r.engine.DecideApproval(r.ctx, payload, sink)
+	}))
+}
+
+func (r InputHandler) Handle(operation protocol.Operation, payload *protocol.InputReplyPayload) OperationOutcome {
+	phase := r.turnPhase(payload.ThreadID, payload.TurnID)
+	r.EventService.mu.Lock()
+	_, known := r.inputs[payload.RequestID]
+	r.EventService.mu.Unlock()
+	if known {
+		phase = PhaseAwaitingInput
+	}
+	disposition := RoutePending(phase, PendingItem{Source: SourceInput})
+	if disposition != DispositionResumePaused {
+		return finishOutcome(fmt.Errorf(
+			"pending-work rejected input: %s",
+			ExplainPending(phase, PendingItem{Source: SourceInput}, disposition),
+		))
+	}
+	return finishOutcome(r.invoke(operation, func(sink EngineSink) error {
+		return r.engine.ReplyInput(r.ctx, payload, sink)
+	}))
+}
+
+func (r StartTurnHandler) Handle(operation protocol.Operation, payload *protocol.StartTurnPayload) OperationOutcome {
+	return r.TurnService.Start(operation, payload)
+}
+
+func (r CancelTurnHandler) Handle(operation protocol.Operation, payload *protocol.CancelTurnPayload) OperationOutcome {
+	return r.TurnService.Cancel(operation, payload)
 }
