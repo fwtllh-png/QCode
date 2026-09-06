@@ -20,6 +20,26 @@ import (
 
 const SchemaVersion = 4
 
+// schemaMigration moves the schema exactly one version forward. The step
+// owns its transaction and records the new user_version itself.
+type schemaMigration struct {
+	from int
+	to   int
+	run  func(context.Context, *Store) error
+}
+
+// schemaMigrations is the explicit migration chain. Adding a schema version
+// means appending one entry whose from equals the previous entry's to (or 3
+// for the first entry); databases at a version with no registered step fail
+// closed instead of being guessed.
+var schemaMigrations = []schemaMigration{
+	{
+		from: 3,
+		to:   4,
+		run:  func(ctx context.Context, s *Store) error { return s.migrateV3ToV4(ctx) },
+	},
+}
+
 var (
 	ErrCorrupt           = errors.New("sqlite database is corrupt")
 	ErrUnsupportedSchema = errors.New("sqlite schema version is unsupported")
@@ -169,19 +189,19 @@ func Open(ctx context.Context, path string, options ...Options) (*Store, error) 
 	if err := store.enableWAL(ctx); err != nil {
 		return nil, err
 	}
-	if version == 3 {
-		if err := store.migrateV3ToV4(ctx); err != nil {
-			return nil, err
-		}
-		version = 4
-	}
 	if version == 0 {
 		if err := store.initializeSchema(ctx); err != nil {
 			return nil, err
 		}
 	} else if version != SchemaVersion {
-		return nil, &SchemaVersionError{
-			Found: version, Supported: SchemaVersion,
+		migrated, err := store.applySchemaMigrations(ctx, version)
+		if err != nil {
+			return nil, err
+		}
+		if migrated != SchemaVersion {
+			return nil, &SchemaVersionError{
+				Found: migrated, Supported: SchemaVersion,
+			}
 		}
 	}
 	if err := store.verifyPragmas(ctx, opts.BusyTimeout); err != nil {
@@ -213,6 +233,34 @@ func (s *Store) enableWAL(ctx context.Context) error {
 		return fmt.Errorf("enable WAL: SQLite selected journal mode %q", mode)
 	}
 	return nil
+}
+
+// applySchemaMigrations walks the explicit migration chain forward from
+// version until it reaches SchemaVersion. A version without a registered
+// step reports the unsupported-schema error without writing anything.
+func (s *Store) applySchemaMigrations(ctx context.Context, version int) (int, error) {
+	for version < SchemaVersion {
+		step, ok := schemaMigrationFrom(version)
+		if !ok {
+			return version, &SchemaVersionError{
+				Found: version, Supported: SchemaVersion,
+			}
+		}
+		if err := step.run(ctx, s); err != nil {
+			return version, err
+		}
+		version = step.to
+	}
+	return version, nil
+}
+
+func schemaMigrationFrom(from int) (schemaMigration, bool) {
+	for _, step := range schemaMigrations {
+		if step.from == from {
+			return step, true
+		}
+	}
+	return schemaMigration{}, false
 }
 
 func (s *Store) initializeSchema(ctx context.Context) error {

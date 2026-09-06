@@ -346,3 +346,44 @@ var _ interface {
 } = (*Log)(nil)
 
 var _ io.Writer = (*failWriteOnceFile)(nil)
+
+func TestReadRecordReturnsExactCommittedRecord(t *testing.T) {
+	dir := t.TempDir()
+	log, err := Open(filepath.Join(dir, "events.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = log.Close(context.Background()) }()
+	var last protocol.Cursor
+	for sequence := 1; sequence <= 5; sequence++ {
+		event, err := protocol.NewEvent(protocol.EventMeta{
+			Sequence:    protocol.Cursor(sequence),
+			OperationID: "op_read_record",
+			ThreadID:    "thread_read_record",
+			TurnID:      "turn_read_record",
+			ItemID:      protocol.ItemID(fmt.Sprintf("item_%d", sequence)),
+		}, &protocol.TurnCompletedData{Text: "ok"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := log.Append(context.Background(), event); err != nil {
+			t.Fatal(err)
+		}
+		last = event.Sequence
+	}
+	record, found, err := log.ReadRecord(context.Background(), last)
+	if err != nil || !found {
+		t.Fatalf("ReadRecord = found=%v err=%v", found, err)
+	}
+	if record.Event.Sequence != last {
+		t.Fatalf("ReadRecord sequence = %d, want %d", record.Event.Sequence, last)
+	}
+	if record.Evidence.Offset < 0 || record.Evidence.Length <= 0 {
+		t.Fatalf("ReadRecord evidence = %+v", record.Evidence)
+	}
+	if _, found, err := log.ReadRecord(
+		context.Background(), last+1,
+	); err != nil || found {
+		t.Fatalf("uncommitted ReadRecord = found=%v err=%v", found, err)
+	}
+}

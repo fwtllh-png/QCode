@@ -21,22 +21,34 @@ type CommandRequest struct {
 func (b *Broker) RunCommand(
 	ctx context.Context,
 	request CommandRequest,
-) (result Result, resultErr error) {
+) (Result, error) {
 	if b == nil || b.authority == nil {
 		return Result{}, errors.New("process broker is required")
 	}
 	if err := validateCommand(request); err != nil {
 		return Result{}, err
 	}
-	if err := b.authority.Consume(request.Lease, request.Validation); err != nil {
-		return Result{}, err
-	}
-	settlement := authority.Settlement{Status: "failed", Reason: "runner_failure"}
-	defer func() {
-		settlement.CompletedAt = time.Now().UTC()
-		resultErr = errors.Join(resultErr, b.authority.Settle(request.Lease, settlement))
-		result.Settlement = settlement
-	}()
+	var result Result
+	settlement, err := b.authority.RunSettled(
+		request.Lease,
+		request.Validation,
+		"runner_failure",
+		time.Now,
+		func(settlement *authority.Settlement) error {
+			var runErr error
+			result, runErr = b.runCommandConsumed(ctx, request, settlement)
+			return runErr
+		},
+	)
+	result.Settlement = settlement
+	return result, err
+}
+
+func (b *Broker) runCommandConsumed(
+	ctx context.Context,
+	request CommandRequest,
+	settlement *authority.Settlement,
+) (result Result, resultErr error) {
 	leaseSnapshot, err := b.authority.Snapshot(request.Lease)
 	if err != nil {
 		return Result{}, err

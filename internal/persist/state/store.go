@@ -45,7 +45,11 @@ type Options struct {
 }
 
 type Store struct {
-	mu      sync.Mutex
+	// mu serializes durable writes and guards closed. Replay, ReplayLimit,
+	// LastSequence, and EventByID take read locks so a slow consumer replay
+	// never blocks appends; the append-only log and the single SQLite write
+	// connection keep the read paths consistent with committed state.
+	mu      sync.RWMutex
 	root    string
 	sqlite  *sqlitestate.Store
 	events  *eventlog.Log
@@ -281,8 +285,8 @@ func (s *Store) PatchThreadMeta(ctx context.Context, patch ThreadMetaPatch) erro
 }
 
 func (s *Store) Replay(ctx context.Context, cursor protocol.Cursor) ([]protocol.Event, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	if s.closed {
 		return nil, ErrClosed
 	}
@@ -307,6 +311,11 @@ func (s *Store) EventByID(
 	ctx context.Context,
 	eventID protocol.EventID,
 ) (protocol.Event, bool, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.closed {
+		return protocol.Event{}, false, ErrClosed
+	}
 	var sequence protocol.Cursor
 	err := s.sqlite.DB().QueryRowContext(
 		ctx,
@@ -319,22 +328,20 @@ func (s *Store) EventByID(
 	if err != nil {
 		return protocol.Event{}, false, err
 	}
-	events, err := s.events.Replay(ctx, sequence-1)
-	if err != nil {
-		return protocol.Event{}, false, err
+	record, found, err := s.events.ReadRecord(ctx, sequence)
+	if err != nil || !found {
+		return protocol.Event{}, false, fmt.Errorf(
+			"event index %q has no matching log event",
+			eventID,
+		)
 	}
-	for _, event := range events {
-		if event.Sequence == sequence && event.ID == eventID {
-			return event, true, nil
-		}
-		if event.Sequence > sequence {
-			break
-		}
+	if record.Event.ID != eventID {
+		return protocol.Event{}, false, fmt.Errorf(
+			"event index %q has no matching log event",
+			eventID,
+		)
 	}
-	return protocol.Event{}, false, fmt.Errorf(
-		"event index %q has no matching log event",
-		eventID,
-	)
+	return record.Event, true, nil
 }
 
 // ReplayLimit bounds durable replay while preserving the store lock used to
@@ -344,8 +351,8 @@ func (s *Store) ReplayLimit(
 	cursor protocol.Cursor,
 	limit int,
 ) ([]protocol.Event, bool, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	if s.closed {
 		return nil, false, ErrClosed
 	}
@@ -367,8 +374,8 @@ func (s *Store) ReplayLimit(
 }
 
 func (s *Store) LastSequence(ctx context.Context) (protocol.Cursor, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	if s.closed {
 		return 0, ErrClosed
 	}

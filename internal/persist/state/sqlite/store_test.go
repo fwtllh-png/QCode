@@ -374,3 +374,36 @@ func TestIsUniqueConstraintViolationUsesSQLiteCodes(t *testing.T) {
 		t.Fatalf("foreign key error was classified as unique: %v", foreignKeyErr)
 	}
 }
+
+func TestSchemaMigrationChainIsContiguous(t *testing.T) {
+	if len(schemaMigrations) == 0 {
+		t.Fatal("schema migration chain is empty")
+	}
+	seen := make(map[int]bool)
+	for index, step := range schemaMigrations {
+		if step.from >= step.to {
+			t.Fatalf("migration %d does not advance: %d -> %d", index, step.from, step.to)
+		}
+		if seen[step.from] {
+			t.Fatalf("duplicate migration source version %d", step.from)
+		}
+		seen[step.from] = true
+		if step.run == nil {
+			t.Fatalf("migration %d -> %d has no run function", step.from, step.to)
+		}
+		if index == 0 {
+			continue
+		}
+		if step.from != schemaMigrations[index-1].to {
+			t.Fatalf(
+				"migration chain is not contiguous: %d -> %d then %d -> %d",
+				schemaMigrations[index-1].from, schemaMigrations[index-1].to,
+				step.from, step.to,
+			)
+		}
+	}
+	last := schemaMigrations[len(schemaMigrations)-1]
+	if last.to != SchemaVersion {
+		t.Fatalf("migration chain ends at %d, want SchemaVersion %d", last.to, SchemaVersion)
+	}
+}

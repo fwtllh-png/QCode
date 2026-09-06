@@ -315,7 +315,7 @@ smoke: build
 	./$(BINARY) --help >/dev/null
 	./$(BINARY) --version
 
-docs-check: web-experience-check benchmark-v2-check
+docs-check: web-experience-check benchmark-v2-check catalog-check
 	./scripts/check-docs.sh
 	$(MAKE) doc-governance-check
 	$(MAKE) doc-governance-test
@@ -430,6 +430,13 @@ bench:
 benchmark-v2-check:
 	$(GO) test -count=1 ./scripts/benchmarkv2
 	$(GO) run ./scripts/benchmarkv2 -root .
+
+# catalog-check keeps the hand-maintained bundled model catalog honest:
+# pricing, limit relationships, provenance vocabulary, and cross-model
+# consistency, on top of the runtime per-provider validation.
+catalog-check:
+	$(GO) test -count=1 ./scripts/catalogcheck
+	$(GO) run ./scripts/catalogcheck -root .
 
 benchmark-v2: benchmark-v2-check bench
 	$(GO) test -count=1 -run 'Recovery' ./internal/persist/workspacejournal

@@ -119,9 +119,12 @@ type durableFile interface {
 }
 
 // Log is a concurrency-safe JSONL event log. Each newline is the commit marker
-// for the preceding JSON event.
+// for the preceding JSON event. Appends take the write lock; replays and
+// evidence lookups take read locks and run concurrently with appends —
+// committed regions of the file are append-only, and a failed append only
+// ever truncates bytes beyond the previously committed end.
 type Log struct {
-	mu       sync.Mutex
+	mu       sync.RWMutex
 	path     string
 	file     durableFile
 	entries  []Evidence
@@ -352,8 +355,8 @@ func (l *Log) replayRecords(
 	if err := ctx.Err(); err != nil {
 		return nil, false, err
 	}
-	l.mu.Lock()
-	defer l.mu.Unlock()
+	l.mu.RLock()
+	defer l.mu.RUnlock()
 	if l.closed {
 		return nil, false, ErrClosed
 	}
@@ -376,38 +379,76 @@ func (l *Log) replayRecords(
 		if err := ctx.Err(); err != nil {
 			return nil, false, err
 		}
-		recordBytes := make([]byte, evidence.Length)
-		read, err := l.file.ReadAt(recordBytes, evidence.Offset)
-		if err != nil && !errors.Is(err, io.EOF) {
-			return nil, false, &CorruptionError{Path: l.path, Offset: evidence.Offset, Err: err}
+		record, err := l.readVerifiedRecord(evidence)
+		if err != nil {
+			return nil, false, err
 		}
-		if int64(read) != evidence.Length || len(recordBytes) == 0 || recordBytes[len(recordBytes)-1] != '\n' {
-			return nil, false, &CorruptionError{
-				Path: l.path, Offset: evidence.Offset, Err: errors.New("committed record is truncated"),
-			}
-		}
-		payload := recordBytes[:len(recordBytes)-1]
-		digest := sha256.Sum256(payload)
-		if !bytes.Equal(digest[:], mustDecodeHash(evidence.SHA256)) {
-			return nil, false, &CorruptionError{
-				Path: l.path, Offset: evidence.Offset, Err: errors.New("committed record hash mismatch"),
-			}
-		}
-		var event protocol.Event
-		if err := json.Unmarshal(payload, &event); err != nil {
-			return nil, false, &CorruptionError{Path: l.path, Offset: evidence.Offset, Err: err}
-		}
-		if event.Sequence != evidence.Sequence {
-			return nil, false, &CorruptionError{
-				Path: l.path, Offset: evidence.Offset,
-				Err: &SequenceError{
-					Expected: evidence.Sequence, Actual: event.Sequence, Offset: evidence.Offset,
-				},
-			}
-		}
-		records = append(records, Record{Event: event, Evidence: evidence})
+		records = append(records, record)
 	}
 	return records, more, nil
+}
+
+// ReadRecord returns the committed record for sequence with byte
+// verification, without replaying any other record. The boolean is false
+// when the sequence is not committed.
+func (l *Log) ReadRecord(
+	ctx context.Context,
+	sequence protocol.Cursor,
+) (Record, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return Record{}, false, err
+	}
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	if l.closed {
+		return Record{}, false, ErrClosed
+	}
+	index := sort.Search(len(l.entries), func(index int) bool {
+		return l.entries[index].Sequence >= sequence
+	})
+	if index == len(l.entries) || l.entries[index].Sequence != sequence {
+		return Record{}, false, nil
+	}
+	record, err := l.readVerifiedRecord(l.entries[index])
+	if err != nil {
+		return Record{}, false, err
+	}
+	return record, true, nil
+}
+
+// readVerifiedRecord reads and verifies one committed record; the caller
+// holds the read or write lock.
+func (l *Log) readVerifiedRecord(evidence Evidence) (Record, error) {
+	recordBytes := make([]byte, evidence.Length)
+	read, err := l.file.ReadAt(recordBytes, evidence.Offset)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return Record{}, &CorruptionError{Path: l.path, Offset: evidence.Offset, Err: err}
+	}
+	if int64(read) != evidence.Length || len(recordBytes) == 0 || recordBytes[len(recordBytes)-1] != '\n' {
+		return Record{}, &CorruptionError{
+			Path: l.path, Offset: evidence.Offset, Err: errors.New("committed record is truncated"),
+		}
+	}
+	payload := recordBytes[:len(recordBytes)-1]
+	digest := sha256.Sum256(payload)
+	if !bytes.Equal(digest[:], mustDecodeHash(evidence.SHA256)) {
+		return Record{}, &CorruptionError{
+			Path: l.path, Offset: evidence.Offset, Err: errors.New("committed record hash mismatch"),
+		}
+	}
+	var event protocol.Event
+	if err := json.Unmarshal(payload, &event); err != nil {
+		return Record{}, &CorruptionError{Path: l.path, Offset: evidence.Offset, Err: err}
+	}
+	if event.Sequence != evidence.Sequence {
+		return Record{}, &CorruptionError{
+			Path: l.path, Offset: evidence.Offset,
+			Err: &SequenceError{
+				Expected: evidence.Sequence, Actual: event.Sequence, Offset: evidence.Offset,
+			},
+		}
+	}
+	return Record{Event: event, Evidence: evidence}, nil
 }
 
 func mustDecodeHash(hash string) []byte {
@@ -417,8 +458,8 @@ func mustDecodeHash(hash string) []byte {
 
 // Evidence returns the byte evidence for sequence when it is present.
 func (l *Log) Evidence(sequence protocol.Cursor) (Evidence, bool) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
+	l.mu.RLock()
+	defer l.mu.RUnlock()
 	index := sort.Search(len(l.entries), func(index int) bool {
 		return l.entries[index].Sequence >= sequence
 	})
@@ -434,8 +475,8 @@ func (l *Log) LastSequence(ctx context.Context) (protocol.Cursor, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, err
 	}
-	l.mu.Lock()
-	defer l.mu.Unlock()
+	l.mu.RLock()
+	defer l.mu.RUnlock()
 	if l.closed {
 		return l.last, ErrClosed
 	}

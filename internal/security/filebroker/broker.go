@@ -156,7 +156,7 @@ func (p Plan) Validate() error {
 func (b *Broker) Commit(
 	ctx context.Context,
 	request Request,
-) (result Result, resultErr error) {
+) (Result, error) {
 	if b == nil || b.workspace == nil || b.authority == nil {
 		return Result{}, errors.New("file broker is required")
 	}
@@ -166,21 +166,31 @@ func (b *Broker) Commit(
 	if err := validateOperation(request.Validation.Operation, request.Plan); err != nil {
 		return Result{}, err
 	}
-	if err := b.authority.Consume(request.Lease, request.Validation); err != nil {
-		return Result{}, err
-	}
-	settlement := authority.Settlement{Status: "failed", Reason: "file_commit_failed"}
-	defer func() {
-		settlement.CompletedAt = b.now().UTC()
-		resultErr = errors.Join(
-			resultErr,
-			b.authority.Settle(request.Lease, settlement),
-		)
-		result.Settlement = settlement
-	}()
+	var result Result
+	settlement, err := b.authority.RunSettled(
+		request.Lease,
+		request.Validation,
+		"file_commit_failed",
+		b.now,
+		func(settlement *authority.Settlement) error {
+			var commitErr error
+			result, commitErr = b.commitConsumed(ctx, request, settlement)
+			return commitErr
+		},
+	)
+	result.Settlement = settlement
+	return result, err
+}
 
-	result.Before = make(map[string]State, len(request.Plan.Entries))
-	result.After = make(map[string]State, len(request.Plan.Entries))
+func (b *Broker) commitConsumed(
+	ctx context.Context,
+	request Request,
+	settlement *authority.Settlement,
+) (Result, error) {
+	result := Result{
+		Before: make(map[string]State, len(request.Plan.Entries)),
+		After:  make(map[string]State, len(request.Plan.Entries)),
+	}
 	for _, entry := range request.Plan.Entries {
 		current, err := b.snapshot(entry.Path)
 		if err != nil {
@@ -213,37 +223,32 @@ func (b *Broker) Commit(
 				continue
 			}
 			if err := ctx.Err(); err != nil {
-				resultErr = b.rollback(request, done, err)
 				settlement.Reason = "context_canceled"
-				return result, resultErr
+				return result, b.rollback(request, done, err)
 			}
 			if b.beforeApply != nil {
 				if err := b.beforeApply(entry.Path); err != nil {
-					resultErr = b.rollback(request, done, err)
-					return result, resultErr
+					return result, b.rollback(request, done, err)
 				}
 			}
 			current, err := b.snapshot(entry.Path)
 			if err != nil {
-				resultErr = b.rollback(
+				return result, b.rollback(
 					request, done,
 					fmt.Errorf("revalidate before apply %q: %w", entry.Path, err),
 				)
-				return result, resultErr
 			}
 			if current != entry.Before {
-				resultErr = b.rollback(
+				return result, b.rollback(
 					request, done,
 					fmt.Errorf("file transaction %q changed before apply", entry.Path),
 				)
-				return result, resultErr
 			}
 			if err := b.apply(entry); err != nil {
-				resultErr = b.rollback(
+				return result, b.rollback(
 					request, done,
 					fmt.Errorf("apply %q: %w", entry.Path, err),
 				)
-				return result, resultErr
 			}
 			done = append(done, entry)
 		}
@@ -251,29 +256,26 @@ func (b *Broker) Commit(
 	for _, entry := range request.Plan.Entries {
 		after, err := b.snapshot(entry.Path)
 		if err != nil {
-			resultErr = b.rollback(
+			return result, b.rollback(
 				request, done,
 				fmt.Errorf("snapshot committed %q: %w", entry.Path, err),
 			)
-			return result, resultErr
 		}
 		if !sameContent(after, entry.After) {
-			resultErr = b.rollback(
+			return result, b.rollback(
 				request, done,
 				fmt.Errorf("file transaction result %q does not match plan", entry.Path),
 			)
-			return result, resultErr
 		}
 		result.After[entry.Path] = after
 		if request.Journal != nil {
 			if err := request.Journal.After(
 				filepath.Join(b.workspace.Root(), filepath.FromSlash(entry.Path)),
 			); err != nil {
-				resultErr = b.rollback(
+				return result, b.rollback(
 					request, done,
 					fmt.Errorf("journal settlement %q: %w", entry.Path, err),
 				)
-				return result, resultErr
 			}
 		}
 	}

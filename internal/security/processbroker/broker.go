@@ -55,7 +55,7 @@ func New(manager *authority.LeaseAuthority) (*Broker, error) {
 func (b *Broker) RunSmoke(
 	ctx context.Context,
 	request Request,
-) (result Result, resultErr error) {
+) (Result, error) {
 	if b == nil || b.authority == nil {
 		return Result{}, errors.New("process broker is required")
 	}
@@ -65,20 +65,27 @@ func (b *Broker) RunSmoke(
 	if err := validateArtifact(request.Artifact, request.Validation); err != nil {
 		return Result{}, err
 	}
-	if err := b.authority.Consume(request.Lease, request.Validation); err != nil {
-		return Result{}, err
-	}
-	settlement := authority.Settlement{
-		Status: "failed", Reason: "runner_failure",
-	}
-	defer func() {
-		settlement.CompletedAt = time.Now().UTC()
-		resultErr = errors.Join(
-			resultErr,
-			b.authority.Settle(request.Lease, settlement),
-		)
-		result.Settlement = settlement
-	}()
+	var result Result
+	settlement, err := b.authority.RunSettled(
+		request.Lease,
+		request.Validation,
+		"runner_failure",
+		time.Now,
+		func(settlement *authority.Settlement) error {
+			var runErr error
+			result, runErr = b.runSmokeConsumed(ctx, request, settlement)
+			return runErr
+		},
+	)
+	result.Settlement = settlement
+	return result, err
+}
+
+func (b *Broker) runSmokeConsumed(
+	ctx context.Context,
+	request Request,
+	settlement *authority.Settlement,
+) (result Result, resultErr error) {
 	running, err := process.StartManaged(ctx, process.Options{
 		Path: request.Artifact.ExecutablePath,
 		Args: append([]string(nil), request.Args...),
@@ -139,7 +146,7 @@ func (b *Broker) RunSmoke(
 		_ = running.Cancel()
 		completedRun = <-finished
 		settlement.Status, settlement.Reason = "canceled", "context_canceled"
-		return Result{Process: completedRun.result, Settlement: settlement}, ctx.Err()
+		return Result{Process: completedRun.result, Settlement: *settlement}, ctx.Err()
 	}
 	if err := b.validateHandle(request, handle, processID, generation, authority.ProcessWait); err != nil {
 		return Result{}, err
@@ -157,7 +164,7 @@ func (b *Broker) RunSmoke(
 	}
 	return Result{
 		Process: completedRun.result, Survived: survived,
-		Handle: handleSnapshot, Settlement: settlement,
+		Handle: handleSnapshot, Settlement: *settlement,
 	}, nil
 }
 

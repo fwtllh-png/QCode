@@ -3,8 +3,10 @@ package state
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -227,12 +229,12 @@ func seedThread(t *testing.T, store *Store, threadID, title, status string) {
 	}
 }
 
-func testEvent(t *testing.T, sequence protocol.Cursor) protocol.Event {
+func testEvent(t testing.TB, sequence protocol.Cursor) protocol.Event {
 	t.Helper()
 	return testEventWithData(t, sequence, &protocol.TurnCompletedData{Text: "ok"})
 }
 
-func testEventWithData(t *testing.T, sequence protocol.Cursor, data protocol.EventData) protocol.Event {
+func testEventWithData(t testing.TB, sequence protocol.Cursor, data protocol.EventData) protocol.Event {
 	t.Helper()
 	itemID := protocol.ItemID("item_" + time.Now().Format("150405.000000000"))
 	operation, err := protocol.NewOperation(&protocol.StartTurnPayload{
@@ -397,5 +399,148 @@ func TestAppendRetriesAbandonedDurableEvent(t *testing.T) {
 	}
 	if len(events) != 1 || events[0].ID != event.ID {
 		t.Fatalf("replayed events = %+v, want the retried durable event", events)
+	}
+}
+
+func TestEventByIDReadsExactRecordAtScale(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, Options{DataDir: t.TempDir(), BusyTimeout: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.CloseAll(context.Background()) })
+
+	const total = 2000
+	ids := make([]protocol.EventID, total)
+	for sequence := 1; sequence <= total; sequence++ {
+		event := testEventWithData(
+			t,
+			protocol.Cursor(sequence),
+			&protocol.TurnCompletedData{Text: fmt.Sprintf("event-%d", sequence)},
+		)
+		ids[sequence-1] = event.ID
+		if err := store.Append(ctx, event); err != nil {
+			t.Fatalf("append %d: %v", sequence, err)
+		}
+	}
+	for _, index := range []int{0, total / 2, total - 1} {
+		event, found, err := store.EventByID(ctx, ids[index])
+		if err != nil || !found {
+			t.Fatalf("EventByID(%d) = found=%v err=%v", index+1, found, err)
+		}
+		if event.Sequence != protocol.Cursor(index+1) {
+			t.Fatalf("EventByID(%d) sequence = %d", index+1, event.Sequence)
+		}
+	}
+	if _, found, err := store.EventByID(ctx, protocol.EventID("missing")); err != nil || found {
+		t.Fatalf("missing EventByID = found=%v err=%v", found, err)
+	}
+}
+
+func TestReplayRunsConcurrentlyWithAppends(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, Options{DataDir: t.TempDir(), BusyTimeout: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.CloseAll(context.Background()) })
+
+	for sequence := 1; sequence <= 20; sequence++ {
+		if err := store.Append(ctx, testEvent(t, protocol.Cursor(sequence))); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Sequences must be appended in order (single-writer discipline), so one
+	// appender drives them forward while several consumers replay the
+	// committed log concurrently.
+	const appended = 120
+	const repliers = 3
+	const rounds = 25
+	var wg sync.WaitGroup
+	failures := make(chan error, repliers+1)
+	done := make(chan struct{})
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		defer close(done)
+		for sequence := 21; sequence <= 20+appended; sequence++ {
+			if err := store.Append(
+				ctx, testEvent(t, protocol.Cursor(sequence)),
+			); err != nil {
+				failures <- fmt.Errorf("append %d: %w", sequence, err)
+				return
+			}
+		}
+	}()
+	for worker := 0; worker < repliers; worker++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for round := 0; round < rounds; round++ {
+				select {
+				case <-done:
+					return
+				default:
+				}
+				events, err := store.Replay(ctx, 0)
+				if err != nil {
+					failures <- fmt.Errorf("replay: %w", err)
+					return
+				}
+				previous := protocol.Cursor(0)
+				for _, event := range events {
+					if event.Sequence <= previous {
+						failures <- fmt.Errorf(
+							"replay returned non-increasing sequence %d after %d",
+							event.Sequence, previous,
+						)
+						return
+					}
+					previous = event.Sequence
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	close(failures)
+	for failure := range failures {
+		t.Error(failure)
+	}
+	last, err := store.LastSequence(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := protocol.Cursor(20 + appended); last != want {
+		t.Fatalf("last sequence = %d, want %d", last, want)
+	}
+}
+
+func BenchmarkEventByID(b *testing.B) {
+	ctx := context.Background()
+	store, err := Open(ctx, Options{DataDir: b.TempDir(), BusyTimeout: time.Second})
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer func() { _ = store.CloseAll(context.Background()) }()
+
+	const total = 5000
+	// The first event is the farthest from the log tail, so looking it up
+	// exercises the worst case for implementations that replay to the end.
+	var firstID protocol.EventID
+	for sequence := 1; sequence <= total; sequence++ {
+		event := testEvent(b, protocol.Cursor(sequence))
+		if sequence == 1 {
+			firstID = event.ID
+		}
+		if err := store.Append(ctx, event); err != nil {
+			b.Fatal(err)
+		}
+	}
+	b.ResetTimer()
+	for iteration := 0; iteration < b.N; iteration++ {
+		if _, found, err := store.EventByID(ctx, firstID); err != nil || !found {
+			b.Fatalf("EventByID = found=%v err=%v", found, err)
+		}
 	}
 }

@@ -107,6 +107,12 @@ Trusted Binding 以十维 Required Controls 描述操作需求，Sandbox Probe�
 Command 共同产出 Effective Controls。Authority 在 Lease 签发时执行逐维集合比较，
 Process Owner 在 Backend `Prepare` 后再次校验本次命令的 Prepared Controls。
 旧 `Strength` 能力字段已删除；展示和缓存身份直接由 Effective Controls 派生。
+十维的枚举、校验、满足关系、投影与 Identity 顺序由 `controlmatrix` 的单一规格表
+声明；新增维度必须同步扩展该表，字段级完备性测试会锁定遗漏。
+
+Broker 副作用统一经过 `authority` 的 `RunSettled` 事务骨架：消费租约、以失败为
+初始结算执行副作用、恰好一次带时间戳的结算，结算错误与业务错误合并返回；
+新增 Broker 不再各自展开 Consume/defer-Settle 样板。
 
 Runtime 构造具有 Prepared 状态。`RuntimeModule` 只构造 Facade 并恢复静态 Durable
 State，不接受 Operation；`BackgroundModule` 依次执行 MCP 初次 Refresh、启动 Runtime
@@ -415,15 +421,21 @@ Durable State 由多个明确组件组合：
 | Workspace Journal | Before Image 与编辑恢复 |
 | Snapshot | 显式 Thread 状态检查点 |
 
-SQLite Schema 版本记录在 `PRAGMA user_version`，当前为版本 4。打开时只接受空库
-初始化与已知的显式迁移（v3 → v4）；更高版本拒绝打开，更低的未知版本不做自动迁移。
-首次稳定基线前的开发迁移历史已有意压缩；公开版本后的 Schema 变更必须继续使用
-显式 Migration。
+SQLite Schema 版本记录在 `PRAGMA user_version`，当前为版本 4。版本演进以显式
+迁移链登记：每一步恰好前进一个版本并在自己的事务内记录新版本号，链必须连续且
+终点等于当前版本（源码级测试锁定）；更高版本拒绝打开，没有登记步骤的版本
+不做自动迁移。首次稳定基线前的开发迁移历史已有意压缩；公开版本后的 Schema
+变更必须继续在迁移链上追加显式步骤。
 
 Event Log 与 SQLite 投影之间的一致性以事件日志为准：启动时执行 reconcile；运行期
 追加遇到预留冲突或投影失败时，也会先按日志修复一次再重试同一事件。不确定的落盘
 结果保留预留状态，交由下一次对账裁决，不会写入重复记录；此前的干净失败则允许
 重试诚实地补写日志。
+
+事件日志与状态存储的读路径与追加并发执行：已提交区域只追加不收缩，失败回滚只
+影响上一个已提交末尾之后的字节，因此重放、单条读取和高水位查询都持读锁，慢消费
+者的重放不再阻塞写入。`EventByID` 经 `event_index` 的偏移证据直达读取日志记录，
+不重放日志前缀。
 
 Persistent Runtime Wiring 在创建 Engine 前注入 SQLite Turn Coordinator Store。每个
 已接受 Transition 都在 State Commit 或 Effect Dispatch 前追加 Domain Fact。热路径恢复

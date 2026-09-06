@@ -4,6 +4,7 @@ package workspacebroker
 import (
 	"context"
 	"errors"
+	"sync"
 	"time"
 
 	"github.com/fwtllh-png/QCode/internal/persist/workspacejournal"
@@ -18,6 +19,13 @@ type Runtime struct {
 	VCS       *vcsbroker.Broker
 	authority *authority.LeaseAuthority
 	leaseTTL  time.Duration
+
+	// fileRuntimes caches per-workspace file brokers for CommitFilesAt so a
+	// repeated target workspace pays construction once. Broker.Commit is
+	// stateless besides its thread-safe authority, so cached runtimes are
+	// safe to share.
+	fileRuntimesMu sync.Mutex
+	fileRuntimes   map[string]*filebroker.Runtime
 }
 
 func (r *Runtime) ReadVCS(
@@ -263,9 +271,19 @@ func (r *Runtime) CommitFilesAt(
 	if err != nil {
 		return filebroker.Result{}, err
 	}
-	runtime, err := filebroker.NewRuntime(root, r.authority, r.leaseTTL)
-	if err != nil {
-		return filebroker.Result{}, err
+	r.fileRuntimesMu.Lock()
+	runtime, cached := r.fileRuntimes[root.Root()]
+	if !cached {
+		runtime, err = filebroker.NewRuntime(root, r.authority, r.leaseTTL)
+		if err != nil {
+			r.fileRuntimesMu.Unlock()
+			return filebroker.Result{}, err
+		}
+		if r.fileRuntimes == nil {
+			r.fileRuntimes = make(map[string]*filebroker.Runtime)
+		}
+		r.fileRuntimes[root.Root()] = runtime
 	}
+	r.fileRuntimesMu.Unlock()
 	return runtime.Commit(ctx, toolName, plan, nil)
 }
