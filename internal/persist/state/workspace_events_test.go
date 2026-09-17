@@ -63,6 +63,12 @@ func TestWorkspaceEventStoreIsolatesReplayAndDoesNotOwnSharedStore(
 	}
 	assertWorkspaceReplay(eventsA, eventA.ID)
 	assertWorkspaceReplay(eventsB, eventB.ID)
+	// Even explicitly supplied foreign threads cannot expand Workspace access.
+	page, more, err := eventsA.ReplaySessionBefore(t.Context(), "session-a",
+		[]protocol.ThreadID{"thread-a", "thread-b"}, 0, 2, 1)
+	if err != nil || more || len(page) != 1 || page[0].ID != eventA.ID {
+		t.Fatalf("indexed Workspace replay=%+v more=%v err=%v", page, more, err)
+	}
 
 	if err := eventsA.Close(t.Context()); err != nil {
 		t.Fatal(err)

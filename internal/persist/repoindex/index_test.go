@@ -86,6 +86,48 @@ func TestEnsurePrunesDeletedFiles(t *testing.T) {
 	}
 }
 
+func TestEnsureReusesGraphUntilContentChanges(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, "api.go", "package api\nfunc Serve() {}\n")
+	index, store := newIndex(t, root, Options{})
+	if _, err := index.Ensure(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	// A write-rejecting trigger makes accidental rebuilds observable even though
+	// graph errors intentionally do not fail symbol queries.
+	if _, err := store.db.ExecContext(t.Context(), `
+		CREATE TRIGGER reject_rank_write BEFORE INSERT ON repo_index_file_rank
+		BEGIN SELECT RAISE(FAIL, 'graph write rejected'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := index.Ensure(t.Context()); err != nil || index.graphFiles == nil {
+		t.Fatalf("unchanged graph rebuilt: %v", err)
+	}
+	now := time.Now().Add(time.Hour)
+	if err := os.Chtimes(filepath.Join(root, "api.go"), now, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := index.Ensure(t.Context()); err != nil || index.graphFiles == nil {
+		t.Fatalf("timestamp-only change rebuilt graph: %v", err)
+	}
+	writeFile(t, root, "api.go", "package api\nfunc Changed() {}\n")
+	if _, err := index.Ensure(t.Context()); err != nil || index.graphFiles != nil {
+		t.Fatalf("failed graph build was cached: %v", err)
+	}
+	if _, err := store.db.ExecContext(t.Context(), "DROP TRIGGER reject_rank_write"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := index.Ensure(t.Context()); err != nil || index.graphFiles == nil {
+		t.Fatalf("graph build did not recover: %v", err)
+	}
+	if err := os.Remove(filepath.Join(root, "api.go")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := index.Ensure(t.Context()); err != nil || len(index.graphFiles) != 0 {
+		t.Fatalf("deleted graph node retained: %v", err)
+	}
+}
+
 func TestEnsureRebuildsWhenTheIndexerVersionMoved(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, root, "api.go", "package api\n\nfunc Serve() {}\n")

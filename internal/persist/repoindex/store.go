@@ -613,7 +613,7 @@ func (s *Store) Edges(ctx context.Context) ([]graphEdge, error) {
 // that uses a name declared elsewhere in the repository references the
 // declaring file, with the use count as the edge weight. The join runs where
 // both tables and their name indexes live.
-func (s *Store) referenceEdges(ctx context.Context) []graphEdge {
+func (s *Store) referenceEdges(ctx context.Context) ([]graphEdge, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT r.path AS src, s.path AS dst, SUM(r.use_count) AS weight
 		FROM repo_index_references r
@@ -624,7 +624,7 @@ func (s *Store) referenceEdges(ctx context.Context) []graphEdge {
 		GROUP BY r.path, s.path
 		ORDER BY r.path, s.path`, s.root)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	defer rows.Close()
 	var edges []graphEdge
@@ -632,9 +632,9 @@ func (s *Store) referenceEdges(ctx context.Context) []graphEdge {
 		var edge graphEdge
 		edge.Kind = EdgeReference
 		if err := rows.Scan(&edge.Src, &edge.Dst, &edge.Weight); err != nil {
-			return nil
+			return nil, err
 		}
 		edges = append(edges, edge)
 	}
-	return edges
+	return edges, rows.Err()
 }

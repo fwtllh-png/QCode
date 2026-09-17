@@ -196,11 +196,9 @@ func (t *symbolTool) run(ctx context.Context, input symbolInput) (tool.Result, e
 			"symbol search requires runtime result budget or explicit max_results",
 		)
 	}
-	snapshot, err := t.index.Ensure(ctx)
-	if err != nil {
-		return tool.Result{}, err
-	}
-	if !snapshot.Ready() {
+	// Index query methods refresh themselves; do not walk the repository twice.
+	snapshot := t.index.Snapshot()
+	if snapshot.Status == repoindex.StatusDisabled {
 		return unavailableResult(snapshot)
 	}
 	switch t.kind {
@@ -281,6 +279,7 @@ func (t *symbolTool) declarations(
 	if !current.Ready() {
 		return unavailableResult(current)
 	}
+	snapshot = current
 	matches := make([]symbolMatch, 0, min(limit, len(found)))
 	total := 0
 	for _, symbol := range found {
@@ -406,6 +405,7 @@ func (t *symbolTool) relatedTests(
 	if !current.Ready() {
 		return unavailableResult(current)
 	}
+	snapshot = current
 	sources := make([]string, 0, len(related))
 	for source := range related {
 		sources = append(sources, source)

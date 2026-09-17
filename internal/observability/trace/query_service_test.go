@@ -102,6 +102,30 @@ func TestUnsigned32RejectsOverflowAndFractions(t *testing.T) {
 	}
 }
 
+func TestTraceCompleteRequiresDurableEndedSpansAndReleasedRecorder(t *testing.T) {
+	active := NewRuntime(nil)
+	recorder := active.NewTurnRecorder(t.Context(), "session-1", "turn-1")
+	recorder.Start(NameTurn, 0, nil)
+	recorder.FreezeTerminal(StatusOK)
+	store := &queryStore{records: map[protocol.TurnID][]Record{"turn-1": recorder.Spans()}}
+	service := NewQueryService(sessionReader{sessionID: "session-1"}, store, active)
+	query := TraceQuery{SessionID: "session-1", TurnIDs: []protocol.TurnID{"turn-1"}}
+	result, err := service.Query(t.Context(), query)
+	if err != nil || result.Turns[0].Complete {
+		t.Fatalf("active frozen trace marked complete: %+v %v", result, err)
+	}
+	recorder.Close()
+	result, err = service.Query(t.Context(), query)
+	if err != nil || !result.Turns[0].Complete {
+		t.Fatalf("durable closed trace not complete: %+v %v", result, err)
+	}
+	store.records["turn-1"] = nil
+	result, err = service.Query(t.Context(), query)
+	if err != nil || result.Turns[0].Complete {
+		t.Fatalf("unavailable trace marked complete: %+v %v", result, err)
+	}
+}
+
 type sessionReader struct {
 	sessionID     string
 	workspaceRoot string

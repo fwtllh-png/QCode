@@ -98,6 +98,9 @@ type Index struct {
 
 	mu       sync.Mutex
 	snapshot Snapshot
+	// graphFiles is set only after a complete graph build. Comparing content
+	// digests also handles a previous refresh canceled after writing file rows.
+	graphFiles map[string]string
 	// failures counts consecutive refreshes that could not trust the store. After
 	// the second one the index stays degraded rather than rebuilding on every
 	// call, because a database that fails twice will not start working.
@@ -241,6 +244,9 @@ func (i *Index) refresh(ctx context.Context) (Snapshot, error) {
 		}
 		found = false
 	}
+	if !found {
+		i.graphFiles = nil
+	}
 	existing, err := i.store.Files(ctx)
 	if err != nil {
 		return Snapshot{}, err
@@ -275,7 +281,15 @@ func (i *Index) refresh(ctx context.Context) (Snapshot, error) {
 	// the files the refresh just confirmed. A graph failure degrades the
 	// ranks alone — the map falls back to declaration counts — and never
 	// fails the refresh.
-	i.rebuildGraph(ctx, files)
+	if !i.graphMatches(files) {
+		i.graphFiles = nil
+		if err := i.rebuildGraph(ctx, files); err == nil {
+			i.graphFiles = make(map[string]string, len(files))
+			for path, file := range files {
+				i.graphFiles[path] = file.Digest
+			}
+		}
+	}
 	total := 0
 	for _, file := range files {
 		total += file.SymbolCount
@@ -289,6 +303,18 @@ func (i *Index) refresh(ctx context.Context) (Snapshot, error) {
 		return Snapshot{}, err
 	}
 	return Snapshot{Status: StatusReady, Meta: refreshed}, nil
+}
+
+func (i *Index) graphMatches(files map[string]File) bool {
+	if i.graphFiles == nil || len(i.graphFiles) != len(files) {
+		return false
+	}
+	for path, file := range files {
+		if digest, ok := i.graphFiles[path]; !ok || digest != file.Digest {
+			return false
+		}
+	}
+	return true
 }
 
 // stale returns the entries that have to be read again. Size and modification

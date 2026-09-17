@@ -69,6 +69,8 @@ describe("RuntimeClient", () => {
   let snapshotSequence = 0;
   let snapshotGate: Promise<void> | undefined;
   let profileGate: Promise<void> | undefined;
+  let traceGate: Promise<void> | undefined;
+  let traceComplete = true;
   let failNextCreate = false;
   let createdSession = false;
   let failToolCatalog = false;
@@ -94,6 +96,8 @@ describe("RuntimeClient", () => {
     snapshotSequence = 0;
     snapshotGate = undefined;
     profileGate = undefined;
+    traceGate = undefined;
+    traceComplete = true;
     failNextCreate = false;
     createdSession = false;
     failToolCatalog = false;
@@ -474,12 +478,15 @@ describe("RuntimeClient", () => {
         return envelope({version: 1, items: []});
       }
       if (route.endsWith("/trace/query")) {
+        const complete = traceComplete;
+        await traceGate;
         return envelope({
           version: 1,
           session_id: body.session_id,
           through_sequence: body.through_sequence,
           turns: (body.turn_ids as string[]).map((turnID) => ({
             turn_id: turnID,
+            complete,
             status: "ok",
             spans: []
           }))
@@ -959,6 +966,7 @@ describe("RuntimeClient", () => {
   });
 
   it("keeps live trace queries on the last acknowledged watermark", async () => {
+    traceComplete = false;
     snapshotSequence = 2;
     snapshotEvents = [
       runtimeEvent(1, "turn.started"),
@@ -986,6 +994,82 @@ describe("RuntimeClient", () => {
       session_id: "session",
       through_sequence: 2
     });
+    client.stop();
+  });
+
+  it("publishes history and independent details before slow controls and Trace", async () => {
+    const client = new RuntimeClient();
+    await startClient(client);
+    snapshotSequence = 2;
+    snapshotEvents = [runtimeEvent(1, "turn.started"), runtimeEvent(2, "turn.completed")];
+    let releaseProfile = (): void => {};
+    let releaseTrace = (): void => {};
+    profileGate = new Promise<void>((resolve) => { releaseProfile = resolve; });
+    traceGate = new Promise<void>((resolve) => { releaseTrace = resolve; });
+    const selecting = client.selectSession("session");
+    await vi.waitFor(() => {
+      expect(client.getSnapshot().events).toHaveLength(2);
+      expect(client.getSnapshot().usage).toBeDefined();
+    });
+    expect(client.getSnapshot().hydratingSessionID).toBe("session");
+    await expect(client.submitPrompt("too early")).rejects.toThrow("Session is still loading");
+    releaseProfile();
+    await vi.waitFor(() => expect(client.getSnapshot().hydratingSessionID).toBe(""));
+    expect(client.getSnapshot().tracePhase).toBe("loading");
+    await client.submitPrompt("controls are ready");
+    releaseTrace();
+    await selecting;
+    client.stop();
+  });
+
+  it("discards auxiliary responses from an earlier selection of the same Session", async () => {
+    const client = new RuntimeClient();
+    await startClient(client);
+    snapshotSequence = 2;
+    snapshotEvents = [runtimeEvent(1, "turn.started"), runtimeEvent(2, "turn.completed")];
+    traceComplete = false;
+    let release = (): void => {};
+    traceGate = new Promise<void>((resolve) => { release = resolve; });
+    const old = client.selectSession("session");
+    await vi.waitFor(() => expect(requests.filter((r) => r.route.endsWith("/trace/query"))).toHaveLength(1));
+    traceGate = undefined;
+    traceComplete = true;
+    await client.selectSession("session");
+    release();
+    await old;
+    expect(client.getSnapshot().trace?.turns[0]?.complete).toBe(true);
+    client.stop();
+  });
+
+  it("queries only incomplete and newly loaded Turns and merges their traces", async () => {
+    snapshotSequence = 12;
+    snapshotTruncatedBefore = 10;
+    snapshotEvents = [runtimeEvent(11, "turn.started"), runtimeEvent(12, "turn.completed")];
+    traceComplete = false;
+    const client = new RuntimeClient();
+    const socket = await startClient(client);
+    traceComplete = true;
+    await client.refreshTrace();
+    const count = requests.filter((r) => r.route.endsWith("/trace/query")).length;
+    await client.refreshTrace();
+    expect(requests.filter((r) => r.route.endsWith("/trace/query"))).toHaveLength(count);
+    for (const [sequence, kind] of [[13, "turn.started"], [14, "turn.completed"]] as const) {
+      socket.emit("message", {
+        type: "event", protocol_version: 1, session_id: "session", sequence,
+        event: {...runtimeEvent(sequence, kind), turn_id: "turn-new"}
+      });
+    }
+    await vi.waitFor(() => expect(client.getSnapshot().trace?.turns).toHaveLength(2));
+    expect(requests.filter((r) => r.route.endsWith("/trace/query")).at(-1)?.body.turn_ids)
+      .toEqual(["turn-new"]);
+    earlierEvents = [
+      {...runtimeEvent(1, "turn.started"), turn_id: "turn-old"},
+      {...runtimeEvent(2, "turn.completed"), turn_id: "turn-old"}
+    ];
+    await client.loadEarlierHistory();
+    await vi.waitFor(() => expect(client.getSnapshot().trace?.turns).toHaveLength(3));
+    expect(requests.filter((r) => r.route.endsWith("/trace/query")).at(-1)?.body.turn_ids)
+      .toEqual(["turn-old"]);
     client.stop();
   });
 

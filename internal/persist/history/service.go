@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"slices"
 	"strings"
 	"time"
 
@@ -76,6 +77,19 @@ type Service struct {
 	runtime Runtime
 }
 
+// BackwardReader is optional for stores with an ownership index. Events are
+// newest-first and must retain normal replay integrity and ownership checks.
+type BackwardReader interface {
+	ReplaySessionBefore(context.Context, string, []protocol.ThreadID, protocol.Cursor, protocol.Cursor, int) ([]protocol.Event, bool, error)
+}
+
+func (s *Service) backwardReader() BackwardReader {
+	if runtime, ok := s.runtime.(interface{ HistoryEventReader() BackwardReader }); ok {
+		return runtime.HistoryEventReader()
+	}
+	return nil
+}
+
 func NewService(runtime Runtime) *Service {
 	return &Service{runtime: runtime}
 }
@@ -130,6 +144,23 @@ func (s *Service) historyBefore(
 	result := SessionHistoryPage{
 		SessionID: query.SessionID,
 		Events:    make([]protocol.Event, 0, query.Limit),
+	}
+	if reader := s.backwardReader(); reader != nil {
+		threads := make([]protocol.ThreadID, 0, len(threadIDs))
+		for thread := range threadIDs {
+			threads = append(threads, thread)
+		}
+		events, more, err := reader.ReplaySessionBefore(ctx, query.SessionID, threads, query.Before, query.Before-1, query.Limit)
+		if err != nil {
+			return SessionHistoryPage{}, err
+		}
+		slices.Reverse(events)
+		result.Events, result.MoreBefore = events, more
+		if len(events) > 0 {
+			result.Previous = events[0].Sequence
+			result.Next = events[len(events)-1].Sequence
+		}
+		return result, nil
 	}
 	cursor := protocol.Cursor(0)
 	for cursor < query.Before {
@@ -198,6 +229,17 @@ func (s *Service) buildSnapshot(
 		threadIDs[threadID] = struct{}{}
 	}
 	highWatermark := fence.ThroughSequence
+	if reader := s.backwardReader(); reader != nil {
+		events, truncated, err := snapshotTail(ctx, reader, sessionID, fence)
+		if err != nil {
+			return SessionPresentationSnapshot{}, protocol.SessionSummary{}, err
+		}
+		return SessionPresentationSnapshot{
+			Version: 1, SessionID: sessionID, ThreadID: fence.Session.ThreadID,
+			SessionRevision: fence.Session.Revision, ThroughSequence: highWatermark,
+			Events: events, HistoryTruncatedBefore: truncated,
+		}, fence.Session, nil
+	}
 	cursor := protocol.Cursor(0)
 	events := make([]protocol.Event, 0)
 	var sizes []int
@@ -248,6 +290,35 @@ func (s *Service) buildSnapshot(
 		Events:                 events,
 		HistoryTruncatedBefore: truncatedBefore,
 	}, fence.Session, nil
+}
+
+func snapshotTail(ctx context.Context, reader BackwardReader, sessionID string, fence protocol.SessionReadFence) ([]protocol.Event, protocol.Cursor, error) {
+	events := make([]protocol.Event, 0)
+	total := 0
+	before := protocol.Cursor(0)
+	for {
+		page, more, err := reader.ReplaySessionBefore(ctx, sessionID, fence.ThreadIDs, before, fence.ThroughSequence, 1000)
+		if err != nil {
+			return nil, 0, err
+		}
+		for _, event := range page {
+			encoded, err := json.Marshal(event)
+			if err != nil {
+				return nil, 0, err
+			}
+			if len(events) > 0 && total+len(encoded) > maxPresentationSnapshotBytes {
+				slices.Reverse(events)
+				return events, event.Sequence, nil
+			}
+			events = append(events, event)
+			total += len(encoded)
+			before = event.Sequence
+		}
+		if !more || len(page) == 0 {
+			slices.Reverse(events)
+			return events, 0, nil
+		}
+	}
 }
 
 func (s *Service) Export(

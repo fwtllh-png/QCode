@@ -225,6 +225,12 @@ export class RuntimeClient {
   private sessionListHydrationRequested = false;
   private sessionWorkspaceIDs = new Map<string, string>();
   private selectionGeneration = 0;
+  private selectionController?: AbortController;
+  private traceTurns = new Set<string>();
+  private tracePending = new Set<string>();
+  private traceInFlight?: Promise<void>;
+  private traceRefreshAgain = false;
+  private traceWatermark = 0;
   private hydration?: Hydration;
   private historyRequest?: {
     controller: AbortController;
@@ -355,6 +361,8 @@ export class RuntimeClient {
   }
 
   stop(): void {
+    this.selectionController?.abort();
+    this.selectionGeneration += 1;
     this.cancelEarlierHistory();
     this.eventNotifier.flushNow();
     this.flushBrowserState();
@@ -732,6 +740,14 @@ export class RuntimeClient {
     this.pendingSelectedEvents = [];
     const previousSessionID = this.state.selectedSessionID;
     const generation = ++this.selectionGeneration;
+    this.selectionController?.abort();
+    const controller = new AbortController();
+    this.selectionController = controller;
+    const options = {workspaceID, signal: controller.signal};
+    this.traceTurns.clear();
+    this.tracePending.clear();
+    this.traceInFlight = undefined;
+    this.traceWatermark = 0;
     const hydration: Hydration = {generation, sessionID, events: []};
     this.hydration = hydration;
     this.update({
@@ -760,54 +776,13 @@ export class RuntimeClient {
     await this.call<SessionBinding>("session/activate", {
       session_id: sessionID,
       thread_id: summary?.thread_id
-    }, {workspaceID});
+    }, options);
     if (generation !== this.selectionGeneration) return;
     const snapshot = await this.call<PresentationSnapshot>("session/snapshot", {
       session_id: sessionID
-    }, {workspaceID});
+    }, options);
     if (generation !== this.selectionGeneration) return;
     const snapshotEvents = snapshot.events ?? [];
-    const traceTurnIDs = turnIDs(snapshotEvents);
-    const details = await Promise.allSettled([
-      this.call<SessionProfileSnapshot>("profile/get", {session_id: sessionID}, {workspaceID}),
-      this.call<ToolCatalog>("tool/catalog", {session_id: sessionID}, {workspaceID}),
-      this.call<CheckpointList>(
-        "checkpoint/list", {session_id: sessionID, limit: 20}, {workspaceID}
-      ),
-      this.call<SessionPlanSnapshot>("plan/get", {session_id: sessionID}, {workspaceID}),
-      this.call<AgentList>(
-        "agent/list", {session_id: sessionID, limit: 20}, {workspaceID}
-      ),
-      this.call<UsageQueryResult>("usage/query", {
-        session_id: sessionID,
-        include_children: true,
-        limit: 100
-      }, {workspaceID}),
-      this.call<ExtensionControlResult>("extension/list", {kind: "all"}, {workspaceID}),
-      traceTurnIDs.length > 0
-        ? this.call<TraceSnapshot>("trace/query", {
-          session_id: sessionID,
-          turn_ids: traceTurnIDs,
-          through_sequence: snapshot.through_sequence
-        }, {workspaceID})
-        : Promise.resolve<TraceSnapshot>({
-          version: 1,
-          session_id: sessionID,
-          through_sequence: snapshot.through_sequence,
-          turns: []
-        }),
-      this.call<TurnQueue>("turn/queue", {session_id: sessionID}, {workspaceID})
-    ]);
-    if (generation !== this.selectionGeneration || this.hydration !== hydration) return;
-    const profile = fulfilled(details[0]);
-    const catalog = fulfilled(details[1]);
-    const checkpoints = fulfilled(details[2]);
-    const plan = fulfilled(details[3]);
-    const agents = fulfilled(details[4]);
-    const usage = fulfilled(details[5]);
-    const extensions = fulfilled(details[6]);
-    const trace = fulfilled(details[7]);
-    const queue = fulfilled(details[8]);
     const liveEvents = hydration.events
       .filter(({event, sessionID: owner}) =>
         owner === sessionID && event.sequence > snapshot.through_sequence
@@ -834,24 +809,11 @@ export class RuntimeClient {
     const events = [...(snapshot.events ?? []), ...liveEvents];
     this.update({
       selectedSessionID: sessionID,
-      hydratingSessionID: "",
       events,
       conversation: this.replaceConversation(events),
       historyMoreBefore: Boolean(snapshot.history_truncated_before),
-      profile,
-      tools: catalog?.tools ?? [],
-      checkpoints: checkpoints?.checkpoints ?? [],
-      plan: hydratePlanArtifact(plan?.artifact),
       mergePlan: undefined,
-      agents: agents?.agents ?? [],
-      usage: usage?.rollup,
-      trace,
-      tracePhase: trace ? "ready" : "unavailable",
-      traceProblem: details[7]?.status === "rejected"
-        ? errorMessage(details[7].reason)
-        : undefined,
-      extensions: extensions?.extensions ?? [],
-      queuedTurns: projectTurnQueue(queue?.items ?? [], liveEvents),
+      queuedTurns: projectTurnQueue([], liveEvents),
       contextResources: [],
       problem: undefined
     });
@@ -859,6 +821,60 @@ export class RuntimeClient {
     if (refreshForForeignEvent || refreshForDefaultTitle || refreshForTitle) {
       void this.refreshSessions("", false);
     }
+    this.traceWatermark = snapshot.through_sequence;
+    const current = () => generation === this.selectionGeneration &&
+      !controller.signal.aborted && sessionID === this.state.selectedSessionID;
+    const detail = async <T>(
+      route: WebRPCRoute, body: unknown, project: (value: T) => Partial<RuntimeSnapshot>
+    ): Promise<void> => {
+      const requestedAt = this.cursor;
+      const value = await this.call<T>(route, body, options);
+      if (!current()) return;
+      this.eventNotifier.flushNow();
+      // Live events already trigger authoritative refreshes for these panels.
+      // A slower initial response must not overwrite their newer projection.
+      const advanced = this.state.events.some((event) =>
+        event.sequence > requestedAt &&
+        ((route === "plan/get" && (event.kind === "plan.delta" || isTerminal(event.kind))) ||
+          (route === "agent/list" && (progressEventKinds.has(event.kind) || isTerminal(event.kind))) ||
+          (route === "usage/query" && isTerminal(event.kind)))
+      );
+      if (!advanced) this.update(project(value));
+    };
+    const controls = Promise.all([
+      detail<SessionProfileSnapshot>("profile/get", {session_id: sessionID},
+        (profile) => ({profile})),
+      detail<TurnQueue>("turn/queue", {session_id: sessionID}, (queue) => ({
+        queuedTurns: projectTurnQueue(queue.items ?? [],
+          this.state.events.filter((event) => event.sequence > snapshot.through_sequence))
+      }))
+    ]).then(() => {
+      if (current()) {
+        this.eventNotifier.flushNow();
+        this.update({hydratingSessionID: ""});
+      }
+    }).catch((error: unknown) => {
+      if (current()) this.update({problem: {
+        version: 1, code: "unavailable", message: errorMessage(error), retryable: true
+      }});
+    });
+    await Promise.allSettled([
+      controls,
+      detail<ToolCatalog>("tool/catalog", {session_id: sessionID},
+        (catalog) => ({tools: catalog.tools ?? []})),
+      detail<CheckpointList>("checkpoint/list", {session_id: sessionID, limit: 20},
+        (value) => ({checkpoints: value.checkpoints ?? []})),
+      detail<SessionPlanSnapshot>("plan/get", {session_id: sessionID},
+        (value) => ({plan: hydratePlanArtifact(value.artifact)})),
+      detail<AgentList>("agent/list", {session_id: sessionID, limit: 20},
+        (value) => ({agents: value.agents ?? []})),
+      detail<UsageQueryResult>("usage/query",
+        {session_id: sessionID, include_children: true, limit: 100},
+        (value) => ({usage: value.rollup})),
+      detail<ExtensionControlResult>("extension/list", {kind: "all"},
+        (value) => ({extensions: value.extensions ?? []})),
+      this.refreshTrace(sessionID)
+    ]);
     } catch (error) {
       if (generation !== this.selectionGeneration || this.hydration !== hydration) {
         return;
@@ -1233,6 +1249,7 @@ export class RuntimeClient {
           conversation: earlier.length > 0 ? this.replaceConversation(events) : this.state.conversation,
           historyMoreBefore: Boolean(page.more_before)
         });
+        if (earlier.length > 0) void this.refreshTrace(sessionID);
         return earlier.length;
       } catch (error) {
         if (!current()) return 0;
@@ -1245,6 +1262,7 @@ export class RuntimeClient {
   }
 
   private cancelEarlierHistory(): void {
+    this.selectionController?.abort();
     this.historyRequest?.controller.abort();
     this.historyRequest = undefined;
   }
@@ -1842,6 +1860,7 @@ export class RuntimeClient {
     if (isTerminal(event.kind)) {
       this.scheduleSessionRefresh();
       void this.refreshUsage(sessionID);
+      if (this.traceTurns.has(event.turn_id)) this.tracePending.add(event.turn_id);
       void this.refreshTrace(sessionID);
     }
     if (isTerminal(event.kind) || progressEventKinds.has(event.kind)) {
@@ -1853,7 +1872,13 @@ export class RuntimeClient {
     if (this.pendingSelectedEvents.length === 0) return;
     const pending = this.pendingSelectedEvents;
     this.pendingSelectedEvents = [];
-    for (const event of pending) this.conversationProjection.apply(event);
+    for (const event of pending) {
+      this.conversationProjection.apply(event);
+      if (event.kind === "turn.started" && event.turn_id) {
+        this.traceTurns.add(event.turn_id);
+        this.tracePending.add(event.turn_id);
+      }
+    }
     this.update({
       events: [...this.state.events, ...pending],
       conversation: this.conversationProjection.snapshot(),
@@ -1866,6 +1891,16 @@ export class RuntimeClient {
   ): ConversationSnapshot {
     this.conversationProjection = new ConversationProjection();
     this.conversationProjection.applyAll(events);
+    if (events.length === 0) {
+      this.traceTurns.clear();
+      this.tracePending.clear();
+    }
+    for (const id of turnIDs(events)) {
+      if (!this.traceTurns.has(id)) {
+        this.traceTurns.add(id);
+        this.tracePending.add(id);
+      }
+    }
     return this.conversationProjection.snapshot();
   }
 
@@ -1914,37 +1949,55 @@ export class RuntimeClient {
   async refreshTrace(sessionID = this.state.selectedSessionID): Promise<void> {
     if (!sessionID || sessionID !== this.state.selectedSessionID) return;
     this.eventNotifier.flushNow();
+    if (this.traceInFlight) {
+      this.traceRefreshAgain = true;
+      return this.traceInFlight;
+    }
     const generation = this.selectionGeneration;
-    const events = this.state.events;
-    const ids = turnIDs(events);
-    if (ids.length === 0) {
-      this.update({trace: undefined, tracePhase: "ready", traceProblem: undefined});
+    const workspaceID = this.state.selectedWorkspaceID;
+    const signal = this.selectionController?.signal;
+    if (this.tracePending.size === 0) {
+      this.update({tracePhase: "ready", traceProblem: undefined});
       return;
     }
-    this.update({tracePhase: "loading", traceProblem: undefined});
+    const current = () => generation === this.selectionGeneration &&
+      sessionID === this.state.selectedSessionID && !signal?.aborted;
+    const request = (async () => {
+      do {
+        this.traceRefreshAgain = false;
+        const ids = [...this.tracePending];
+        if (ids.length === 0 || !current()) return;
+        this.update({tracePhase: "loading", traceProblem: undefined});
+        try {
+          const trace = await this.call<TraceSnapshot>("trace/query", {
+            session_id: sessionID, turn_ids: ids,
+            through_sequence: this.traceWatermark
+          }, {workspaceID, signal});
+          if (!current()) return;
+          const turns = new Map((this.state.trace?.turns ?? [])
+            .map((turn) => [turn.turn_id, turn]));
+          for (const turn of trace.turns) {
+            turns.set(turn.turn_id, turn);
+            if (turn.complete) this.tracePending.delete(turn.turn_id);
+          }
+          this.update({
+            trace: {...trace, turns: [...turns.values()]},
+            tracePhase: "ready", traceProblem: undefined
+          });
+        } catch (error) {
+          if (current()) this.update({
+            tracePhase: "unavailable", traceProblem: errorMessage(error)
+          });
+          return;
+        }
+      } while (this.traceRefreshAgain);
+    })();
+    this.traceInFlight = request;
     try {
-      const throughSequence = this.state.trace?.through_sequence ?? 0;
-      const trace = await this.call<TraceSnapshot>("trace/query", {
-        session_id: sessionID,
-        turn_ids: ids,
-        through_sequence: throughSequence
-      });
-      if (
-        generation !== this.selectionGeneration ||
-        sessionID !== this.state.selectedSessionID
-      ) {
-        return;
-      }
-      this.update({trace, tracePhase: "ready", traceProblem: undefined});
-    } catch (error) {
-      if (
-        generation === this.selectionGeneration &&
-        sessionID === this.state.selectedSessionID
-      ) {
-        this.update({
-          tracePhase: "unavailable",
-          traceProblem: errorMessage(error)
-        });
+      await request;
+    } finally {
+      if (this.traceInFlight === request) {
+        this.traceInFlight = undefined;
       }
     }
   }
@@ -2148,10 +2201,6 @@ function protocolProblem(error: unknown): Problem {
     message: error instanceof Error ? error.message : String(error),
     retryable: false
   };
-}
-
-function fulfilled<T>(result: PromiseSettledResult<T>): T | undefined {
-  return result.status === "fulfilled" ? result.value : undefined;
 }
 
 function turnIDs(events: readonly RuntimeEvent[]): string[] {

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
 	"github.com/fwtllh-png/QCode/internal/persist/repoindex"
@@ -69,6 +70,47 @@ func TestSearchSymbolFindsDeclarationsBySubstring(t *testing.T) {
 	if matches := decodeSymbols(t, kinds.Content); len(matches) != 1 ||
 		matches[0]["name"] != "ServeHTTP" || matches[0]["container"] != "Handler" {
 		t.Fatalf("kind filtered matches = %#v", matches)
+	}
+}
+
+func TestSymbolQueriesRefreshIndexOnce(t *testing.T) {
+	root := t.TempDir()
+	write(t, filepath.Join(root, "api.go"), "package api\nfunc Serve() {}\n")
+	store, err := repoindex.NewStore(openIndexDatabase(t), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	walker, err := repowalk.New(root, searchTestBackend{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	refreshes := 0
+	index, err := repoindex.NewIndex(store, walker, repoindex.Options{Now: func() time.Time {
+		refreshes++
+		return time.Now()
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := index.Ensure(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	for _, kind := range []string{KindSymbol, KindDefinition, KindReferences, KindRelatedTests} {
+		t.Run(kind, func(t *testing.T) {
+			refreshes = 0
+			executor, err := newSymbolTool(kind, index, walker, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := executor.run(t.Context(), symbolInput{
+				Query: "Serve", Name: "Serve", Paths: []string{"api.go"}, MaxResults: 10,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if refreshes != 1 {
+				t.Fatalf("unchanged query refreshed %d times", refreshes)
+			}
+		})
 	}
 }
 

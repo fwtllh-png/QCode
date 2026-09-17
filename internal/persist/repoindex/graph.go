@@ -69,23 +69,31 @@ func (o RankOptions) withDefaults() RankOptions {
 // replaces the stored edge and rank rows for the root. It runs at the end of a
 // refresh, when the file set is complete; a failure degrades the ranks (the
 // map falls back to declaration counts) without failing the refresh.
-func (i *Index) rebuildGraph(ctx context.Context, files map[string]File) {
-	edges := i.importEdges(ctx, files)
-	edges = append(edges, i.store.referenceEdges(ctx)...)
+func (i *Index) rebuildGraph(ctx context.Context, files map[string]File) error {
+	edges, err := i.importEdges(ctx, files)
+	if err != nil {
+		return err
+	}
+	references, err := i.store.referenceEdges(ctx)
+	if err != nil {
+		return err
+	}
+	edges = append(edges, references...)
 	scoped, err := i.store.scopedReferenceEdges(ctx)
 	if err != nil {
-		return
+		return err
 	}
 	edges = append(edges, scoped...)
 	if err := i.store.ReplaceEdges(ctx, edges); err != nil {
-		return
+		return err
 	}
 	ranks := personalPageRank(files, edges, i.options.Rank)
 	if err := i.store.ReplaceRanks(ctx, ranks); err != nil {
 		// The edges stay: consumers of the graph (impact analysis) do not
 		// depend on the ranks succeeding.
-		return
+		return err
 	}
+	return nil
 }
 
 // importEdges resolves every recorded specifier against the file set the
@@ -93,10 +101,10 @@ func (i *Index) rebuildGraph(ctx context.Context, files map[string]File) {
 // resolution fans out to every indexed file of that package; every other
 // language resolves to at most a handful of candidate files. Candidates that
 // name nothing indexed record nothing.
-func (i *Index) importEdges(ctx context.Context, files map[string]File) []graphEdge {
+func (i *Index) importEdges(ctx context.Context, files map[string]File) ([]graphEdge, error) {
 	specs, err := i.store.Imports(ctx)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	// Package directories once, so a Go import's fan-out costs a map lookup
 	// rather than a scan per specifier.
@@ -149,7 +157,7 @@ func (i *Index) importEdges(ctx context.Context, files map[string]File) []graphE
 		pair[key] = struct{}{}
 		deduplicated = append(deduplicated, edge)
 	}
-	return deduplicated
+	return deduplicated, nil
 }
 
 func sortedFileKeys(files map[string]File) []string {

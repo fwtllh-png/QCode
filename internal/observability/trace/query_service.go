@@ -39,11 +39,14 @@ type TraceSnapshot struct {
 }
 
 type TraceTurn struct {
-	TurnID    protocol.TurnID `json:"turn_id"`
-	StartedAt *time.Time      `json:"started_at,omitempty"`
-	EndedAt   *time.Time      `json:"ended_at,omitempty"`
-	Status    string          `json:"status"`
-	Spans     []TraceSpan     `json:"spans"`
+	TurnID protocol.TurnID `json:"turn_id"`
+	// Complete means the recorder has been released and the durable root has
+	// ended. Active or unavailable snapshots must remain refreshable.
+	Complete  bool        `json:"complete"`
+	StartedAt *time.Time  `json:"started_at,omitempty"`
+	EndedAt   *time.Time  `json:"ended_at,omitempty"`
+	Status    string      `json:"status"`
+	Spans     []TraceSpan `json:"spans"`
 }
 
 type TraceSpan struct {
@@ -132,10 +135,18 @@ func (s *QueryService) Query(
 			return TraceSnapshot{}, err
 		}
 		records := s.active.ActiveTurnSpans(turnID)
-		if len(records) == 0 {
+		active := len(records) != 0
+		if !active {
 			records = durable
 		}
-		result.Turns = append(result.Turns, projectTraceTurn(turnID, records))
+		turn := projectTraceTurn(turnID, records)
+		turn.Complete = !active && turn.EndedAt != nil
+		for _, span := range turn.Spans {
+			if span.EndedAt == nil {
+				turn.Complete = false
+			}
+		}
+		result.Turns = append(result.Turns, turn)
 	}
 	return result, nil
 }

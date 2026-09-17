@@ -78,6 +78,50 @@ func (s *WorkspaceEventStore) LastSequence(
 	return s.store.LastSequence(ctx)
 }
 
+// ReplaySessionBefore applies Workspace ownership after the log's session
+// index. Declared agent roots retain precedence over their thread's root.
+func (s *WorkspaceEventStore) ReplaySessionBefore(ctx context.Context, sessionID string, threadIDs []protocol.ThreadID, before, through protocol.Cursor, limit int) ([]protocol.Event, bool, error) {
+	if limit <= 0 {
+		return nil, false, &workspaceReplayLimitError{}
+	}
+	if s.workspaceRoot == "" {
+		return s.store.ReplaySessionBefore(ctx, sessionID, threadIDs, before, through, limit)
+	}
+	root := physicalWorkspaceRoot(s.workspaceRoot)
+	threads, err := s.store.workspaceThreadIDs(ctx, root)
+	if err != nil {
+		return nil, false, err
+	}
+	result := make([]protocol.Event, 0, limit+1)
+	for {
+		page, more, err := s.store.ReplaySessionBefore(ctx, sessionID, threadIDs, before, through, limit+1-len(result))
+		if err != nil {
+			return nil, false, err
+		}
+		for _, event := range page {
+			before = event.Sequence
+			if workspaceOwnsEvent(root, threads, event) {
+				result = append(result, event)
+			}
+		}
+		if len(result) > limit {
+			return result[:limit], true, nil
+		}
+		if !more {
+			return result, false, nil
+		}
+	}
+}
+
+func (s *Store) ReplaySessionBefore(ctx context.Context, sessionID string, threads []protocol.ThreadID, before, through protocol.Cursor, limit int) ([]protocol.Event, bool, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.closed {
+		return nil, false, ErrClosed
+	}
+	return s.events.ReplaySessionBefore(ctx, sessionID, threads, before, through, limit)
+}
+
 func (s *WorkspaceEventStore) EventByID(
 	ctx context.Context,
 	eventID protocol.EventID,

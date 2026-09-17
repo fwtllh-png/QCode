@@ -3,8 +3,14 @@ package app
 import (
 	"context"
 
+	"github.com/fwtllh-png/QCode/internal/persist/history"
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
 )
+
+func (r *Runtime) HistoryEventReader() history.BackwardReader {
+	reader, _ := r.events.(history.BackwardReader)
+	return reader
+}
 
 func (r *Runtime) HistoryWorkspaceRoot() string {
 	if r == nil {

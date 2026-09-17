@@ -124,14 +124,16 @@ type durableFile interface {
 // committed regions of the file are append-only, and a failed append only
 // ever truncates bytes beyond the previously committed end.
 type Log struct {
-	mu       sync.RWMutex
-	path     string
-	file     durableFile
-	entries  []Evidence
-	last     protocol.Cursor
-	end      int64
-	closed   bool
-	closeErr error
+	mu        sync.RWMutex
+	path      string
+	file      durableFile
+	entries   []Evidence
+	bySession map[string][]int
+	byThread  map[protocol.ThreadID][]int
+	last      protocol.Cursor
+	end       int64
+	closed    bool
+	closeErr  error
 }
 
 // Store is an integration-friendly alias for Log.
@@ -147,17 +149,17 @@ func Open(path string) (*Log, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open event log: %w", err)
 	}
-	entries, last, end, err := scanAndRepair(path, file)
+	log := &Log{path: path, file: file}
+	entries, last, end, err := scanAndRepair(path, file, log.indexOwner)
 	if err != nil {
 		_ = file.Close()
 		return nil, err
 	}
-	return &Log{
-		path: path, file: file, entries: entries, last: last, end: end,
-	}, nil
+	log.entries, log.last, log.end = entries, last, end
+	return log, nil
 }
 
-func scanAndRepair(path string, file *os.File) ([]Evidence, protocol.Cursor, int64, error) {
+func scanAndRepair(path string, file *os.File, indexOwner func(protocol.Event, int)) ([]Evidence, protocol.Cursor, int64, error) {
 	if _, err := file.Seek(0, io.SeekStart); err != nil {
 		return nil, 0, 0, fmt.Errorf("seek event log: %w", err)
 	}
@@ -203,6 +205,7 @@ func scanAndRepair(path string, file *os.File) ([]Evidence, protocol.Cursor, int
 				Err: &SequenceError{Expected: expected, Actual: event.Sequence, Offset: offset},
 			}
 		}
+		indexOwner(event, len(entries))
 		entries = append(entries, makeEvidence(event.Sequence, offset, line))
 		last = event.Sequence
 		offset += int64(len(line))
@@ -266,6 +269,7 @@ func (l *Log) AppendWithEvidence(ctx context.Context, event protocol.Event) (Evi
 	}
 
 	evidence := makeEvidence(event.Sequence, offset, record)
+	l.indexOwner(event, len(l.entries))
 	l.entries = append(l.entries, evidence)
 	l.last = event.Sequence
 	l.end += int64(len(record))

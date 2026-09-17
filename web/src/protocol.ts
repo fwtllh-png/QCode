@@ -604,6 +604,7 @@ export interface TraceSpan {
 
 export interface TraceTurn {
   turn_id: string;
+  complete?: boolean;
   started_at?: string;
   ended_at?: string;
   status: "unavailable" | "open" | "ok" | "error" | "canceled";

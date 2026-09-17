@@ -256,6 +256,9 @@ Go Handler Table；Handler 方法名由路由分段确定，例如 `session/crea
 Web Client 使用 Runtime Snapshot 完成 Hydration，再按当前 Workspace 的 Cursor 消费
 Event。持久层 Sequence 在 Supervisor 内全局严格单调，浏览器则按 Workspace 分别保存
 Cursor；只有对应 Runtime 明确报告 Retention Gap 时才进入 Desync。
+Snapshot 与加载期间缓冲的 Live Event 合并后立即显示正文，Profile、队列与辅助面板
+独立更新；Profile 和队列未成功就绪前仍禁止提交会话操作。切换 Session 时取消旧加载，
+并用选择代次拒绝迟到结果，旧辅助查询不能覆盖已经由实时事件刷新的面板。
 浏览器 Conversation Projection 对高频 Delta 按动画帧合并发布，并保持未变化业务节点
 的引用稳定。Chat 的终态、用量和刷新水位使用独立的非 Delta 事件视图，追加流式文本
 不重建这些统计；切换 Session、替换 Snapshot 或加载较早历史时重新建立该视图。
@@ -269,6 +272,11 @@ Cursor；只有对应 Runtime 明确报告 Retention Gap 时才进入 Desync。
 弹窗关闭只恢复焦点，不隐式滚回原触发控件；该焦点恢复也不能覆盖正在执行的显式导航。
 Trajectory Event Ledger 与 Chat 复用完整事件窗口；`trace/query` 只补充
 经过 Session/Turn 归属校验和字段白名单投影的时序，不返回任意 Span Attribute。
+Trace 按已加载 Turn 维护查询集合，终态到达时只更新受影响及尚未完整的 Turn，
+加载较早历史时补充新增 Turn，返回结果按 Turn 合并。只有活动 Recorder 已释放、
+持久 Trace 根与公开 Span 均已结束时，服务端才返回 `complete=true`，客户端才缓存
+该终态结果；未完整或不可用的结果在后续刷新时继续查询。`through_sequence` 保持
+已确认的事件水位语义，不代表 Trace 的增量游标。
 Runtime 已验证并实际传给模型的图片输入会编码进 `turn.started`，使用户消息图片能够从
 持久化 Event 恢复；Presentation Snapshot 预算覆盖一个完整的最大图片输入。
 
@@ -512,6 +520,11 @@ Event Log 与 SQLite 投影之间的一致性以事件日志为准：启动时�
 影响上一个已提交末尾之后的字节，因此重放、单条读取和高水位查询都持读锁，慢消费
 者的重放不再阻塞写入。`EventByID` 经 `event_index` 的偏移证据直达读取日志记录，
 不重放日志前缀。
+倒序 Session 历史与 Presentation Snapshot 使用日志归属索引定位目标记录。
+索引在启动日志校验及成功追加时建立，显式 Session 归属优先于 Thread 归属；
+Workspace 过滤及日志字节摘要校验仍执行。分页只解码目标页，Snapshot 从读取栅栏
+向前取尾部，达到既有正文预算即停止，保持截断游标及至少保留最新事件的语义。
+无持久索引的内存 Runtime 继续使用原有重放路径。
 
 Persistent Runtime Wiring 在创建 Engine 前注入 SQLite Turn Coordinator Store。每个
 已接受 Transition 都在 State Commit 或 Effect Dispatch 前追加 Domain Fact。热路径恢复
@@ -646,6 +659,10 @@ Subagent 传播，用于关联调用；它不获得执行权威。故障分析�
 Envelope、Trace、Usage、Receipt、Job Log 与 Workspace Journal 交叉核对。
 
 ## 上下文架构
+
+仓库符号查询由实际索引查询方法执行一次刷新，仍检查文件列表与修改时间。
+依赖图与排名仅在文件集合、内容摘要或索引器版本变化时重建；只变更文件时间戳
+不重建图。图构建失败不缓存为成功，下次刷新重试；进程重新打开索引后重新确认图。
 
 上下文按稳定性和用途拆分：
 
