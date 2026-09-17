@@ -63,7 +63,7 @@ Child 的实际执行仍是普通 Runtime Turn，不建立后台 WorkGraph 镜�
 2. 与实现同包的 Unit/Property/Race Test；
 3. 生成协议与 Contract Fixture；
 4. `docs/zh-CN` 当前架构文档；
-5. 书籍章节和示例。
+5. 使用指南和示例。
 
 注释和命名可以解释意图，但不能替代测试中可观察的行为。
 
@@ -867,7 +867,6 @@ make reliability-gate
 
 # 文档与 Web
 make docs-check
-make book-check
 npm --prefix web run check
 npm --prefix web test
 

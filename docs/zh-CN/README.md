@@ -4,21 +4,15 @@
 有效的架构决策会以“当前约束”的形式写入对应指南，而不是要求读者重放开发过程。
 产品手册只维护中文版本，`docs/en` 和 `docs/book/en` 不属于允许的仓库结构。
 
-QCode 同时维护一本可执行的 Agent 工程知识书籍：把背景概念、系统设计、
-源码导读、测试、故障和动手实验组织为一条渐进式学习路径，目录与章节状态见
-[书籍与导航](../book/zh-CN/README.md)。
-
 ## 按目标阅读
 
 ### 我要系统学习 Agent 工程
 
 1. [项目与系统全景](./overview.md)
-2. [Agent 工程知识书籍](../book/zh-CN/README.md)
-3. [书籍导航与章节状态](../book/zh-CN/NAVIGATION.md)
-4. [架构设计](./architecture.md)
-5. [安全模型](./security.md)
-6. [源码阅读路线指南](./reading-guide.md)
-7. [本地开发与脚本](./development.md)
+2. [架构设计](./architecture.md)
+3. [安全模型](./security.md)
+4. [源码阅读路线指南](./reading-guide.md)
+5. [本地开发与脚本](./development.md)
 
 ### 我要使用 QCode
 
@@ -44,8 +38,6 @@ QCode 同时维护一本可执行的 Agent 工程知识书籍：把背景概念�
 5. [Agent 指南](./agent-guide.md)
 6. [CONTRIBUTING.md](../../CONTRIBUTING.md)
 7. [后续规划](./roadmap.md)
-8. [Turn 中断恢复与重复探索分析（待实施方案）](./turn-interruption-recovery-analysis.md)
-9. [A2UI 分阶段技术实现方案（待实施）](./a2ui-implementation-plan.md)
 
 ## 文档事实来源
 
@@ -57,8 +49,6 @@ QCode 同时维护一本可执行的 Agent 工程知识书籍：把背景概念�
 | 架构边界 | Import 图和 Architecture Test |
 | 构建测试命令 | `Makefile` 与 `web/package.json` |
 | Web 体验语义 | `testdata/contracts/web-experience-contract.json` |
-| 书籍目录与章节状态 | `docs/book/catalog.json` |
-| 书籍 Ownership、新鲜度与发布事实 | `docs/book/governance.json` |
 | Runtime 所有权与主流程 | `docs/zh-CN/architecture.md` 与 Architecture Test |
 | 可靠性不变量 | `testdata/contracts/reliability-matrix.json` |
 | 路线图 | 只描述目标，不作为“已交付”证明 |

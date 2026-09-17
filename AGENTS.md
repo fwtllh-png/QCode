@@ -34,14 +34,7 @@ Web and shared by the main agent and subagents.
   configuration, negotiated protocol limits, and observed runtime state.
   Necessary absolute safety limits must be public contract or configuration
   fields with provenance, validation, documentation, and boundary tests.
-- Product documentation and book chapters are maintained in Chinese only under
-  `docs/zh-CN` and `docs/book/zh-CN`.
-- Treat `docs/book/catalog.json` as the book structure and status source of
-  truth. Do not create empty files for `planned` chapters.
-- Treat `docs/book/governance.json` as the ownership, freshness, and release
-  fact source of truth.
-- Book chapters move to `draft` or `verified` only with a Chinese file and
-  valid Front Matter; regenerate navigation through the repository command.
+- Product documentation is maintained in Chinese only under `docs/zh-CN`.
 - Use repository commands for generated protocol and compatibility files.
 - Do not reintroduce architecture line-count, fanout, or function-length
   ratchets. Do not compress or split code just to satisfy a size budget.
@@ -64,7 +57,6 @@ Web client                 web
 ```bash
 go test ./path/to/package
 make docs-check
-make book-check
 git diff --check
 ```
 

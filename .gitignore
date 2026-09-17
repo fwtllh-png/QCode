@@ -2,6 +2,7 @@
 /dist/
 /web/dist/
 /web/node_modules/
+__pycache__/
 /.tmp/
 /.qcode/
 # Machine-local provider runbooks may contain real credentials.

@@ -23,8 +23,8 @@ body:
     id: location
     attributes:
       label: Document and section / 文档与章节
-      description: Provide the path, chapter ID, heading, or URL.
-      placeholder: docs/book/zh-CN/03-runtime-kernel/01-protocol.md, runtime-protocol
+      description: Provide the document path, heading, or URL.
+      placeholder: docs/zh-CN/architecture.md, Runtime 协议
     validations:
       required: true
 

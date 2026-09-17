@@ -154,8 +154,7 @@ go test ./internal/persist/... ./internal/orchestration/...
 
 ```bash
 make docs-check
-make book-check
 git diff --check
 ```
 
-Catalog 变化后运行 `make book-navigation`。不要为 `planned` 章节创建空文件。
+根据错误定位失效链接、缺失文档或脚本回归；删除文档时同步更新导航与引用。

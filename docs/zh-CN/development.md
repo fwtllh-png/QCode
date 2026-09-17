@@ -59,7 +59,6 @@ Web 主题 Token 集中在 `web/src/ui/theme/tokens.css`，统一控件外观在
 
 ```bash
 make docs-check
-make book-check
 git diff --check
 ```
 

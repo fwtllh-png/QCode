@@ -24,15 +24,15 @@ configuration, release artifacts, or documentation.
 ## Documentation Impact / 文档影响
 
 Use `affected` when source, tests, commands, protocol, configuration, or
-observable behavior changes. List every updated book chapter ID. Use `none`
+observable behavior changes. List every updated document path. Use `none`
 only when documentation facts do not change, and provide a concrete rationale.
 
 源码、测试、命令、协议、配置或可观察行为变化时使用 `affected`，并列出所有已更新的
-书籍章节 ID。只有文档事实没有变化时才使用 `none`，且必须给出具体理由。
+文档路径。只有文档事实没有变化时才使用 `none`，且必须给出具体理由。
 
 ```text
 Documentation-impact: affected
-Documentation-chapters: runtime-protocol, host-web
+Documentation-paths: docs/zh-CN/architecture.md, docs/zh-CN/usage.md
 Documentation-rationale: N/A
 ```
 

@@ -19,17 +19,14 @@ WEB_BUILD_TAG := webbundle
 	test-release release-baseline-check integration-gate release-gate race build cross-build smoke \
 	capacity-policy-check \
 	security-side-effect-check \
-	docs-check book-check web-experience-check \
+	docs-check script-test web-experience-check \
 	host-journey-contract \
 	benchmark-v2-check benchmark-v2 hotspot-baseline \
 	web-protocol web-protocol-check \
 	provider-deepseek-live-control provider-deepseek-live-ce7 \
 	architecture-freeze \
-	book-navigation \
 	turn-kernel-convergence-baseline turn-kernel-convergence-exit-gate \
-	doc-governance-check doc-governance-test doc-impact \
-	doc-reverify doc-reverify-dry-run \
-	doc-external-links release-fact-check brand-check \
+	brand-check \
 	security-test sandbox-attack-test secret-leak-test \
 	stress stress-nightly \
 	web-host-smoke protocol-contract protocol-schema \
@@ -90,7 +87,7 @@ fmt:
 capacity-policy-check:
 	$(GO) test ./scripts -run '^TestCapacityPathsDoNotReintroduceLegacyTiers$$'
 
-verify: docs-check book-check brand-check web-protocol-check \
+verify: docs-check brand-check web-protocol-check \
 	web-check web-test web-assets-check web-supply-chain-check \
 	reliability-gate
 	@unformatted="$$(git ls-files --cached --others --exclude-standard '*.go' | \
@@ -318,14 +315,7 @@ smoke: build
 
 docs-check: web-experience-check benchmark-v2-check catalog-check
 	./scripts/check-docs.sh
-	$(MAKE) doc-governance-check
-	$(MAKE) doc-governance-test
-
-book-check:
-	./scripts/check-book.sh
-
-book-navigation:
-	python3 scripts/render-book-navigation.py
+	$(MAKE) script-test
 
 turn-kernel-convergence-baseline:
 	$(GO) test -count=1 \
@@ -353,27 +343,8 @@ host-journey-contract:
 	$(GO) test -count=1 ./internal/host/web
 	$(NPM) --prefix web test
 
-doc-governance-check:
-	python3 scripts/check-doc-governance.py check
-
-doc-governance-test:
+script-test:
 	python3 -m unittest discover -s scripts/tests -p 'test_*.py'
-
-doc-reverify:
-	python3 scripts/check-doc-governance.py reverify
-
-doc-reverify-dry-run:
-	python3 scripts/check-doc-governance.py reverify --dry-run
-
-doc-impact:
-	@test -n "$(BASE_REF)" || { echo "BASE_REF is required" >&2; exit 2; }
-	python3 scripts/check-doc-governance.py impact --base "$(BASE_REF)" --head "$${HEAD_REF:-HEAD}"
-
-doc-external-links:
-	python3 scripts/check-doc-governance.py external-links
-
-release-fact-check:
-	python3 scripts/check-doc-governance.py release
 
 brand-check:
 	./scripts/check-brand.sh

@@ -6,9 +6,6 @@ Root 运行。
 | 脚本 | 网络 | 输出或副作用 |
 | --- | --- | --- |
 | `check-docs.sh` | 无 | 检查 Markdown Link 与中文单一文档树 |
-| `check-book.sh` | 无 | 检查书籍 Catalog、元数据、路径和导航 |
-| `check-doc-governance.py` | 仅外链模式联网 | 检查 Ownership、PR Impact、Freshness、Release Fact、图片和外链 |
-| `render-book-navigation.py` | 无 | 根据书籍 Catalog 重新生成中文导航 |
 | `check-brand.sh` | 无 | 扫描已跟踪源码中的历史品牌 |
 | `test-brand-check.sh` | 无 | Brand Scanner 自测 |
 | `run-test-lane.py` | 取决于被测命令 | 写入 Passed、Failed 或 Unavailable JSON Lane 证据 |
@@ -36,8 +33,7 @@ Root 运行。
 
 ```bash
 make docs-check
-make book-check
-make book-navigation
+make script-test
 make test
 make hotspot-baseline
 make architecture-freeze
@@ -45,9 +41,6 @@ make host-journey-contract
 make web-experience-check
 make test-platform-capability
 make test-integration
-BASE_REF=origin/main make doc-impact
-make release-fact-check
-make doc-external-links
 make brand-check
 make secret-leak-test
 make security-side-effect-check

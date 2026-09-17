@@ -229,16 +229,8 @@ Trust 时：
 - 更新 `docs/zh-CN`，不创建英文镜像；
 - 删除过时材料，不保留互相矛盾的副本。
 
-建设 Agent 工程知识书籍时：
-
-- 把 `docs/book/catalog.json` 作为结构、标题、路径、里程碑和交付状态的事实来源；
-- 不为 `planned` 章节创建 Markdown 占位文件；
-- 章节进入 `draft` 时创建中文文件；
-- 从中文模板开始，并保持 Front Matter 与 Catalog 一致；
-- 使用 `docs/book/governance.json` 管理 Ownership、Freshness 和 Release Fact；
-- 在 PR Documentation Impact 区块声明受影响 Chapter ID；
-- Catalog 变化后运行 `make book-navigation`；
-- 完成前运行 `make book-check`。
+在 PR Documentation Impact 区块列出受影响的中文文档路径，并运行
+`make docs-check`；不再要求已删除书籍的 Catalog、章节元数据或导航。
 
 ## 完成报告
 

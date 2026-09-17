@@ -28,7 +28,7 @@ body:
       options:
         - Web
         - Worker or orchestration
-        - Documentation or book
+        - Documentation
         - Other
     validations:
       required: true

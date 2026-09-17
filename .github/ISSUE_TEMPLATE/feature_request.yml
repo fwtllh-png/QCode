@@ -38,7 +38,7 @@ body:
         - Persistence or observability
         - Orchestration
         - Web
-        - Documentation or book
+        - Documentation
         - Build, test, or release
         - Other
     validations:

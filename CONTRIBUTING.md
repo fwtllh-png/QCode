@@ -50,15 +50,13 @@ git diff --check
 
 ### Documentation
 
-- 只维护中文产品文档和知识书籍，不创建英文镜像。
+- 只维护 `docs/zh-CN` 下的中文产品文档，不创建英文镜像。
 - 示例命令需通过 `--help` 核对。
 - 删除被替代文档，不保留冲突副本。
 - 运行 `make docs-check`。
-- 修改 `docs/book` 时更新 `catalog.json`、重新生成导航并运行
-  `make book-check`；不能为规划章节创建空文件。
-- 完整填写 PR Documentation Impact 区块。事实来源变化必须同步更新中文章节，
+- 完整填写 PR Documentation Impact 区块并列出文档路径。事实来源变化必须同步更新中文文档，
   或给出具体的 `Documentation-impact: none` 理由。
-- 准备 Release 前运行 `make release-fact-check`。
+- 准备 Release 前按本地开发指南执行发布验证。
 
 ## Commit 质量
 
@@ -78,7 +76,7 @@ docs: add provider configuration guide
 - [ ] Security Check 无法绕过。
 - [ ] Persistence/Protocol Compatibility 是有意设计。
 - [ ] 测试与风险匹配，并在支持环境中通过。
-- [ ] 已声明文档影响并列出受影响 Chapter ID。
+- [ ] 已声明文档影响并列出受影响文档路径。
 - [ ] 中文文档与代码事实同步。
 - [ ] 未提交 Credential、个人路径或无关生成文件。
 

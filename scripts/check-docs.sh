@@ -27,6 +27,7 @@ listed = subprocess.run(
         "-z",
         "--",
         "*.md",
+        ":(exclude)docs/DEEPSEEK-LIVE.zh-CN.md",
     ],
     cwd=root,
     check=True,
@@ -59,7 +60,6 @@ for source in markdown_files:
             errors.append(f"{source.relative_to(root)}: missing link target: {raw_target}")
 
 chinese = root / "docs" / "zh-CN"
-book_chinese = root / "docs" / "book" / "zh-CN"
 for forbidden in (
     root / "docs" / "en",
     root / "docs" / "book" / "en",
@@ -71,8 +71,6 @@ for forbidden in (
 
 required_chinese = (
     chinese / "README.md",
-    book_chinese / "README.md",
-    book_chinese / "NAVIGATION.md",
     root / "README.md",
     root / "CONTRIBUTING.md",
     root / "SECURITY.md",

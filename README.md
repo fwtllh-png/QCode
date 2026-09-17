@@ -5,25 +5,15 @@
 [![Release](https://img.shields.io/github/v/release/fwtllh-png/QCode?display_name=tag&sort=semver)](https://github.com/fwtllh-png/QCode/releases)
 [![Discussions](https://img.shields.io/github/discussions/fwtllh-png/QCode)](https://github.com/fwtllh-png/QCode/discussions)
 
-**一个使用 Go 实现的、本地运行、受控执行的 AI Coding Agent Runtime，也是一套
-可执行的 Agent 工程知识书籍。**
+**一个使用 Go 实现的、本地运行、受控执行的 AI Coding Agent Runtime。**
 
 QCode 将仓库理解、模型调用、受治理工具、审批、验证、持久化会话与 Subagent
 协作统一放在一套 Runtime 协议之后，并通过本机 Web 这一产品入口服务交互式使用。
 
 > 项目状态：初始开发版本。首次公开稳定发布前，接口和持久化格式仍可能调整。
 
-## Runtime 与可执行的知识书籍
-
-| 交付物 | 提供的价值 |
-| --- | --- |
-| **面向真实工程的 Agent Runtime** | 模型接入、上下文工程、受控工具、持久化状态、Subagent 协作、可观测性和本机 Web |
-| **可执行的 Agent 工程知识书籍** | 从基础原理进入真实源码、测试、架构图、失败模式和可复现实验的中文路径 |
-
-`docs/zh-CN` 下的中文产品手册描述已交付行为。
-[Agent 工程知识书籍](./docs/book/zh-CN/README.md)把设计推理与 QCode 实现和
-动手实验关联起来；全书目录与章节状态以
-[`docs/book/catalog.json`](./docs/book/catalog.json) 为准。
+`docs/zh-CN` 下的中文产品手册描述已交付行为；
+[源码阅读指南](./docs/zh-CN/reading-guide.md)提供架构、实现与测试的阅读路径。
 
 ## 为什么建设 QCode
 
@@ -141,7 +131,7 @@ testdata/                Hermetic Provider 与 Benchmark Fixture
 | 安全 | [安全指南](./docs/zh-CN/security.md) |
 | 本地开发 | [本地开发](./docs/zh-CN/development.md) |
 | Agent 上下文 | [Agent 指南](./docs/zh-CN/agent-guide.md) |
-| Agent 工程知识书籍 | [书籍与导航](./docs/book/zh-CN/README.md) |
+| 源码导读 | [源码阅读指南](./docs/zh-CN/reading-guide.md) |
 | 产品方向 | [后续规划](./docs/zh-CN/roadmap.md) |
 
 ## 开发
