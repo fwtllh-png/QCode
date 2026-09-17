@@ -909,7 +909,7 @@ export class RuntimeClient {
     return receipt;
   }
 
-  async loadDraft(sessionID = this.state.selectedSessionID): Promise<string> {
+  loadDraft(sessionID = this.state.selectedSessionID): string {
     if (!sessionID) return "";
     return this.stored.drafts[sessionID] ?? "";
   }
@@ -2054,8 +2054,11 @@ export class RuntimeClient {
       workspaceID
     ].join(":");
     if (scope === this.storageScope) return;
-    this.storageScope = scope;
     const restored = await this.storage.load(scope).catch(() => undefined);
+    // Inputs can still arrive in the old Workspace while storage is loading.
+    // Flush them under its scope before publishing the new selection and drafts.
+    this.flushBrowserState();
+    this.storageScope = scope;
     this.stored = {
       cursor: Math.max(0, restored?.cursor ?? 0),
       selectedSessionID: restored?.selectedSessionID ?? "",
@@ -2064,6 +2067,7 @@ export class RuntimeClient {
     };
     this.cursor = Math.max(0, this.stored.cursor);
     this.update({
+      selectedWorkspaceID: workspaceID,
       selectedSessionID: this.stored.selectedSessionID,
       events: [],
       conversation: this.replaceConversation([]),

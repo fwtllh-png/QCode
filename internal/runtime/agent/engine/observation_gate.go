@@ -24,7 +24,7 @@ func (e *Engine) observationGate(
 	item, _ := e.admissionWorkItem()
 	read, known := e.knownWorkItemRead(item, path)
 	if known {
-		replay, invalidation := e.replayCoveredRead(read, path, startLine)
+		replay, invalidation := e.replayCoveredRead(read, path, startLine, call)
 		if replay != nil {
 			return replay
 		}

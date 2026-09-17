@@ -388,7 +388,7 @@ func runWeb(
 			requestContext context.Context,
 			request webhost.SetupProbeRequest,
 		) (webhost.SetupProbeResult, error) {
-			baseURL, probeErr := validateSetupBaseURL(request.BaseURL)
+			providerID, baseURL, protocol, probeErr := resolveSetupProbeConnection(request)
 			if probeErr != nil {
 				return webhost.SetupProbeResult{}, probeErr
 			}
@@ -396,12 +396,6 @@ func runWeb(
 			if !setupModelIDPattern.MatchString(modelID) {
 				return webhost.SetupProbeResult{}, invalidSetup(
 					"custom provider model id is invalid",
-				)
-			}
-			if strings.TrimSpace(request.Protocol) !=
-				string(model.ProtocolOpenAIChat) {
-				return webhost.SetupProbeResult{}, invalidSetup(
-					"automatic capability probing currently requires Chat Completions",
 				)
 			}
 			var reference credential.Reference
@@ -423,7 +417,7 @@ func runWeb(
 			}
 			probed, probeErr := wire.ProbeModelConnection(
 				requestContext,
-				customProviderID,
+				providerID,
 				baseURL,
 				modelID,
 				strings.TrimSpace(request.APIKey),
@@ -431,6 +425,7 @@ func runWeb(
 					Kind: reference.Kind,
 					Name: reference.Name,
 				},
+				protocol,
 			)
 			if probeErr != nil {
 				return webhost.SetupProbeResult{}, probeErr

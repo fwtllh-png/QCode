@@ -786,8 +786,15 @@ func TestAgentInterruptFollowUpViaTools(t *testing.T) {
 	interrupted := execute(t, registry, "interrupt_agent", map[string]any{"agent_id": agentID})
 	var interruptBody map[string]any
 	_ = json.Unmarshal([]byte(interrupted.Content), &interruptBody)
-	if interruptBody["status"] != "interrupted" || interruptBody["previous_status"] != "running" {
+	if interruptBody["status"] != "running" || interruptBody["previous_status"] != "running" {
 		t.Fatalf("interrupt = %+v", interruptBody)
+	}
+	snap, _ := manager.Agent(agentID)
+	if err := manager.Settle(subagent.Result{
+		AgentID: agentID, ThreadID: snap.ThreadID, TurnID: snap.TurnID,
+		Status: subagent.StatusInterrupted,
+	}); err != nil {
+		t.Fatal(err)
 	}
 	follow := execute(t, registry, "followup_task", map[string]any{
 		"agent_id": agentID, "prompt": "resume please",
@@ -826,7 +833,7 @@ func TestWaitAgentReturnsCompactRetryableCard(t *testing.T) {
 	agentID, _ := body["agent_id"].(string)
 	if err := manager.Settle(subagent.Result{
 		AgentID: agentID, Status: subagent.StatusFailed,
-		Summary: "resource_exhausted: token budget exhausted: projected 17698, limit 15000",
+		Summary:         "resource_exhausted: token budget exhausted: projected 17698, limit 15000",
 		ReasonCode:      subagent.ReasonBudgetExhausted,
 		Retryable:       true,
 		SuggestedAction: subagent.SuggestedAction(subagent.ReasonBudgetExhausted),

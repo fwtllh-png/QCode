@@ -212,6 +212,28 @@ export function ModelMetadataFields({
   };
   return (
     <>
+      <label className="selectField">
+        <span>
+          <input type="checkbox" aria-label="Tool calling" checked={value.capabilities.tool_calls}
+            disabled={disabled}
+            onChange={(event) => onChange({
+              ...value, capabilities: {...value.capabilities, tool_calls: event.target.checked}
+            })} />
+          Tool calling
+        </span>
+      </label>
+      <label className="selectField">
+        <span>
+          <input type="checkbox" aria-label="Reasoning" checked={value.capabilities.reasoning}
+            disabled={disabled}
+            onChange={(event) => onChange({
+              ...value,
+              capabilities: {...value.capabilities, reasoning: event.target.checked, thinking_toggle: false},
+              reasoningEfforts: "", defaultReasoningEffort: ""
+            })} />
+          Reasoning
+        </span>
+      </label>
       <div className="settingsFacts">
         {value.limitsDetected ? (
           <div className="detectedModelLimits" aria-label="Detected model limits">

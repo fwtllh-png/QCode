@@ -259,6 +259,11 @@ Cursor；只有对应 Runtime 明确报告 Retention Gap 时才进入 Desync。
 Snapshot 与加载期间缓冲的 Live Event 合并后立即显示正文，Profile、队列与辅助面板
 独立更新；Profile 和队列未成功就绪前仍禁止提交会话操作。切换 Session 时取消旧加载，
 并用选择代次拒绝迟到结果，旧辅助查询不能覆盖已经由实时事件刷新的面板。
+Composer 草稿在输入事件中立即写入当前 Workspace/Session 的浏览器内存，
+仅持久化层合并写入 IndexedDB；切换 Session、Workspace 或离开页面不等待 UI 防抖。
+草稿读取同步使用内存，Workspace 的存储 Scope、草稿和选中身份一起切换；
+加载目标 Workspace 期间继续输入的文本仍保存到原 Workspace。发送成功清空草稿，
+提交失败保留原文。
 浏览器 Conversation Projection 对高频 Delta 按动画帧合并发布，并保持未变化业务节点
 的引用稳定。Chat 的终态、用量和刷新水位使用独立的非 Delta 事件视图，追加流式文本
 不重建这些统计；切换 Session、替换 Snapshot 或加载较早历史时重新建立该视图。
@@ -289,6 +294,12 @@ ID 在刷新、重启和其他 Session 中仍可选择。Active Turn 期间拒�
 Connection 设置通过 Host 控制面切换 Provider：先拒绝新的 Runtime 操作并确认全部
 Workspace 空闲，再构造新 Runtime、事务化迁移 Session Route，最后替换旧 Runtime；
 任一步失败都会保留或恢复原连接。
+首次配置与 Connection 设置的模型探测使用同一 Provider 边界：内置 Provider 的端点和
+协议来自目录，自定义连接采用用户选定的 Chat Completions 或 Responses 协议。
+探测分别请求 `/chat/completions`、`/responses` 或 `/messages`，并复用对应流解析器；
+Messages 必需的输出上限只取服务广告或已知目录值，缺失时不猜测。目录外模型可探测后
+补充缺失容量，也可显式填写元数据；探测失败仍可重试或手动填写。提交前继续校验正整数
+容量、输出不超过窗口以及工具调用能力，探测操作本身不修改连接或重启 Runtime。
 
 ### Application Ownership
 
@@ -362,7 +373,9 @@ Control State。Cancel、Steer、Approval、Input 统一进入 `ControlPort`；�
     规范化 arguments）完全相同且签名也未变时递增。不同 arguments 的同路径
     `file_edit`、验证命令或收尾声明都算仍在工作，与 Codex / Cursor 一样把
     「模型停止发工具 / 提交 complete」当作正常结束，把「同一调用空转」当作循环。
-    已知路径的覆盖 `file_read` 回放原结果，无法回放时放行必要重读。Continue 上的
+    已知路径的 `file_read` 仅在规范化请求参数一致且文件摘要未变时回放原结果；
+    回放保留原始分页信息、截断状态和结果句柄，不把有限窗口扩展为已读到 EOF。
+    翻页、扩大读取窗口或更换 PDF 页码时放行必要重读。Continue 上的
     `git_status` / `git_diff` 放行，不因巡视失败消耗采样。约三分之一时提示收敛；
     Finish-only 与 Token/Cost 预算只建议收尾，不再收窄工具目录。完整 Lease 耗尽后
     进入一次只保留 Terminal/Input 能力的 Finalization。连续重复同一工具身份时改用
@@ -663,6 +676,11 @@ Envelope、Trace、Usage、Receipt、Job Log 与 Workspace Journal 交叉核对�
 仓库符号查询由实际索引查询方法执行一次刷新，仍检查文件列表与修改时间。
 依赖图与排名仅在文件集合、内容摘要或索引器版本变化时重建；只变更文件时间戳
 不重建图。图构建失败不缓存为成功，下次刷新重试；进程重新打开索引后重新确认图。
+符号声明查询在 SQL 中先按名称、类型、文件路径、字面路径前缀及导出属性过滤，
+再排序和限制返回条数。路径前缀区分大小写，`%`、`_` 和反斜杠不作为通配符。
+`search_symbol` 与索引回退的 `search_definition` 从同一 SQL 快照取得匹配总数，
+`total` 不受返回条数限制；超过 `max_results` 或存储层现有 2000 条上限时，
+`truncated` 如实标记，不能把被截断的候选集当作完整查询结果。
 
 上下文按稳定性和用途拆分：
 
@@ -802,6 +820,10 @@ Parent Turn
   context 投递同一收件人；Mailbox Drain 失败不得丢消息。
 - **Typed Settlement**：`completed` / `retryable`（预算、rate-limit） / `failed` /
   `interrupted`，并带稳定 `reason_code`。
+- **取消与结算**：`interrupt_agent` 只提交活动 Turn 的取消请求，返回当前真实状态。
+  取消结果到达前保留活动状态和 Manager 的预算预留；真实结果经 `Settle` 一次性提交
+  终态、结果、用量与 completion 消息。父 Agent 通过 `wait_agent` 等待结算后再
+  `followup_task`，重复取消已结算的 Agent 不再提交操作或改写终态。
 - **共享 Provider 限额**：Session 级 limiter 对 Parent 与 Children 的 Provider
   Sample 单飞排队，共用一份 Retry-After 冷却和 429 等待预算；冷却未解除时
   Supervisor 不再并行启动第二个 Child。用户发起的新 Parent Turn 会刷新等待预算，

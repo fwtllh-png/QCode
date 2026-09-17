@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"maps"
 	"path/filepath"
 	"strings"
 
@@ -16,12 +17,11 @@ import (
 // fact) may enter: a result without a verifiable version has no reuse
 // contract and must re-execute.
 type readResultEntry struct {
-	ContentDigest string
-	StartLine     int
-	EndLine       int
-	CallID        string
-	Turn          uint64
-	Content       string
+	ContentDigest   string
+	RequestIdentity string
+	CallID          string
+	Turn            uint64
+	Result          tool.Result
 }
 
 // recordReadResults admits accepted file_read results into the cross-turn
@@ -52,22 +52,26 @@ func (e *Engine) recordReadResults(
 			path = relative
 		}
 		entry := readResultEntry{
-			ContentDigest: strings.TrimSpace(fact.Digest),
-			CallID:        call.ID,
-			Turn:          e.turn,
-			Content:       result.Content,
+			ContentDigest:   strings.TrimSpace(fact.Digest),
+			RequestIdentity: readRequestIdentity(call),
+			CallID:          call.ID,
+			Turn:            e.turn,
+			// Retain the read surface, not the original execution authority.
+			Result: tool.Result{
+				Content: result.Content, Metadata: maps.Clone(result.Metadata),
+				Truncated: result.Truncated, OriginalBytes: result.OriginalBytes,
+				Handle: result.Handle,
+				Outcome: &tool.Outcome{
+					Status: tool.OutcomeSucceeded,
+					Facts: &tool.OutcomeFacts{
+						WorkspaceRead: &tool.WorkspaceReadFact{Path: fact.Path, Digest: fact.Digest},
+						ResultHandle:  result.Outcome.Facts.ResultHandle,
+					},
+				},
+			},
 		}
 		if entry.ContentDigest == "" {
 			continue
-		}
-		_, start, ok := turnkernel.ParseFileReadWindow(call.Arguments)
-		if ok {
-			entry.StartLine = start
-			if returned, _ := result.Metadata["returned_lines"].(int); returned > 0 {
-				if more, _ := result.Metadata["has_more"].(bool); more {
-					entry.EndLine = start + returned
-				}
-			}
 		}
 		e.readResultMu.Lock()
 		if existing, exists := e.readResults[path]; !exists ||
@@ -78,14 +82,21 @@ func (e *Engine) recordReadResults(
 	}
 }
 
+func readRequestIdentity(call provider.ToolCall) string {
+	return turnkernel.FormatToolCallsIdentity([]turnkernel.ToolCallState{{
+		Name: call.Name, Arguments: call.Arguments,
+	}})
+}
+
 // replayCoveredRead serves the recorded result of an unchanged file whose
-// window already covers the request. A nil return means the record cannot
+// normalized request matches exactly. A nil return means the record cannot
 // answer this read; the second return explains which guarantee failed so the
 // caller can record the invalidation on the admitted fresh read.
 func (e *Engine) replayCoveredRead(
 	read turnkernel.WorkItemRead,
 	path string,
 	startLine int,
+	call provider.ToolCall,
 ) (*tool.Result, string) {
 	if read.ContentDigest == "" {
 		return nil, "read_record_has_no_content_version"
@@ -99,6 +110,11 @@ func (e *Engine) replayCoveredRead(
 	if !cached || entry.ContentDigest != read.ContentDigest {
 		return nil, "recorded_result_unavailable"
 	}
+	// A matching start alone does not prove coverage of max_lines or PDF pages.
+	// Reusing a different window would also relabel its body in the reducer.
+	if entry.RequestIdentity != readRequestIdentity(call) {
+		return nil, "requested_window_not_covered"
+	}
 	current, err := e.currentWorkspaceDigest(path)
 	if err != nil {
 		return nil, "content_version_unverifiable"
@@ -106,23 +122,17 @@ func (e *Engine) replayCoveredRead(
 	if current != read.ContentDigest {
 		return nil, "file_content_changed"
 	}
-	return &tool.Result{
-		Content: entry.Content,
-		Outcome: &tool.Outcome{
-			Status: tool.OutcomeSucceeded,
-			Facts: &tool.OutcomeFacts{
-				WorkspaceRead: &tool.WorkspaceReadFact{
-					Path: path, Digest: read.ContentDigest,
-				},
-			},
-		},
-		Metadata: map[string]any{
-			"reused_read":    true,
-			"source_call_id": entry.CallID,
-			"source_turn":    entry.Turn,
-			"content_digest": read.ContentDigest,
-		},
-	}, ""
+	result := entry.Result
+	result.Outcome = tool.CloneOutcome(entry.Result.Outcome)
+	result.Metadata = maps.Clone(entry.Result.Metadata)
+	if result.Metadata == nil {
+		result.Metadata = make(map[string]any)
+	}
+	result.Metadata["reused_read"] = true
+	result.Metadata["source_call_id"] = entry.CallID
+	result.Metadata["source_turn"] = entry.Turn
+	result.Metadata["content_digest"] = read.ContentDigest
+	return &result, ""
 }
 
 // noteReadInvalidation records why a known read record could not answer an

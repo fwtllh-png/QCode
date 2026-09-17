@@ -137,6 +137,36 @@ func setupKnownModels(
 	return models
 }
 
+// resolveSetupProbeConnection uses the same provider boundary as setup/apply.
+// Built-in providers never accept an endpoint or protocol override from the UI.
+func resolveSetupProbeConnection(request webhost.SetupProbeRequest) (string, string, model.WireProtocol, error) {
+	providerID := strings.TrimSpace(request.Provider)
+	if providerID == customProviderID {
+		baseURL, err := validateSetupBaseURL(request.BaseURL)
+		if err != nil {
+			return "", "", "", err
+		}
+		protocol := model.WireProtocol(strings.TrimSpace(request.Protocol))
+		if protocol == "" {
+			protocol = model.ProtocolOpenAIChat
+		}
+		if protocol != model.ProtocolOpenAIChat && protocol != model.ProtocolOpenAIResponses {
+			return "", "", "", invalidSetup("custom provider protocol must be openai_chat or openai_responses")
+		}
+		return providerID, baseURL, protocol, nil
+	}
+	for _, allowed := range webSetupCatalog().Providers {
+		if allowed.ID != providerID || allowed.Custom {
+			continue
+		}
+		provider, exists := model.DefaultCatalog().Provider(providerID)
+		if exists {
+			return providerID, provider.Endpoint, provider.Protocol, nil
+		}
+	}
+	return "", "", "", invalidSetup("unknown setup provider")
+}
+
 func resolveWebSetup(request webhost.SetupRequest) (
 	webSetupSelection, credential.Reference, error,
 ) {

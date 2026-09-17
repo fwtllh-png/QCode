@@ -184,6 +184,20 @@ func (i *Index) Symbols(ctx context.Context, query Query) ([]Symbol, Snapshot, e
 	return found, snapshot, nil
 }
 
+// SymbolsWithTotal refreshes once and returns a bounded page with its filtered
+// total. Unavailable indexes follow the same contract as Symbols.
+func (i *Index) SymbolsWithTotal(ctx context.Context, query Query) ([]Symbol, int, Snapshot, error) {
+	snapshot, err := i.Ensure(ctx)
+	if err != nil || !snapshot.Ready() {
+		return nil, 0, snapshot, err
+	}
+	found, total, err := i.store.SymbolsWithTotal(ctx, query)
+	if err != nil {
+		return nil, 0, Snapshot{Status: StatusDegraded, Detail: err.Error()}, nil
+	}
+	return found, total, snapshot, nil
+}
+
 // Paths returns the indexed paths, optionally restricted to one language.
 func (i *Index) Paths(ctx context.Context, language string) ([]string, Snapshot, error) {
 	snapshot, err := i.Ensure(ctx)

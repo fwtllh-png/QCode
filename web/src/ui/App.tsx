@@ -228,7 +228,6 @@ export function App({client}: Props) {
   const [workspaceRemovalID, setWorkspaceRemovalID] = useState("");
   const [workspaceRemoving, setWorkspaceRemoving] = useState(false);
   const [draft, setDraft] = useState("");
-  const [draftOwner, setDraftOwner] = useState("");
   const [contextOpen, setContextOpen] = useState(false);
   const [railCollapsed, setRailCollapsed] = useState(initialRailCollapsed);
   const [mobileRailOpen, setMobileRailOpen] = useState(false);
@@ -936,29 +935,13 @@ export function App({client}: Props) {
   }, [client, snapshot.phase]);
 
   useEffect(() => {
-    const sessionID = snapshot.selectedSessionID;
-    let current = true;
-    setDraftOwner("");
-    setDraft("");
-    if (sessionID) {
-      void client.loadDraft(sessionID).then((value) => {
-        if (!current) return;
-        setDraft(value);
-        setDraftOwner(sessionID);
-      });
-    }
-    return () => {
-      current = false;
-    };
-  }, [client, snapshot.selectedSessionID]);
+    setDraft(client.loadDraft(snapshot.selectedSessionID));
+  }, [client, snapshot.selectedSessionID, snapshot.selectedWorkspaceID]);
 
-  useEffect(() => {
-    if (!draftOwner) return;
-    const timeout = window.setTimeout(() => {
-      client.saveDraft(draft, draftOwner);
-    }, 150);
-    return () => window.clearTimeout(timeout);
-  }, [client, draft, draftOwner]);
+  const updateDraft = (value: string) => {
+    client.saveDraft(value, snapshot.selectedSessionID);
+    setDraft(value);
+  };
 
   useLayoutEffect(() => {
     const node = transcriptRef.current;
@@ -1174,8 +1157,7 @@ export function App({client}: Props) {
         setComposerAttachments([]);
         removedAttachmentIDs.current.clear();
         if (draftRef.current.trim() === prompt) {
-          setDraft("");
-          client.saveDraft("", submittedSessionID);
+          updateDraft("");
         }
       }
     } catch (error) {
@@ -2029,7 +2011,7 @@ export function App({client}: Props) {
                     disabled={Boolean(snapshot.hydratingSessionID) || submitting}
                     onChange={(event) => {
                       const value = event.target.value;
-                      setDraft(value);
+                      updateDraft(value);
                       const slashQuery = composerSlashQuery(value);
                       if (slashQuery !== undefined) {
                         setCommandMenuSource("slash");
@@ -2160,7 +2142,7 @@ export function App({client}: Props) {
                             setCommandMenuSource("button");
                             setCommandQuery("");
                           } else if (commandMenuSource === "slash") {
-                            setDraft("");
+                            updateDraft("");
                             setCommandQuery("");
                             setCommandMenuSource("button");
                           }
@@ -2169,7 +2151,7 @@ export function App({client}: Props) {
                         onSelect={() => {
                           setCommandQuery("");
                           if (commandMenuSource === "slash") {
-                            setDraft("");
+                            updateDraft("");
                           }
                           setCommandMenuSource("button");
                         }}
@@ -3602,14 +3584,14 @@ function FirstRunSetup({
     }
   };
   const probeModel = async () => {
-    if (!custom || !baseURL.trim() || !modelID.trim() || probing) return;
+    if (!provider || (custom && !baseURL.trim()) || !modelID.trim() || probing) return;
     setProbing(true);
     setProbeError("");
     try {
       const result = await client.probeSetup({
         provider: providerID,
-        base_url: baseURL.trim(),
-        protocol,
+        base_url: custom ? baseURL.trim() : "",
+        protocol: custom ? protocol : provider.protocol,
         model: modelID.trim(),
         ...(apiKey.trim() ? {api_key: apiKey.trim()} : {})
       });
@@ -3654,7 +3636,7 @@ function FirstRunSetup({
                 aria-label="Provider"
                 value={providerID}
                 autoFocus
-                disabled={submitting}
+                disabled={submitting || probing}
                 onChange={(event) => {
                   const next = catalog.providers.find(
                     (entry) => entry.id === event.target.value
@@ -3694,7 +3676,7 @@ function FirstRunSetup({
                     aria-label="Base URL"
                     value={baseURL}
                     placeholder="https://api.example.com/v1"
-                    disabled={submitting}
+                    disabled={submitting || probing}
                     onChange={(event) => {
                       setBaseURL(event.target.value);
                       setProbed(false);
@@ -3708,7 +3690,7 @@ function FirstRunSetup({
                   <select
                     aria-label="Protocol"
                     value={protocol}
-                    disabled={submitting}
+                    disabled={submitting || probing}
                     onChange={(event) => {
                       setProtocol(event.target.value);
                       setProbed(false);
@@ -3725,7 +3707,7 @@ function FirstRunSetup({
                   aria-label="Model ID"
                   value={modelID}
                   placeholder="Enter the exact model ID"
-                  disabled={submitting}
+                  disabled={submitting || probing}
                   onChange={(event) => {
                     const nextModelID = event.target.value;
                     setMetadata(emptyModelMetadataDraft(nextModelID.trim()));
@@ -3767,7 +3749,7 @@ function FirstRunSetup({
                 placeholder={provider.requires_api_key
                   ? "Enter API key"
                   : "Optional API key"}
-                disabled={submitting}
+                disabled={submitting || probing}
                 onChange={(event) => {
                   setAPIKey(event.target.value);
                   setProbed(false);
@@ -3784,7 +3766,7 @@ function FirstRunSetup({
                 type="button"
                 className="settingsHeaderAction"
                 disabled={
-                  probing || !baseURL.trim() || !modelID.trim() || Boolean(keyError)
+                  probing || (custom && !baseURL.trim()) || !modelID.trim() || Boolean(keyError)
                 }
                 onClick={() => void probeModel()}
               >
@@ -3792,12 +3774,21 @@ function FirstRunSetup({
               </button>
             )}
             {probeError && <p className="startupError">{probeError}</p>}
+            {requiresMetadata && !probed && (
+              <button type="button" className="settingsHeaderAction" disabled={submitting || probing}
+                onClick={() => {
+                  setMetadata(emptyModelMetadataDraft(modelID.trim()));
+                  setProbed(true);
+                }}>
+                Enter model metadata
+              </button>
+            )}
           </div>
         )}
 
         <div className="startupFooter">
           {workspaceRoot && <small title={workspaceRoot}>{workspaceRoot}</small>}
-          <button className="startupCreate" disabled={!ready || submitting}>
+          <button className="startupCreate" disabled={!ready || submitting || probing}>
             {submitting
               ? <LoaderCircle className="spin" size={17} />
               : <Plus size={17} />}

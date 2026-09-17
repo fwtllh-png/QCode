@@ -97,6 +97,10 @@ type Query struct {
 	Kinds []string
 	// Paths restricts the result to these files when non-empty.
 	Paths []string
+	// PathPrefix is a literal, case-sensitive path prefix.
+	PathPrefix string
+	// ExportedOnly excludes declarations that are not exported.
+	ExportedOnly bool
 	// Limit bounds the returned rows. Zero selects DefaultQueryLimit.
 	Limit int
 }
@@ -293,6 +297,17 @@ func (s *Store) Reset(ctx context.Context) error {
 // names — the closer matches for a substring query — come first, then by path
 // and line for a stable result.
 func (s *Store) Symbols(ctx context.Context, query Query) ([]Symbol, error) {
+	found, _, err := s.symbols(ctx, query, false)
+	return found, err
+}
+
+// SymbolsWithTotal returns a bounded page and the total matching declarations
+// from the same SQL snapshot. The total is computed before LIMIT.
+func (s *Store) SymbolsWithTotal(ctx context.Context, query Query) ([]Symbol, int, error) {
+	return s.symbols(ctx, query, true)
+}
+
+func (s *Store) symbols(ctx context.Context, query Query, withTotal bool) ([]Symbol, int, error) {
 	limit := query.Limit
 	switch {
 	case limit <= 0:
@@ -303,8 +318,11 @@ func (s *Store) Symbols(ctx context.Context, query Query) ([]Symbol, error) {
 	statement := strings.Builder{}
 	statement.WriteString(`
 		SELECT path, name, kind, container, line, exported,
-			signature, docstring, resolution
-		FROM repo_index_symbols WHERE root_path = ?`)
+			signature, docstring, resolution`)
+	if withTotal {
+		statement.WriteString(", COUNT(*) OVER ()")
+	}
+	statement.WriteString(" FROM repo_index_symbols WHERE root_path = ?")
 	arguments := []any{s.root}
 	if name := strings.TrimSpace(query.Name); name != "" {
 		if query.Exact {
@@ -327,34 +345,47 @@ func (s *Store) Symbols(ctx context.Context, query Query) ([]Symbol, error) {
 			arguments = append(arguments, path)
 		}
 	}
+	if query.PathPrefix != "" {
+		statement.WriteString(" AND substr(path, 1, length(?)) = ? COLLATE BINARY")
+		arguments = append(arguments, query.PathPrefix, query.PathPrefix)
+	}
+	if query.ExportedOnly {
+		statement.WriteString(" AND exported = 1")
+	}
 	statement.WriteString(" ORDER BY length(name), name, path, line LIMIT ?")
 	arguments = append(arguments, limit)
 
 	rows, err := s.db.QueryContext(ctx, statement.String(), arguments...)
 	if err != nil {
-		return nil, fmt.Errorf("query repository index symbols: %w", err)
+		return nil, 0, fmt.Errorf("query repository index symbols: %w", err)
 	}
 	defer rows.Close()
 	symbols := make([]Symbol, 0, min(limit, 64))
+	total := 0
 	for rows.Next() {
 		var (
 			symbol   Symbol
 			exported int
 		)
-		if err := rows.Scan(
+		destinations := [...]any{
 			&symbol.Path, &symbol.Name, &symbol.Kind,
 			&symbol.Container, &symbol.Line, &exported,
-			&symbol.Signature, &symbol.Docstring, &symbol.Resolution,
-		); err != nil {
-			return nil, fmt.Errorf("query repository index symbols: %w", err)
+			&symbol.Signature, &symbol.Docstring, &symbol.Resolution, &total,
+		}
+		columns := destinations[:len(destinations)-1]
+		if withTotal {
+			columns = destinations[:]
+		}
+		if err := rows.Scan(columns...); err != nil {
+			return nil, 0, fmt.Errorf("query repository index symbols: %w", err)
 		}
 		symbol.Exported = exported != 0
 		symbols = append(symbols, symbol)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("query repository index symbols: %w", err)
+		return nil, 0, fmt.Errorf("query repository index symbols: %w", err)
 	}
-	return symbols, nil
+	return symbols, total, nil
 }
 
 // Paths returns the indexed paths, restricted to a language when one is given

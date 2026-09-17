@@ -185,9 +185,12 @@ func TestObservationGateReplaysCoveredUnchangedRead(t *testing.T) {
 		},
 		readResultEntry{
 			ContentDigest: fingerprint.SHA256,
-			CallID:        "call-read-1",
-			Turn:          1,
-			Content:       "package parser\n",
+			RequestIdentity: readRequestIdentity(provider.ToolCall{
+				Name: "file_read", Arguments: `{"path":"parser.go"}`,
+			}),
+			CallID: "call-read-1",
+			Turn:   1,
+			Result: tool.Result{Content: "package parser\n"},
 		},
 	)
 	full := provider.ToolCall{
@@ -204,9 +207,8 @@ func TestObservationGateReplaysCoveredUnchangedRead(t *testing.T) {
 		Name:      "file_read",
 		Arguments: `{"path":"parser.go","start_line":9}`,
 	}
-	if got := engine.observationGate(windowed, false); got == nil ||
-		got.IsError {
-		t.Fatalf("covered windowed read replay = %+v", got)
+	if got := engine.observationGate(windowed, false); got != nil {
+		t.Fatalf("different window received the original body: %+v", got)
 	}
 }
 
@@ -227,9 +229,12 @@ func TestObservationGateAllowsReadWhenContentChanged(t *testing.T) {
 		},
 		readResultEntry{
 			ContentDigest: fingerprint.SHA256,
-			CallID:        "call-read-1",
-			Turn:          1,
-			Content:       "package parser\n",
+			RequestIdentity: readRequestIdentity(provider.ToolCall{
+				Name: "file_read", Arguments: `{"path":"parser.go","start_line":1}`,
+			}),
+			CallID: "call-read-1",
+			Turn:   1,
+			Result: tool.Result{Content: "package parser\n"},
 		},
 	)
 	if err := os.WriteFile(path, []byte("package parser // changed\n"), 0o644); err != nil {
@@ -267,10 +272,12 @@ func TestObservationGateAllowsReadWhenWindowUncovered(t *testing.T) {
 		},
 		readResultEntry{
 			ContentDigest: fingerprint.SHA256,
-			StartLine:     50,
-			CallID:        "call-read-1",
-			Turn:          1,
-			Content:       "window content",
+			RequestIdentity: readRequestIdentity(provider.ToolCall{
+				Name: "file_read", Arguments: `{"path":"parser.go","start_line":50}`,
+			}),
+			CallID: "call-read-1",
+			Turn:   1,
+			Result: tool.Result{Content: "window content"},
 		},
 	)
 	earlier := provider.ToolCall{
@@ -286,7 +293,7 @@ func TestObservationGateAllowsReadWhenWindowUncovered(t *testing.T) {
 	}
 	covered := provider.ToolCall{
 		Name:      "file_read",
-		Arguments: `{"path":"parser.go","start_line":60}`,
+		Arguments: `{"path":"parser.go","start_line":50}`,
 	}
 	if got := engine.observationGate(covered, false); got == nil || got.IsError {
 		t.Fatalf("covered window read = %+v", got)

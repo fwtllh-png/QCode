@@ -100,6 +100,19 @@ func TestListFollowUpInterruptWaitContract(t *testing.T) {
 		t.Fatalf("cancels = %d", runtime.cancels)
 	}
 	snap, ok = manager.Agent(child.ID)
+	if !ok || snap.Status != subagent.StatusRunning || snap.Result != nil {
+		t.Fatalf("cancel request prematurely settled child: %+v", snap)
+	}
+	if _, err := manager.FollowUp(t.Context(), child.ID, "too early"); err == nil {
+		t.Fatal("follow-up accepted before cancellation settled")
+	}
+	if err := manager.Settle(subagent.Result{
+		AgentID: child.ID, ThreadID: child.ThreadID, TurnID: turn,
+		Status: subagent.StatusInterrupted,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	snap, ok = manager.Agent(child.ID)
 	if !ok || snap.Status != subagent.StatusInterrupted {
 		t.Fatalf("interrupted = %+v", snap)
 	}

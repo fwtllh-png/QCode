@@ -261,8 +261,8 @@ func (m *Manager) FollowUp(ctx context.Context, agentID, prompt string) (string,
 	return m.startTurn(ctx, agentID, "", m.runtime)
 }
 
-// Interrupt cancels the current turn if possible and marks the agent interrupted.
-// Worktree and concurrency slot are retained for later FollowUp (unlike Close).
+// Interrupt requests cancellation; the runtime's terminal result owns settlement.
+// The active slot is retained until Settle, and the worktree remains for FollowUp.
 func (m *Manager) Interrupt(ctx context.Context, agentID string) (Status, error) {
 	m.mu.Lock()
 	agent, ok := m.agents[agentID]
@@ -273,26 +273,30 @@ func (m *Manager) Interrupt(ctx context.Context, agentID string) (Status, error)
 	prev := agent.Status
 	turnID := agent.TurnID
 	runtime := m.runtime
-	m.mu.Unlock()
-
-	if runtime != nil && turnID != "" {
-		if err := runtime.CancelTurn(ctx, agentID, turnID); err != nil {
-			return prev, err
+	if isTerminal(prev) {
+		m.mu.Unlock()
+		return prev, nil
+	}
+	if runtime != nil {
+		m.mu.Unlock()
+		if turnID == "" || prev == StatusStarting {
+			return prev, errors.New("agent turn has not started")
 		}
+		// CancelTurn only submits an operation. Settle may run before or after
+		// it returns, and a FollowUp may already own a different turn by then.
+		return prev, runtime.CancelTurn(ctx, agentID, turnID)
 	}
-
-	m.mu.Lock()
+	// Without a runtime there is no asynchronous result producer. Publish a
+	// synthetic result through the same atomic result/usage/mailbox transition.
 	defer m.mu.Unlock()
-	agent, ok = m.agents[agentID]
-	if !ok || agent.Closed {
-		return prev, errors.New("agent not found")
+	result := Result{
+		AgentID: agentID, ThreadID: agent.ThreadID, TurnID: turnID,
+		Status: StatusInterrupted, Summary: "interrupt requested",
 	}
-	if err := m.transitionLocked(
-		agent, StatusInterrupted, turnID, "", "parent", "interrupt requested", nil,
-	); err != nil {
-		return prev, err
-	}
-	return prev, nil
+	return prev, m.transitionLocked(
+		agent, result.Status, turnID, result.Digest(),
+		"parent", "interrupt requested", &result,
+	)
 }
 
 func (m *Manager) AwaitApproval(agentID, requestID string) error {

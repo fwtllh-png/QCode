@@ -212,13 +212,13 @@ func (t *symbolTool) run(ctx context.Context, input symbolInput) (tool.Result, e
 			result, err := t.declarations(ctx, snapshot, repoindex.Query{
 				Name: input.Name, Exact: true, Kinds: input.Kinds,
 				Limit: limit,
-			}, "", false)
+			})
 			return semanticFallback(result, semanticErr), err
 		}
 		return t.declarations(ctx, snapshot, repoindex.Query{
 			Name: input.Name, Exact: true, Kinds: input.Kinds,
 			Limit: limit,
-		}, "", false)
+		})
 	case KindReferences:
 		if input.Mode != "" && input.Mode != "auto" && input.Mode != "text" {
 			return tool.Result{}, tool.Precondition(errors.New("mode must be auto or text"))
@@ -244,8 +244,8 @@ func (t *symbolTool) run(ctx context.Context, input symbolInput) (tool.Result, e
 	default:
 		return t.declarations(ctx, snapshot, repoindex.Query{
 			Name: input.Query, Kinds: input.Kinds,
-			Limit: limit,
-		}, input.PathPrefix, input.ExportedOnly)
+			Limit: limit, PathPrefix: input.PathPrefix, ExportedOnly: input.ExportedOnly,
+		})
 	}
 }
 
@@ -266,13 +266,9 @@ type symbolMatch struct {
 
 func (t *symbolTool) declarations(
 	ctx context.Context, snapshot repoindex.Snapshot,
-	query repoindex.Query, pathPrefix string, exportedOnly bool,
+	query repoindex.Query,
 ) (tool.Result, error) {
-	// Ask for more rows than the reply needs, so filtering by path or visibility
-	// does not silently shrink a full page of results.
-	limit := query.Limit
-	query.Limit = limit * 4
-	found, current, err := t.index.Symbols(ctx, query)
+	found, total, current, err := t.index.SymbolsWithTotal(ctx, query)
 	if err != nil {
 		return tool.Result{}, err
 	}
@@ -280,19 +276,8 @@ func (t *symbolTool) declarations(
 		return unavailableResult(current)
 	}
 	snapshot = current
-	matches := make([]symbolMatch, 0, min(limit, len(found)))
-	total := 0
+	matches := make([]symbolMatch, 0, len(found))
 	for _, symbol := range found {
-		if exportedOnly && !symbol.Exported {
-			continue
-		}
-		if pathPrefix != "" && !strings.HasPrefix(symbol.Path, pathPrefix) {
-			continue
-		}
-		total++
-		if len(matches) >= limit {
-			continue
-		}
 		matches = append(matches, symbolMatch{
 			Name: symbol.Name, Kind: symbol.Kind, File: symbol.Path,
 			Line: symbol.Line, Container: symbol.Container, Exported: symbol.Exported,

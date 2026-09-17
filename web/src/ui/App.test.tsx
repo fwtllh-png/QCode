@@ -1153,6 +1153,76 @@ describe("projectTranscript", () => {
     });
   });
 
+  it.each([
+    {settings: false, custom: true, protocol: "openai_responses", fail: false},
+    {settings: true, custom: true, protocol: "openai_responses", fail: false},
+    {settings: false, custom: false, protocol: "openai_chat", fail: false},
+    {settings: true, custom: false, protocol: "openai_chat", fail: false},
+    {settings: false, custom: false, protocol: "anthropic", fail: true},
+    {settings: true, custom: true, protocol: "openai_responses", fail: true}
+  ])("configures an unknown model: $settings / $custom / $protocol / failure=$fail", async ({
+    settings, custom, protocol, fail
+  }) => {
+    const value = snapshot();
+    const providerID = custom ? "openai-compatible" : "provider";
+    value.setupCatalog = {version: 2, providers: [{
+      id: providerID, display_name: "Provider", protocol, custom,
+      requires_api_key: false, models: ["catalog-model"]
+    }]};
+    if (!settings) {
+      value.phase = "setup";
+      value.sessions = [];
+      value.selectedSessionID = "";
+      value.profile = undefined;
+    }
+    const client = mockClient(value);
+    if (fail) vi.mocked(client.probeSetup).mockRejectedValue(new Error("probe unavailable"));
+    render(<App client={client} />);
+    if (settings) {
+      fireEvent.click(screen.getByRole("button", {name: "Settings"}));
+      await screen.findByRole("dialog", {name: "Settings"});
+      fireEvent.click(screen.getByRole("button", {name: "Connection"}));
+      await screen.findByText("https://models.example.com/v1");
+      fireEvent.click(screen.getByRole("button", {name: "Change provider"}));
+    }
+    const label = (name: string) => settings ? ({
+      Provider: "Connection provider", "Base URL": "Connection base URL",
+      Protocol: "Connection protocol", "Model ID": "Connection model ID"
+    }[name]!) : name;
+    fireEvent.change(screen.getByLabelText(label("Provider")), {target: {value: providerID}});
+    if (custom) {
+      fireEvent.change(screen.getByLabelText(label("Base URL")), {target: {value: "https://models.example.com/v1"}});
+      fireEvent.change(screen.getByLabelText(label("Protocol")), {target: {value: protocol}});
+    }
+    fireEvent.change(screen.getByLabelText(label("Model ID")), {target: {value: "vendor-model"}});
+    fireEvent.click(screen.getByRole("button", {name: "Detect model"}));
+    await waitFor(() => expect(client.probeSetup).toHaveBeenCalledWith({
+      provider: providerID, model: "vendor-model",
+      base_url: custom ? "https://models.example.com/v1" : "", protocol
+    }));
+    const submitLabel = settings ? "Apply and restart" : "Start QCode";
+    if (fail) {
+      await screen.findByText("probe unavailable");
+      fireEvent.click(screen.getByRole("button", {name: "Enter model metadata"}));
+      expect(screen.getByRole("button", {name: submitLabel})).toHaveProperty("disabled", true);
+      fireEvent.change(screen.getByLabelText("Context tokens"), {target: {value: "65536"}});
+      fireEvent.change(screen.getByLabelText("Max output tokens"), {target: {value: "8192"}});
+      fireEvent.click(screen.getByLabelText("Tool calling"));
+    } else {
+      await screen.findByLabelText("Detected model limits");
+    }
+    fireEvent.click(screen.getByRole("button", {name: submitLabel}));
+    await waitFor(() => expect(client.completeSetup).toHaveBeenCalledWith(expect.objectContaining({
+      provider: providerID, model: "vendor-model",
+      ...(custom ? {protocol} : {}),
+      model_metadata: expect.objectContaining({
+        context_tokens: fail ? 65536 : 200000,
+        max_output_tokens: fail ? 8192 : 24000,
+        capabilities: expect.objectContaining({tool_calls: true})
+      })
+    })));
+  });
+
   it("requests explicit discard when deleting an active session", () => {
     vi.spyOn(window, "confirm").mockReturnValue(true);
     const value = snapshot();
@@ -1930,14 +2000,98 @@ describe("projectTranscript", () => {
 
   it("restores and persists the selected Session draft", async () => {
     const client = mockClient(snapshot());
-    vi.mocked(client.loadDraft).mockResolvedValue("restored draft");
+    vi.mocked(client.loadDraft).mockReturnValue("restored draft");
     render(<App client={client} />);
 
     const composer = await screen.findByDisplayValue("restored draft");
     fireEvent.change(composer, {target: {value: "edited draft"}});
-    await waitFor(() => {
-      expect(client.saveDraft).toHaveBeenCalledWith("edited draft", "session");
+    expect(client.saveDraft).toHaveBeenCalledWith("edited draft", "session");
+  });
+
+  it.each([
+    {delay: 0, crossWorkspace: false},
+    {delay: 149, crossWorkspace: false},
+    {delay: 0, crossWorkspace: true},
+    {delay: 149, crossWorkspace: true}
+  ])("preserves drafts when switching after $delay ms (cross Workspace: $crossWorkspace)", async ({
+    delay, crossWorkspace
+  }) => {
+    const value = snapshot();
+    const client = mockClient(value);
+    const drafts = new Map<string, string>();
+    const key = (sessionID: string) => `${value.selectedWorkspaceID}:${sessionID}`;
+    vi.mocked(client.loadDraft).mockImplementation((sessionID = value.selectedSessionID) =>
+      drafts.get(key(sessionID)) ?? "");
+    vi.mocked(client.saveDraft).mockImplementation((text, sessionID = value.selectedSessionID) => {
+      drafts.set(key(sessionID), text);
     });
+    const secondWorkspaceID = crossWorkspace ? "workspace-b" : "workspace-id";
+    const secondSessionID = "session-b";
+    value.sessions = [...value.sessions, {
+      ...value.sessions[0]!,
+      session_id: secondSessionID,
+      title: "Second session",
+      workspace_root: crossWorkspace ? "/workspace-b" : "/workspace"
+    }];
+    if (crossWorkspace) {
+      value.workspaces = [...value.workspaces, {
+        ...value.workspaces[0]!, id: secondWorkspaceID, root: "/workspace-b"
+      }];
+    }
+    const view = render(<App client={client} />);
+    const firstDraft = "  第一份草稿\n末尾空格 🙂  ";
+    const secondDraft = "另一份\n独立草稿";
+    vi.useFakeTimers();
+    try {
+      const switchTo = (workspaceID: string, sessionID: string) => {
+        value.selectedWorkspaceID = workspaceID;
+        value.selectedSessionID = sessionID;
+        view.rerender(<App client={client} />);
+      };
+      fireEvent.change(screen.getByPlaceholderText("Ask QCode"), {
+        target: {value: firstDraft}
+      });
+      await act(async () => { vi.advanceTimersByTime(delay); });
+      switchTo(secondWorkspaceID, secondSessionID);
+      expect(screen.getByPlaceholderText("Ask QCode")).toHaveProperty("value", "");
+      fireEvent.change(screen.getByPlaceholderText("Ask QCode"), {
+        target: {value: secondDraft}
+      });
+      await act(async () => { vi.advanceTimersByTime(delay); });
+      switchTo("workspace-id", "session");
+      expect(screen.getByPlaceholderText("Ask QCode")).toHaveProperty("value", firstDraft);
+      switchTo(secondWorkspaceID, secondSessionID);
+      expect(screen.getByPlaceholderText("Ask QCode")).toHaveProperty("value", secondDraft);
+      view.unmount();
+      expect(drafts.get("workspace-id:session")).toBe(firstDraft);
+      expect(drafts.get(`${secondWorkspaceID}:${secondSessionID}`)).toBe(secondDraft);
+      expect(drafts.size).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([false, true])("keeps the saved draft until submission succeeds (failure: %s)", async (fails) => {
+    const client = mockClient(snapshot());
+    let savedDraft = "  待发送内容  ";
+    vi.mocked(client.loadDraft).mockImplementation(() => savedDraft);
+    vi.mocked(client.saveDraft).mockImplementation((text) => { savedDraft = text; });
+    let resolve!: () => void;
+    let reject!: (error: Error) => void;
+    vi.mocked(client.submitPrompt).mockImplementation(() => new Promise((yes, no) => {
+      resolve = () => yes({} as Awaited<ReturnType<RuntimeClient["submitPrompt"]>>);
+      reject = no;
+    }));
+    render(<App client={client} />);
+    fireEvent.click(screen.getByRole("button", {name: "Send"}));
+    expect(client.submitPrompt).toHaveBeenCalledWith("待发送内容");
+    expect(savedDraft).toBe("  待发送内容  ");
+    await act(async () => {
+      if (fails) reject(new Error("submission rejected"));
+      else resolve();
+    });
+    expect(savedDraft).toBe(fails ? "  待发送内容  " : "");
+    expect(screen.getByPlaceholderText("Ask QCode")).toHaveProperty("value", savedDraft);
   });
 
   it("preserves the textarea DOM node when a blank session becomes active", () => {
@@ -3137,7 +3291,7 @@ function mockClient(value: RuntimeSnapshot): RuntimeClient {
     selectSession: vi.fn(async () => {}),
     updateSession: vi.fn(async () => {}),
     deleteSession: vi.fn(async () => {}),
-    loadDraft: vi.fn(async () => ""),
+    loadDraft: vi.fn(() => ""),
     saveDraft: vi.fn(),
     submitPrompt: vi.fn(async () => ({})),
     steer: vi.fn(async () => ({})),

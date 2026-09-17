@@ -885,14 +885,14 @@ function ConnectionSettings({
     }
   };
   const probeModel = async () => {
-    if (!custom || !baseURL.trim() || !modelID.trim() || probing) return;
+    if (!providerOption || (custom && !baseURL.trim()) || !modelID.trim() || probing) return;
     setProbing(true);
     setProbeError("");
     try {
       const result = await client.probeSetup({
         provider: providerID,
-        base_url: baseURL.trim(),
-        protocol,
+        base_url: custom ? baseURL.trim() : "",
+        protocol: custom ? protocol : providerOption.protocol,
         model: modelID.trim(),
         ...(apiKey.trim() ? {api_key: apiKey.trim()} : {})
       });
@@ -940,7 +940,7 @@ function ConnectionSettings({
               label="Connection provider"
               value={providerID}
               values={catalog.providers.map((entry) => entry.id)}
-              disabled={pending}
+              disabled={pending || probing}
               format={(value) => catalog.providers.find(
                 (entry) => entry.id === value
               )?.display_name ?? value}
@@ -964,7 +964,7 @@ function ConnectionSettings({
                 aria-label="Connection base URL"
                 value={baseURL}
                 placeholder="https://api.example.com/v1"
-                disabled={pending}
+                disabled={pending || probing}
                 onChange={(event) => {
                   setBaseURL(event.target.value);
                   setProbed(false);
@@ -978,7 +978,7 @@ function ConnectionSettings({
                 label="Connection protocol"
                 value={protocol}
                 values={["openai_chat", "openai_responses"]}
-                disabled={pending}
+                disabled={pending || probing}
                 format={(value) => value === "openai_chat"
                   ? "Chat Completions"
                   : "Responses"}
@@ -995,7 +995,7 @@ function ConnectionSettings({
               aria-label="Connection model ID"
               value={modelID}
               placeholder="Enter the exact model ID"
-              disabled={pending}
+              disabled={pending || probing}
               onChange={(event) => {
                 const nextModelID = event.target.value;
                 setMetadata(emptyModelMetadataDraft(nextModelID.trim()));
@@ -1021,7 +1021,7 @@ function ConnectionSettings({
               type="button"
               className="settingsHeaderAction"
               disabled={
-                probing || !baseURL.trim() || !modelID.trim()
+                probing || (custom && !baseURL.trim()) || !modelID.trim()
               }
               onClick={() => void probeModel()}
             >
@@ -1030,6 +1030,15 @@ function ConnectionSettings({
           )}
           {probeError && (
             <small className="settingsError" role="alert">{probeError}</small>
+          )}
+          {requiresMetadata && !probed && (
+            <button type="button" className="settingsHeaderAction" disabled={pending || probing}
+              onClick={() => {
+                setMetadata(emptyModelMetadataDraft(modelID.trim()));
+                setProbed(true);
+              }}>
+              Enter model metadata
+            </button>
           )}
           <SettingRow
             title="API key"
@@ -1044,7 +1053,7 @@ function ConnectionSettings({
               aria-label="Connection API key"
               value={apiKey}
               placeholder="Use saved key"
-              disabled={pending}
+              disabled={pending || probing}
               onChange={(event) => {
                 setAPIKey(event.target.value);
                 setProbed(false);
@@ -1055,7 +1064,7 @@ function ConnectionSettings({
             <button
               type="button"
               disabled={
-                pending || !providerOption || !modelID.trim() ||
+                pending || probing || !providerOption || !modelID.trim() ||
                 (custom && !baseURL.trim()) || (requiresKey && !apiKey.trim()) ||
                 (requiresMetadata && !probed) ||
                 Boolean(metadataError)

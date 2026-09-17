@@ -1169,6 +1169,85 @@ describe("RuntimeClient", () => {
     client.stop();
   });
 
+  it.each(["workspace", "session"] as const)(
+    "preserves drafts entered before and during a cross-Workspace %s switch",
+    async (selection) => {
+      multipleWorkspaces = true;
+      const storage = new MemoryBrowserStorage();
+      const client = new RuntimeClient(storage);
+      await startClient(client);
+      const firstDraft = "  第一份草稿\n原样保留 🙂  ";
+      const lateDraft = `${firstDraft}\n切换期间继续输入`;
+      const secondDraft = "第二个 Workspace 的草稿";
+      let release!: () => void;
+      let loading!: () => void;
+      const entered = new Promise<void>((resolve) => { loading = resolve; });
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      const load = storage.load.bind(storage);
+      storage.load = async (scope) => {
+        if (scope === "v1:build:workspace-b-id") {
+          loading();
+          await gate;
+        }
+        return load(scope);
+      };
+      const select = (workspaceID: string, sessionID: string) => selection === "workspace"
+        ? client.selectWorkspace(workspaceID)
+        : client.selectSession(sessionID);
+      const finishSwitch = async (switching: Promise<void>) => {
+        const count = FakeWebSocket.instances.length;
+        await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(count + 1));
+        const socket = FakeWebSocket.instances.at(-1)!;
+        socket.emit("open");
+        socket.emit("message", {type: "hello", protocol_version: 1, sequence: 0});
+        await switching;
+      };
+      try {
+        client.saveDraft(firstDraft);
+        const switching = select("workspace-b-id", "session-b");
+        await entered;
+        expect(client.getSnapshot().selectedWorkspaceID).toBe("workspace-id");
+        client.saveDraft(lateDraft);
+        expect(client.loadDraft("session")).toBe(lateDraft);
+        release();
+        await finishSwitch(switching);
+        expect(client.loadDraft()).toBe("");
+        client.saveDraft(secondDraft);
+        await finishSwitch(select("workspace-id", "session"));
+        expect(client.loadDraft()).toBe(lateDraft);
+        expect(storage.values.get("v1:build:workspace-id")?.drafts)
+          .toEqual({session: lateDraft});
+        expect(storage.values.get("v1:build:workspace-b-id")?.drafts)
+          .toEqual({"session-b": secondDraft});
+      } finally {
+        release();
+        client.stop();
+      }
+    }
+  );
+
+  it.each(["pagehide", "stop"])("flushes the latest draft on %s without waiting for storage debounce", async (exit) => {
+    vi.useFakeTimers();
+    const storage = new MemoryBrowserStorage();
+    const client = new RuntimeClient(storage);
+    await startClient(client);
+    try {
+      const before = storage.saveCalls;
+      client.saveDraft("第一行");
+      client.saveDraft("第一行\n第二行 🙂 ");
+      expect(storage.saveCalls).toBe(before);
+      if (exit === "stop") client.stop();
+      else window.dispatchEvent(new Event("pagehide"));
+      // Drain the serialized storage promise without advancing the debounce.
+      await vi.advanceTimersByTimeAsync(0);
+      expect(storage.values.get("v1:build:workspace-id")?.drafts)
+        .toEqual({session: "第一行\n第二行 🙂 "});
+      expect(storage.saveCalls).toBe(before + 1);
+    } finally {
+      client.stop();
+    }
+  });
+
   it("routes background Session lifecycle mutations to their owner Workspace", async () => {
     multipleWorkspaces = true;
     const client = new RuntimeClient();

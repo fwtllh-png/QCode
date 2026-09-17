@@ -19,6 +19,7 @@ func ProbeModelConnection(
 	ctx context.Context,
 	providerID, baseURL, modelID, apiKey string,
 	credential model.CredentialRef,
+	protocol model.WireProtocol,
 ) (ModelProbeResult, error) {
 	var (
 		listed       map[string]any
@@ -33,12 +34,6 @@ func ProbeModelConnection(
 			baseURL,
 			apiKey,
 		)
-		capabilities, probeErr = modelcatalog.ProbeCapabilities(
-			ctx,
-			baseURL,
-			apiKey,
-			modelID,
-		)
 	} else {
 		listed, listErr = modelcatalog.List(
 			ctx,
@@ -46,11 +41,31 @@ func ProbeModelConnection(
 			baseURL,
 			credential,
 		)
-		capabilities, probeErr = modelcatalog.ProbeCapabilitiesWithCredential(
+	}
+	discovered, _ := listed["model_metadata"].([]modelcatalog.DiscoveredModel)
+	var maxOutputTokens uint64
+	for _, value := range discovered {
+		if value.ID == modelID {
+			maxOutputTokens = value.MaxOutputTokens
+		}
+	}
+	if maxOutputTokens == 0 {
+		if catalogProvider, found := model.DefaultCatalog().Provider(providerID); found {
+			maxOutputTokens = catalogProvider.Models[modelID].Limits.MaxOutputTokens
+		}
+	}
+	if apiKey != "" {
+		capabilities, probeErr = modelcatalog.ProbeCapabilitiesForProtocol(
+			ctx, baseURL, apiKey, modelID, protocol, maxOutputTokens,
+		)
+	} else {
+		capabilities, probeErr = modelcatalog.ProbeCapabilitiesWithCredentialForProtocol(
 			ctx,
 			baseURL,
 			credential,
 			modelID,
+			protocol,
+			maxOutputTokens,
 		)
 	}
 	if probeErr != nil {

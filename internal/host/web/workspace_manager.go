@@ -206,7 +206,7 @@ func (m *workspaceRuntimeManager) ProbeModel(
 	reference := m.reference
 	m.mu.Unlock()
 	baseURL := selection.BaseURL
-	providerID := setupRuntimeProviderID(selection)
+	providerID := selection.Provider
 	if baseURL == "" {
 		if provider, exists := model.DefaultCatalog().Provider(providerID); exists {
 			baseURL = provider.Endpoint
@@ -219,6 +219,7 @@ func (m *workspaceRuntimeManager) ProbeModel(
 		modelID,
 		"",
 		model.CredentialRef{Kind: reference.Kind, Name: reference.Name},
+		model.WireProtocol(selection.Protocol),
 	)
 	if err != nil {
 		return webhost.SetupProbeResult{}, err

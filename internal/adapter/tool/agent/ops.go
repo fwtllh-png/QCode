@@ -182,8 +182,9 @@ func (o *operation) Descriptor() tool.Descriptor {
 	case "interrupt_agent":
 		return tool.Descriptor{
 			Name: "interrupt_agent",
-			Description: "Interrupt a running child agent turn. The agent stays open " +
-				"(worktree retained) so followup_task can resume.",
+			Description: "Request cancellation of a running child agent turn. " +
+				"Use wait_agent to await its terminal result before followup_task. " +
+				"The agent stays open with its worktree retained.",
 			DiscoveryTerms: []string{"interrupt agent", "中断子代理", "暂停代理"},
 			Visibility:     o.visibility(), Capability: tool.CapabilityWrite,
 			AccessMode: tool.AccessWrite, ParallelPolicy: tool.ParallelSerial,

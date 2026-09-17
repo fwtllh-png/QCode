@@ -846,8 +846,8 @@ func TestDeniedChildApprovalPublishesProblemAndToolFeedback(t *testing.T) {
 
 func TestChildCancelPendingApprovalPublishesOneTerminal(t *testing.T) {
 	session, manager, child, events, _ := startSuggestChildApproval(t)
-	if err := session.children.CancelTurn(
-		t.Context(), child.ID, child.TurnID,
+	if _, err := manager.Interrupt(
+		t.Context(), child.ID,
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -863,6 +863,13 @@ func TestChildCancelPendingApprovalPublishesOneTerminal(t *testing.T) {
 	result, ok := manager.Result(child.ID)
 	if !ok || result.Status != subagent.StatusInterrupted {
 		t.Fatalf("canceled approval Result = %+v, ok=%v", result, ok)
+	}
+	if _, err := manager.Interrupt(t.Context(), child.ID); err != nil {
+		t.Fatalf("repeated interrupt after settlement: %v", err)
+	}
+	if messages := manager.Mailbox().PendingSession(child.SessionID, subagent.SessionParentID); len(messages) != 1 ||
+		messages[0].Kind != subagent.MessageCompletion {
+		t.Fatalf("cancel completion messages = %+v", messages)
 	}
 	deadline := time.After(5 * time.Second)
 	terminals := 0
