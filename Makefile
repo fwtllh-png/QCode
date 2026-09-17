@@ -164,6 +164,7 @@ test-integration:
 
 integration-gate: build
 	$(GO) test -count=1 ./internal/host/runtimeapi/web ./internal/host/web
+	$(GO) test -tags=webbundle -count=1 ./web
 
 test-release: release-baseline-check
 	python3 scripts/run-test-lane.py release \
@@ -462,3 +463,17 @@ package: web-assets-check build
 
 clean:
 	rm -rf bin dist .tmp .dbg web/dist
+
+# Compare scoped reference candidates against the previous name-only join.
+# REPO_EVAL_REPORT is optional; the report contains fixture paths, never user code.
+.PHONY: repository-understanding-eval
+REPO_EVAL_REPORT ?= $(CURDIR)/.tmp/repository-understanding-report.json
+repository-understanding-eval:
+	QCODE_REPO_EVAL_REPORT='$(REPO_EVAL_REPORT)' $(GO) test -count=1 -v \
+		./internal/persist/repoindex -run '^TestRepositoryUnderstandingEvaluation$$'
+
+.PHONY: repository-task-eval
+REPO_TASK_REPORT ?= $(CURDIR)/.tmp/repository-task-report.json
+repository-task-eval:
+	QCODE_REPO_TASK_REPORT='$(REPO_TASK_REPORT)' $(GO) test -count=1 -v \
+		./internal/adapter/tool/search -run '^TestRepositoryTaskEvaluation$$'

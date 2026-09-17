@@ -5,10 +5,9 @@ import (
 	"testing"
 )
 
-// The tests here cover what the layering added beyond the six original rule
-// tables: the generic engine, C and C++, the detail fields, and language
-// detection. The identity behaviour of the original tables is pinned by the
-// fixtures above, which the migration left byte-for-byte equal.
+// These tests cover fallback languages, C/C++ structure and bounded detail.
+// Syntax-supported languages report their grammar tier; generic languages
+// retain their existing heuristic behavior.
 
 func TestDetectLanguageFallsBackToShebang(t *testing.T) {
 	for _, test := range []struct {
@@ -152,29 +151,29 @@ int assigned = lookup(sku);
 	want := []Symbol{
 		{Name: "add", Kind: KindFunction, Container: "inventory", Line: 7, Exported: true,
 			Signature: "void add(int sku)", Docstring: "Adds stock, never removes it.",
-			Resolution: ResolutionLexical},
-		{Name: "Store", Kind: KindClass, Container: "inventory", Line: 11, Exported: false,
-			Signature: "class Store final : public Base", Resolution: ResolutionLexical},
+			Resolution: ResolutionSyntax},
+		{Name: "Store", Kind: KindClass, Container: "inventory", Line: 11, Exported: true,
+			Signature: "class Store final : public Base", Resolution: ResolutionSyntax},
 		{Name: "Store", Kind: KindMethod, Container: "Store", Line: 13, Exported: true,
-			Signature: "Store()", Resolution: ResolutionLexical},
+			Signature: "Store()", Resolution: ResolutionSyntax},
 		{Name: "~Store", Kind: KindMethod, Container: "Store", Line: 14, Exported: true,
-			Signature: "~Store()", Resolution: ResolutionLexical},
+			Signature: "~Store()", Resolution: ResolutionSyntax},
 		{Name: "find", Kind: KindMethod, Container: "Store", Line: 15, Exported: true,
-			Signature: "int find(const char* name)", Resolution: ResolutionLexical},
+			Signature: "int find(const char* name)", Resolution: ResolutionSyntax},
 		{Name: "reload", Kind: KindMethod, Container: "Store", Line: 16, Exported: true,
-			Signature: "virtual int reload(void) noexcept", Resolution: ResolutionLexical},
+			Signature: "virtual int reload(void) noexcept", Resolution: ResolutionSyntax},
 		{Name: "hidden_", Kind: KindMethod, Container: "Store", Line: 18, Exported: false,
-			Signature: "int hidden_()", Resolution: ResolutionLexical},
+			Signature: "int hidden_()", Resolution: ResolutionSyntax},
 		{Name: "reset", Kind: KindMethod, Container: "Store", Line: 19, Exported: false,
-			Signature: "static void reset()", Resolution: ResolutionLexical},
+			Signature: "static void reset()", Resolution: ResolutionSyntax},
 		{Name: "Config", Kind: KindType, Container: "inventory", Line: 22, Exported: true,
-			Signature: "struct Config", Resolution: ResolutionLexical},
+			Signature: "struct Config", Resolution: ResolutionSyntax},
 		{Name: "Mode", Kind: KindType, Container: "inventory", Line: 26, Exported: true,
-			Signature: "enum class Mode { Fast, Slow }", Resolution: ResolutionLexical},
+			Signature: "enum class Mode", Resolution: ResolutionSyntax},
 		{Name: "clamp", Kind: KindFunction, Container: "inventory", Line: 29, Exported: true,
-			Signature: "T clamp(T value)", Resolution: ResolutionLexical},
+			Signature: "T clamp(T value)", Resolution: ResolutionSyntax},
 		{Name: "api", Kind: KindFunction, Container: "inventory", Line: 33, Exported: true,
-			Signature: "void api(int sku)", Resolution: ResolutionLexical},
+			Signature: "void api(int sku)", Resolution: ResolutionSyntax},
 	}
 	assertFullSymbols(t, found, want)
 	for _, symbol := range found {

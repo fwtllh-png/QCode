@@ -1,22 +1,12 @@
-// Package symbols finds the declarations in a source file by reading its lines.
-//
-// Extraction is layered so that every language has a baseline rather than only
-// the ones with a hand-tuned rule table:
-//
-//   - Tier 0, a generic engine of shared declaration shapes, runs for any
-//     language and reports ResolutionHeuristic.
-//   - Tier 1, the per-language rule tables, runs for the languages below and
-//     reports ResolutionLexical.
-//
-// Both tiers are deliberately lexical, not semantic: there is no parser, no
-// type resolution and no build. That buys support for every language from one
-// small table per tier and keeps indexing a whole repository cheap, at the cost
-// of the errors a lexer makes — a declaration written inside a string literal
-// is reported, a macro that generates one is not. Consumers must pass the
-// resolution on rather than present any tier as ground truth.
+// Package symbols extracts source declarations, documentation and file-level
+// identifiers. Valid source in the supported grammar set uses syntax trees;
+// malformed or unsupported input falls back to language-specific lexical rules
+// or generic heuristics. Resolution travels with each row. Syntax extraction
+// does not imply type checking, macro expansion or semantic reference resolution.
 package symbols
 
 import (
+	"context"
 	"strings"
 	"unicode"
 )
@@ -45,6 +35,8 @@ const (
 	ResolutionHeuristic = "heuristic"
 	// ResolutionLexical is a per-language rule table.
 	ResolutionLexical = "lexical"
+	// ResolutionSyntax is a grammar-derived declaration, without type resolution.
+	ResolutionSyntax = "syntax"
 )
 
 // Languages with a Tier 1 rule table. Languages known by name but absent from
@@ -90,6 +82,13 @@ type Reference struct {
 
 // Result is everything one file yielded.
 type Result struct {
+	ReferenceSitesTruncated bool
+	ScopeAware              bool
+	PackageName             string
+	ReferenceSites          []ReferenceSite
+	// Resolution is syntax when imports and references came from the parsed tree.
+	Resolution string
+	Imports    []string
 	Symbols    []Symbol
 	References []Reference
 }
@@ -98,11 +97,14 @@ type Result struct {
 // the bounds keep a pathological file from turning the index into a copy of
 // its own source. Callers expose them as configuration with provenance.
 type Options struct {
+	// SourcePath distinguishes grammar dialects such as TypeScript and TSX.
+	SourcePath string
 	// SignatureMaxBytes bounds the recorded declaration text.
 	SignatureMaxBytes int
 	// DocstringMaxBytes bounds the recorded comment block.
 	DocstringMaxBytes int
-	// ReferenceMaxCount bounds how many distinct identifiers one file records.
+	// ReferenceMaxCount independently bounds distinct identifier counts and
+	// scoped reference occurrences per file; occurrence truncation is reported.
 	ReferenceMaxCount int
 }
 
@@ -145,80 +147,81 @@ var languagesByExtension = map[string]string{
 	".ts":   LanguageTypeScript,
 	".tsx":  LanguageTypeScript,
 	".mts":  LanguageTypeScript,
+	".cts":  LanguageTypeScript,
 	".rs":   LanguageRust,
 	".java": LanguageJava,
 	// C and C++ share one rule table; the names stay distinct so a query can
 	// still tell which files are which.
-	".c":    LanguageC,
-	".h":    LanguageC,
-	".cc":   LanguageCPP,
-	".cp":   LanguageCPP,
-	".cpp":  LanguageCPP,
-	".cxx":  LanguageCPP,
-	".c++":  LanguageCPP,
-	".hpp":  LanguageCPP,
-	".hh":   LanguageCPP,
-	".hxx":  LanguageCPP,
-	".h++":  LanguageCPP,
-	".ipp":  LanguageCPP,
-	".tpp":  LanguageCPP,
+	".c":   LanguageC,
+	".h":   LanguageC,
+	".cc":  LanguageCPP,
+	".cp":  LanguageCPP,
+	".cpp": LanguageCPP,
+	".cxx": LanguageCPP,
+	".c++": LanguageCPP,
+	".hpp": LanguageCPP,
+	".hh":  LanguageCPP,
+	".hxx": LanguageCPP,
+	".h++": LanguageCPP,
+	".ipp": LanguageCPP,
+	".tpp": LanguageCPP,
 	// Known languages without a rule table yet. Recording the real name keeps
 	// per-language queries meaningful; extraction falls to the generic engine
 	// and the rows carry ResolutionHeuristic.
-	".cs":       "csharp",
-	".csx":      "csharp",
-	".rb":       "ruby",
-	".php":      "php",
-	".kt":       "kotlin",
-	".kts":      "kotlin",
-	".swift":    "swift",
-	".scala":    "scala",
-	".sc":       "scala",
-	".m":        "objective-c",
-	".mm":       "objective-cpp",
-	".sh":       "shell",
-	".bash":     "shell",
-	".zsh":      "shell",
-	".fish":     "shell",
-	".lua":      "lua",
-	".pl":       "perl",
-	".pm":       "perl",
-	".r":        "r",
-	".jl":       "julia",
-	".ex":       "elixir",
-	".exs":      "elixir",
-	".erl":      "erlang",
-	".hrl":      "erlang",
-	".hs":       "haskell",
-	".ml":       "ocaml",
-	".mli":      "ocaml",
-	".zig":      "zig",
-	".d":        "d",
-	".groovy":   "groovy",
-	".gradle":   "groovy",
-	".dart":     "dart",
-	".vue":      "vue",
-	".svelte":   "svelte",
-	".el":       "emacs-lisp",
-	".clj":      "clojure",
-	".cljs":     "clojure",
-	".rkt":      "racket",
-	".scm":      "scheme",
-	".f90":      "fortran",
-	".f95":      "fortran",
-	".pas":      "pascal",
-	".asm":      "assembly",
-	".s":        "assembly",
-	".sql":      "sql",
-	".proto":    "protobuf",
-	".graphql":  "graphql",
-	".gql":      "graphql",
-	".tf":       "terraform",
-	".hcl":      "hcl",
-	".vim":      "vimscript",
-	".nim":      "nim",
-	".v":        "verilog",
-	".sv":       "systemverilog",
+	".cs":      "csharp",
+	".csx":     "csharp",
+	".rb":      "ruby",
+	".php":     "php",
+	".kt":      "kotlin",
+	".kts":     "kotlin",
+	".swift":   "swift",
+	".scala":   "scala",
+	".sc":      "scala",
+	".m":       "objective-c",
+	".mm":      "objective-cpp",
+	".sh":      "shell",
+	".bash":    "shell",
+	".zsh":     "shell",
+	".fish":    "shell",
+	".lua":     "lua",
+	".pl":      "perl",
+	".pm":      "perl",
+	".r":       "r",
+	".jl":      "julia",
+	".ex":      "elixir",
+	".exs":     "elixir",
+	".erl":     "erlang",
+	".hrl":     "erlang",
+	".hs":      "haskell",
+	".ml":      "ocaml",
+	".mli":     "ocaml",
+	".zig":     "zig",
+	".d":       "d",
+	".groovy":  "groovy",
+	".gradle":  "groovy",
+	".dart":    "dart",
+	".vue":     "vue",
+	".svelte":  "svelte",
+	".el":      "emacs-lisp",
+	".clj":     "clojure",
+	".cljs":    "clojure",
+	".rkt":     "racket",
+	".scm":     "scheme",
+	".f90":     "fortran",
+	".f95":     "fortran",
+	".pas":     "pascal",
+	".asm":     "assembly",
+	".s":       "assembly",
+	".sql":     "sql",
+	".proto":   "protobuf",
+	".graphql": "graphql",
+	".gql":     "graphql",
+	".tf":      "terraform",
+	".hcl":     "hcl",
+	".vim":     "vimscript",
+	".nim":     "nim",
+	".v":       "verilog",
+	".sv":      "systemverilog",
 }
 
 // extractors holds one Tier 1 scanner per rule-table language.
@@ -311,10 +314,25 @@ func Extract(language string, data []byte) []Symbol {
 
 // ExtractResult returns the declarations and file-level references of data.
 func ExtractResult(language string, data []byte, options Options) Result {
+	return ExtractResultContext(context.Background(), language, data, options)
+}
+
+// ExtractResultContext propagates indexing cancellation into syntax parsing.
+func ExtractResultContext(ctx context.Context, language string, data []byte, options Options) Result {
 	options = options.withDefaults()
+	if ctx.Err() != nil {
+		return Result{}
+	}
+	if result, ok := extractSyntax(ctx, language, data, options); ok {
+		return result
+	}
+	if ctx.Err() != nil {
+		return Result{}
+	}
 	lines := scan(language, data)
-	result := Result{}
+	result := Result{Resolution: ResolutionHeuristic}
 	if extractor, found := extractors[language]; found {
+		result.Resolution = ResolutionLexical
 		result.Symbols = extractor(lines, options)
 	} else {
 		result.Symbols = extractGeneric(lines, options)

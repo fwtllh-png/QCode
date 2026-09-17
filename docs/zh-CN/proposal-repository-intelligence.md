@@ -11,7 +11,7 @@ QCode 当前的仓库理解是纯词法路线：
 
 | 能力 | 现状 | 位置 |
 | --- | --- | --- |
-| 符号提取 | 逐行词法规则表，自述 "deliberately lexical, not semantic" | `internal/platform/symbols/symbols.go` |
+| 符号提取 | 主要语言优先语法树，失败时回退词法或启发式；见[代码结构提取](./code-structure.md) | `internal/platform/symbols/symbols.go` |
 | 符号索引 | path/name/kind/container/line/exported，无签名、无引用、无 docstring | `internal/persist/repoindex` |
 | Repo Map | 目录 + 符号计数摘要，目录按符号数排名，入口点为硬编码文件名表 | `internal/runtime/agent/repository/map.go` |
 | 语义查询 | LSP 一次性进程（每次查询冷启动），否则词法回退 | `internal/adapter/lsp` |
@@ -105,7 +105,7 @@ docstring，模型拿到符号列表后仍需整文件读取确认形态；其�
 | --- | --- | --- | --- |
 | Tier 0 通用启发式 | 任何文本语言，含未知语言与 DSL | 通用声明形态（`name(...)` + 块开始 / 缩进块）、前置注释块即 docstring、文件级标识符 | `heuristic`（新增档） |
 | Tier 1 语言精调包 | 主流语言：现有六种 + C/C++、C#、Ruby、PHP、Kotlin、Swift 渐进加入 | 精调规则：准确容器归属、语言特定 docstring 形态、模板/预处理等声明变体 | `lexical` |
-| Tier 2 语法级（未排期） | 由 grammar 生态决定（tree-sitter 官方生态 300+） | 精确签名、作用域内引用 | `syntax` |
+| Tier 2 语法级（已交付基础提取） | Go、JS/TS、Python、Rust、Java、C/C++、C#、Ruby、PHP，含 JSX/TSX | 语法声明、签名、文档与文件级标识符；详见[覆盖边界](./code-structure.md) | `syntax` |
 | Tier 3 LSP（已有，R3 增强） | 项目级 | 权威 definition/references | `lsp` |
 
 Tier 0 是覆盖保证：语言不在 Tier 1/2 清单中时自动落到
@@ -128,14 +128,11 @@ Tier 1 首批（词法级可覆盖函数/类/命名空间/模板声明与
 - `internal/persist/repoindex`：Symbol 存储扩展上述字段；
   `IndexerVersion` 提升一位触发重建；增量刷新逻辑
   （size + mtime + digest）不变。
-- Tier 2 语法级（tree-sitter 形态）未排期：架构上它是可选的
-  质量增强层，不是任何后续里程碑的结构依赖——M2 的 import 边
-  用说明符解析、近似边由 M1 的引用标识符构建，M4 的图查询
-  按边上的 Resolution 加权，Tier 0/1 已使全部下游可交付。
-  M0 首轮评估（第 10 节）也未找到同时满足"纯 Go 构建 +
-  grammar 内嵌 + 可靠维护"的现成绑定，引入需要产品级构建
-  决策；待真实使用数据表明词法质量不足时，再以独立提案
-  重新评估（官方 cgo 绑定或 wazero 包装官方 WASM grammar）。
+- Tier 2 基础提取已通过纯 Go 的 gotreesitter 运行时接入，grammar 随依赖内嵌。
+  它增强现有索引，不引入外部解析进程或运行时下载。具体语言、解析失败降级、
+  索引版本与限制见[代码结构提取](./code-structure.md)。后续已为 Go、JS/TS
+  接入作用域感知的跨文件引用候选，并建立[专项评测](./repository-understanding-evaluation.md)；
+  其他语言继续使用近似标识符关系，不宣称编译器级语义绑定。
 - 协议影响：`search_symbol` 等工具返回体属于模型可见文本，
   新字段向后兼容，不修改 Operation/Event 协议。
 
@@ -362,8 +359,8 @@ M6   R6 仓库工作记忆                    （依赖 M1/M4 的 provenance 链
 
 每个里程碑独立可验收、可回退（配置开关关闭后行为与现状一致），
 不允许跨里程碑的大提交。M1/M2/M4 是主线；M3 提供独立价值可并行。
-Tier 2（语法级）与 R5（验证命令发现）不在交付序列中，见各自的
-未排期说明。
+Tier 2 的基础语法提取已独立接入现有索引，见[交付范围](./code-structure.md)。
+R5（验证命令发现）仍未排期。
 
 ## 6. 配置字段清单（新增）
 
@@ -390,9 +387,9 @@ Tier 2（语法级）与 R5（验证命令发现）不在交付序列中，见�
 1. Tier 0 通用启发式在声明形态不规则的语言上产生噪音符号——
    噪音符号携带 `Resolution=heuristic` 如实分级，下游（Repo Map
    排名、影响分析）按置信度加权；用户可按语言关闭 Tier 0。
-   Tier 2（tree-sitter 形态）未排期：若真实使用数据表明词法
-   质量不足，须以独立提案重新评估（官方 cgo 与 wazero 自包装
-   均涉及产品级构建决策，不在此处默认）。
+   Tier 2 使用固定版本的纯 Go 解析器增强主要语言；解析器维护和 grammar
+   正确性风险仍存在。通过内部适配、语言级回归与解析失败降级约束影响，
+   不把第三方宣称的全部语言自动加入支持范围。
 2. 词法近似引用边假阳性（同名符号）——边携带 Resolution，
    下游（排名、影响分析）按置信度加权，不冒充精确；R3 LSP 命中时
    可校正。
@@ -437,13 +434,13 @@ Tier 2（语法级）与 R5（验证命令发现）不在交付序列中，见�
 
 ## 10. 实施记录（随里程碑追加）
 
-- [x] M0 依赖选型决策记录（2026-09-12 首轮评估，实施暂停待路线决策）：
+- [x] M0 依赖选型记录（含当前实现选择）：
 
   | 候选 | 版本 | 结论 |
   | --- | --- | --- |
-  | `github.com/tree-sitter/go-tree-sitter`（官方） | v0.25.0 | 权威维护；**cgo**，且不带 grammar，每语言需单独绑定包；影响 Windows 构建、交叉编译与自包含发布。未否决，引入属产品级构建决策，需显式评审 |
+  | `github.com/tree-sitter/go-tree-sitter`（官方） | v0.25.0 | 权威维护；**cgo**，且不带 grammar，每语言需单独绑定包；增加跨平台构建与分发成本，本次未采用 |
   | `github.com/kreuzberg-dev/tree-sitter-language-pack` | v1.18.0 | 语言覆盖广、迭代活跃；cgo 且**首次使用需联网下载预编译解析器**，违反本地无网络边界。排除 |
-  | `github.com/odvcencio/gotreesitter` | v0.52.0 | 纯 Go、grammar 内嵌、语言覆盖满足；但公开 API 无边界（数百个 `ForTest`/诊断钩子暴露在包级）、单人维护、无社区背书。评审否决 |
+  | `github.com/odvcencio/gotreesitter` | v0.52.0 | 纯 Go、grammar 内嵌。早期评估因公开 API 边界和维护集中度风险否决；当前实现为满足 Go 多语言提取选择固定此版本，相关风险仍保留，由内部适配与回归测试限制接入范围 |
 
   附加事实与修正：提案调研阶段引用的 "wasilibs/go-tree-sitter"
   经核实不存在，已从 R1 移除。R1 原定的"六语言"范围为现状继承
@@ -457,11 +454,12 @@ Tier 2（语法级）与 R5（验证命令发现）不在交付序列中，见�
   独立决策）"的分层覆盖模型；wazero 包装官方 WASM grammar
   因同时满足语言广度与纯 Go 构建，升入 M1.5 必查路线。
 
-  当前状态：M1 已按分层模型交付（见下条）。原 M1.5（Tier 2
-  语法级选型调研）已从计划中移除——它不是任何后续里程碑的
-  结构依赖（M2 的 import 边用说明符解析，M4 按边 Resolution
-  加权），且该决策依赖产品级构建取舍，在 Tier 0/1 质量被
-  真实使用证明不足前不排期；如需重启，以独立提案为准。
+  当前状态：M1 的词法与启发式基础继续保留；Tier 2 的主要语言基础提取已接入。
+  本次实现采用固定版本的 gotreesitter，限定为经过仓库样例验证的 11 种语言及
+  JSX/TSX，不引入 CGO、额外进程或运行时 grammar 下载。早期对依赖维护集中度
+  和公开 API 过宽的疑虑仍成立；QCode 只通过 `internal/platform/symbols`
+  的内部适配使用它，升级必须重新运行多语言、取消、竞态与跨平台检查。
+  行为与限制以[代码结构提取](./code-structure.md)为准。
 
 - [x] M1 通用提取层（2026-09-12 交付）：
 
@@ -649,8 +647,10 @@ Tier 2（语法级）与 R5（验证命令发现）不在交付序列中，见�
      turn 行为变更评审（该区域另有进行中的工作），不应在
      M4 内默认引入。RelatedTests 的质量提升已使未来接线
      即受益。Receipt 影响来源字段随门禁裁剪一并推迟。
-  2. 提案所述"每条结果附引用位置"降为"末跳边类型"：M2 的
-     边是文件级（无行号），证据粒度与图一致，不冒充。
+  2. 现已补充最短文件依赖链；作用域候选边携带一个代表性的引用位置，
+     工具核对 digest 后附源码片段。普通 import 和旧同名边仍不虚构行号。
+     多个改动来源分别归因，深度/数量截断及证据缺失显式报告，
+     详见[代码结构提取](./code-structure.md)。这仍是文件级推荐，不是函数级覆盖证明。
   3. `IndexerVersion` 不变：边表结构未动，RelatedTests 是
      查询时计算。
 

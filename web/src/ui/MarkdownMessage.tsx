@@ -35,6 +35,10 @@ const MathMarkdownMessage = lazy(async () => ({
   default: (await import("./MathMarkdownMessage")).MathMarkdownMessage
 }));
 
+const MermaidDiagram = lazy(async () => ({
+  default: (await import("./MermaidDiagram")).MermaidDiagram
+}));
+
 export const MarkdownMessage = memo(function MarkdownMessage({
   text,
   settled
@@ -73,7 +77,9 @@ export const MarkdownMessage = memo(function MarkdownMessage({
       );
     },
     img: ({src, alt}) => <MarkdownImage source={src} alt={alt ?? ""} />,
-    pre: ({children}) => <MarkdownCodeBlock>{children}</MarkdownCodeBlock>,
+    pre: ({children}) => (
+      <MarkdownCodeBlock settled={settled}>{children}</MarkdownCodeBlock>
+    ),
     table: ({children}) => (
       <div
         className="markdownTable"
@@ -84,7 +90,7 @@ export const MarkdownMessage = memo(function MarkdownMessage({
         <table>{children}</table>
       </div>
     )
-  }), []);
+  }), [settled]);
   if (settled && containsMath(text)) {
     return (
       <Suspense fallback={
@@ -117,10 +123,18 @@ const BaseMarkdownMessage = memo(function BaseMarkdownMessage({
   );
 });
 
-function MarkdownCodeBlock({children}: {children?: ReactNode}) {
+function MarkdownCodeBlock({
+  children,
+  settled
+}: {
+  children?: ReactNode;
+  settled: boolean;
+}) {
   const [copied, setCopied] = useState(false);
   const value = reactText(children).replace(/\n$/, "");
   const language = codeLanguage(children);
+  const diagram = settled && language === "mermaid" && value.trim() !== "";
+  const code = <pre tabIndex={0}>{children}</pre>;
   const copy = async () => {
     if (copied || !value) return;
     await navigator.clipboard.writeText(value);
@@ -129,9 +143,13 @@ function MarkdownCodeBlock({children}: {children?: ReactNode}) {
   };
   return (
     <div
-      className="markdownCodeBlock"
+      className={diagram ? "markdownCodeBlock markdownDiagramBlock" : "markdownCodeBlock"}
       role="region"
-      aria-label={language ? `${language} code` : "Code block"}
+      aria-label={diagram
+        ? "Mermaid diagram"
+        : language
+          ? `${language} code`
+          : "Code block"}
     >
       <div className="markdownCodeHeader">
         <span>{language || "Code"}</span>
@@ -144,7 +162,14 @@ function MarkdownCodeBlock({children}: {children?: ReactNode}) {
           {copied ? <Check size={13} /> : <Copy size={13} />}
         </button>
       </div>
-      <pre tabIndex={0}>{children}</pre>
+      {diagram ? (
+        <Suspense fallback={code}>
+          <MermaidDiagram
+            source={value}
+            fallback={code}
+          />
+        </Suspense>
+      ) : code}
     </div>
   );
 }

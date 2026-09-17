@@ -378,7 +378,7 @@ func TestEnsureRecordsLayeredDetailForEveryLanguage(t *testing.T) {
 	if found[0].Docstring != "Serve answers." {
 		t.Fatalf("docstring = %q", found[0].Docstring)
 	}
-	if found[0].Resolution != symbols.ResolutionLexical {
+	if found[0].Resolution != symbols.ResolutionSyntax {
 		t.Fatalf("resolution = %q", found[0].Resolution)
 	}
 
@@ -433,5 +433,47 @@ func TestStoreRoundTripsReferences(t *testing.T) {
 	}
 	if _, counted := counts["return"]; counted {
 		t.Fatalf("stop word counted: %#v", counts)
+	}
+}
+
+func TestSyntaxIndexPersistsDeclarationsAndImports(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, "web/app.tsx", "import {\n render\n} from './view';\nexport const App = () => <div/>;\nconst text = `\nfunction Fake(){}\n`;\n")
+	writeFile(t, root, "web/view.ts", "export function render() {}\n")
+	index, store := newIndex(t, root, Options{})
+	if _, err := index.Ensure(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	found, _, err := index.Symbols(t.Context(), Query{Name: "App", Exact: true})
+	if err != nil || len(found) != 1 || found[0].Resolution != ResolutionSyntax || found[0].Kind != symbols.KindFunction {
+		t.Fatalf("symbols=%+v err=%v", found, err)
+	}
+	fake, _, err := index.Symbols(t.Context(), Query{Name: "Fake", Exact: true})
+	if err != nil || len(fake) != 0 {
+		t.Fatalf("literal symbols=%+v err=%v", fake, err)
+	}
+	// Read the persisted specifier, not an in-memory extractor result.
+	imports, err := store.Imports(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(imports["web/app.tsx"]) != 1 || imports["web/app.tsx"][0] != "./view" {
+		t.Fatalf("imports=%+v", imports)
+	}
+}
+
+func TestWeakestResolutionIncludesSyntax(t *testing.T) {
+	for _, tt := range []struct {
+		values []Symbol
+		want   string
+	}{
+		{[]Symbol{{Resolution: ResolutionSyntax}}, ResolutionSyntax},
+		{[]Symbol{{Resolution: ResolutionSyntax}, {Resolution: ResolutionLexical}}, ResolutionLexical},
+		{[]Symbol{{Resolution: ResolutionLexical}, {Resolution: ResolutionSyntax}}, ResolutionLexical},
+		{[]Symbol{{Resolution: ResolutionSyntax}, {Resolution: ResolutionHeuristic}}, ResolutionHeuristic},
+	} {
+		if got := WeakestResolution(tt.values); got != tt.want {
+			t.Errorf("resolution=%s want=%s", got, tt.want)
+		}
 	}
 }

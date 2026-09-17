@@ -217,6 +217,122 @@
   outline-offset: -2px;
 }
 
+.markdownDiagramError {
+  display: grid;
+}
+
+.markdownDiagramNotice {
+  padding: 10px 16px 0;
+  color: var(--ch-text-muted);
+  font-size: 12px;
+}
+
+.markdownDiagramShell {
+  position: relative;
+  max-width: 100%;
+}
+
+.markdownDiagramToolbar {
+  position: absolute;
+  z-index: var(--ch-layer-content);
+  top: 10px;
+  right: 10px;
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  background: var(--ch-panel-raised);
+  border: 1px solid var(--ch-border);
+  border-radius: var(--ch-radius-control);
+}
+
+.markdownDiagramToolbar button {
+  display: inline-grid;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  place-items: center;
+  color: var(--ch-text-muted);
+  background: transparent;
+  border-radius: var(--ch-radius);
+}
+
+.markdownDiagramToolbar button:hover,
+.markdownDiagramToolbar button:focus-visible {
+  color: var(--ch-text);
+  background: var(--ch-panel);
+}
+
+.markdownDiagramScale {
+  min-width: 46px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.markdownDiagramScroll {
+  overflow: auto;
+  max-height: 446px;
+  padding: 14px 16px 16px;
+}
+
+.markdownDiagramScroll[data-state="loading"] {
+  display: grid;
+  min-height: 96px;
+  place-items: center;
+}
+
+.markdownDiagramScroll:focus-visible {
+  outline: 2px solid var(--ch-focus);
+  outline-offset: -2px;
+}
+
+.markdownDiagramStage {
+  margin: 0 auto;
+  cursor: grab;
+}
+
+.markdownDiagramStage:active {
+  cursor: grabbing;
+}
+
+.markdownDiagramZoom {
+  width: 100%;
+  transform-origin: top left;
+}
+
+.markdownDiagramSvg {
+  width: 100%;
+}
+
+.markdownDiagramSvg svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.markdownDiagramExpanded {
+  position: fixed;
+  z-index: calc(var(--ch-layer-popover) + 10);
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 18px;
+  background: var(--ch-modal-mask);
+  backdrop-filter: blur(3px);
+}
+
+.markdownDiagramExpanded .markdownDiagramToolbar {
+  position: static;
+  flex: 0 0 auto;
+  align-self: flex-end;
+}
+
+.markdownDiagramExpanded .markdownDiagramScroll {
+  flex: 1;
+  min-height: 0;
+  max-height: none;
+}
+
 .markdownTable {
   max-width: 100%;
   margin: 20px 0;
@@ -416,7 +532,8 @@
     max-height: none;
   }
 
-  .markdownCodeBlock pre {
+  .markdownCodeBlock pre,
+  .markdownDiagramScroll {
     max-height: 326px;
   }
 
@@ -429,7 +546,8 @@
 @media (forced-colors: active) {
   .markdownCodeBlock,
   .markdownImageFrame,
-  .markdownImageConsent {
+  .markdownImageConsent,
+  .markdownDiagramToolbar {
     border: 1px solid CanvasText;
   }
 }

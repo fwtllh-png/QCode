@@ -1,0 +1,274 @@
+{
+  "version": 1,
+  "annotation_status": "agent_authored_source_reviewed_not_independently_human_reviewed",
+  "scope": "allowlisted_qcode_source_subset",
+  "result_token_budget": 10000,
+  "max_results": 200,
+  "budget_provenance": "固定评测配置：结果预算沿用搜索工具测试夹具 10000；max_results 沿用 repoindex 默认查询上限 200。两条路线相同，不是生产默认值。",
+  "files": [
+    "internal/platform/repowalk/repowalk.go",
+    "internal/platform/repowalk/repowalk_test.go",
+    "internal/platform/symbols/symbols.go",
+    "internal/platform/symbols/symbols_test.go",
+    "internal/platform/symbols/syntax.go",
+    "internal/platform/symbols/syntax_test.go",
+    "internal/platform/symbols/references_go.go",
+    "internal/platform/symbols/references_script.go",
+    "internal/platform/symbols/references_test.go"
+  ],
+  "tasks": [
+    {
+      "id": "locate-binary-policy",
+      "kind": "locate",
+      "prompt": "源码文件被判定为二进制的规则在哪里实现？",
+      "expected_files": [
+        "internal/platform/repowalk/repowalk.go"
+      ],
+      "required_tests": [],
+      "anchors": [
+        {
+          "file": "internal/platform/repowalk/repowalk.go",
+          "text": "func IsBinary(data []byte) bool"
+        }
+      ],
+      "text": [
+        {
+          "tool": "search_text",
+          "arguments": {
+            "query": "IsBinary"
+          }
+        }
+      ],
+      "structured": [
+        {
+          "tool": "search_definition",
+          "arguments": {
+            "name": "IsBinary"
+          }
+        }
+      ],
+      "annotation_rationale": "repowalk.go 的 IsBinary 以 NUL 字节判断二进制。"
+    },
+    {
+      "id": "locate-language-detection",
+      "kind": "locate",
+      "prompt": "扩展名未知时，源码语言识别入口在哪里？",
+      "expected_files": [
+        "internal/platform/symbols/symbols.go"
+      ],
+      "required_tests": [],
+      "anchors": [
+        {
+          "file": "internal/platform/symbols/symbols.go",
+          "text": "func DetectLanguage("
+        }
+      ],
+      "text": [
+        {
+          "tool": "search_text",
+          "arguments": {
+            "query": "DetectLanguage"
+          }
+        }
+      ],
+      "structured": [
+        {
+          "tool": "search_definition",
+          "arguments": {
+            "name": "DetectLanguage"
+          }
+        }
+      ],
+      "annotation_rationale": "DetectLanguage 声明位于 symbols.go，先查扩展名再检查内容。"
+    },
+    {
+      "id": "change-go-binding",
+      "kind": "change_scope",
+      "prompt": "调整 Go 引用绑定规则前，应定位提取实现、接入点并选择回归测试。",
+      "expected_files": [
+        "internal/platform/symbols/references_go.go",
+        "internal/platform/symbols/syntax.go",
+        "internal/platform/symbols/references_test.go",
+        "internal/platform/symbols/syntax_test.go",
+        "internal/platform/symbols/symbols_test.go"
+      ],
+      "required_tests": [
+        "internal/platform/symbols/references_test.go",
+        "internal/platform/symbols/syntax_test.go",
+        "internal/platform/symbols/symbols_test.go"
+      ],
+      "anchors": [
+        {
+          "file": "internal/platform/symbols/references_go.go",
+          "text": "func goReferenceSites("
+        },
+        {
+          "file": "internal/platform/symbols/syntax.go",
+          "text": "= goReferenceSites(ctx, data, options.ReferenceMaxCount)"
+        }
+      ],
+      "text": [
+        {
+          "tool": "search_text",
+          "arguments": {
+            "query": "goReferenceSites"
+          }
+        },
+        {
+          "tool": "search_text",
+          "arguments": {
+            "query": "TestScoped"
+          }
+        }
+      ],
+      "structured": [
+        {
+          "tool": "search_definition",
+          "arguments": {
+            "name": "goReferenceSites"
+          }
+        },
+        {
+          "tool": "search_references",
+          "arguments": {
+            "name": "goReferenceSites"
+          }
+        },
+        {
+          "tool": "search_related_tests",
+          "arguments": {
+            "paths": [
+              "internal/platform/symbols/references_go.go"
+            ]
+          }
+        }
+      ],
+      "annotation_rationale": "references_go.go 是实现；syntax.go 接入；references_test 验证遮蔽，上层 syntax/symbols 测试验证提取集成。此任务只评估准备证据，不实际修改代码。"
+    },
+    {
+      "id": "change-read-limit",
+      "kind": "change_scope",
+      "prompt": "调整源码读取大小边界前，定位读取策略及边界测试。",
+      "expected_files": [
+        "internal/platform/repowalk/repowalk.go",
+        "internal/platform/repowalk/repowalk_test.go"
+      ],
+      "required_tests": [
+        "internal/platform/repowalk/repowalk_test.go"
+      ],
+      "anchors": [
+        {
+          "file": "internal/platform/repowalk/repowalk.go",
+          "text": "func (w *Walker) Read("
+        },
+        {
+          "file": "internal/platform/repowalk/repowalk_test.go",
+          "text": "func TestReadAppliesTheSharedFilePolicy("
+        }
+      ],
+      "text": [
+        {
+          "tool": "search_text",
+          "arguments": {
+            "query": "SkipLarge"
+          }
+        },
+        {
+          "tool": "search_text",
+          "arguments": {
+            "query": "TestReadAppliesTheSharedFilePolicy"
+          }
+        }
+      ],
+      "structured": [
+        {
+          "tool": "search_definition",
+          "arguments": {
+            "name": "Read"
+          }
+        },
+        {
+          "tool": "search_related_tests",
+          "arguments": {
+            "paths": [
+              "internal/platform/repowalk/repowalk.go"
+            ]
+          }
+        },
+        {
+          "tool": "search_definition",
+          "arguments": {
+            "name": "TestReadAppliesTheSharedFilePolicy"
+          }
+        }
+      ],
+      "annotation_rationale": "Read 执行读取上限并返回 SkipLarge；TestReadAppliesTheSharedFilePolicy 验证超限读取。"
+    },
+    {
+      "id": "verify-repowalk",
+      "kind": "verify",
+      "prompt": "修改 repowalk.go 后，推荐应检查的测试文件。",
+      "expected_files": [
+        "internal/platform/repowalk/repowalk_test.go"
+      ],
+      "required_tests": [
+        "internal/platform/repowalk/repowalk_test.go"
+      ],
+      "anchors": [],
+      "text": [
+        {
+          "tool": "search_text",
+          "arguments": {
+            "query": "repowalk"
+          }
+        }
+      ],
+      "structured": [
+        {
+          "tool": "search_related_tests",
+          "arguments": {
+            "paths": [
+              "internal/platform/repowalk/repowalk.go"
+            ]
+          }
+        }
+      ],
+      "annotation_rationale": "选定源码子集内 repowalk_test.go 是直接包测试，symbols 包测试不属于必要测试。"
+    },
+    {
+      "id": "verify-symbol-extraction",
+      "kind": "verify",
+      "prompt": "修改 symbols.go 的结构提取入口后，推荐提取及引用绑定回归测试。",
+      "expected_files": [
+        "internal/platform/symbols/symbols_test.go",
+        "internal/platform/symbols/syntax_test.go",
+        "internal/platform/symbols/references_test.go"
+      ],
+      "required_tests": [
+        "internal/platform/symbols/symbols_test.go",
+        "internal/platform/symbols/syntax_test.go",
+        "internal/platform/symbols/references_test.go"
+      ],
+      "anchors": [],
+      "text": [
+        {
+          "tool": "search_text",
+          "arguments": {
+            "query": "ExtractResult"
+          }
+        }
+      ],
+      "structured": [
+        {
+          "tool": "search_related_tests",
+          "arguments": {
+            "paths": [
+              "internal/platform/symbols/symbols.go"
+            ]
+          }
+        }
+      ],
+      "annotation_rationale": "所选子集内三个测试文件分别覆盖基础提取、多语言语法、作用域绑定；required_tests 是文件级标注，不是测试已执行或覆盖率证明。"
+    }
+  ]
+}

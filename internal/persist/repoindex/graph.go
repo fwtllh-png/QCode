@@ -2,6 +2,7 @@ package repoindex
 
 import (
 	"context"
+	"github.com/fwtllh-png/QCode/internal/platform/symbols"
 	"path"
 	"sort"
 )
@@ -17,8 +18,10 @@ import (
 
 // Edge kinds recorded in repo_index_edges.
 const (
-	EdgeImport    = "import"
-	EdgeReference = "reference"
+	EdgeImport           = "import"
+	EdgeReference        = "reference"
+	EdgeImportReference  = symbols.ReferenceImport
+	EdgePackageReference = symbols.ReferencePackage
 )
 
 // graphEdge is one directed edge: src depends on dst, so dst's rank grows.
@@ -69,6 +72,11 @@ func (o RankOptions) withDefaults() RankOptions {
 func (i *Index) rebuildGraph(ctx context.Context, files map[string]File) {
 	edges := i.importEdges(ctx, files)
 	edges = append(edges, i.store.referenceEdges(ctx)...)
+	scoped, err := i.store.scopedReferenceEdges(ctx)
+	if err != nil {
+		return
+	}
+	edges = append(edges, scoped...)
 	if err := i.store.ReplaceEdges(ctx, edges); err != nil {
 		return
 	}

@@ -615,6 +615,9 @@ CREATE TABLE repo_index_files (
     symbol_count INTEGER NOT NULL DEFAULT 0,
     indexed_at TEXT NOT NULL,
     entry_point INTEGER NOT NULL DEFAULT 0,
+    scope_aware INTEGER NOT NULL DEFAULT 0,
+    package_name TEXT NOT NULL DEFAULT '',
+    reference_sites_truncated INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (root_path, path)
 );
 
@@ -645,6 +648,22 @@ CREATE TABLE repo_index_references (
         REFERENCES repo_index_files(root_path, path) ON DELETE CASCADE
 );
 CREATE INDEX repo_index_references_name ON repo_index_references(root_path, name);
+
+CREATE TABLE repo_index_reference_sites (
+ root_path TEXT NOT NULL,
+ path TEXT NOT NULL,
+ position INTEGER NOT NULL,
+ name TEXT NOT NULL,
+ target TEXT NOT NULL,
+ module TEXT NOT NULL,
+ kind TEXT NOT NULL,
+ scope INTEGER NOT NULL,
+ start_byte INTEGER NOT NULL,
+ end_byte INTEGER NOT NULL,
+ line INTEGER NOT NULL,
+ PRIMARY KEY(root_path,path,position),
+ FOREIGN KEY(root_path,path) REFERENCES repo_index_files(root_path,path) ON DELETE CASCADE
+);
 
 CREATE TABLE repo_index_imports (
     root_path TEXT NOT NULL,
@@ -693,7 +712,7 @@ CREATE TABLE repo_index_meta (
 var repositoryIndexColumns = map[string][]string{
 	"repo_index_files": {
 		"root_path", "path", "language", "size_bytes", "modified_unix_nano",
-		"digest", "symbol_count", "indexed_at", "entry_point",
+		"digest", "symbol_count", "indexed_at", "entry_point", "scope_aware", "package_name", "reference_sites_truncated",
 	},
 	"repo_index_symbols": {
 		"root_path", "path", "name", "kind", "container", "line", "exported",
@@ -702,6 +721,7 @@ var repositoryIndexColumns = map[string][]string{
 	"repo_index_references": {
 		"root_path", "path", "name", "use_count",
 	},
+	"repo_index_reference_sites": {"root_path", "path", "position", "name", "target", "module", "kind", "scope", "start_byte", "end_byte", "line"},
 	"repo_index_imports": {
 		"root_path", "path", "position", "spec",
 	},
@@ -763,6 +783,7 @@ func (s *Store) ensureRepositoryIndexShape(ctx context.Context) error {
 		for _, statement := range []string{
 			`DROP TABLE IF EXISTS repo_index_symbols`,
 			`DROP TABLE IF EXISTS repo_index_references`,
+			`DROP TABLE IF EXISTS repo_index_reference_sites`,
 			`DROP TABLE IF EXISTS repo_index_imports`,
 			`DROP TABLE IF EXISTS repo_index_edges`,
 			`DROP TABLE IF EXISTS repo_index_file_rank`,

@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"math"
 	"sort"
 	"strings"
@@ -26,7 +25,7 @@ const (
 
 // symbolTool answers a question about declarations from the repository index.
 // Every one of them is read-only over the repository tree and reports its
-// results as lexical, because that is what the index holds.
+// results with their extraction tier and reference provenance.
 type symbolTool struct {
 	typed.Contract[symbolInput, tool.Result]
 	kind     string
@@ -36,6 +35,7 @@ type symbolTool struct {
 }
 
 type symbolInput struct {
+	Mode               string   `json:"mode"`
 	Query              string   `json:"query"`
 	Name               string   `json:"name"`
 	Kinds              []string `json:"kinds"`
@@ -112,16 +112,20 @@ func symbolDescription(kind string) string {
 	switch kind {
 	case KindDefinition:
 		return "Find where a symbol is declared, by exact name. " +
-			"Lexical index, not a compiler: confirm the result before relying on it."
+			"Results report syntax, lexical or heuristic extraction quality."
 	case KindReferences:
-		return "Find whole-word uses of a symbol across indexed files, excluding its " +
-			"declarations. Lexical: matches in comments and strings are included."
+		return "Find reference evidence by name or import alias. Auto mode uses scoped cross-file " +
+			"candidates and text fallback for unsupported files; results report source and completeness. " +
+			"A document position uses LSP when available. Use mode=text for whole-word matches, " +
+			"including local uses, comments and strings."
 	case KindRelatedTests:
-		return "List the test files that cover the given source paths, by the naming " +
-			"convention of each language. Paths with no known convention are omitted."
+		return "Recommend tests for changed file paths, with a shortest dependency chain and " +
+			"reference evidence where available. Distinguishes scoped candidates, name-based " +
+			"associations and naming conventions; reports traversal limits. This is file-level " +
+			"impact analysis, not proven function-level test coverage."
 	default:
 		return "Search declarations (functions, types, classes, constants) by name " +
-			"substring. Lexical index, not a compiler."
+			"substring. Results report syntax, lexical or heuristic extraction quality."
 	}
 }
 
@@ -150,6 +154,7 @@ func symbolSchema(kind string) map[string]any {
 				"line":                map[string]any{"type": "integer", "minimum": float64(1)},
 				"character":           map[string]any{"type": "integer", "minimum": float64(1)},
 				"include_definitions": map[string]any{"type": "boolean"},
+				"mode":                map[string]any{"type": "string", "enum": []string{"auto", "text"}, "description": "Defaults to auto. Text mode bypasses scoped and LSP analysis."},
 				"path_prefix":         map[string]any{"type": "string"},
 				"max_results":         map[string]any{"type": "integer"},
 			},
@@ -217,22 +222,25 @@ func (t *symbolTool) run(ctx context.Context, input symbolInput) (tool.Result, e
 			Limit: limit,
 		}, "", false)
 	case KindReferences:
+		if input.Mode != "" && input.Mode != "auto" && input.Mode != "text" {
+			return tool.Result{}, tool.Precondition(errors.New("mode must be auto or text"))
+		}
 		if query, ok := semanticQuery(input.Path, input.Line, input.Character); ok &&
-			t.semantic != nil {
+			t.semantic != nil && input.Mode != "text" {
 			found, semanticErr := t.semantic.References(
 				ctx, query, input.IncludeDefinitions,
 			)
 			if semanticErr == nil {
-				return semanticReferences(found, input.Name, limit)
+				return t.semanticReferenceEvidence(ctx, found, input.Name, input.PathPrefix, limit)
 			}
 			result, err := t.references(
 				ctx, snapshot, input.Name, input.PathPrefix,
-				input.IncludeDefinitions, limit,
+				input.IncludeDefinitions, limit, input.Mode,
 			)
 			return semanticFallback(result, semanticErr), err
 		}
 		return t.references(ctx, snapshot, input.Name, input.PathPrefix,
-			input.IncludeDefinitions, limit)
+			input.IncludeDefinitions, limit, input.Mode)
 	case KindRelatedTests:
 		return t.relatedTests(ctx, snapshot, input.Paths)
 	default:
@@ -312,103 +320,6 @@ func (t *symbolTool) declarations(
 	}, hits))
 }
 
-type referenceMatch struct {
-	File      string `json:"file"`
-	Line      int    `json:"line"`
-	Character int    `json:"character,omitempty"`
-	Text      string `json:"text,omitempty"`
-}
-
-// references scans the files the index lists for whole-word uses of a name. It
-// rescans rather than keeping a token index: a reverse index of every identifier
-// costs more storage than the recall it would add over this scan.
-func (t *symbolTool) references(
-	ctx context.Context, snapshot repoindex.Snapshot,
-	name, pathPrefix string, includeDefinitions bool, limit int,
-) (tool.Result, error) {
-	name = strings.TrimSpace(name)
-	if name == "" {
-		return tool.Result{}, tool.Precondition(errors.New("a symbol name is required"))
-	}
-	paths, current, err := t.index.Paths(ctx, "")
-	if err != nil {
-		return tool.Result{}, err
-	}
-	if !current.Ready() {
-		return unavailableResult(current)
-	}
-	declarations := map[string]struct{}{}
-	if !includeDefinitions {
-		declared, _, err := t.index.Symbols(ctx, repoindex.Query{
-			Name: name, Exact: true, Limit: 0,
-		})
-		if err != nil {
-			return tool.Result{}, err
-		}
-		for _, symbol := range declared {
-			declarations[fmt.Sprintf("%s:%d", symbol.Path, symbol.Line)] = struct{}{}
-		}
-	}
-	matches := make([]referenceMatch, 0, min(limit, 64))
-	total := 0
-	scanned := 0
-	for _, path := range paths {
-		if err := ctx.Err(); err != nil {
-			return tool.Result{}, err
-		}
-		if pathPrefix != "" && !strings.HasPrefix(path, pathPrefix) {
-			continue
-		}
-		budget := tool.ResultTokenBudget(ctx)
-		maxBytes := int64(min(budget, uint64(math.MaxInt64/4)) * 4)
-		content, reason, err := t.walker.Read(repowalk.Entry{Path: path}, maxBytes)
-		if err != nil {
-			return tool.Result{}, err
-		}
-		if reason != repowalk.SkipNone {
-			continue
-		}
-		scanned++
-		for offset, text := range strings.Split(string(content.Data), "\n") {
-			if !containsWord(text, name) {
-				continue
-			}
-			line := offset + 1
-			if _, declared := declarations[fmt.Sprintf("%s:%d", path, line)]; declared {
-				continue
-			}
-			total++
-			if len(matches) >= limit {
-				continue
-			}
-			matches = append(matches, referenceMatch{File: path, Line: line, Text: text})
-		}
-	}
-	truncated := total > len(matches)
-	hits := make([]tool.EvidenceHit, 0, len(matches))
-	seen := make(map[string]struct{}, len(matches))
-	for _, match := range matches {
-		// One entry per file: a symbol used forty times in one file is one place
-		// the caller has to look at.
-		if _, found := seen[match.File]; found {
-			continue
-		}
-		seen[match.File] = struct{}{}
-		hits = append(hits, tool.EvidenceHit{
-			Kind: tool.EvidenceReference, Path: match.File, Line: match.Line, Symbol: name,
-		})
-	}
-	return marshalResult(map[string]any{
-		"matches": matches, "total": total, "truncated": truncated,
-		"resolution": repoindex.ResolutionLexical, "source": "repoindex",
-		"version": repoindex.IndexerVersion, "confidence": "low",
-	}, truncated, attach(map[string]any{
-		"matches": total, "returned": len(matches), "scanned_files": scanned,
-		"resolution": repoindex.ResolutionLexical, "index_source": snapshot.Meta.Source,
-		"source": "repoindex", "version": repoindex.IndexerVersion, "confidence": "low",
-	}, hits))
-}
-
 func semanticQuery(path string, line, character int) (symbols.SemanticQuery, bool) {
 	path = strings.TrimSpace(path)
 	if path == "" || line < 1 || character < 1 {
@@ -453,39 +364,6 @@ func semanticDefinitions(
 	)
 }
 
-func semanticReferences(
-	found symbols.SemanticResult, name string, limit int,
-) (tool.Result, error) {
-	locations := found.Locations
-	if len(locations) > limit {
-		locations = locations[:limit]
-	}
-	matches := make([]referenceMatch, 0, len(locations))
-	hits := make([]tool.EvidenceHit, 0, len(locations))
-	for _, location := range locations {
-		matches = append(matches, referenceMatch{
-			File: location.Path, Line: location.Line, Character: location.Character,
-		})
-		hits = append(hits, tool.EvidenceHit{
-			Kind: tool.EvidenceReference, Path: location.Path,
-			Line: location.Line, Symbol: name,
-		})
-	}
-	provenance := semanticProvenance(found)
-	payload := map[string]any{
-		"matches": matches, "total": len(found.Locations),
-		"truncated": len(locations) != len(found.Locations),
-	}
-	for key, value := range provenance {
-		payload[key] = value
-	}
-	provenance["matches"] = len(matches)
-	provenance["returned"] = len(matches)
-	return marshalResult(
-		payload, len(locations) != len(found.Locations), attach(provenance, hits),
-	)
-}
-
 func semanticProvenance(found symbols.SemanticResult) map[string]any {
 	return map[string]any{
 		"resolution": "semantic", "source": found.Source,
@@ -505,6 +383,13 @@ func semanticFallback(result tool.Result, semanticErr error) tool.Result {
 		message = message[:512]
 	}
 	result.Metadata["semantic_fallback"] = message
+	var payload map[string]any
+	if json.Unmarshal([]byte(result.Content), &payload) == nil && payload != nil {
+		payload["semantic_fallback"] = message
+		if content, err := json.Marshal(payload); err == nil {
+			result.Content = string(content)
+		}
+	}
 	return result
 }
 
@@ -514,7 +399,7 @@ func (t *symbolTool) relatedTests(
 	if len(paths) == 0 {
 		return tool.Result{}, tool.Precondition(errors.New("at least one path is required"))
 	}
-	related, current, err := t.index.RelatedTests(ctx, normalizePaths(paths))
+	related, completeness, current, err := t.index.RelatedTestsWithEvidence(ctx, normalizePaths(paths))
 	if err != nil {
 		return tool.Result{}, err
 	}
@@ -527,15 +412,27 @@ func (t *symbolTool) relatedTests(
 	}
 	sort.Strings(sources)
 	type coverage struct {
-		Source string                    `json:"source"`
-		Tests  []repoindex.RelatedTest   `json:"tests"`
+		Source       string                   `json:"source"`
+		Tests        []relatedTestEvidence    `json:"tests"`
+		Completeness repoindex.ImpactCoverage `json:"completeness"`
 	}
 	entries := make([]coverage, 0, len(sources))
+	evidenceReader := newImpactEvidenceReader(t)
+	truncated := false
+	for _, c := range completeness {
+		truncated = truncated || c.ResultsTruncated || c.DepthTruncated
+	}
 	unmapped := make([]string, 0)
 	tests := 0
 	routes := map[string]struct{}{}
 	for _, source := range sources {
-		entries = append(entries, coverage{Source: source, Tests: related[source]})
+		rows, err := evidenceReader.rows(ctx, related[source])
+		if err != nil {
+			return tool.Result{}, err
+		}
+		c := completeness[source]
+		truncated = truncated || c.ResultsTruncated || c.DepthTruncated
+		entries = append(entries, coverage{Source: source, Tests: rows, Completeness: c})
 		tests += len(related[source])
 		for _, test := range related[source] {
 			routes[test.Resolution] = struct{}{}
@@ -563,11 +460,14 @@ func (t *symbolTool) relatedTests(
 	}
 	return marshalResult(map[string]any{
 		"coverage": entries, "unmapped": unmapped, "impact_source": answer,
+		"completeness": completeness, "truncated": truncated,
+		"scope": "file_dependencies", "claim": "recommended_tests_not_proven_coverage",
 		"resolution": repoindex.ResolutionLexical,
-	}, false, attach(map[string]any{
-		"sources": len(entries), "tests": tests, "unmapped": len(unmapped),
+	}, truncated, attach(map[string]any{
+		"completeness": completeness,
+		"sources":      len(entries), "tests": tests, "unmapped": len(unmapped),
 		"impact_source": answer,
-		"resolution": repoindex.ResolutionLexical, "index_source": snapshot.Meta.Source,
+		"resolution":    repoindex.ResolutionLexical, "index_source": snapshot.Meta.Source,
 	}, hits))
 }
 

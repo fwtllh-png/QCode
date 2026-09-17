@@ -1,0 +1,179 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "name": "go-same-package-not-global",
+      "files": {
+        "pkg/use.go": "package pkg\nfunc Use(){ Run() }\n",
+        "pkg/run.go": "package pkg\nfunc Run(){}\n",
+        "other/run.go": "package other\nfunc Run(){}\n"
+      },
+      "expected": [
+        {
+          "source": "pkg/use.go",
+          "destination": "pkg/run.go",
+          "target": "Run"
+        }
+      ]
+    },
+    {
+      "name": "go-parameter-shadow",
+      "files": {
+        "pkg/use.go": "package pkg\nfunc Use(Run func()){ Run() }\n",
+        "pkg/run.go": "package pkg\nfunc Run(){}\n"
+      },
+      "expected": []
+    },
+    {
+      "name": "go-block-shadow-and-outer-use",
+      "files": {
+        "pkg/use.go": "package pkg\nfunc Use(){ {Run:=func(){}; Run()}; Run() }\n",
+        "pkg/run.go": "package pkg\nfunc Run(){}\n"
+      },
+      "expected": [
+        {
+          "source": "pkg/use.go",
+          "destination": "pkg/run.go",
+          "target": "Run"
+        }
+      ]
+    },
+    {
+      "name": "go-import-alias",
+      "files": {
+        "app/use.go": "package app\nimport engine \"example.org/project/core\"\nfunc Use(){engine.Run()}\n",
+        "core/run.go": "package core\nfunc Run(){}\n",
+        "other/run.go": "package other\nfunc Run(){}\n"
+      },
+      "expected": [
+        {
+          "source": "app/use.go",
+          "destination": "core/run.go",
+          "target": "Run"
+        }
+      ]
+    },
+    {
+      "name": "go-import-shadow",
+      "files": {
+        "app/use.go": "package app\nimport engine \"example.org/project/core\"\nfunc Use(engine interface{Run()}){engine.Run()}\n",
+        "core/run.go": "package core\nfunc Run(){}\n"
+      },
+      "expected": []
+    },
+    {
+      "name": "go-unknown-receiver",
+      "files": {
+        "pkg/use.go": "package pkg\nfunc Use(x interface{Close()}){x.Close()}\n",
+        "other/close.go": "package other\nfunc Close(){}\n"
+      },
+      "expected": []
+    },
+    {
+      "name": "go-external-test-package",
+      "files": {
+        "pkg/use_test.go": "package pkg_test\nfunc Use(){Run()}\n",
+        "pkg/run.go": "package pkg\nfunc Run(){}\n"
+      },
+      "expected": []
+    },
+    {
+      "name": "ts-named-alias",
+      "files": {
+        "src/use.ts": "import {run as execute} from \"./engine\"; export function use(){ execute(); }",
+        "src/engine.ts": "export function run() {}",
+        "other/engine.ts": "export function run() {}"
+      },
+      "expected": [
+        {
+          "source": "src/use.ts",
+          "destination": "src/engine.ts",
+          "target": "run"
+        }
+      ]
+    },
+    {
+      "name": "ts-parameter-shadow",
+      "files": {
+        "src/use.ts": "import {run} from \"./engine\"; export function use(run: () => void){run();}",
+        "src/engine.ts": "export function run() {}"
+      },
+      "expected": []
+    },
+    {
+      "name": "ts-block-shadow",
+      "files": {
+        "src/use.ts": "import {run} from \"./engine\"; export function use(){ {const run=()=>{};run();} run();}",
+        "src/engine.ts": "export function run() {}"
+      },
+      "expected": [
+        {
+          "source": "src/use.ts",
+          "destination": "src/engine.ts",
+          "target": "run"
+        }
+      ]
+    },
+    {
+      "name": "js-var-hoisting",
+      "files": {
+        "src/use.js": "import {run} from \"./engine\"; function use(){run(); if(true){var run=()=>{};}}",
+        "src/engine.js": "export function run() {}"
+      },
+      "expected": []
+    },
+    {
+      "name": "ts-namespace-import",
+      "files": {
+        "src/use.ts": "import * as engine from \"./engine\"; engine.run();",
+        "src/engine.ts": "export function run() {}",
+        "src/other.ts": "export function run() {}"
+      },
+      "expected": [
+        {
+          "source": "src/use.ts",
+          "destination": "src/engine.ts",
+          "target": "run"
+        }
+      ]
+    },
+    {
+      "name": "ts-destructured-parameter",
+      "files": {
+        "src/use.ts": "import {run} from \"./engine\"; function use({run}: {run:()=>void}){run();}",
+        "src/engine.ts": "export function run() {}"
+      },
+      "expected": []
+    },
+    {
+      "name": "ts-unbound-is-not-global",
+      "files": {
+        "src/use.ts": "export function use(){run();}",
+        "src/engine.ts": "export function run() {}"
+      },
+      "expected": []
+    },
+    {
+      "name": "ts-closure-import",
+      "files": {
+        "src/use.ts": "import {run} from \"./engine\"; export const use=()=>()=>run();",
+        "src/engine.ts": "export function run() {}"
+      },
+      "expected": [
+        {
+          "source": "src/use.ts",
+          "destination": "src/engine.ts",
+          "target": "run"
+        }
+      ]
+    },
+    {
+      "name": "tsx-template-literal-decoy",
+      "files": {
+        "src/use.tsx": "export const View=()=> <div/>; const text=`function run(){}`;",
+        "src/engine.ts": "export function run() {}"
+      },
+      "expected": []
+    }
+  ]
+}

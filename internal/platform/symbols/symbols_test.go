@@ -250,29 +250,27 @@ interface Loader {
 		{Name: "Service", Kind: KindMethod, Container: "Service", Line: 7, Exported: true},
 		{Name: "run", Kind: KindMethod, Container: "Service", Line: 12, Exported: true},
 		{Name: "describe", Kind: KindMethod, Container: "Service", Line: 18},
+		{Name: "packagePrivate", Kind: KindMethod, Container: "Service", Line: 22},
 		{Name: "Loader", Kind: KindInterface, Line: 27},
 		{Name: "load", Kind: KindMethod, Container: "Loader", Line: 28, Exported: true},
 	})
 }
 
-func TestExtractLeavesDeclarationsInStringsAsAKnownLimit(t *testing.T) {
-	// A lexer cannot tell a declaration from text that looks like one. The rule is
-	// recorded here so the false positive is a documented cost rather than a
-	// surprise: consumers label symbol results as lexical for exactly this reason.
+func TestExtractExcludesDeclarationsInStrings(t *testing.T) {
 	source := "package main\n\nvar template = `\nfunc Fake() {}\n`\n"
 	found := Extract(LanguageGo, []byte(source))
-	if len(found) != 2 || found[1].Name != "Fake" {
+	if len(found) != 1 || found[0].Name != "template" {
 		t.Fatalf("symbols = %s", format(found))
 	}
 }
 
-func TestExtractStopsAtTheLineCeiling(t *testing.T) {
+func TestLexicalFallbackStopsAtTheLineCeiling(t *testing.T) {
 	var builder strings.Builder
 	builder.WriteString("package main\n")
 	for index := 0; index < maxLines+10; index++ {
 		fmt.Fprintf(&builder, "func Generated%d() {}\n", index)
 	}
-	found := Extract(LanguageGo, []byte(builder.String()))
+	found := extractors[LanguageGo](scan(LanguageGo, []byte(builder.String())), Options{}.withDefaults())
 	if len(found) == 0 || len(found) >= maxLines+10 {
 		t.Fatalf("symbols = %d, want a bounded count", len(found))
 	}
@@ -290,13 +288,12 @@ func assertSymbols(t *testing.T, language, source string, want []Symbol) {
 		t.Fatalf("symbols =\n%s\nwant\n%s", format(got), format(want))
 	}
 	for index := range want {
-		// The rule tables own identity; signature and docstring are the
-		// decorate step's business and have their own tests. A rule table
-		// fixture asserts the identity fields never moved and the tier is
-		// what it should be.
-		if got[index].Resolution != ResolutionLexical {
+		// Identity fixtures exercise syntax extraction; signature and
+		// docstring details have separate assertions. Lexical fallback is
+		// covered by malformed-source and fragment tests.
+		if got[index].Resolution != ResolutionSyntax {
 			t.Fatalf("symbol %d resolution = %q, want %q", index,
-				got[index].Resolution, ResolutionLexical)
+				got[index].Resolution, ResolutionSyntax)
 		}
 		got[index].Signature = ""
 		got[index].Docstring = ""

@@ -51,7 +51,7 @@ func TestSearchSymbolFindsDeclarationsBySubstring(t *testing.T) {
 		matches[0]["kind"] != "type" || matches[0]["line"].(float64) != 3 {
 		t.Fatalf("first match = %#v", matches[0])
 	}
-	if result.Metadata["resolution"] != repoindex.ResolutionLexical {
+	if result.Metadata["resolution"] != repoindex.ResolutionSyntax {
 		t.Fatalf("resolution = %#v", result.Metadata["resolution"])
 	}
 
@@ -147,7 +147,7 @@ func TestSymbolSearchFallsBackToLexicalWithReason(t *testing.T) {
 	result := execute(t, registry, "search_definition", map[string]any{
 		"name": "Serve", "path": "api.go", "line": 3, "character": 6,
 	})
-	if result.Metadata["resolution"] != repoindex.ResolutionLexical ||
+	if result.Metadata["resolution"] != repoindex.ResolutionSyntax ||
 		result.Metadata["source"] != "repoindex" ||
 		result.Metadata["version"] != repoindex.IndexerVersion ||
 		result.Metadata["confidence"] != "low" ||
@@ -161,7 +161,7 @@ func TestSearchReferencesExcludesDeclarationsAndPartialWords(t *testing.T) {
 		"api.go":  "package api\n\nfunc Serve() {}\n",
 		"call.go": "package api\n\nfunc run() {\n\tServe()\n\tServeAll()\n\t// Serve again\n}\n",
 	})
-	result := execute(t, registry, "search_references", map[string]any{"name": "Serve"})
+	result := execute(t, registry, "search_references", map[string]any{"name": "Serve", "mode": "text"})
 	matches := decodeMatches(t, result.Content)
 	if len(matches) != 2 {
 		t.Fatalf("matches = %#v", matches)
@@ -174,7 +174,7 @@ func TestSearchReferencesExcludesDeclarationsAndPartialWords(t *testing.T) {
 	}
 
 	withDeclarations := execute(t, registry, "search_references", map[string]any{
-		"name": "Serve", "include_definitions": true,
+		"name": "Serve", "mode": "text", "include_definitions": true,
 	})
 	if matches := decodeMatches(t, withDeclarations.Content); len(matches) != 3 ||
 		matches[0]["file"] != "api.go" {
@@ -182,7 +182,7 @@ func TestSearchReferencesExcludesDeclarationsAndPartialWords(t *testing.T) {
 	}
 
 	truncated := execute(t, registry, "search_references", map[string]any{
-		"name": "Serve", "max_results": 1,
+		"name": "Serve", "mode": "text", "max_results": 1,
 	})
 	if !truncated.Truncated || truncated.Metadata["matches"] != 2 {
 		t.Fatalf("truncated = %+v", truncated)

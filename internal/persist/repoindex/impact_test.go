@@ -2,6 +2,8 @@ package repoindex
 
 import (
 	"fmt"
+	"os"
+	"strings"
 	"testing"
 )
 
@@ -169,5 +171,115 @@ func TestRelatedTestsKeepsConventionWhenGraphIsSilent(t *testing.T) {
 	if len(rows) != 1 || rows[0].Path != "api_test.go" ||
 		rows[0].Resolution != TestFromConvention {
 		t.Fatalf("rows = %#v, want api_test.go by convention", rows)
+	}
+}
+
+func TestRelatedTestsAttributesEachSourceAndKeepsEvidenceChain(t *testing.T) {
+	root := t.TempDir()
+	for path, source := range map[string]string{
+		"a/core.go":       "package a\nfunc Run(){}\n",
+		"b/core.go":       "package b\nfunc Other(){}\n",
+		"mid/mid.go":      "package mid\nimport a \"example/a\"\nfunc Wrap(){a.Run()}\n",
+		"tests/a_test.go": "package tests\nimport m \"example/mid\"\nfunc TestWrap(){m.Wrap()}\n",
+		"tests/b_test.go": "package tests\nimport b \"example/b\"\nfunc TestOther(){b.Other()}\n",
+	} {
+		writeFile(t, root, path, source)
+	}
+	index, _ := newIndex(t, root, Options{})
+	related, coverage, _, err := index.RelatedTestsWithEvidence(t.Context(), []string{"a/core.go", "b/core.go"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, b := related["a/core.go"], related["b/core.go"]
+	if len(a) != 1 || a[0].Path != "tests/a_test.go" || len(b) != 1 || b[0].Path != "tests/b_test.go" {
+		t.Fatalf("cross-attributed: %+v", related)
+	}
+	if len(a[0].Chain) != 2 || a[0].Reason != "scoped_reference_candidate" {
+		t.Fatalf("a=%+v", a)
+	}
+	chain := a[0].Chain
+	if chain[0].Dependency != "a/core.go" || chain[0].Dependent != "mid/mid.go" || chain[1].Dependency != "mid/mid.go" || chain[1].Dependent != "tests/a_test.go" {
+		t.Fatalf("chain=%+v", chain)
+	}
+	for _, step := range chain {
+		if step.Kind != EdgeImportReference || step.Evidence == nil || step.Evidence.Site.Line != 3 {
+			t.Fatalf("step=%+v", step)
+		}
+	}
+	if coverage["a/core.go"].ResultsTruncated || coverage["a/core.go"].DepthTruncated {
+		t.Fatalf("coverage=%+v", coverage)
+	}
+}
+
+func TestImpactChainLimitsCyclesAndEvidenceStrength(t *testing.T) {
+	edges := []graphEdge{{Src: "mid", Dst: "core", Kind: EdgeImport}, {Src: "test", Dst: "mid", Kind: EdgeReference}, {Src: "core", Dst: "test", Kind: EdgeImport}}
+	hits, c, err := walkImpact(t.Context(), []string{"core"}, edges, ImpactOptions{MaxDepth: 1, MaxResults: 10}, nil)
+	if err != nil || len(hits) != 1 || !c.DepthTruncated {
+		t.Fatalf("hits=%+v coverage=%+v err=%v", hits, c, err)
+	}
+	hits, c, err = walkImpact(t.Context(), []string{"core"}, edges, ImpactOptions{MaxDepth: 5, MaxResults: 10}, nil)
+	if err != nil || len(hits) != 2 || c.DepthTruncated || impactReason(hits["test"].Chain) != "name_based_candidate" || impactReason(hits["mid"].Chain) != "dependency_candidate" {
+		t.Fatalf("hits=%+v c=%+v err=%v", hits, c, err)
+	}
+	_, c, err = walkImpact(t.Context(), []string{"core"}, edges, ImpactOptions{MaxDepth: 5, MaxResults: 1}, nil)
+	if err != nil || !c.ResultsTruncated {
+		t.Fatalf("coverage=%+v err=%v", c, err)
+	}
+}
+
+// Read a small allowlist of actual QCode files, not the entire worktree. This
+// checks real syntax and avoids accidentally indexing local runbooks/secrets.
+func TestQCodeRelatedTestsEvidence(t *testing.T) {
+	root := t.TempDir()
+	const source = "internal/platform/repowalk/repowalk.go"
+	const expected = "internal/platform/repowalk/repowalk_test.go"
+	paths := []string{source, expected, "internal/platform/symbols/references_test.go"}
+	content := map[string]string{}
+	for _, path := range paths {
+		data, err := os.ReadFile("../../../" + path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		content[path] = string(data)
+		writeFile(t, root, path, string(data))
+	}
+	index, _ := newIndex(t, root, Options{})
+	related, _, _, err := index.RelatedTestsWithEvidence(t.Context(), []string{source})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows := related[source]
+	if len(rows) != 1 || rows[0].Path != expected || rows[0].Reason != "scoped_reference_candidate" || len(rows[0].Chain) != 1 {
+		t.Fatalf("real QCode result=%+v", rows)
+	}
+	evidence := rows[0].Chain[0].Evidence
+	if evidence == nil {
+		t.Fatal("missing real reference")
+	}
+	site := evidence.Site
+	if content[expected][site.StartByte:site.EndByte] != site.Name || !strings.Contains(strings.Split(content[expected], "\n")[site.Line-1], site.Name) {
+		t.Fatalf("evidence=%+v", evidence)
+	}
+	t.Logf("QCode evidence: %s:%d uses %s in %s", evidence.Source, site.Line, site.Name, evidence.Destination)
+}
+
+func TestRelatedTestsReportsUnavailableGraphAndPreservesConvention(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, "api.go", "package p\nfunc Run(){}\n")
+	writeFile(t, root, "api_test.go", "package p\nfunc TestRun(){Run()}\n")
+	index, store := newIndex(t, root, Options{})
+	if _, err := index.Ensure(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(t.Context(), "DROP TABLE repo_index_edges"); err != nil {
+		t.Fatal(err)
+	}
+	related, coverage, snapshot, err := index.RelatedTestsWithEvidence(t.Context(), []string{"api.go"})
+	if err != nil || !snapshot.Ready() {
+		t.Fatalf("snapshot=%+v err=%v", snapshot, err)
+	}
+	rows := related["api.go"]
+	if !coverage["api.go"].GraphUnavailable || len(rows) != 1 || rows[0].Reason != "naming_convention" || len(rows[0].Chain) != 0 {
+		t.Fatalf("related=%+v coverage=%+v", related, coverage)
 	}
 }

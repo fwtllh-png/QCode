@@ -15,6 +15,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"github.com/fwtllh-png/QCode/internal/platform/symbols"
 	"strings"
 	"time"
 )
@@ -26,15 +27,18 @@ import (
 // the entry-point classification so every consumer of the index answers it the
 // same way.
 type File struct {
-	Path        string `json:"path"`
-	Language    string `json:"language,omitempty"`
-	Size        int64  `json:"size"`
-	Digest      string `json:"digest"`
-	SymbolCount int    `json:"symbol_count"`
-	Rank        float64 `json:"rank,omitempty"`
-	EntryPoint  bool   `json:"entry_point,omitempty"`
-	Modified    time.Time
-	IndexedAt   time.Time
+	ReferenceSitesTruncated bool    `json:"reference_sites_truncated"`
+	ScopeAware              bool    `json:"scope_aware"`
+	PackageName             string  `json:"package_name,omitempty"`
+	Path                    string  `json:"path"`
+	Language                string  `json:"language,omitempty"`
+	Size                    int64   `json:"size"`
+	Digest                  string  `json:"digest"`
+	SymbolCount             int     `json:"symbol_count"`
+	Rank                    float64 `json:"rank,omitempty"`
+	EntryPoint              bool    `json:"entry_point,omitempty"`
+	Modified                time.Time
+	IndexedAt               time.Time
 }
 
 // Symbol is one declaration the extractor found. Line is 1-based. Signature
@@ -63,9 +67,10 @@ type Reference struct {
 
 // Record is a file together with the declarations it holds.
 type Record struct {
-	File       File
-	Symbols    []Symbol
-	References []Reference
+	ReferenceSites []symbols.ReferenceSite
+	File           File
+	Symbols        []Symbol
+	References     []Reference
 	// Imports are the raw import specifiers the extractor read; the graph
 	// build resolves them once the file set is complete.
 	Imports []string
@@ -188,7 +193,7 @@ func (s *Store) Files(ctx context.Context) (map[string]File, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT f.path, f.language, f.size_bytes, f.modified_unix_nano, f.digest,
 			f.symbol_count, f.indexed_at, f.entry_point,
-			IFNULL(r.rank, 0)
+			IFNULL(r.rank, 0), f.scope_aware, f.package_name, f.reference_sites_truncated
 		FROM repo_index_files f
 		LEFT JOIN repo_index_file_rank r
 			ON r.root_path = f.root_path AND r.path = f.path
@@ -208,7 +213,7 @@ func (s *Store) Files(ctx context.Context) (map[string]File, error) {
 		if err := rows.Scan(
 			&file.Path, &file.Language, &file.Size, &modified,
 			&file.Digest, &file.SymbolCount, &indexedAt, &entryPoint,
-			&file.Rank,
+			&file.Rank, &file.ScopeAware, &file.PackageName, &file.ReferenceSitesTruncated,
 		); err != nil {
 			return nil, fmt.Errorf("read repository index files: %w", err)
 		}
@@ -269,6 +274,7 @@ func (s *Store) Reset(ctx context.Context) error {
 		for _, statement := range []string{
 			`DELETE FROM repo_index_symbols WHERE root_path = ?`,
 			`DELETE FROM repo_index_references WHERE root_path = ?`,
+			`DELETE FROM repo_index_reference_sites WHERE root_path = ?`,
 			`DELETE FROM repo_index_imports WHERE root_path = ?`,
 			`DELETE FROM repo_index_edges WHERE root_path = ?`,
 			`DELETE FROM repo_index_file_rank WHERE root_path = ?`,
@@ -396,8 +402,8 @@ func (s *Store) applyRecord(ctx context.Context, tx *sql.Tx, record Record) erro
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO repo_index_files(
 			root_path, path, language, size_bytes, modified_unix_nano,
-			digest, symbol_count, indexed_at, entry_point
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+			digest, symbol_count, indexed_at, entry_point, scope_aware, package_name, reference_sites_truncated
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(root_path, path) DO UPDATE SET
 			language = excluded.language,
 			size_bytes = excluded.size_bytes,
@@ -405,9 +411,9 @@ func (s *Store) applyRecord(ctx context.Context, tx *sql.Tx, record Record) erro
 			digest = excluded.digest,
 			symbol_count = excluded.symbol_count,
 			indexed_at = excluded.indexed_at,
-			entry_point = excluded.entry_point`,
+			entry_point = excluded.entry_point, scope_aware=excluded.scope_aware, package_name=excluded.package_name, reference_sites_truncated=excluded.reference_sites_truncated`,
 		s.root, file.Path, file.Language, file.Size, file.Modified.UnixNano(),
-		file.Digest, len(record.Symbols), timestamp(file.IndexedAt), entryPoint,
+		file.Digest, len(record.Symbols), timestamp(file.IndexedAt), entryPoint, file.ScopeAware, file.PackageName, file.ReferenceSitesTruncated,
 	); err != nil {
 		return fmt.Errorf("write repository index file: %w", err)
 	}
@@ -451,6 +457,14 @@ func (s *Store) applyRecord(ctx context.Context, tx *sql.Tx, record Record) erro
 			s.root, file.Path, reference.Name, reference.Count,
 		); err != nil {
 			return fmt.Errorf("write repository index reference: %w", err)
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM repo_index_reference_sites WHERE root_path=? AND path=?`, s.root, file.Path); err != nil {
+		return err
+	}
+	for position, site := range record.ReferenceSites {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO repo_index_reference_sites(root_path,path,position,name,target,module,kind,scope,start_byte,end_byte,line) VALUES(?,?,?,?,?,?,?,?,?,?,?)`, s.root, file.Path, position, site.Name, site.Target, site.Module, site.Kind, site.Scope, site.StartByte, site.EndByte, site.Line); err != nil {
+			return fmt.Errorf("write reference site: %w", err)
 		}
 	}
 	for position, spec := range record.Imports {
@@ -606,6 +620,7 @@ func (s *Store) referenceEdges(ctx context.Context) []graphEdge {
 		JOIN repo_index_symbols s
 			ON s.root_path = r.root_path AND s.name = r.name
 		WHERE r.root_path = ? AND r.path <> s.path
+ AND NOT EXISTS (SELECT 1 FROM repo_index_files f WHERE f.root_path=r.root_path AND f.path=r.path AND f.scope_aware=1)
 		GROUP BY r.path, s.path
 		ORDER BY r.path, s.path`, s.root)
 	if err != nil {

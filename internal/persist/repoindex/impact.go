@@ -22,7 +22,29 @@ type ImpactHit struct {
 	// Via is the kind of the last edge the walk followed — an import or a
 	// reference — reported so a consumer can weigh a structural edge above a
 	// name coincidence.
-	Via string
+	Via   string
+	Chain []ImpactStep
+}
+
+// ImpactStep follows impact outward: Dependent depends on Dependency.
+// Evidence is one representative occurrence, not an exhaustive call chain.
+type ImpactStep struct {
+	Dependency string             `json:"dependency"`
+	Dependent  string             `json:"dependent"`
+	Kind       string             `json:"kind"`
+	Evidence   *ReferenceRelation `json:"evidence,omitempty"`
+}
+
+type ImpactCoverage struct {
+	Status                       string `json:"status"`
+	IndexTruncated               bool   `json:"index_truncated"`
+	ResultsTruncated             bool   `json:"results_truncated"`
+	DepthTruncated               bool   `json:"depth_truncated"`
+	MaxDepth                     int    `json:"max_depth"`
+	MaxResults                   int    `json:"max_results"`
+	GraphUnavailable             bool   `json:"graph_unavailable"`
+	ReferenceEvidenceUnavailable bool   `json:"reference_evidence_unavailable"`
+	ReferenceSitesTruncated      bool   `json:"reference_sites_truncated"`
 }
 
 // ImpactOptions bound the reverse walk.
@@ -54,7 +76,7 @@ func (o ImpactOptions) withDefaults() ImpactOptions {
 
 // Impact returns the files that depend on the given paths, transitively, with
 // the hop count and last edge kind of the shortest walk to each. The second
-// result reports whether the answer was cut short by the result bound: a
+// result reports whether the answer was cut short by a depth or result bound: a
 // truncated closure is still a closure's beginning, and the caller decides
 // whether it is enough.
 func (i *Index) Impact(ctx context.Context, paths []string) (map[string]ImpactHit, bool, error) {
@@ -62,52 +84,84 @@ func (i *Index) Impact(ctx context.Context, paths []string) (map[string]ImpactHi
 	if err != nil {
 		return nil, false, err
 	}
-	reverse := make(map[string][]graphEdge, len(edges))
+	hits, coverage, err := walkImpact(ctx, paths, edges, i.options.Impact.withDefaults(), nil)
+	return hits, coverage.ResultsTruncated || coverage.DepthTruncated, err
+}
+
+func walkImpact(ctx context.Context, paths []string, edges []graphEdge, options ImpactOptions, evidence map[string]*ReferenceRelation) (map[string]ImpactHit, ImpactCoverage, error) {
+	return walkReverseImpact(ctx, paths, impactReverse(edges), options, evidence)
+}
+
+func impactReverse(edges []graphEdge) map[string][]graphEdge {
+	reverse := map[string][]graphEdge{}
 	for _, edge := range edges {
 		reverse[edge.Dst] = append(reverse[edge.Dst], edge)
 	}
-	options := i.options.Impact.withDefaults()
+	for path := range reverse {
+		sort.Slice(reverse[path], func(a, b int) bool {
+			x, y := reverse[path][a], reverse[path][b]
+			if x.Src != y.Src {
+				return x.Src < y.Src
+			}
+			// Prefer occurrence-backed evidence when parallel edges join the same files.
+			xs, ys := isScopedEdge(x.Kind), isScopedEdge(y.Kind)
+			if xs != ys {
+				return xs
+			}
+			return x.Kind < y.Kind
+		})
+	}
+	return reverse
+}
 
-	found := make(map[string]ImpactHit, len(edges))
-	truncated := false
-	// A plain queue in breadth order is what makes Hops the shortest walk:
-	// every file is first reached through as few edges as possible.
-	type pending struct {
-		path string
-		hops int
-		via  string
-	}
-	queue := make([]pending, 0, len(paths))
-	roots := make(map[string]struct{}, len(paths))
-	for _, path := range paths {
-		roots[path] = struct{}{}
-	}
-	for _, path := range paths {
-		queue = append(queue, pending{path: path})
+func walkReverseImpact(ctx context.Context, paths []string, reverse map[string][]graphEdge, options ImpactOptions, evidence map[string]*ReferenceRelation) (map[string]ImpactHit, ImpactCoverage, error) {
+	found := map[string]ImpactHit{}
+	coverage := ImpactCoverage{Status: "partial", MaxDepth: options.MaxDepth, MaxResults: options.MaxResults}
+	roots := map[string]bool{}
+	queue := make([]ImpactHit, 0, len(paths))
+	sorted := append([]string(nil), paths...)
+	sort.Strings(sorted)
+	for _, path := range sorted {
+		if !roots[path] {
+			roots[path] = true
+			queue = append(queue, ImpactHit{Path: path})
+		}
 	}
 	for head := 0; head < len(queue); head++ {
+		if err := ctx.Err(); err != nil {
+			return nil, coverage, err
+		}
 		current := queue[head]
-		for _, edge := range reverse[current.path] {
-			if _, isRoot := roots[edge.Src]; isRoot {
+		for _, edge := range reverse[current.Path] {
+			if roots[edge.Src] {
 				continue
 			}
-			if _, reached := found[edge.Src]; reached {
+			if _, ok := found[edge.Src]; ok {
+				continue
+			}
+			if current.Hops >= options.MaxDepth {
+				coverage.DepthTruncated = true
 				continue
 			}
 			if len(found) >= options.MaxResults {
-				truncated = true
+				coverage.ResultsTruncated = true
 				continue
 			}
-			hit := ImpactHit{Path: edge.Src, Hops: current.hops + 1, Via: edge.Kind}
+			chain := append([]ImpactStep(nil), current.Chain...)
+			chain = append(chain, ImpactStep{Dependency: edge.Dst, Dependent: edge.Src, Kind: edge.Kind, Evidence: evidence[impactEdgeKey(edge.Src, edge.Dst, edge.Kind)]})
+			hit := ImpactHit{Path: edge.Src, Hops: current.Hops + 1, Via: edge.Kind, Chain: chain}
 			found[edge.Src] = hit
-			if hit.Hops < options.MaxDepth {
-				queue = append(queue, pending{path: edge.Src, hops: hit.Hops, via: edge.Kind})
-			}
+			queue = append(queue, hit)
 		}
 	}
-	// The map is the answer; determinism of iteration is the caller's to pick
-	// up by sorting, which every consumer that prints does.
-	return found, truncated, nil
+	return found, coverage, nil
+}
+
+func isScopedEdge(kind string) bool {
+	return kind == EdgePackageReference || kind == EdgeImportReference
+}
+func impactEdgeKey(source, destination, kind string) string {
+	return source + "\x00" + destination + "\x00" + kind
 }
 
 // RelatedTest is one test file that covers a source path, with how it was
@@ -123,7 +177,9 @@ type RelatedTest struct {
 	// Via is the last edge kind of the walk that reached the test.
 	Via string `json:"via,omitempty"`
 	// Resolution says which route found the test: "graph" or "convention".
-	Resolution string `json:"resolution"`
+	Resolution string       `json:"resolution"`
+	Reason     string       `json:"reason"`
+	Chain      []ImpactStep `json:"chain,omitempty"`
 }
 
 // Resolutions a related test can carry.
@@ -144,34 +200,70 @@ const (
 func (i *Index) RelatedTests(
 	ctx context.Context, paths []string,
 ) (map[string][]RelatedTest, Snapshot, error) {
-	files, snapshot, err := i.Files(ctx)
+	related, _, snapshot, err := i.RelatedTestsWithEvidence(ctx, paths)
+	return related, snapshot, err
+}
+
+// RelatedTestsWithEvidence isolates the closure of each source: a test reached
+// from one input must never be attributed to every other input.
+func (i *Index) RelatedTestsWithEvidence(ctx context.Context, paths []string) (map[string][]RelatedTest, map[string]ImpactCoverage, Snapshot, error) {
+	snapshot, err := i.Ensure(ctx)
 	if err != nil || !snapshot.Ready() {
-		return nil, snapshot, err
+		return nil, nil, snapshot, err
 	}
-	indexed := make(map[string]struct{}, len(files))
-	directories := make(map[string][]string)
-	for path := range files {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	snapshot = i.snapshot
+	if !snapshot.Ready() {
+		return nil, nil, snapshot, nil
+	}
+	files, err := i.store.Files(ctx)
+	if err != nil {
+		return nil, nil, snapshot, err
+	}
+	indexed := map[string]struct{}{}
+	directories := map[string][]string{}
+	sitesTruncated := false
+	for path, file := range files {
 		indexed[path] = struct{}{}
 		directory, name := splitPath(path)
 		directories[directory] = append(directories[directory], name)
+		sitesTruncated = sitesTruncated || file.ReferenceSitesTruncated
 	}
-	impacted, _, err := i.Impact(ctx, paths)
-	if err != nil {
-		// A graph that cannot answer is not a reason to stop answering: the
-		// convention route stands on its own, and the rows say which route
-		// spoke.
-		impacted = nil
+	edges, graphErr := i.store.Edges(ctx)
+	evidence := map[string]*ReferenceRelation{}
+	relations, evidenceErr := i.store.ReferenceRelations(ctx)
+	for _, relation := range relations {
+		key := impactEdgeKey(relation.Source, relation.Destination, relation.Site.Kind)
+		if evidence[key] == nil {
+			r := relation
+			evidence[key] = &r
+		}
 	}
-
-	related := make(map[string][]RelatedTest, len(paths))
+	related := map[string][]RelatedTest{}
+	coverage := map[string]ImpactCoverage{}
+	reverse := impactReverse(edges)
 	for _, path := range paths {
-		matches := relatedTestRows(path, indexed, directories, impacted)
-		if matches == nil {
+		if _, done := coverage[path]; done {
 			continue
 		}
-		related[path] = matches
+		if err := ctx.Err(); err != nil {
+			return nil, nil, snapshot, err
+		}
+		hits, c, err := walkReverseImpact(ctx, []string{path}, reverse, i.options.Impact.withDefaults(), evidence)
+		if err != nil {
+			return nil, nil, snapshot, err
+		}
+		c.IndexTruncated = snapshot.Meta.Truncated
+		c.GraphUnavailable = graphErr != nil
+		c.ReferenceEvidenceUnavailable = evidenceErr != nil
+		c.ReferenceSitesTruncated = sitesTruncated
+		coverage[path] = c
+		if matches := relatedTestRows(path, indexed, directories, hits); matches != nil {
+			related[path] = matches
+		}
 	}
-	return related, snapshot, nil
+	return related, coverage, snapshot, nil
 }
 
 // relatedTestRows merges the two routes for one source path: graph hits first
@@ -210,7 +302,7 @@ func relatedTestRows(
 		for _, hit := range hits {
 			rows = append(rows, RelatedTest{
 				Path: hit.Path, Hops: hit.Hops, Via: hit.Via,
-				Resolution: TestFromGraph,
+				Resolution: TestFromGraph, Reason: impactReason(hit.Chain), Chain: hit.Chain,
 			})
 			seen[hit.Path] = struct{}{}
 		}
@@ -218,7 +310,7 @@ func relatedTestRows(
 	if IsTestPath(path) {
 		if _, found := indexed[path]; found {
 			if _, duplicated := seen[path]; !duplicated {
-				rows = append(rows, RelatedTest{Path: path, Resolution: TestFromGraph})
+				rows = append(rows, RelatedTest{Path: path, Resolution: TestFromGraph, Reason: "input_is_test"})
 				seen[path] = struct{}{}
 			}
 		}
@@ -228,7 +320,7 @@ func relatedTestRows(
 		if _, duplicated := seen[candidate]; duplicated {
 			continue
 		}
-		rows = append(rows, RelatedTest{Path: candidate, Resolution: TestFromConvention})
+		rows = append(rows, RelatedTest{Path: candidate, Resolution: TestFromConvention, Reason: "naming_convention"})
 		seen[candidate] = struct{}{}
 	}
 	// An empty answer and an absent one say different things: a path the
@@ -256,4 +348,17 @@ func looksLikeTest(path string) bool {
 		}
 	}
 	return false
+}
+
+func impactReason(chain []ImpactStep) string {
+	reason := "scoped_reference_candidate"
+	for _, step := range chain {
+		if step.Kind == EdgeReference {
+			return "name_based_candidate"
+		}
+		if !isScopedEdge(step.Kind) {
+			reason = "dependency_candidate"
+		}
+	}
+	return reason
 }

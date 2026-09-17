@@ -460,6 +460,8 @@ INSERT INTO repo_index_symbols(root_path, path, name, kind, line)
 	assertTableColumns(t, opened.DB(), "repo_index_symbols", "signature")
 	assertTableColumns(t, opened.DB(), "repo_index_symbols", "resolution")
 	assertTableColumns(t, opened.DB(), "repo_index_references", "use_count")
+	assertTableColumns(t, opened.DB(), "repo_index_files", "scope_aware")
+	assertTableColumns(t, opened.DB(), "repo_index_reference_sites", "start_byte")
 	var rows int
 	if err := opened.DB().QueryRowContext(
 		t.Context(),

@@ -22,16 +22,17 @@ if (policy.version !== 1 || !Array.isArray(policy.allowed_licenses)) {
 }
 
 const allowed = new Set(policy.allowed_licenses);
+const attestations = policy.license_attestations ?? {};
 const dependencies = Object.entries(lock.packages ?? {})
   .filter(([path]) => path !== "")
   .map(([path, value]) => ({
     path,
-    license: value.license ?? "",
+    license: value.license ??
+      attestations[`${packageName(path)}@${value.version ?? ""}`] ??
+      "",
     version: value.version ?? ""
   }));
-const rejected = dependencies.filter(
-  ({license}) => !license || !allowed.has(license)
-);
+const rejected = dependencies.filter(({license}) => !licenseAllowed(license));
 const problems = [];
 if (rejected.length > 0) problems.push(
   `disallowed or missing dependency licenses: ${JSON.stringify(rejected)}`
@@ -109,6 +110,29 @@ process.stdout.write(
 
 function readJSON(path) {
   return JSON.parse(readFileSync(path, "utf8"));
+}
+
+function licenseAllowed(license) {
+  if (!license) return false;
+  if (allowed.has(license)) return true;
+  const alternatives = spdxOrAlternatives(license);
+  // SPDX "OR" lets the consumer pick a branch, so any allowed branch is enough.
+  return alternatives.some((id) => allowed.has(id));
+}
+
+function spdxOrAlternatives(license) {
+  const trimmed = license.trim();
+  const inner = trimmed.slice(1, -1);
+  const unwrapped = trimmed.startsWith("(") && trimmed.endsWith(")") &&
+    !inner.includes("(")
+    ? inner
+    : trimmed;
+  return unwrapped.split(" OR ").map((part) => part.trim());
+}
+
+function packageName(path) {
+  const parts = path.split("node_modules/");
+  return parts[parts.length - 1];
 }
 
 function fail(message) {

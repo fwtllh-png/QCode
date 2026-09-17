@@ -5,9 +5,14 @@
     "BSD-2-Clause",
     "BSD-3-Clause",
     "CC-BY-4.0",
+    "EPL-2.0",
     "ISC",
     "MIT",
     "MIT-0",
-    "MPL-2.0"
-  ]
+    "MPL-2.0",
+    "Unlicense"
+  ],
+  "license_attestations": {
+    "khroma@2.1.0": "MIT"
+  }
 }

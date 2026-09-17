@@ -24,7 +24,9 @@ import (
 // Version 3 added the reference graph: recorded import specifiers, resolved
 // import and reference edges, file ranks, and entry-point classification on
 // the file rows.
-const IndexerVersion = 3
+// Version 4 adds grammar-based declarations, identifiers and imports.
+// Version 5 records scoped reference sites for Go and JS/TS.
+const IndexerVersion = 5
 
 // Index states a consumer can see.
 const (
@@ -61,9 +63,9 @@ type Options struct {
 	// SignatureMaxBytes, DocstringMaxBytes and ReferenceMaxCount carry the
 	// extractor's detail bounds through from configuration; zero selects the
 	// extractor defaults.
-	SignatureMaxBytes  int64
-	DocstringMaxBytes  int64
-	ReferenceMaxCount  int
+	SignatureMaxBytes int64
+	DocstringMaxBytes int64
+	ReferenceMaxCount int
 	// Rank carries the graph bounds: damping, iteration limit and convergence
 	// threshold for the file PageRank. Zero selects the defaults; the damping
 	// default is the standard value from Brin & Page (1998).
@@ -319,7 +321,7 @@ func (i *Index) reindex(ctx context.Context, stale []repowalk.Entry) error {
 		go func() {
 			defer producers.Done()
 			for entry := range work {
-				record, ok := i.scan(entry)
+				record, ok := i.scan(ctx, entry)
 				if !ok {
 					continue
 				}
@@ -374,7 +376,7 @@ func (i *Index) reindex(ctx context.Context, stale []repowalk.Entry) error {
 //
 // A file whose language is not identified is recorded as the generic tier and
 // gets heuristic rows rather than none.
-func (i *Index) scan(entry repowalk.Entry) (Record, bool) {
+func (i *Index) scan(ctx context.Context, entry repowalk.Entry) (Record, bool) {
 	language := symbols.Language(entry.Path)
 	file := File{
 		Path: entry.Path, Language: language, Size: entry.Size,
@@ -400,12 +402,15 @@ func (i *Index) scan(entry repowalk.Entry) (Record, bool) {
 		}
 		file.Language = language
 	}
-	extracted := symbols.ExtractResult(language, content.Data, symbols.Options{
-		SignatureMaxBytes:  int(i.options.SignatureMaxBytes),
-		DocstringMaxBytes:  int(i.options.DocstringMaxBytes),
-		ReferenceMaxCount:  i.options.ReferenceMaxCount,
+	extracted := symbols.ExtractResultContext(ctx, language, content.Data, symbols.Options{
+		SourcePath:        entry.Path,
+		SignatureMaxBytes: int(i.options.SignatureMaxBytes),
+		DocstringMaxBytes: int(i.options.DocstringMaxBytes),
+		ReferenceMaxCount: i.options.ReferenceMaxCount,
 	})
-	record := Record{File: file, Symbols: make([]Symbol, 0, len(extracted.Symbols))}
+	file.ScopeAware, file.PackageName = extracted.ScopeAware, extracted.PackageName
+	file.ReferenceSitesTruncated = extracted.ReferenceSitesTruncated
+	record := Record{File: file, ReferenceSites: extracted.ReferenceSites, Symbols: make([]Symbol, 0, len(extracted.Symbols))}
 	for _, found := range extracted.Symbols {
 		record.Symbols = append(record.Symbols, Symbol{
 			Path: entry.Path, Name: found.Name, Kind: found.Kind,
@@ -422,7 +427,11 @@ func (i *Index) scan(entry repowalk.Entry) (Record, bool) {
 	}
 	// Import specifiers are recorded raw; the graph build resolves them once
 	// the whole file set is confirmed.
-	record.Imports = parseImports(language, content.Data)
+	if extracted.Resolution == symbols.ResolutionSyntax {
+		record.Imports = extracted.Imports
+	} else {
+		record.Imports = parseImports(language, content.Data)
+	}
 	return record, true
 }
 
@@ -455,13 +464,12 @@ func (i *Index) prune(ctx context.Context, entries []repowalk.Entry, existing ma
 	return nil
 }
 
-// Resolution labels the extraction tier of a symbol row. The index reads
-// lines, not syntax trees: a heuristic row came from the generic engine, a
-// lexical row from a per-language rule table, and consumers are expected to
-// pass the tier on rather than imply more precision than there is.
+// Resolution labels grammar-derived syntax, lexical rules or generic heuristics.
+// Consumers propagate the weakest tier instead of claiming semantic precision.
 const (
 	ResolutionHeuristic = symbols.ResolutionHeuristic
 	ResolutionLexical   = symbols.ResolutionLexical
+	ResolutionSyntax    = symbols.ResolutionSyntax
 )
 
 // WeakestResolution names the least trusted tier a result set carries, so a
@@ -473,8 +481,10 @@ func WeakestResolution(found []Symbol) string {
 		case ResolutionHeuristic:
 			return ResolutionHeuristic
 		case ResolutionLexical:
+			weakest = ResolutionLexical
+		case ResolutionSyntax:
 			if weakest == "" {
-				weakest = ResolutionLexical
+				weakest = ResolutionSyntax
 			}
 		}
 	}

@@ -12,6 +12,7 @@ require (
 	github.com/creack/pty v1.1.24
 	github.com/landlock-lsm/go-landlock v0.9.0
 	github.com/ledongthuc/pdf v0.0.0-20250511090121-5959a4027728
+	github.com/odvcencio/gotreesitter v0.52.0
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2
 	github.com/sourcegraph/go-diff v0.8.0
 	github.com/zalando/go-keyring v0.2.6

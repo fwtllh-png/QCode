@@ -22,7 +22,7 @@ var (
 	scriptSideEffect = regexp.MustCompile(`(?:^|[,;]\s*)import\s+["']([^"']+)["']`)
 	// Python's forms: dotted absolute imports and relative ones counted by
 	// leading dots.
-	pythonImportFrom = regexp.MustCompile(`^\s*from\s+(\.*)([\w.]*)\s+import\b`)
+	pythonImportFrom  = regexp.MustCompile(`^\s*from\s+(\.*)([\w.]*)\s+import\b`)
 	pythonPlainImport = regexp.MustCompile(`^\s*import\s+([\w.,\s]+)`)
 	// A Rust `use crate::...` path is the only intra-crate edge a lexical pass
 	// can resolve: external crates come through Cargo.toml, which is the build
@@ -199,10 +199,15 @@ func resolveImport(language, spec, fromPath string, emit func(candidate string))
 		if !strings.HasPrefix(spec, "crate::") {
 			return
 		}
-		rest := strings.TrimPrefix(spec, "crate::")
-		rest = strings.ReplaceAll(rest, "::", "/")
-		emit("src/" + rest + ".rs")
-		emit("src/" + rest + "/mod.rs")
+		// A use path can end in a symbol (including a grouped-use member),
+		// rather than a module. Offer module prefixes; only indexed files
+		// become edges, and no compiler-level binding is implied.
+		parts := strings.Split(strings.TrimPrefix(spec, "crate::"), "::")
+		for end := len(parts); end > 0; end-- {
+			rest := strings.Join(parts[:end], "/")
+			emit("src/" + rest + ".rs")
+			emit("src/" + rest + "/mod.rs")
+		}
 	case "java":
 		emit(strings.ReplaceAll(spec, ".", "/") + ".java")
 		// A static import names a member of the class; the candidate without

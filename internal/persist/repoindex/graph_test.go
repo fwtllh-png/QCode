@@ -243,7 +243,7 @@ func TestEnsureBuildsGraphAndRanksFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 	// main.go imports the core package and references core.Run; both edges
-	// should exist, the import by resolution and the reference by the join.
+	// should exist, the import by resolution and the reference by its scoped import binding.
 	kinds := map[string]string{}
 	for _, edge := range edges {
 		if edge.Src == "main.go" && edge.Dst == "core/core.go" {
@@ -253,7 +253,15 @@ func TestEnsureBuildsGraphAndRanksFiles(t *testing.T) {
 	if _, imported := kinds[EdgeImport]; !imported {
 		t.Fatalf("import edge missing: %+v", edges)
 	}
-	if _, referenced := kinds[EdgeReference]; !referenced {
+	if _, referenced := kinds[EdgeImportReference]; !referenced {
 		t.Fatalf("reference edge missing: %+v", edges)
+	}
+}
+
+func TestRustGroupedUseResolvesSymbolToModule(t *testing.T) {
+	candidates := map[string]bool{}
+	resolveImport("rust", "crate::engine::Runner", "src/main.rs", func(p string) { candidates[p] = true })
+	if !candidates["src/engine.rs"] || !candidates["src/engine/mod.rs"] {
+		t.Fatalf("module candidates=%v", candidates)
 	}
 }
