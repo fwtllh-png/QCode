@@ -382,18 +382,23 @@ Control State。Cancel、Steer、Approval、Input 统一进入 `ControlPort`；�
     Sample 上限，只要 Context 与显式 Token/Cost Budget 允许且持续产生结构化进展就继续。
     非零 `MaxSteps` 是连续无进展的 Progress Lease。进展签名仍来自 Kernel Work Item
     的路径集合（Goal、已读路径、已改路径、验证覆盖、Plan 完成步、接受的
-    Completion、未关闭 Process Session），用于续期长任务；停轮不看「同一路径是否
+    Completion、未关闭进程数量），用于续期长任务；停轮不看「同一路径是否
     又改过一次」。No-progress 计数看 Turn 内已见工作状态：观察键未出现才清零。
-    换工具身份但内容版本与结果 digest 已见时继续累加长租约。同一观察且同一身份
-    才走短租约。翻页、新内容版本或新结果 digest 都算仍在工作，与 Codex / Cursor 一样把
+    换工具身份但内容版本与结果语义 digest 已见时继续累加长租约。同一观察且同一身份
+    才走短租约。翻页、新内容版本或新结构化结果 digest 都算仍在工作，把
     「模型停止发工具 / 提交 complete」当作正常结束，把「同一工作状态空转或循环」当作循环。
+    结果语义摘要仅投影结构化的文件版本、搜索命中位置、诊断位置/代码、验证状态与
+    输入摘要、失败类别和进程运行/退出状态；集合顺序和重复项不影响摘要。正文、
+    Admission 内容摘要、结果 Handle、Call ID、进程 ID、输出游标、诊断自由文本
+    不构成进展。没有结构化事实的输出保守地消耗现有租约；不从原始日志猜测失败
+    测试集合。进程会话在进展签名中只投影未关闭数量，保留原 ID 用于执行与恢复。
     已知路径的 `file_read` 仅在规范化请求参数一致且文件摘要未变时回放原结果；
     回放保留原始分页信息、截断状态和结果句柄，不把有限窗口扩展为已读到 EOF。
     翻页、扩大读取窗口或更换 PDF 页码时放行必要重读。Continue 上的
     `git_status` / `git_diff` 放行，不因巡视失败消耗采样。约三分之一时提示收敛；
     Finish-only 与 Token/Cost 预算只建议收尾，不再收窄工具目录。完整 Lease 耗尽后
     进入一次只保留 Terminal/Input 能力的 Finalization。工作状态
-    （Workspace 内容版本、Work Item 签名、工具结果 digest）首次出现才算进展；
+    （Workspace 内容版本、Work Item 签名、工具结果语义 digest）首次出现才算进展；
     身份切换本身不清零。回到已见观察且调用身份相同，改用
     `execution.implement_no_progress_samples`（默认 6）作为三个阶段的一致权威：
     一半时提示收敛、全值进入 Finish-only、再保留与 Step Lease 相同构造的 Repair
@@ -679,7 +684,7 @@ Continue / Retry / 新 prompt 把已读文件再读一遍；有行号命中时�
 相邻 Sample 在同一工作状态上重复同一工具身份达到
 `execution.implement_no_progress_samples`（默认 6）即进入 Finish-only；该阶段
 不允许 `git_status` / `git_diff` 或整文件读取。新的内容版本、翻页窗口或新的
-工具结果 digest 会同时续期长短租约；A/B 交替但观察键已见时只走 `max_steps`
+工具结果语义 digest 会同时续期长短租约；A/B 交替但观察键已见时只走 `max_steps`
 长租约。已知路径整文件 `file_read` 与
 Continue 巡视 git 在工具执行前被拒绝，不续租。脏的 `git_status` /
 `git_diff` 或可见 Tail 没有那次读取都不是重读理由，应走 `turn_history` /

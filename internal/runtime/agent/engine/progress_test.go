@@ -1,6 +1,8 @@
 package engine
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -473,6 +475,25 @@ func TestAcceptedCompletionPublishesSummaryWithoutFinalAnswerSampleAtLimit(
 }
 
 func TestIdenticalToolRepeatsUseImplementLease(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		executor tool.Executor
+	}{
+		{"stable output", &echoTool{}},
+		{"noisy output", &noisyProgressTool{}},
+	} {
+		t.Run(test.name, func(t *testing.T) { testIdenticalToolRepeatsUseImplementLease(t, test.executor) })
+	}
+}
+
+type noisyProgressTool struct{ echoTool }
+
+func (t *noisyProgressTool) Execute(_ context.Context, _ json.RawMessage) (tool.Result, error) {
+	attempt := t.calls.Add(1)
+	return tool.Result{Content: fmt.Sprintf("same failure at 12:00:%d in /tmp/attempt-%d; elapsed=%dms", attempt, attempt, attempt)}, nil
+}
+
+func testIdenticalToolRepeatsUseImplementLease(t *testing.T, executor tool.Executor) {
 	streams := make([]provider.Stream, 0, 16)
 	for index := range 14 {
 		streams = append(streams, toolCallStream(
@@ -489,7 +510,7 @@ func TestIdenticalToolRepeatsUseImplementLease(t *testing.T) {
 	runtime := &scriptedProvider{streams: streams}
 	registry := tool.NewRegistry(nil, nil)
 	for _, executor := range []tool.Executor{
-		&echoTool{}, &completiontool.Tool{},
+		executor, &completiontool.Tool{},
 	} {
 		if err := registry.Register(executor); err != nil {
 			t.Fatal(err)

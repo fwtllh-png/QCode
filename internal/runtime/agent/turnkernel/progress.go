@@ -59,7 +59,7 @@ func FormatResultDigest(digests []string) string {
 		return ""
 	}
 	slices.Sort(parts)
-	return strings.Join(parts, "\x1e")
+	return strings.Join(slices.Compact(parts), "\x1e")
 }
 
 func FormatObservationKey(
@@ -75,44 +75,46 @@ func FormatObservationKey(
 	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
+// ResultObservationDigest projects semantic execution facts, not the result's
+// presentation or storage identity. Raw output and admission digests include
+// timestamps, durations and temporary paths; process IDs/cursors and handles
+// identify attempts, not progress. Unknown output conservatively adds no facts.
 func ResultObservationDigest(result tool.Result) string {
-	var builder strings.Builder
-	if result.IsError {
-		builder.WriteString("error")
-	} else {
-		builder.WriteString("ok")
-	}
-	switch {
-	case result.Admission != nil &&
-		strings.TrimSpace(result.Admission.Digest) != "":
-		builder.WriteString(";admission=")
-		builder.WriteString(strings.TrimSpace(result.Admission.Digest))
-	case result.Content != "":
-		sum := sha256.Sum256([]byte(result.Content))
-		builder.WriteString(";content=sha256:")
-		builder.WriteString(hex.EncodeToString(sum[:]))
-	}
-	if result.Outcome == nil || result.Outcome.Facts == nil {
-		return builder.String()
-	}
-	facts := result.Outcome.Facts
-	if read := facts.WorkspaceRead; read != nil {
-		if digest := strings.TrimSpace(read.Digest); digest != "" {
-			builder.WriteString(";read=")
-			builder.WriteString(digest)
+	parts := []string{fmt.Sprintf("error=%t", result.IsError)}
+	if result.Outcome != nil && result.Outcome.Facts != nil {
+		facts := result.Outcome.Facts
+		if read := facts.WorkspaceRead; read != nil {
+			parts = append(parts, fmt.Sprintf("read:%q:%q", read.Path, read.Digest))
+		}
+		for _, change := range facts.WorkspaceChanges {
+			parts = append(parts, fmt.Sprintf("change:%q:%q:%q", change.Path, change.Kind, change.AfterDigest))
+		}
+		for _, hit := range facts.Evidence {
+			parts = append(parts, fmt.Sprintf("hit:%q:%q:%d:%q", hit.Kind, hit.Path, hit.Line, hit.Symbol))
+		}
+		for _, receipt := range facts.Diagnostics {
+			parts = append(parts, fmt.Sprintf("diagnostics:%q:%q:%q:%q:%d", receipt.Path, receipt.Runner, receipt.Status, receipt.ErrorCategory, receipt.ExitCode))
+			for _, diagnostic := range receipt.Diagnostics {
+				parts = append(parts, fmt.Sprintf("diagnostic:%q:%v:%q:%q:%q", diagnostic.Path, diagnostic.Range, diagnostic.Severity, diagnostic.Code, diagnostic.Source))
+			}
+		}
+		if verification := facts.Verification; verification != nil {
+			parts = append(parts, fmt.Sprintf("verification:%q:%q:%q:%d", verification.Kind, verification.Status, verification.InputDigest, verification.ExitCode))
+			for _, path := range verification.CoveredPaths {
+				parts = append(parts, fmt.Sprintf("covered:%q", path))
+			}
+		}
+		if failure := facts.Failure; failure != nil {
+			parts = append(parts, fmt.Sprintf("failure:%q", failure.Category))
+		}
+		if session := facts.ProcessSession; session != nil {
+			parts = append(parts, fmt.Sprintf("process:%t:%d:%t:%t", session.Running, session.ExitCode, session.Terminated, session.TimedOut))
 		}
 	}
-	if session := facts.ProcessSession; session != nil {
-		fmt.Fprintf(
-			&builder,
-			";proc=%s:%d:%d:%t",
-			strings.TrimSpace(session.SessionID),
-			session.Cursor,
-			session.ExitCode,
-			session.Running,
-		)
-	}
-	return builder.String()
+	// Facts are sets. Producer ordering and repeated hits cannot renew a lease.
+	slices.Sort(parts)
+	sum := sha256.Sum256([]byte(strings.Join(slices.Compact(parts), "\n")))
+	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
 func rememberObservation(progress *ProgressState, key string) {

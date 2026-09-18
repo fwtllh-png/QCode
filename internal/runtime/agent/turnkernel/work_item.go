@@ -434,7 +434,7 @@ func FormatWorkItemSignature(
 	}
 	return fmt.Sprintf(
 		"goal=%s;reads=%s;edits=%s;verify=%s/%s;coverage=%s;"+
-			"plan_done=%d;completion=%t;sessions=%s",
+			"plan_done=%d;completion=%t;sessions=%d",
 		state.WorkItem.GoalDigest,
 		reads,
 		joinSortedKeys(state.WorkItem.KnownEdits),
@@ -443,7 +443,7 @@ func FormatWorkItemSignature(
 		strings.Join(append([]string(nil), state.WorkItem.Open.CoveredPaths...), ","),
 		completedPlanSteps,
 		completionAccepted,
-		strings.Join(append([]string(nil), state.WorkItem.Open.Sessions...), ","),
+		len(state.WorkItem.Open.Sessions),
 	)
 }
 

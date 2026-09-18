@@ -79,11 +79,14 @@ native_search = false
 `turn_budget_tokens` 统计一个 Turn 内所有模型调用的累计输入与输出。它不是模型的
 Context Window：后者只约束单次请求。默认值 `0` 不设置累计上限，单次请求仍受模型
 能力约束；连续无结构化进展时仍受 `max_steps` 约束。相邻 Sample 在同一工作状态
-（Workspace 内容版本、Work Item 签名、工具结果 digest）上重复同一工具身份时改用
+（Workspace 内容版本、Work Item 签名、工具结果语义 digest）上重复同一工具身份时改用
 `implement_no_progress_samples`（默认 6）进入 finish-only；`0` 表示继承
-`max_steps` 派生的 2/3 租约。新的内容版本或结果 digest 同时续期长短租约；已见
+`max_steps` 派生的 2/3 租约。新的内容版本或结构化结果 digest 同时续期长短租约；已见
 观察换身份只走长租约。需要控制成本时应显式设置
 `turn_budget_tokens`、`budget_tokens` 或 `budget_usd`。
+结果语义摘要不使用原始正文、耗时、临时路径日志、结果 Handle、进程 ID 或输出
+游标；仅结构化事实变化可以续期。没有结构化事实的新输出不会单独清零计数。
+已有租约阈值保持不变；长时间进程仅持续输出日志也不能无限续期。
 [execution.verify]
 mode = "soft"                # off | soft | hard
 scope = "diagnostics"        # diagnostics | repository | affected
@@ -336,7 +339,7 @@ Incremental Transport 固定使用 `store=false`。Response State 只保留在�
 
 `execution.max_steps` 是连续无结构化进展的显式执行 Lease，默认值为 `64`；
 显式配置为 `0` 表示不设置 Sample 数量上限。Work Item 路径集合签名变化（新已读或
-已改路径、验证覆盖、Plan 完成步、接受的 Completion、Open Session）会续期 Lease，
+已改路径、验证覆盖、Plan 完成步、接受的 Completion、未关闭进程数量）会续期 Lease，
 因此跨文件的正常长任务不会因为累计 Sample 数达到 64 而中断。Lease 耗尽后，Kernel 会在预算之外保留一次
 Finalization Sample；它只能请求必需输入，或声明 Complete/Incomplete 状态，不能继续
 探索或修改。Kernel 授权的 Repair Steps 拥有独立预算。
@@ -346,8 +349,8 @@ No-progress 阶段由显式 `execution.max_steps` 派生：约三分之一时要
 时建议收尾，但不再收窄工具目录。直到完整 Lease 耗尽才进入只保留 Terminal/Input
 的结构化 Finalization。Complete 声明仍可选提交；Incomplete 声明记录可恢复的摘要与
 具体 Pending Actions。Work Item 签名变化（新已读/已改路径、验证覆盖、Plan 完成
-步、接受的 Completion、Open Session）会立即清零计数。真正的进展是 Turn 内首次
-出现的工作状态：Workspace 内容版本、Work Item 签名或工具结果 digest。身份切换
+步、接受的 Completion、未关闭进程数量）会立即清零计数。真正的进展是 Turn 内首次
+出现的工作状态：Workspace 内容版本、Work Item 签名或工具结果语义 digest。身份切换
 本身不清零。回到已见观察且调用身份相同才累加短租约，达到
 `execution.implement_no_progress_samples`（默认 6，公开合同字段）进入
 Finish-only；回到已见观察但换了身份则累加 `max_steps` 长租约。该值为 `0` 时

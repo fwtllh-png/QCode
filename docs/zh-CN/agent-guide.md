@@ -102,10 +102,12 @@
   无法回放或先前正文已不在当前 Sample 时放行必要重读。取消 Checkpoint 保留下一项
   Plan 与已读路径指针。Paused Continue 恢复 Work Item（当前用户句为 Goal，源
   Turn KnownReads 开局写入）；覆盖读回放，git 巡视放行。相邻 Sample 重复同一
-  工作状态（内容版本 + 结果 digest）且同一工具身份达到
+  工作状态（内容版本 + 结果语义 digest）且同一工具身份达到
   `execution.implement_no_progress_samples`（默认 6）进入 Finish-only，但此时
-  不再收窄工具目录。新窗口、新内容版本或新结果 digest 同时续期；A/B 循环只走
-  `max_steps` 长租约。
+  不再收窄工具目录。新窗口、新内容版本或新结构化结果 digest 同时续期；A/B 循环只走
+  `max_steps` 长租约。结果语义摘要只使用结构化的文件版本、命中位置、诊断代码/位置、
+  验证状态与输入摘要、失败类别和进程状态；正文、Admission 内容摘要、诊断自由文本、
+  Handle、进程 ID 与输出游标不续期。未知输出保守处理，原始结果仍完整保留。
 - 模型窗口、经济预算和 Provider Throughput 是三个独立容量平面。Operator 通过
   `execution.tokens_per_minute` 声明 TPM；`0` 表示未知，不发明按模型名称的默认值。
   合法工作集超过已知 Burst 或等待将超过预算时，先做一次 Visible Tail Fold 再
