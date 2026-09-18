@@ -61,9 +61,15 @@ func (e *Engine) observeTokenWindow(
 	}
 	// Calibrate before the plausibility guard below: an overflowing report
 	// still carries the true estimate-to-usage ratio for its request.
+	previousRatio := e.tokenCalibration.CalibrationRatio()
 	e.tokenCalibration.Observe(context.EstimatedTokens, inputTokens)
+	currentRatio := e.tokenCalibration.CalibrationRatio()
+	rebased := previousRatio != currentRatio
 	hardLimit := e.contextCapacity().ContextTokens
 	if hardLimit != 0 && inputTokens > hardLimit {
+		if rebased {
+			e.rebaseWindowEstimateBasis(previousRatio, currentRatio)
+		}
 		return
 	}
 	projectedTokens, pendingTokens := context.WindowProjectedTokens, context.WindowPendingTokens
@@ -72,6 +78,9 @@ func (e *Engine) observeTokenWindow(
 	if scope == nil {
 		window := e.context.Window()
 		window.Observe(*context, inputTokens, cachedTokens)
+		if rebased {
+			window.RebaseEstimates(previousRatio, currentRatio)
+		}
 		e.context.SetWindow(window)
 		projection := window.Prepare(
 			context, context.WindowOutputReserve, e.autoCompactLimit(),
@@ -85,6 +94,9 @@ func (e *Engine) observeTokenWindow(
 	scope.mu.Lock()
 	window := scope.state.context.Window()
 	window.Observe(*context, inputTokens, cachedTokens)
+	if rebased {
+		window.RebaseEstimates(previousRatio, currentRatio)
+	}
 	scope.state.context.SetWindow(window)
 	projection := window.Prepare(
 		context, context.WindowOutputReserve, e.autoCompactLimit(),
@@ -94,6 +106,23 @@ func (e *Engine) observeTokenWindow(
 	agentcontext.ApplyWindowProjection(context, projection)
 	context.WindowProjectedTokens = projectedTokens
 	context.WindowPendingTokens = pendingTokens
+}
+
+// rebaseWindowEstimateBasis rescales the current window's estimate baseline
+// when the calibration ratio changed without a fresh provider observation
+// replacing it, keeping later estimate deltas on one measurement basis.
+func (e *Engine) rebaseWindowEstimateBasis(previous, current float64) {
+	if scope := e.runningScope(); scope != nil {
+		scope.mu.Lock()
+		window := scope.state.context.Window()
+		window.RebaseEstimates(previous, current)
+		scope.state.context.SetWindow(window)
+		scope.mu.Unlock()
+		return
+	}
+	window := e.context.Window()
+	window.RebaseEstimates(previous, current)
+	e.context.SetWindow(window)
 }
 
 func (e *Engine) advanceTokenWindow() agentcontext.WindowLedger {

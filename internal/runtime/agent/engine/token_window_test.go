@@ -74,16 +74,19 @@ func TestTokenWindowUsesObservedBaselineForPendingDelta(t *testing.T) {
 	}
 	engine.prepareTokenWindow(&first, 20)
 	engine.observeTokenWindow(&first, 150, 50)
+	// The post-observation estimate arrives on the calibrated basis (the
+	// raw 100 tokens now price at 150), so only the growth beyond it is
+	// pending: 200 - 150 = 50 on top of the observed 150.
 	second := protocol.SampleContextData{
 		ContextDigest: "sha256:second", EstimatedTokens: 200,
 	}
 	projected := engine.prepareTokenWindow(&second, 20)
-	if projected.FullActiveTokens != 250 || projected.PrefillTokens != 150 ||
-		projected.BodyTokens != 100 || projected.PendingTokens != 100 ||
+	if projected.FullActiveTokens != 200 || projected.PrefillTokens != 150 ||
+		projected.BodyTokens != 50 || projected.PendingTokens != 50 ||
 		!projected.Observed {
 		t.Fatalf("observed projection=%+v", projected)
 	}
-	actualNextInput := uint64(245)
+	actualNextInput := uint64(205)
 	errorRate := float64(absDiff(projected.FullActiveTokens, actualNextInput)) /
 		float64(actualNextInput)
 	if errorRate > 0.05 {

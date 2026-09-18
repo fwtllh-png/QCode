@@ -62,15 +62,40 @@ func (c *calibratedTokenEstimator) EstimateImage(
 // runtime estimate is estimated. The latest in-range ratio wins: tokenizers
 // are stable within a session, and immediate adoption is what corrects the
 // next sample rather than a smoothed average.
+//
+// estimated must be the calibrated estimate Estimate returned for that same
+// request. The raw heuristic base is recovered by dividing out the ratio that
+// produced it, so the learned ratio always relates provider usage to the raw
+// heuristic. Learning against the calibrated estimate instead would never
+// converge: each adopted ratio changes the denominator of the next
+// observation, alternating between the observed ratio and 1.
 func (c *calibratedTokenEstimator) Observe(estimated, actual uint64) {
 	if c == nil || estimated == 0 || actual == 0 {
 		return
 	}
-	ratio := float64(actual) / float64(estimated)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	base := estimated
+	if c.ratio > 0 {
+		base = uint64(math.Round(float64(estimated) / c.ratio))
+		if base == 0 {
+			return
+		}
+	}
+	ratio := float64(actual) / float64(base)
 	if ratio < minObservedEstimateRatio || ratio > maxObservedEstimateRatio {
 		return
 	}
-	c.mu.Lock()
 	c.ratio = ratio
-	c.mu.Unlock()
+}
+
+// CalibrationRatio returns the multiplier currently applied to raw
+// estimates; zero means no provider usage has been learned yet.
+func (c *calibratedTokenEstimator) CalibrationRatio() float64 {
+	if c == nil {
+		return 0
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.ratio
 }

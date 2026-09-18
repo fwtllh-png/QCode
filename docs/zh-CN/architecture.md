@@ -460,9 +460,12 @@ Ceiling 和 Turn/Session Budget 共同确定的 Output Reserve 后，得到硬�
 默认 Prepare、Auto Compact 与 Emergency 都等于该容量，不再按百分比提前触发；
 Operator 可显式配置更小的成本或延迟 Ceiling。Transport 类型不得暗中套用固定档位。
 Token 估算默认使用字符数启发式；Provider 首次上报真实 Input Tokens 后，Runtime
-按同请求的 `真实值 / 估算值` 比率校准后续估算（比率限定在记录于源码并有边界
-测试锁定的可信区间内，区间外的上报视为记账异常不予学习），使会话早期的窗口
-与吞吐准入贴合真实分词压力，而不是通过反复 Prune/Fold 事后发现。
+按同请求的 `真实值 / 原始启发式估算` 比率校准后续估算。反馈先除去当前倍率还原
+原始基准再学习，因此连续反馈收敛到真实倍率，而不会因分母随倍率变化在真实
+倍率与 1 之间震荡（比率限定在记录于源码并有边界测试锁定的可信区间内，区间外
+的上报视为记账异常不予学习）。倍率变化时，窗口账本把已记录的估算基线重定到
+新口径，后续增量始终在同一计量基准上比较，不会把倍率变化误读为内容增减，
+使会话早期的窗口与吞吐准入贴合真实分词压力，而不是通过反复 Prune/Fold 事后发现。
 Provider Throughput 是第三条独立容量平面：`execution.tokens_per_minute` 或 Token
 专用限流 Header 给出已知 Burst 时，Runtime 在发送前按 `投影输入 + 输出保留` 准入；
 未知则跳过 Token Admission，不按模型名称发明 TPM。超过已知 Burst 或等待将超过

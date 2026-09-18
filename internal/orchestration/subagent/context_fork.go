@@ -231,30 +231,15 @@ func (f *ContextForker) Fork(
 		}
 		return redacted
 	}
-	objective, clippedObjective := boundedText(
-		sanitize(strings.TrimSpace(request.Objective)), 4<<10,
-	)
-	expected, clippedExpected := boundedText(
-		sanitize(strings.TrimSpace(request.Agent.ExpectedOutput)), 2<<10,
-	)
-	taskName, clippedTaskName := boundedText(
-		sanitize(strings.TrimSpace(request.Agent.TaskName)), 256,
-	)
-	if clippedObjective {
-		excluded = append(excluded, ContextItem{
-			Kind: "objective", Reason: "truncated to the task contract budget",
-		})
-	}
-	if clippedExpected {
-		excluded = append(excluded, ContextItem{
-			Kind: "expected_output", Reason: "truncated to the task contract budget",
-		})
-	}
-	if clippedTaskName {
-		excluded = append(excluded, ContextItem{
-			Kind: "task_name", Reason: "truncated to the task contract budget",
-		})
-	}
+	// The task contract — objective, expected output, task name — is the
+	// non-trimmable core of the delegation: constraints and acceptance
+	// criteria typically close the objective, so any byte clipping would
+	// silently drop them. fitCapsule rejects the fork outright when the
+	// contract cannot fit the effective budget instead of executing a
+	// semantically incomplete task.
+	objective := sanitize(strings.TrimSpace(request.Objective))
+	expected := sanitize(strings.TrimSpace(request.Agent.ExpectedOutput))
+	taskName := sanitize(strings.TrimSpace(request.Agent.TaskName))
 	budget := request.Role.DefaultBudget.WithDefaults()
 	if request.Agent.Budget.MaxSteps > 0 {
 		budget.MaxSteps = request.Agent.Budget.MaxSteps
@@ -615,15 +600,29 @@ func fitCapsule(
 			})
 		case len(capsule.ParentGoal) > 256:
 			capsule.ParentGoal, _ = boundedText(capsule.ParentGoal, len(capsule.ParentGoal)/2)
+			excluded = append(excluded, ContextItem{
+				Kind: "parent_goal", Count: 1, Reason: "context budget",
+			})
 		case len(capsule.UserRequest) > 256:
 			capsule.UserRequest, _ = boundedText(capsule.UserRequest, len(capsule.UserRequest)/2)
+			excluded = append(excluded, ContextItem{
+				Kind: "user_request", Count: 1, Reason: "context budget",
+			})
 		case len(capsule.RoleInstructions) > 256:
 			capsule.RoleInstructions, _ = boundedText(
 				capsule.RoleInstructions, len(capsule.RoleInstructions)/2,
 			)
+			excluded = append(excluded, ContextItem{
+				Kind: "role_instructions", Count: 1, Reason: "context budget",
+			})
 		default:
+			// Only the non-trimmable task contract (objective, expected
+			// output, role, authority, limits) remains: refuse the delegation
+			// rather than executing a task whose contract was clipped.
 			return "", TaskCapsule{}, nil, fmt.Errorf(
-				"task capsule exceeds %d-byte context budget", limit,
+				"delegation task contract does not fit the %d-byte context "+
+					"budget; split the objective or raise the agent budget",
+				limit,
 			)
 		}
 	}

@@ -646,6 +646,144 @@ func TestHardVerificationRepairCompletesFromLaterText(t *testing.T) {
 	}
 }
 
+func batchCallStream(calls ...provider.ToolCall) provider.Stream {
+	events := make([]provider.StreamEvent, 0, len(calls)+1)
+	for index, call := range calls {
+		events = append(events, provider.StreamEvent{
+			Type: provider.EventToolCallDelta,
+			ToolCall: &provider.ToolCallFragment{
+				Index: index, ID: call.ID, Name: call.Name,
+				Arguments: call.Arguments,
+			},
+		})
+	}
+	events = append(events, provider.StreamEvent{
+		Type: provider.EventMessageStop, StopReason: provider.StopReasonToolUse,
+	})
+	return &providerfixture.SliceStream{Events: events}
+}
+
+// A completion declaration batched with other calls must recover through
+// model-correctable feedback from any position in the batch, instead of
+// failing the turn on an illegal kernel phase transition.
+func TestBatchedCompletionDeclarationRecoversFromAnyPosition(t *testing.T) {
+	declarationFor := func(id string) provider.ToolCall {
+		return provider.ToolCall{
+			ID: id, Name: completiontool.Name,
+			Arguments: `{
+				"status":"complete",
+				"summary":"Recovered.",
+				"pending_actions":[]
+			}`,
+		}
+	}
+	commandFor := func(id string) provider.ToolCall {
+		return provider.ToolCall{
+			ID: id, Name: "exec_command",
+			Arguments: `{"covered_paths":["a.go"]}`,
+		}
+	}
+	writeFor := func(id string) provider.ToolCall {
+		return provider.ToolCall{ID: id, Name: "write_fixture", Arguments: `{}`}
+	}
+	cases := []struct {
+		name   string
+		calls  []provider.ToolCall
+		reason string
+		intent protocol.TurnIntent
+		input  string
+	}{
+		{
+			name:   "declaration first",
+			calls:  []provider.ToolCall{declarationFor("complete-1"), commandFor("verify-1")},
+			reason: "declaration_must_be_only_call",
+			intent: protocol.TurnIntentAnswer,
+			input:  "settle the fixture",
+		},
+		{
+			name: "declaration middle",
+			calls: []provider.ToolCall{
+				commandFor("verify-1"), declarationFor("complete-1"),
+				commandFor("verify-2"),
+			},
+			reason: "declaration_must_be_only_call",
+			intent: protocol.TurnIntentAnswer,
+			input:  "settle the fixture",
+		},
+		{
+			name:   "declaration last",
+			calls:  []provider.ToolCall{commandFor("verify-1"), declarationFor("complete-1")},
+			reason: "declaration_must_be_only_call",
+			intent: protocol.TurnIntentAnswer,
+			input:  "settle the fixture",
+		},
+		{
+			name:   "declaration before same-batch mutation",
+			calls:  []provider.ToolCall{declarationFor("complete-1"), writeFor("write-1")},
+			reason: "same_batch_mutation",
+			intent: protocol.TurnIntentWorkspaceChange,
+			input:  "change a.go",
+		},
+		{
+			name:   "declaration after same-batch mutation",
+			calls:  []provider.ToolCall{writeFor("write-1"), declarationFor("complete-1")},
+			reason: "same_batch_mutation",
+			intent: protocol.TurnIntentWorkspaceChange,
+			input:  "change a.go",
+		},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			retry := toolCallStream("complete-2", completiontool.Name, `{
+				"status":"complete",
+				"summary":"Recovered.",
+				"pending_actions":[]
+			}`)
+			runtime := &scriptedProvider{streams: []provider.Stream{
+				batchCallStream(testCase.calls...), retry,
+			}}
+			engine := declarationEngine(t, runtime, declarationRegistry(t, true),
+				verify.Receipt{
+					Scope:   verify.ScopeDiagnostics,
+					Status:  verify.StatusUnavailable,
+					Message: "no diagnostics covered a.go",
+				})
+			result, err := engine.RunForTurnWithIntentAndAttachments(
+				t.Context(), "turn-batch", testCase.input,
+				testCase.intent, nil, nil,
+			)
+			if err != nil {
+				t.Fatalf(
+					"Run() error = %v requests=%+v", err, runtime.requests,
+				)
+			}
+			if result.State != Completed || result.Text != "Recovered." {
+				t.Fatalf("result=%+v", result)
+			}
+			if len(runtime.requests) < 2 ||
+				!requestToolResultContains(
+					runtime.requests[1], testCase.reason,
+				) {
+				t.Fatalf(
+					"rejection feedback missing: requests=%+v", runtime.requests,
+				)
+			}
+		})
+	}
+}
+
+func requestToolResultContains(request provider.ModelRequest, value string) bool {
+	for _, message := range request.Messages {
+		for _, block := range message.Blocks {
+			if block.ToolResult != nil &&
+				strings.Contains(block.ToolResult.Content, value) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func declarationRegistry(t *testing.T, withVerification bool) *tool.Registry {
 	t.Helper()
 	registry := tool.NewRegistry(nil, nil)

@@ -67,6 +67,35 @@ func TestWindowLedgerHandlesEstimateReductionAndAdvance(t *testing.T) {
 	}
 }
 
+func TestWindowLedgerRebasesEstimateBaselineOnCalibrationChange(t *testing.T) {
+	ledger, err := NewWindowLedger("window-1", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	observed := protocol.SampleContextData{
+		ContextDigest: "sha256:observed", EstimatedTokens: 1000,
+	}
+	ledger.Prepare(&observed, 0, 650, 1000)
+	ledger.Observe(observed, 1050, 0)
+	// The observation calibrated the session ratio from raw (1) to 1.5:
+	// the baseline must move to the calibrated basis so unchanged content
+	// still projects the observed usage, not a phantom delta.
+	ledger.RebaseEstimates(0, 1.5)
+	repriced := protocol.SampleContextData{
+		ContextDigest: "sha256:repriced", EstimatedTokens: 1500,
+	}
+	projected := ledger.Prepare(&repriced, 0, 650, 1000)
+	if projected.FullActiveTokens != 1050 || projected.PendingTokens != 0 {
+		t.Fatalf("rebased projection=%+v", projected)
+	}
+	// A no-op rebase leaves the sealed ledger untouched.
+	before := ledger.ObservedEstimateTokens
+	ledger.RebaseEstimates(1.5, 1.5)
+	if ledger.ObservedEstimateTokens != before || !ledger.Valid() {
+		t.Fatalf("no-op rebase changed ledger: %+v", ledger)
+	}
+}
+
 func TestWindowLedgerRejectsTampering(t *testing.T) {
 	ledger, err := NewWindowLedger("window-1", 1)
 	if err != nil {

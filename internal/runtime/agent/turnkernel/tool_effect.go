@@ -115,7 +115,34 @@ func (s *RuntimeKernel) ExecuteToolEffect(
 			break
 		}
 	}
+	type completionEvaluation struct {
+		index     int
+		call      provider.ToolCall
+		candidate CompletionCandidate
+	}
+	// Declarations are evaluated only after every call in the batch has
+	// closed: the evaluator accepts PhaseSampling, which the kernel enters
+	// when the last open call closes, so a declaration must not depend on
+	// its position within the batch. Candidates are still built during the
+	// close loop so verification evidence keeps binding to the mutation
+	// revision observed at that point.
+	pending := make([]completionEvaluation, 0, 1)
 	var projectionErr error
+	finishClosed := func(index int, call provider.ToolCall) {
+		effect.Executed[call.ID] = results[index]
+		if effect.AfterClose != nil {
+			projectionErr = errors.Join(
+				projectionErr,
+				effect.AfterClose(call, results[index]),
+			)
+		}
+		if effect.PublishResult != nil {
+			projectionErr = errors.Join(
+				projectionErr,
+				effect.PublishResult(call, results[index]),
+			)
+		}
+	}
 	for index, call := range effect.Calls {
 		if plan.AlreadyExecuted[index] {
 			continue
@@ -129,13 +156,13 @@ func (s *RuntimeKernel) ExecuteToolEffect(
 				mutationRevision,
 			)
 		}
-		result := results[index]
-		changes := ObservedFileChanges(result)
-		if err := s.CloseTool(call, result, changes); err != nil {
+		changes := ObservedFileChanges(results[index])
+		if err := s.CloseTool(call, results[index], changes); err != nil {
 			projectionErr = errors.Join(projectionErr, err)
 			continue
 		}
-		submittedPlan, _ := result.Metadata["submitted_plan"].(bool)
+		submittedPlan, _ := results[index].Metadata["submitted_plan"].(bool)
+		defersFinish := false
 		if (call.Name == "turn_complete" || submittedPlan) &&
 			effect.CompletionCandidate != nil {
 			candidate := effect.CompletionCandidate(
@@ -146,30 +173,30 @@ func (s *RuntimeKernel) ExecuteToolEffect(
 				mutationRevision,
 			)
 			if call.Name == "turn_complete" || candidate.DeclarationValid {
-				decision, err := s.EvaluateCompletion(candidate)
-				if err != nil {
-					projectionErr = errors.Join(projectionErr, err)
-					continue
-				}
-				if call.Name == "turn_complete" {
-					BindCompletionDecision(&results[index], decision)
-					result = results[index]
-				}
+				pending = append(pending, completionEvaluation{
+					index: index, call: call, candidate: candidate,
+				})
+				// The turn_complete result is rewritten with the decision,
+				// so its execution record and publication wait for the
+				// evaluation below.
+				defersFinish = call.Name == "turn_complete"
 			}
 		}
-		effect.Executed[call.ID] = results[index]
-		if effect.AfterClose != nil {
-			projectionErr = errors.Join(
-				projectionErr,
-				effect.AfterClose(call, result),
-			)
+		if !defersFinish {
+			finishClosed(index, call)
 		}
-		if effect.PublishResult != nil {
-			projectionErr = errors.Join(
-				projectionErr,
-				effect.PublishResult(call, result),
-			)
+	}
+	for _, evaluation := range pending {
+		decision, err := s.EvaluateCompletion(evaluation.candidate)
+		if err != nil {
+			projectionErr = errors.Join(projectionErr, err)
+			continue
 		}
+		if evaluation.call.Name != "turn_complete" {
+			continue
+		}
+		BindCompletionDecision(&results[evaluation.index], decision)
+		finishClosed(evaluation.index, evaluation.call)
 	}
 	if projectionErr != nil {
 		return results, projectionErr

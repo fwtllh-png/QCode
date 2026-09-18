@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
 )
@@ -203,6 +204,29 @@ func (w *WindowLedger) Observe(
 	w.ToolDefinitionTokens = context.ToolDefinitionTokens
 	w.LastProviderInputTokens = inputTokens
 	w.LastProviderCachedTokens = min(inputTokens, cachedTokens)
+	w.seal()
+}
+
+// RebaseEstimates rescales the recorded estimate baseline after the session
+// estimator's calibration ratio changes, so later Prepare deltas compare
+// estimates from one measurement basis instead of reading a ratio change as
+// content growth. A zero from-ratio marks a baseline recorded before the
+// first calibration, when estimates were still raw.
+func (w *WindowLedger) RebaseEstimates(from, to float64) {
+	if !w.Valid() || w.ObservedEstimateTokens == 0 || w.LastProviderInputTokens == 0 {
+		return
+	}
+	if from <= 0 {
+		from = 1
+	}
+	if to <= 0 || to == from {
+		return
+	}
+	scaled := math.Round(float64(w.ObservedEstimateTokens) * to / from)
+	if scaled < 1 {
+		scaled = 1
+	}
+	w.ObservedEstimateTokens = uint64(scaled)
 	w.seal()
 }
 

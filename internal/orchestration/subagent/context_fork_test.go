@@ -332,6 +332,56 @@ func TestContextModesMatchGolden(t *testing.T) {
 	}
 }
 
+func TestTaskContractSurvivesIntactWithinBudget(t *testing.T) {
+	tail := "最终约束：保持公共 API 不变。"
+	unit := "修复计划与验收标准细节描述。"
+	target := 5234 - len(tail)
+	body := strings.Repeat(unit, target/len(unit))
+	for len(body)+3 <= target {
+		body += "详"
+	}
+	objective := body + tail
+	if len(objective) != 5234 {
+		t.Fatalf("objective bytes = %d, want 5234", len(objective))
+	}
+	forker := subagent.NewContextForker(subagent.ContextPolicy{MaxBytes: 400_000})
+	request := contextRequest(subagent.ContextFresh)
+	request.Objective = objective
+	request.Role.DefaultBudget = subagent.Budget{
+		MaxTokens: 100_000, MaxDepth: 3, MaxParallel: 2,
+	}
+	fork, err := forker.Fork(t.Context(), request)
+	if err != nil {
+		t.Fatalf("Fork() error = %v", err)
+	}
+	if fork.Capsule.Objective != objective ||
+		!strings.Contains(fork.Prompt, "保持公共 API") ||
+		strings.Contains(fork.Capsule.Objective, "[truncated]") {
+		t.Fatalf("task contract was clipped: %d bytes kept of %d",
+			len(fork.Capsule.Objective), len(objective))
+	}
+	for _, item := range fork.Receipt.Excluded {
+		if item.Kind == "objective" || item.Kind == "expected_output" {
+			t.Fatalf("task contract excluded: %+v", item)
+		}
+	}
+}
+
+func TestTaskContractRejectsWhenItCannotFit(t *testing.T) {
+	objective := strings.Repeat("验收标准与迁移细节描述。", 200) // 7200 bytes
+	forker := subagent.NewContextForker(subagent.ContextPolicy{MaxBytes: 2_000})
+	request := contextRequest(subagent.ContextFresh)
+	request.Objective = objective
+	_, err := forker.Fork(t.Context(), request)
+	if err == nil {
+		t.Fatal("oversized task contract was accepted")
+	}
+	if !strings.Contains(err.Error(), "does not fit") ||
+		strings.Contains(err.Error(), "[truncated]") {
+		t.Fatalf("rejection = %v", err)
+	}
+}
+
 func contextRequest(mode subagent.ContextMode) subagent.ContextRequest {
 	return subagent.ContextRequest{
 		Mode: mode,
