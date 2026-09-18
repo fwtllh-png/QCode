@@ -55,7 +55,7 @@ workspace = "."
 tools = true
 max_output_tokens = 0           # 0 = 使用当前模型声明的 MaxOutputTokens
 max_steps = 64                  # 连续无结构化进展的 Step Lease；0 = 不设置
-implement_no_progress_samples = 6  # 连续重复同一工具调用身份的 finish-only 租约；0 = 继承 max_steps 派生的 2/3
+implement_no_progress_samples = 6  # 同一工作状态且同一工具身份重复时的 finish-only 租约；0 = 继承 max_steps 派生的 2/3
 timeout = "2m"                  # 连接、TLS 和响应头阶段
 lease_timeout = "2m"            # Guard 授权到 Executor 接管前的 Lease 有效期
 approval_timeout = "0s"         # 0 = 审批随 Turn/Session 生命周期，不独立过期
@@ -78,10 +78,11 @@ native_search = false
 
 `turn_budget_tokens` 统计一个 Turn 内所有模型调用的累计输入与输出。它不是模型的
 Context Window：后者只约束单次请求。默认值 `0` 不设置累计上限，单次请求仍受模型
-能力约束；连续无结构化进展时仍受 `max_steps` 约束。相邻 Sample 重复同一工具
-调用身份（工具名 + 规范化 arguments）时改用
+能力约束；连续无结构化进展时仍受 `max_steps` 约束。相邻 Sample 在同一工作状态
+（Workspace 内容版本、Work Item 签名、工具结果 digest）上重复同一工具身份时改用
 `implement_no_progress_samples`（默认 6）进入 finish-only；`0` 表示继承
-`max_steps` 派生的 2/3 租约。不同 arguments 的同路径编辑或验证不消耗该短租约。需要控制成本时应显式设置
+`max_steps` 派生的 2/3 租约。新的内容版本或结果 digest 同时续期长短租约；已见
+观察换身份只走长租约。需要控制成本时应显式设置
 `turn_budget_tokens`、`budget_tokens` 或 `budget_usd`。
 [execution.verify]
 mode = "soft"                # off | soft | hard
@@ -189,10 +190,13 @@ owner_delta_max_segments = 16
 owner_delta_max_bytes = 65536
 
 Tool Result 在首次 `Admit` 时定稿：不超过 ResultStore 合同则保留原文，超限则
-写成有界说明 + Handle。之后 Sample 不再改写已发送结果，以便保持 append-only
-前缀。再只把最近 `context.view.recent_tail_turns` 个 Turn 投影给模型。完整
-transcript 留在 Durable Journal。超窗时对可见 Tail 做一次因果组折叠，仍放不下
-则 `resource_exhausted`。
+写成有界说明 + Handle。未超硬输入时 Sample 不再改写已发送结果，以便保持
+append-only 前缀。再只把最近 `context.view.recent_tail_turns` 个 Turn 投影给
+模型。完整 transcript 留在 Durable Journal。超窗时对可见 Tail 做一次旧 Turn
+折叠；当前 Turn 仍超硬输入则钉住用户请求，收掉已闭合因果组，并继续降级最新
+一批结果、调用参数、reasoning 和过长的闭合轮次分析正文。伴随工具调用的判断
+默认保留。只有不可再缩前缀（Mandatory 分区 + 当前用户
+请求 + output reserve）仍超硬输入，才 `resource_exhausted`。
 `context.compact.prepare_tokens` / `auto_compact_tokens` / `emergency_tokens`
 为 `0` 时不设提前压缩档位，也不会出现在默认 Context Budget 快照里。History
 Replacement 留给显式 `thread.compact` 与 Turn 终态维护。显式非零值属于
@@ -218,8 +222,9 @@ Ledger 确定性生成，不依赖 compact 事件。Working Set 与 Evidence 仍
 Turn 冻结的硬输入容量减去 Stable / `session_state` 等 Mandatory 分区，而不是
 窗口百分比。投影从最新闭合因果组向前填充，直到 `recent_tail_turns` 或该剩余
 容量先到达，且不拆 Tool Pair、不隐藏当前用户请求。Operator 显式正值是更紧的
-SLA Ceiling，仍不能超过剩余硬输入。若当前 Turn 本身超过该上限，溢出路径只再
-折叠一次可见 Tail，仍放不下则 `resource_exhausted`。
+SLA Ceiling，仍不能超过剩余硬输入。若当前 Turn 本身超过该上限，溢出路径先
+折叠一次可见 Tail，再对当前 Turn 做钉死用户的 working-set 降级；只有不可再缩
+前缀仍超硬输入才 `resource_exhausted`。
 
 `digest` 只允许 `ledger` 或 `ledger+narrative`。`ledger` 是 Mandatory Session
 State；`narrative_mode=post_turn` 另加非阻塞 Narrative 分区。`digest=off` 非法，
@@ -341,11 +346,12 @@ No-progress 阶段由显式 `execution.max_steps` 派生：约三分之一时要
 时建议收尾，但不再收窄工具目录。直到完整 Lease 耗尽才进入只保留 Terminal/Input
 的结构化 Finalization。Complete 声明仍可选提交；Incomplete 声明记录可恢复的摘要与
 具体 Pending Actions。Work Item 签名变化（新已读/已改路径、验证覆盖、Plan 完成
-步、接受的 Completion、Open Session）会立即清零计数。相邻 Sample 换了不同的
-工具 arguments 也会清零，即使仍在同一批路径上验证或修正。只有工具名与规范化
-arguments 都不变的重复调用才累加 No-progress，达到
+步、接受的 Completion、Open Session）会立即清零计数。真正的进展是 Turn 内首次
+出现的工作状态：Workspace 内容版本、Work Item 签名或工具结果 digest。身份切换
+本身不清零。回到已见观察且调用身份相同才累加短租约，达到
 `execution.implement_no_progress_samples`（默认 6，公开合同字段）进入
-Finish-only；该值为 `0` 时继承 `max_steps` 派生的 2/3 租约。
+Finish-only；回到已见观察但换了身份则累加 `max_steps` 长租约。该值为 `0` 时
+短租约继承 `max_steps` 派生的 2/3。
 停轮信号是模型停止调用工具并写出用户可见正文；`turn_complete(status=complete)`
 可选，未完成的 execution Plan 步骤不拒绝停轮。
 已知路径的覆盖重读回放原结果，无法回放时放行；Continue 上的 git 巡视放行。

@@ -108,6 +108,8 @@ func exhaustedRateLimitRetry(err error) error {
 	if errors.As(recovered, &problem) && problem != nil {
 		problem.Message = "provider rate limit retry budget exhausted: " +
 			providerwire.ClassifyFailure(err, false).Message
+		problem.Fault.Reason = protocol.ProblemReasonProviderRateLimited
+		problem.Fault.RecoveryAction = "wait for the shared provider cooldown, then continue from the durable checkpoint"
 	}
 	return recovered
 }

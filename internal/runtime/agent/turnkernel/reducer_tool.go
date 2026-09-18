@@ -62,6 +62,7 @@ func applyToolCalls(
 	transition.State.Progress.PendingIdentity = FormatToolCallsIdentity(
 		command.Calls,
 	)
+	transition.State.Progress.PendingResultDigests = nil
 	return nil
 }
 
@@ -166,6 +167,12 @@ func applyToolResult(
 		command.Observation,
 		command.IsError,
 	)
+	if digest := strings.TrimSpace(command.Observation.ResultDigest); digest != "" {
+		transition.State.Progress.PendingResultDigests = append(
+			transition.State.Progress.PendingResultDigests,
+			digest,
+		)
+	}
 	switch {
 	case len(transition.State.PendingApprovals) != 0:
 		move(transition, PhaseAwaitingApproval)

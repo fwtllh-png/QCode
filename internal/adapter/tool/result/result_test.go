@@ -54,7 +54,7 @@ func TestPruneSurfacesProtectsLatestUnconsumedBatch(t *testing.T) {
 		toolResultMessage(t, "latest", latestContent),
 	}
 	stats, _, err := PruneSurfaces(
-		&history, registry, 256, true,
+		&history, registry, 256, true, false,
 		func([]provider.Message) (PruneWindow, error) {
 			return PruneWindow{}, nil
 		},
@@ -74,6 +74,38 @@ func TestPruneSurfacesProtectsLatestUnconsumedBatch(t *testing.T) {
 	}
 	if latest.Content != latestContent || latest.Truncated {
 		t.Fatalf("latest result was pruned before consumption: %+v", latest)
+	}
+}
+
+func TestPruneSurfacesIncludesLatestBatchWhenRequested(t *testing.T) {
+	store := tool.NewResultStore(32 << 10)
+	registry := tool.NewRegistry(nil, store)
+	latestContent := strings.Repeat("latest ", 1200)
+	history := []provider.Message{
+		toolCallMessage("latest", "file_read"),
+		toolResultMessage(t, "latest", latestContent),
+	}
+	stats, _, err := PruneSurfaces(
+		&history, registry, 256, true, true,
+		func([]provider.Message) (PruneWindow, error) {
+			return PruneWindow{}, nil
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Results != 1 {
+		t.Fatalf("stats = %+v", stats)
+	}
+	var latest tool.Result
+	if err := json.Unmarshal(
+		[]byte(history[1].Blocks[0].ToolResult.Content),
+		&latest,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if latest.Handle == "" || !latest.Truncated {
+		t.Fatalf("latest result stayed raw: %+v", latest)
 	}
 }
 

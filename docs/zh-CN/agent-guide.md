@@ -75,8 +75,12 @@
   用户语义，也不得用隐藏百分比替代公开的 `context.view.recent_tail_turns` 与
   剩余硬输入 residual 契约。`context.view.history_token_ceiling=0` 表示
   Mandatory 分区之后的剩余容量，不是窗口百分比。
-  Tool Result 首次准入后不再改写；不得用隐藏 N 代替 ResultStore 合同或
-  `result_get`。闭合 Turn 的 Checkpoint 同样 write-once，放在 Dynamic 而不是
+  Tool Result 首次准入后，未超硬输入时不再改写；超硬输入时采样路径可把已
+  发送结果和调用参数收成 Handle / 身份投影，不得用隐藏 N 代替 ResultStore
+  合同或 `result_get`。伴随已闭合工具调用的分析正文默认保留；只有超硬输入
+  时才收成带来源的非权威摘要，不能仅因为文字和工具在同一条消息就丢掉判断。
+  进行中的 Turn 不得因窗口失败，除非用户请求加
+  Mandatory 分区已超过硬输入。闭合 Turn 的 Checkpoint 同样 write-once，放在 Dynamic 而不是
   Stable 或 History 前缀；`context.view.checkpoint_max_bytes=0` 继承公开的
   summary / narrative item 预算。未完成工作只能从带 `source_message_ids` 的
   Narrative 项提升为 Plan Todo，禁止从散文猜测清单。旧 Turn 回读走
@@ -98,9 +102,10 @@
   无法回放或先前正文已不在当前 Sample 时放行必要重读。取消 Checkpoint 保留下一项
   Plan 与已读路径指针。Paused Continue 恢复 Work Item（当前用户句为 Goal，源
   Turn KnownReads 开局写入）；覆盖读回放，git 巡视放行。相邻 Sample 重复同一
-  工具调用身份达到 `execution.implement_no_progress_samples`（默认 6）进入
-  Finish-only，但此时不再收窄工具目录。不同 arguments 的同路径 edit 或验证不续
-  短租约，也不算空转。
+  工作状态（内容版本 + 结果 digest）且同一工具身份达到
+  `execution.implement_no_progress_samples`（默认 6）进入 Finish-only，但此时
+  不再收窄工具目录。新窗口、新内容版本或新结果 digest 同时续期；A/B 循环只走
+  `max_steps` 长租约。
 - 模型窗口、经济预算和 Provider Throughput 是三个独立容量平面。Operator 通过
   `execution.tokens_per_minute` 声明 TPM；`0` 表示未知，不发明按模型名称的默认值。
   合法工作集超过已知 Burst 或等待将超过预算时，先做一次 Visible Tail Fold 再

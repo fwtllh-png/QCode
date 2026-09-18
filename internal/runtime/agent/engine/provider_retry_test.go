@@ -262,16 +262,27 @@ func TestEngineExhaustsRateLimitWaitBudgetWithoutSecondProbe(t *testing.T) {
 	engine := newEngine(t, runtime, tool.NewRegistry(nil, nil))
 	engine.options.RateLimitMaxWait = 50 * time.Millisecond
 
-	_, err := engine.Run(t.Context(), "exhaust rate limit wait", nil)
+	var terminal Event
+	_, err := engine.Run(t.Context(), "exhaust rate limit wait", func(event Event) error {
+		if event.State == Failed {
+			terminal = event
+		}
+		return nil
+	})
 	problem := protocol.ProblemOf(err)
 	if problem == nil ||
 		problem.Message != "provider rate limit retry budget exhausted: rate limited" ||
 		problem.Fault == nil ||
+		problem.Fault.Reason != protocol.ProblemReasonProviderRateLimited ||
 		problem.Fault.Disposition != protocol.FaultRetryTurn {
 		t.Fatalf("exhausted wait = %#v", err)
 	}
 	if len(runtime.requests) != 1 {
 		t.Fatalf("provider requests = %d, want 1", len(runtime.requests))
+	}
+	if terminal.Fault == nil ||
+		terminal.Fault.Reason != protocol.ProblemReasonProviderRateLimited {
+		t.Fatalf("terminal fault = %+v", terminal.Fault)
 	}
 }
 
@@ -408,6 +419,8 @@ func TestExhaustedProviderRetryBecomesUserRecoverable(t *testing.T) {
 	limited := protocol.ProblemOf(exhaustedRateLimitRetry(original))
 	if limited.Message != "provider rate limit retry budget exhausted: rate limited" ||
 		limited.Fault == nil ||
+		limited.Fault.Reason != protocol.ProblemReasonProviderRateLimited ||
+		!strings.Contains(limited.Fault.RecoveryAction, "cooldown") ||
 		limited.Fault.Disposition != protocol.FaultRetryTurn {
 		t.Fatalf("exhausted rate limit = %#v", limited)
 	}

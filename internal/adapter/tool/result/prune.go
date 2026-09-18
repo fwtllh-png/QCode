@@ -2,6 +2,7 @@ package result
 
 import (
 	"encoding/json"
+	"unicode/utf8"
 
 	adaptercontent "github.com/fwtllh-png/QCode/internal/adapter/content"
 	"github.com/fwtllh-png/QCode/internal/adapter/provider"
@@ -24,6 +25,7 @@ func PruneSurfaces(
 	registry *tool.Registry,
 	maxBytes int,
 	force bool,
+	includeLatest bool,
 	measure func([]provider.Message) (PruneWindow, error),
 ) (PruneStats, PruneWindow, error) {
 	names := ToolCallNames(*history)
@@ -38,8 +40,10 @@ func PruneSurfaces(
 				block.ToolResult == nil {
 				continue
 			}
-			if _, protected := latest[block.ToolResult.CallID]; protected {
-				continue
+			if !includeLatest {
+				if _, protected := latest[block.ToolResult.CallID]; protected {
+					continue
+				}
 			}
 			name := names[block.ToolResult.CallID]
 			if name == "" {
@@ -50,6 +54,16 @@ func PruneSurfaces(
 				[]byte(block.ToolResult.Content),
 				&value,
 			); err != nil {
+				original := len(block.ToolResult.Content)
+				if !force || !truncateRawToolResult(block.ToolResult, maxBytes) {
+					continue
+				}
+				stats.Results++
+				stats.Bytes += original - len(block.ToolResult.Content)
+				window, err = measure(*history)
+				if err != nil {
+					return PruneStats{}, PruneWindow{}, err
+				}
 				continue
 			}
 			projected, changed := registry.PruneResultSurface(
@@ -188,4 +202,22 @@ func ToolCallNames(messages []provider.Message) map[string]string {
 		}
 	}
 	return names
+}
+
+func truncateRawToolResult(result *provider.ToolResult, maxBytes int) bool {
+	if result == nil {
+		return false
+	}
+	if maxBytes <= 0 {
+		maxBytes = 1
+	}
+	if len(result.Content) <= maxBytes {
+		return false
+	}
+	value := result.Content[:maxBytes]
+	for !utf8.ValidString(value) && len(value) > 0 {
+		value = value[:len(value)-1]
+	}
+	result.Content = value
+	return true
 }

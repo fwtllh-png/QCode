@@ -245,6 +245,7 @@ func TestTerminalEnvelopeComparesTypedFaultsByValue(t *testing.T) {
 		Disposition: protocol.FaultFailTurn,
 		SideEffects: protocol.SideEffectNone,
 		Stage:       protocol.FaultStageModelSample,
+		Reason:      protocol.ProblemReasonProviderRateLimited,
 	}
 	envelope.FrozenState.Terminal.Fault = fault
 	envelope.TerminalEvent.Terminal.Fault =
@@ -266,6 +267,20 @@ func TestTerminalEnvelopeRejectsTypedFaultValueDrift(t *testing.T) {
 	}
 	if _, err := ValidateTerminalEnvelope(envelope); err == nil {
 		t.Fatal("terminal fault value drift was accepted")
+	}
+}
+
+func TestTerminalEnvelopeRejectsFaultReasonDrift(t *testing.T) {
+	envelope := terminalEnvelopeFixture(t)
+	envelope.FrozenState.Terminal.Fault = &protocol.FaultMetadata{
+		Origin: protocol.FaultOriginRuntime, Disposition: protocol.FaultResumeTurn,
+		Reason: protocol.ProblemReasonTokenBudgetExhausted,
+	}
+	envelope.TerminalEvent.Terminal.Fault =
+		protocol.CloneFaultMetadata(envelope.FrozenState.Terminal.Fault)
+	envelope.TerminalEvent.Terminal.Fault.Reason = protocol.ProblemReasonCostBudgetExhausted
+	if _, err := ValidateTerminalEnvelope(envelope); err == nil {
+		t.Fatal("terminal fault reason drift was accepted")
 	}
 }
 

@@ -38,6 +38,7 @@ func (e *Engine) pruneToolResultSurfaces(
 	input agentcontext.MessageSnapshot,
 	outputReserve uint64,
 	force bool,
+	includeLatest bool,
 	economicInput uint64,
 	projectHistory agentcontext.HistoryProjector,
 ) (toolResultPruneStats, tokenWindow, error) {
@@ -58,6 +59,7 @@ func (e *Engine) pruneToolResultSurfaces(
 		e.options.Tools,
 		surfaceBytes,
 		force,
+		includeLatest,
 		func(history []provider.Message) (toolresult.PruneWindow, error) {
 			measured, err := e.measureTokenWindow(
 				input.WithHistory(agentcontext.ProjectHistory(history, projectHistory)),

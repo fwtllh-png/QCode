@@ -72,6 +72,14 @@ func (s *WorkspaceEventStore) ReplayLimit(
 	)
 }
 
+// ReplayThrough retains the global fence while filtering Workspace ownership.
+func (s *WorkspaceEventStore) ReplayThrough(ctx context.Context, cursor, through protocol.Cursor, limit int) ([]protocol.Event, bool, error) {
+	if s.workspaceRoot == "" {
+		return s.store.ReplayThrough(ctx, cursor, through, limit)
+	}
+	return s.store.replayWorkspaceThrough(ctx, cursor, through, s.workspaceRoot, limit)
+}
+
 func (s *WorkspaceEventStore) LastSequence(
 	ctx context.Context,
 ) (protocol.Cursor, error) {
@@ -114,9 +122,12 @@ func (s *WorkspaceEventStore) ReplaySessionBefore(ctx context.Context, sessionID
 }
 
 func (s *Store) ReplaySessionBefore(ctx context.Context, sessionID string, threads []protocol.ThreadID, before, through protocol.Cursor, limit int) ([]protocol.Event, bool, error) {
+	s.readers.RLock()
+	defer s.readers.RUnlock()
 	s.mu.RLock()
-	defer s.mu.RUnlock()
-	if s.closed {
+	closed := s.closed
+	s.mu.RUnlock()
+	if closed {
 		return nil, false, ErrClosed
 	}
 	return s.events.ReplaySessionBefore(ctx, sessionID, threads, before, through, limit)
@@ -229,27 +240,12 @@ func (s *Store) ReplayWorkspace(
 	cursor protocol.Cursor,
 	workspaceRoot string,
 ) ([]protocol.Event, error) {
-	workspaceRoot = physicalWorkspaceRoot(workspaceRoot)
-	threads, err := s.workspaceThreadIDs(ctx, workspaceRoot)
+	through, err := s.LastSequence(ctx)
 	if err != nil {
 		return nil, err
 	}
-	result := make([]protocol.Event, 0)
-	for {
-		page, more, err := s.ReplayLimit(ctx, cursor, workspaceReplayPageSize)
-		if err != nil {
-			return nil, err
-		}
-		for _, event := range page {
-			cursor = event.Sequence
-			if workspaceOwnsEvent(workspaceRoot, threads, event) {
-				result = append(result, event)
-			}
-		}
-		if !more {
-			return result, nil
-		}
-	}
+	events, _, err := s.replayWorkspaceThrough(ctx, cursor, through, workspaceRoot, 0)
+	return events, err
 }
 
 // ReplayWorkspaceLimit bounds decoded Workspace events even when the global
@@ -263,15 +259,23 @@ func (s *Store) ReplayWorkspaceLimit(
 	if limit <= 0 {
 		return nil, false, &workspaceReplayLimitError{}
 	}
+	through, err := s.LastSequence(ctx)
+	if err != nil {
+		return nil, false, err
+	}
+	return s.replayWorkspaceThrough(ctx, cursor, through, workspaceRoot, limit)
+}
+
+func (s *Store) replayWorkspaceThrough(ctx context.Context, cursor, through protocol.Cursor, workspaceRoot string, limit int) ([]protocol.Event, bool, error) {
 	workspaceRoot = physicalWorkspaceRoot(workspaceRoot)
 	threads, err := s.workspaceThreadIDs(ctx, workspaceRoot)
 	if err != nil {
 		return nil, false, err
 	}
-	result := make([]protocol.Event, 0, limit+1)
+	result := make([]protocol.Event, 0)
 	pageSize := max(workspaceReplayPageSize, limit+1)
 	for {
-		page, more, err := s.ReplayLimit(ctx, cursor, pageSize)
+		page, more, err := s.ReplayThrough(ctx, cursor, through, pageSize)
 		if err != nil {
 			return nil, false, err
 		}
@@ -279,7 +283,7 @@ func (s *Store) ReplayWorkspaceLimit(
 			cursor = event.Sequence
 			if workspaceOwnsEvent(workspaceRoot, threads, event) {
 				result = append(result, event)
-				if len(result) > limit {
+				if limit > 0 && len(result) > limit {
 					return result[:limit], true, nil
 				}
 			}

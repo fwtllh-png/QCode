@@ -8,6 +8,7 @@ import (
 	"github.com/fwtllh-png/QCode/internal/adapter/provider"
 	"github.com/fwtllh-png/QCode/internal/persist/state"
 	agentcontext "github.com/fwtllh-png/QCode/internal/runtime/agent/context"
+	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
 )
 
 func TestTurnWithdrawalBaselineAndTombstoneSurviveReopen(t *testing.T) {
@@ -80,6 +81,16 @@ func TestTurnWithdrawalBaselineAndTombstoneSurviveReopen(t *testing.T) {
 	}
 	if withdrawn, err := repository.TurnWithdrawn(t.Context(), "other-thread", "turn"); err != nil || withdrawn {
 		t.Fatal("cross-thread tombstone leak")
+	}
+	batch, err := repository.TurnsWithdrawn(t.Context(), map[protocol.ThreadID]protocol.TurnID{
+		"thread": "turn", "other-thread": "turn",
+	})
+	if err != nil || !batch["thread"] || batch["other-thread"] {
+		t.Fatalf("batch withdrawal identity: %v %v", batch, err)
+	}
+	batch, err = repository.TurnsWithdrawn(t.Context(), map[protocol.ThreadID]protocol.TurnID{"thread": "not-withdrawn"})
+	if err != nil || batch["thread"] {
+		t.Fatalf("batch withdrawal turn identity: %v %v", batch, err)
 	}
 	if _, found, err := repository.TurnBaseline(t.Context(), "other-thread", "turn"); err != nil || found {
 		t.Fatal("cross-thread baseline leak")

@@ -174,7 +174,9 @@ func (r *Repository) ListLifecycle(
 		filter.WorkspaceRoot = workspaceRoot
 	}
 	query := `
-		SELECT s.id
+		SELECT s.id, s.status, s.metadata_json, s.created_at, s.updated_at,
+		       w.root_path, w.display_name,
+		       root.id, root.parent_thread_id, root.title, root.status, root.updated_at
 		FROM sessions s
 		JOIN workspaces w ON w.id = s.workspace_id
 		JOIN threads root ON root.id = COALESCE(
@@ -234,42 +236,36 @@ func (r *Repository) ListLifecycle(
 		return protocol.SessionList{}, fmt.Errorf("list session lifecycle: %w", err)
 	}
 	defer rows.Close()
-	var ids []string
+	var summaries []protocol.SessionSummary
 	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
+		summary, err := scanLifecycle(rows)
+		if err != nil {
 			return protocol.SessionList{}, err
 		}
-		ids = append(ids, id)
+		summaries = append(summaries, summary)
 	}
 	if err := rows.Err(); err != nil {
 		return protocol.SessionList{}, err
 	}
-	result := make([]protocol.SessionSummary, 0, len(ids))
-	matches := make([]protocol.SessionSearchMatch, 0, len(ids))
-	for _, id := range ids {
-		summary, err := r.GetLifecycle(ctx, id)
-		if err != nil {
-			return protocol.SessionList{}, err
-		}
+	if err := rows.Close(); err != nil {
+		return protocol.SessionList{}, err
+	}
+	if err := r.projectLifecyclePage(ctx, summaries); err != nil {
+		return protocol.SessionList{}, err
+	}
+	result := make([]protocol.SessionSummary, 0, len(summaries))
+	for _, summary := range summaries {
 		if filter.Status != "" && summary.Status != filter.Status {
 			continue
 		}
 		result = append(result, summary)
-		if needle != "" {
-			turnID, matchErr := r.matchTurn(ctx, id, needle)
-			if matchErr != nil {
-				return protocol.SessionList{}, matchErr
-			}
-			if turnID != "" {
-				matches = append(matches, protocol.SessionSearchMatch{
-					SessionID: id, TurnID: turnID, Kind: "content",
-				})
-			}
-		}
 		if len(result) == limit {
 			break
 		}
+	}
+	matches, err := r.matchLifecyclePage(ctx, result, needle)
+	if err != nil {
+		return protocol.SessionList{}, err
 	}
 	return protocol.SessionList{
 		Version: protocol.SessionLifecycleVersion,
@@ -292,15 +288,7 @@ func getLifecycle(
 	queryer lifecycleQueryer,
 	sessionID string,
 ) (protocol.SessionSummary, error) {
-	var (
-		summary                                  protocol.SessionSummary
-		sessionStatus, threadStatus              string
-		metadata                                 []byte
-		workspaceLabel                           string
-		createdAt, sessionUpdated, threadUpdated string
-		parent                                   sql.NullString
-	)
-	err := queryer.QueryRowContext(ctx, `
+	summary, err := scanLifecycle(queryer.QueryRowContext(ctx, `
 		SELECT s.id, s.status, s.metadata_json, s.created_at, s.updated_at,
 		       w.root_path, w.display_name,
 		       t.id, t.parent_thread_id, t.title, t.status, t.updated_at
@@ -318,7 +306,32 @@ func getLifecycle(
 		)
 		WHERE s.id = ?`,
 		sessionID,
-	).Scan(
+	))
+	if err != nil {
+		return protocol.SessionSummary{}, err
+	}
+	if err := projectLatestTurn(ctx, queryer, &summary); err != nil {
+		return protocol.SessionSummary{}, err
+	}
+	if err := projectUsage(ctx, queryer, &summary); err != nil {
+		return protocol.SessionSummary{}, err
+	}
+	if err := summary.Validate(); err != nil {
+		return protocol.SessionSummary{}, err
+	}
+	return summary, nil
+}
+
+func scanLifecycle(row interface{ Scan(...any) error }) (protocol.SessionSummary, error) {
+	var (
+		summary                                  protocol.SessionSummary
+		sessionStatus, threadStatus              string
+		metadata                                 []byte
+		workspaceLabel                           string
+		createdAt, sessionUpdated, threadUpdated string
+		parent                                   sql.NullString
+	)
+	err := row.Scan(
 		&summary.SessionID, &sessionStatus, &metadata, &createdAt, &sessionUpdated,
 		&summary.WorkspaceRoot, &workspaceLabel,
 		&summary.ThreadID, &parent, &summary.Title, &threadStatus, &threadUpdated,
@@ -369,15 +382,6 @@ func getLifecycle(
 	}
 	if summary.WorkspaceLabel == "" || summary.WorkspaceLabel == "." {
 		summary.WorkspaceLabel = summary.WorkspaceRoot
-	}
-	if err := projectLatestTurn(ctx, queryer, &summary); err != nil {
-		return protocol.SessionSummary{}, err
-	}
-	if err := projectUsage(ctx, queryer, &summary); err != nil {
-		return protocol.SessionSummary{}, err
-	}
-	if err := summary.Validate(); err != nil {
-		return protocol.SessionSummary{}, err
 	}
 	return summary, nil
 }
@@ -908,7 +912,29 @@ func projectLatestTurn(
 	if err != nil {
 		return err
 	}
+	if err := applyLatestTurn(summary, turnID, status, updatedAt); err != nil {
+		return err
+	}
+	var sequence uint64
+	if err := queryer.QueryRowContext(ctx, `
+		SELECT COALESCE(MAX(e.sequence), 0)
+		FROM event_index e
+		JOIN threads t ON t.id = e.thread_id
+		WHERE t.session_id = ?`,
+		summary.SessionID,
+	).Scan(&sequence); err != nil {
+		return err
+	}
+	summary.LatestSequence = protocol.Cursor(sequence)
+	return nil
+}
+
+func applyLatestTurn(summary *protocol.SessionSummary, turnID, status, updatedAt string) error {
 	summary.LatestTurnID = protocol.TurnID(turnID)
+	summary.Status = protocol.SessionStatusIdle
+	if turnID == "" {
+		return nil
+	}
 	turnTime, err := parseTime(updatedAt)
 	if err != nil {
 		return err
@@ -928,17 +954,6 @@ func projectLatestTurn(
 	default:
 		summary.Status = protocol.SessionStatusIdle
 	}
-	var sequence uint64
-	if err := queryer.QueryRowContext(ctx, `
-		SELECT COALESCE(MAX(e.sequence), 0)
-		FROM event_index e
-		JOIN threads t ON t.id = e.thread_id
-		WHERE t.session_id = ?`,
-		summary.SessionID,
-	).Scan(&sequence); err != nil {
-		return err
-	}
-	summary.LatestSequence = protocol.Cursor(sequence)
 	return nil
 }
 
@@ -962,29 +977,6 @@ func projectUsage(
 	}
 	summary.CostKnown = calls > 0 && unpriced == 0
 	return nil
-}
-
-func (r *Repository) matchTurn(
-	ctx context.Context,
-	sessionID string,
-	query string,
-) (protocol.TurnID, error) {
-	var turnID string
-	err := r.db.QueryRowContext(ctx, `
-		SELECT tr.id
-		FROM items i
-		JOIN turns tr ON tr.id = i.turn_id
-		JOIN threads t ON t.id = tr.thread_id
-		WHERE t.session_id = ?
-		  AND instr(lower(CAST(i.payload_json AS TEXT)), lower(?)) > 0
-		ORDER BY tr.ordinal DESC, i.ordinal DESC
-		LIMIT 1`,
-		sessionID, query,
-	).Scan(&turnID)
-	if errors.Is(err, sql.ErrNoRows) {
-		return "", nil
-	}
-	return protocol.TurnID(turnID), err
 }
 
 func laterTime(left, right time.Time) time.Time {

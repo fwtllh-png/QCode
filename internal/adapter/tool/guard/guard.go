@@ -694,6 +694,11 @@ func (g *Guard) observeFileChange(
 		return FileChange{}, false, err
 	}
 	change := FileChange{Path: relative, Kind: kind}
+	if after.Exists {
+		change.AfterDigest = after.SHA256
+	} else {
+		change.AfterDigest = "missing"
+	}
 	stats, counted, err := g.countLines(ctx, path)
 	if err != nil {
 		return FileChange{}, false, err

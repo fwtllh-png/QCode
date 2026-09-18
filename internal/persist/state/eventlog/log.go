@@ -119,11 +119,12 @@ type durableFile interface {
 }
 
 // Log is a concurrency-safe JSONL event log. Each newline is the commit marker
-// for the preceding JSON event. Appends take the write lock; replays and
-// evidence lookups take read locks and run concurrently with appends —
-// committed regions of the file are append-only, and a failed append only
-// ever truncates bytes beyond the previously committed end.
+// for the preceding JSON event. Readers freeze an immutable index range under
+// mu, then verify bytes without holding the append lock. Committed regions are
+// append-only; rollback only truncates beyond the previously committed end.
 type Log struct {
+	// readers keeps the file open during reads; appends only need mu.
+	readers   sync.RWMutex
 	mu        sync.RWMutex
 	path      string
 	file      durableFile
@@ -334,7 +335,17 @@ func (l *Log) ReplayLimit(
 	if limit <= 0 {
 		return nil, false, errors.New("event replay limit must be positive")
 	}
-	records, more, err := l.replayRecords(ctx, cursor, limit)
+	return l.replayEvents(ctx, cursor, nil, limit)
+}
+
+// ReplayThrough reads (cursor, through], with an inclusive fixed fence.
+// A nonpositive limit returns the entire range.
+func (l *Log) ReplayThrough(ctx context.Context, cursor, through protocol.Cursor, limit int) ([]protocol.Event, bool, error) {
+	return l.replayEvents(ctx, cursor, &through, limit)
+}
+
+func (l *Log) replayEvents(ctx context.Context, cursor protocol.Cursor, through *protocol.Cursor, limit int) ([]protocol.Event, bool, error) {
+	records, more, err := l.replayRecords(ctx, cursor, through, limit)
 	if err != nil {
 		return nil, false, err
 	}
@@ -347,39 +358,53 @@ func (l *Log) ReplayLimit(
 
 // ReplayRecords returns events and verifies their byte offsets and hashes.
 func (l *Log) ReplayRecords(ctx context.Context, cursor protocol.Cursor) ([]Record, error) {
-	records, _, err := l.replayRecords(ctx, cursor, 0)
+	records, _, err := l.replayRecords(ctx, cursor, nil, 0)
 	return records, err
 }
 
 func (l *Log) replayRecords(
 	ctx context.Context,
 	cursor protocol.Cursor,
+	through *protocol.Cursor,
 	limit int,
 ) ([]Record, bool, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, false, err
 	}
+	l.readers.RLock()
+	defer l.readers.RUnlock()
 	l.mu.RLock()
-	defer l.mu.RUnlock()
 	if l.closed {
+		l.mu.RUnlock()
 		return nil, false, ErrClosed
 	}
 	if cursor > l.last {
-		return nil, false, &CursorError{Requested: cursor, Latest: l.last}
+		latest := l.last
+		l.mu.RUnlock()
+		return nil, false, &CursorError{Requested: cursor, Latest: latest}
 	}
 
 	start := sort.Search(len(l.entries), func(index int) bool {
 		return l.entries[index].Sequence > cursor
 	})
-	available := len(l.entries) - start
+	end := len(l.entries)
+	if through != nil {
+		end = sort.Search(len(l.entries), func(index int) bool {
+			return l.entries[index].Sequence > *through
+		})
+	}
+	available := max(0, end-start)
 	count := available
 	more := false
 	if limit > 0 && count > limit {
 		count = limit
 		more = true
 	}
+	// Existing entries never change, even if Append reallocates the index.
+	entries := l.entries[start : start+count : start+count]
+	l.mu.RUnlock()
 	records := make([]Record, 0, count)
-	for _, evidence := range l.entries[start : start+count] {
+	for _, evidence := range entries {
 		if err := ctx.Err(); err != nil {
 			return nil, false, err
 		}
@@ -388,6 +413,9 @@ func (l *Log) replayRecords(
 			return nil, false, err
 		}
 		records = append(records, record)
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, false, err
 	}
 	return records, more, nil
 }
@@ -402,26 +430,34 @@ func (l *Log) ReadRecord(
 	if err := ctx.Err(); err != nil {
 		return Record{}, false, err
 	}
+	l.readers.RLock()
+	defer l.readers.RUnlock()
 	l.mu.RLock()
-	defer l.mu.RUnlock()
 	if l.closed {
+		l.mu.RUnlock()
 		return Record{}, false, ErrClosed
 	}
 	index := sort.Search(len(l.entries), func(index int) bool {
 		return l.entries[index].Sequence >= sequence
 	})
 	if index == len(l.entries) || l.entries[index].Sequence != sequence {
+		l.mu.RUnlock()
 		return Record{}, false, nil
 	}
-	record, err := l.readVerifiedRecord(l.entries[index])
+	evidence := l.entries[index]
+	l.mu.RUnlock()
+	record, err := l.readVerifiedRecord(evidence)
 	if err != nil {
+		return Record{}, false, err
+	}
+	if err := ctx.Err(); err != nil {
 		return Record{}, false, err
 	}
 	return record, true, nil
 }
 
 // readVerifiedRecord reads and verifies one committed record; the caller
-// holds the read or write lock.
+// holds readers so Close cannot invalidate the file.
 func (l *Log) readVerifiedRecord(evidence Evidence) (Record, error) {
 	recordBytes := make([]byte, evidence.Length)
 	read, err := l.file.ReadAt(recordBytes, evidence.Offset)
@@ -489,6 +525,8 @@ func (l *Log) LastSequence(ctx context.Context) (protocol.Cursor, error) {
 
 // Close closes the log. It is safe to call more than once.
 func (l *Log) Close(context.Context) error {
+	l.readers.Lock()
+	defer l.readers.Unlock()
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.closed {

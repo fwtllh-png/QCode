@@ -261,8 +261,11 @@ func TestFinishOnlyAllowsMutationAndVerificationCommands(t *testing.T) {
 }
 
 func TestWorkspaceTurnFinalizesAfterNoProgressBudget(t *testing.T) {
-	streams := make([]provider.Stream, 0, 69)
-	for index := range 68 {
+	// The first distinct tool-result digest renews the clock, so the script
+	// needs one extra identical echo before the MaxSteps+repair lease
+	// (64+5) can exhaust.
+	streams := make([]provider.Stream, 0, 70)
+	for index := range 69 {
 		streams = append(streams, toolCallStream(
 			fmt.Sprintf("call-%d", index),
 			"echo",
@@ -313,8 +316,8 @@ func TestWorkspaceTurnFinalizesAfterNoProgressBudget(t *testing.T) {
 		terminal.Convergence.Cause != string(turnkernel.ConvergenceNoProgress) {
 		t.Fatalf("Run() error = %v", err)
 	}
-	if len(runtime.requests) != 69 {
-		t.Fatalf("provider requests = %d, want 69", len(runtime.requests))
+	if len(runtime.requests) != 70 {
+		t.Fatalf("provider requests = %d, want 70", len(runtime.requests))
 	}
 	assertProgressFeedback := func(requestIndex int, stage string) {
 		t.Helper()
@@ -331,8 +334,8 @@ func TestWorkspaceTurnFinalizesAfterNoProgressBudget(t *testing.T) {
 			stage,
 		)
 	}
-	assertProgressFeedback(22, "converge")
-	assertProgressFeedback(45, "finish_only")
+	assertProgressFeedback(24, "converge")
+	assertProgressFeedback(47, "finish_only")
 }
 
 func TestReadOnlyTurnEntersFinishOnlyAtDerivedBudget(t *testing.T) {

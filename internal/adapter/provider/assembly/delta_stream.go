@@ -3,16 +3,15 @@ package assembly
 import (
 	"io"
 	"sync"
-	"sync/atomic"
-	"time"
 
 	"github.com/fwtllh-png/QCode/internal/adapter/provider"
 )
 
-const (
-	deltaFlushBytes  = 1024
-	deltaFlushWindow = 250 * time.Millisecond
-)
+// MaxCoalescedDeltaBytes is the payload budget for one waiting batch. It
+// preserves the existing 1 KiB batching budget, but is never a flush target:
+// Recv delivers available output immediately. A larger provider event is
+// delivered intact; the reader retains at most one additional source event.
+const MaxCoalescedDeltaBytes = 1024
 
 type streamResult struct {
 	event provider.StreamEvent
@@ -21,20 +20,15 @@ type streamResult struct {
 
 type DeltaCoalescingStream struct {
 	source    provider.Stream
-	requests  chan struct{}
-	results   chan streamResult
-	done      chan struct{}
+	startOnce sync.Once
 	closeOnce sync.Once
 	closeErr  error
 	observe   func()
-	reading   bool
-	dead      atomic.Bool // set to true when the read goroutine exits
-	pending   []streamResult
-	buffered  *provider.StreamEvent
-	timer     *time.Timer
-	runType   provider.StreamEventType
-	runIndex  int
-	emitted   bool
+	mu        sync.Mutex
+	changed   *sync.Cond
+	pending   *streamResult
+	closed    bool
+	finished  bool
 }
 
 func NewDeltaCoalescingStream(
@@ -42,149 +36,101 @@ func NewDeltaCoalescingStream(
 	observe ...func(),
 ) provider.Stream {
 	stream := &DeltaCoalescingStream{
-		source:   source,
-		requests: make(chan struct{}),
-		results:  make(chan streamResult),
-		done:     make(chan struct{}),
+		source: source,
 	}
+	stream.changed = sync.NewCond(&stream.mu)
 	if len(observe) != 0 {
 		stream.observe = observe[0]
 	}
-	go stream.read()
 	return stream
 }
 
 func (s *DeltaCoalescingStream) Recv() (provider.StreamEvent, error) {
-	for {
-		if s.buffered == nil {
-			// If the read goroutine is dead and there are no pending
-			// results, the stream is exhausted.
-			if s.dead.Load() && len(s.pending) == 0 {
-				return provider.StreamEvent{}, io.EOF
-			}
-			result := s.next()
-			if result.err != nil || !coalescibleDelta(result.event) {
-				return result.event, result.err
-			}
-			s.startBuffer(result.event)
-			if !s.emitted {
-				s.emitted = true
-				return s.takeBuffered(), nil
-			}
-			if deltaSize(*s.buffered) >= deltaFlushBytes {
-				return s.takeBuffered(), nil
-			}
-		}
-		s.request()
-		select {
-		case result := <-s.results:
-			s.reading = false
-			if result.err != nil {
-				s.pending = append(s.pending, result)
-				return s.takeBuffered(), nil
-			}
-			event := result.event
-			if !coalescibleDelta(event) ||
-				event.Type != s.runType ||
-				deltaIndex(event) != s.runIndex ||
-				!compatibleDelta(s.buffered, event) {
-				s.pending = append(s.pending, result)
-				return s.takeBuffered(), nil
-			}
-			mergeDelta(s.buffered, event)
-			if deltaSize(*s.buffered) >= deltaFlushBytes {
-				return s.takeBuffered(), nil
-			}
-		case <-s.timer.C:
-			return s.takeBuffered(), nil
-		}
+	// The consumer must finish transport setup and its initial checkpoint
+	// before any provider output is read or observed.
+	s.startOnce.Do(func() { go s.read() })
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for s.pending == nil && !s.closed && !s.finished {
+		s.changed.Wait()
 	}
+	if s.closed || s.pending == nil {
+		return provider.StreamEvent{}, io.EOF
+	}
+	result := *s.pending
+	s.pending = nil
+	s.changed.Broadcast()
+	return result.event, result.err
 }
 
 func (s *DeltaCoalescingStream) Close() error {
 	s.closeOnce.Do(func() {
-		close(s.done)
+		s.mu.Lock()
+		s.closed = true
+		s.pending = nil
+		s.changed.Broadcast()
+		s.mu.Unlock()
 		s.closeErr = s.source.Close()
 	})
 	return s.closeErr
 }
 
 func (s *DeltaCoalescingStream) read() {
-	defer func() { s.dead.Store(true) }()
 	for {
-		select {
-		case <-s.requests:
-		case <-s.done:
+		s.mu.Lock()
+		closed := s.closed
+		s.mu.Unlock()
+		if closed {
 			return
 		}
 		event, err := s.source.Recv()
 		if err == nil && s.observe != nil && outputBearingEvent(event) {
 			s.observe()
 		}
-		select {
-		case s.results <- streamResult{event: event, err: err}:
-		case <-s.done:
-			return
-		}
-		if err != nil {
+		if !s.offer(streamResult{event: event, err: err}) ||
+			err != nil || event.Type == provider.EventMessageStop {
 			return
 		}
 	}
 }
 
-func (s *DeltaCoalescingStream) next() streamResult {
-	if len(s.pending) != 0 {
-		result := s.pending[0]
-		s.pending = s.pending[1:]
-		return result
-	}
-	if s.dead.Load() {
-		return streamResult{err: io.EOF}
-	}
-	s.request()
-	result := <-s.results
-	s.reading = false
-	return result
-}
-
-func (s *DeltaCoalescingStream) request() {
-	if s.reading || s.dead.Load() {
-		return
-	}
-	select {
-	case s.requests <- struct{}{}:
-	case <-s.done:
-		return
-	}
-	s.reading = true
-}
-
-func (s *DeltaCoalescingStream) startBuffer(event provider.StreamEvent) {
-	copy := event
-	if event.ToolCall != nil {
-		fragment := *event.ToolCall
-		copy.ToolCall = &fragment
-	}
-	s.buffered = &copy
-	s.runType = event.Type
-	s.runIndex = deltaIndex(event)
-	s.timer = time.NewTimer(deltaFlushWindow)
-}
-
-func (s *DeltaCoalescingStream) takeBuffered() provider.StreamEvent {
-	event := *s.buffered
-	s.buffered = nil
-	s.runType = ""
-	if s.timer != nil {
-		if !s.timer.Stop() {
-			select {
-			case <-s.timer.C:
-			default:
+// offer combines only output already waiting for a busy consumer. Boundaries
+// and a full batch stop the reader until Recv makes room; there is no timer,
+// unbounded queue, or wait for a future fragment on the consumer path.
+func (s *DeltaCoalescingStream) offer(result streamResult) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for !s.closed {
+		if s.pending == nil {
+			event := result.event
+			if event.ToolCall != nil {
+				fragment := *event.ToolCall
+				event.ToolCall = &fragment
 			}
+			if event.Block != nil {
+				block := *event.Block
+				event.Block = &block
+			}
+			result.event = event
+			s.pending = &result
+			s.finished = result.err != nil || event.Type == provider.EventMessageStop
+			s.changed.Broadcast()
+			return true
 		}
-		s.timer = nil
+		buffered := &s.pending.event
+		if s.pending.err == nil && result.err == nil &&
+			coalescibleDelta(*buffered) && coalescibleDelta(result.event) &&
+			buffered.Type == result.event.Type &&
+			deltaIndex(*buffered) == deltaIndex(result.event) &&
+			compatibleDelta(buffered, result.event) &&
+			deltaSize(result.event) <= MaxCoalescedDeltaBytes &&
+			deltaSize(*buffered) <= MaxCoalescedDeltaBytes-deltaSize(result.event) {
+			mergeDelta(buffered, result.event)
+			return true
+		}
+		s.changed.Wait()
 	}
-	return event
+	return false
 }
 
 func outputBearingEvent(event provider.StreamEvent) bool {

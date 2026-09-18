@@ -63,6 +63,16 @@ func TestWorkspaceEventStoreIsolatesReplayAndDoesNotOwnSharedStore(
 	}
 	assertWorkspaceReplay(eventsA, eventA.ID)
 	assertWorkspaceReplay(eventsB, eventB.ID)
+	for name, eventStore := range map[string]*state.WorkspaceEventStore{
+		"session-a": eventsA, "session-b": eventsB,
+	} {
+		matches, err := eventStore.SearchSessionEvents(t.Context(),
+			map[protocol.ThreadID]string{"thread-a": "session-a", "thread-b": "session-b"},
+			"WORKSPACE")
+		if err != nil || len(matches) != 1 || matches[0].SessionID != name {
+			t.Fatalf("workspace search %s = %+v, %v", name, matches, err)
+		}
+	}
 	// Even explicitly supplied foreign threads cannot expand Workspace access.
 	page, more, err := eventsA.ReplaySessionBefore(t.Context(), "session-a",
 		[]protocol.ThreadID{"thread-a", "thread-b"}, 0, 2, 1)

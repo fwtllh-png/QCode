@@ -2497,10 +2497,15 @@ func TestEngineCompactionRetainsToolPairingAtomically(t *testing.T) {
 
 func TestMidTurnCompactionCutsClosedToolPairsWithinActiveTurn(t *testing.T) {
 	engine := newEngine(t, &scriptedProvider{}, tool.NewRegistry(nil, nil))
+	route := mustTestRouteWithContext(t, 1024)
+	engine.options.Route = route
+	engine.options.Routes, _ = model.NewRouteSet(route, nil, false)
+	engine.options.MaxOutputTokens = 128
 	engine.options.Context.Window.AutoTokens = 500
 	engine.options.SummaryMaxBytes = 2 << 10
+	user := "fix the parser " + strings.Repeat("context ", 80)
 	history := []provider.Message{
-		messageWithText(provider.RoleUser, "fix the parser "+strings.Repeat("context ", 80), 1),
+		messageWithText(provider.RoleUser, user, 1),
 		toolCallMessage(1, "call_1", "read", `{}`),
 		toolResultMessage(1, "call_1", strings.Repeat("first ", 200)),
 		toolCallMessage(1, "call_2", "read", `{}`),
@@ -2508,7 +2513,6 @@ func TestMidTurnCompactionCutsClosedToolPairsWithinActiveTurn(t *testing.T) {
 		toolCallMessage(1, "call_3", "read", `{}`),
 		toolResultMessage(1, "call_3", "latest"),
 	}
-	before := cloneMessages(history)
 	var receipt *CompactionReceipt
 	snapshot := agentcontext.NewMessageLedger(agentcontext.LedgerInput{}).Snapshot()
 	window, err := engine.runCompactGate(
@@ -2518,20 +2522,25 @@ func TestMidTurnCompactionCutsClosedToolPairsWithinActiveTurn(t *testing.T) {
 			return nil
 		}, 0, engine.contextViewProject(nil),
 	)
-	if err != nil && protocol.CodeOf(err) != protocol.CodeResourceExhausted {
-		t.Fatal(err)
+	if err != nil {
+		t.Fatalf("progressing turn failed: %v", err)
 	}
-	if !reflect.DeepEqual(history, before) {
-		t.Fatalf("sample-path gate replaced history: %+v", history)
+	if window.hardLimit != 0 && window.total > window.hardLimit {
+		t.Fatalf("admitted an overflowing window: %+v", window)
 	}
 	assertToolPairs(t, history)
-	if receipt != nil &&
-		(receipt.TruncationReason != "visible_tail_fold" ||
-			receipt.RetainedBytes >= receipt.OriginalBytes) {
-		t.Fatalf("mid-turn fold receipt = %+v", receipt)
+	if !currentTurnKeepsUser(history, user) {
+		t.Fatalf("pinned user missing: %+v", history)
 	}
-	if err == nil && window.hardLimit != 0 && window.total > window.hardLimit {
-		t.Fatalf("admitted an overflowing window: %+v", window)
+	if receipt == nil || receipt.TruncationReason != "current_turn_working_set" {
+		t.Fatalf("working-set receipt = %+v", receipt)
+	}
+	joined := historyTexts(history)
+	if strings.Contains(joined, "first ") || strings.Contains(joined, "second ") {
+		t.Fatalf("closed groups stayed in history: %s", joined)
+	}
+	if !strings.Contains(joined, "latest") {
+		t.Fatalf("latest pair was dropped: %s", joined)
 	}
 }
 
@@ -3848,44 +3857,15 @@ func TestMidTurnSurfacePruneSavesOverpressureTurn(t *testing.T) {
 		t.Fatalf("degraded window still overflows: %+v", window)
 	}
 	assertToolPairs(t, history)
-	var pruned, latestIntact int
-	for _, message := range history {
-		for _, block := range message.Blocks {
-			if block.Type != provider.ContentToolResult ||
-				block.ToolResult == nil {
-				continue
-			}
-			var value tool.Result
-			if err := json.Unmarshal(
-				[]byte(block.ToolResult.Content), &value,
-			); err != nil {
-				t.Fatalf("degraded result is not a projection: %v", err)
-			}
-			if block.ToolResult.CallID == "call_3" {
-				if value.Content != "latest" || value.Handle != "" {
-					t.Fatalf("latest batch degraded: %+v", value)
-				}
-				latestIntact++
-				continue
-			}
-			if value.Handle == "" || !value.Truncated {
-				t.Fatalf("closed surface kept without a handle: %+v", value)
-			}
-			pruned++
-		}
+	if !currentTurnKeepsUser(history, "fix the parser") {
+		t.Fatalf("pinned user missing: %+v", history)
 	}
-	if pruned != 2 || latestIntact != 1 {
-		t.Fatalf("pruned=%d latest=%d", pruned, latestIntact)
+	joined := historyTexts(history)
+	if strings.Contains(joined, strings.Repeat("first ", 20)) ||
+		strings.Contains(joined, strings.Repeat("second ", 20)) {
+		t.Fatalf("closed results stayed in the working set: %s", joined)
 	}
-	var surfaceReceipt *CompactionReceipt
-	for _, receipt := range receipts {
-		if receipt.Mode == "surface" {
-			surfaceReceipt = receipt
-		}
-	}
-	if surfaceReceipt == nil ||
-		surfaceReceipt.PrunedToolResults != pruned ||
-		surfaceReceipt.PrunedBytes <= 0 {
-		t.Fatalf("surface receipts = %+v", receipts)
+	if len(receipts) == 0 {
+		t.Fatal("expected a degradation receipt")
 	}
 }

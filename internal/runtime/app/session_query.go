@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/fwtllh-png/QCode/internal/persist/history"
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
 )
 
@@ -62,17 +63,13 @@ func (r *SessionService) ListSessions(
 			return protocol.SessionList{}, err
 		}
 	}
-	candidates := make([]protocol.SessionSummary, 0, len(page.Sessions))
-	for _, value := range page.Sessions {
-		value, err = r.projectSessionActivity(ctx, value)
-		if err != nil {
-			return protocol.SessionList{}, err
-		}
-		candidates = append(candidates, value)
+	candidates, byThread, err := r.projectSessionActivities(ctx, page.Sessions)
+	if err != nil {
+		return protocol.SessionList{}, err
 	}
 	eventMatches := []protocol.SessionSearchMatch(nil)
 	if searchQuery != "" {
-		eventMatches, err = r.searchSessionEvents(ctx, candidates, searchQuery)
+		eventMatches, err = r.searchSessionEvents(ctx, candidates, byThread, searchQuery)
 		if err != nil {
 			return protocol.SessionList{}, err
 		}
@@ -136,59 +133,39 @@ func (r *SessionService) ListSessions(
 func (r *SessionService) searchSessionEvents(
 	ctx context.Context,
 	sessions []protocol.SessionSummary,
+	byThread map[protocol.ThreadID]string,
 	query string,
 ) ([]protocol.SessionSearchMatch, error) {
-	byThread := make(map[protocol.ThreadID]string, len(sessions))
-	for _, summary := range sessions {
-		threadIDs, err := r.sessionLifecycle.ThreadIDs(ctx, summary.SessionID)
+	matches := make(map[string]protocol.SessionSearchMatch, len(sessions))
+	if reader, ok := r.events.(history.SearchReader); ok {
+		indexed, err := reader.SearchSessionEvents(ctx, byThread, query)
 		if err != nil {
 			return nil, err
 		}
-		for _, threadID := range threadIDs {
-			byThread[threadID] = summary.SessionID
+		for _, match := range indexed {
+			matches[match.SessionID] = match
 		}
-	}
-	events, err := r.events.Replay(ctx, 0)
-	var gap *CursorGapError
-	if errors.As(err, &gap) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	matches := make(map[string]protocol.SessionSearchMatch, len(sessions))
-	record := func(event protocol.Event, kind, value string) {
-		sessionID := byThread[event.ThreadID]
-		snippet, ok := searchSnippet(value, query)
-		if sessionID == "" || !ok || event.TurnID == "" {
-			return
+	} else {
+		events, err := r.events.Replay(ctx, 0)
+		var gap *CursorGapError
+		if errors.As(err, &gap) {
+			return nil, nil
 		}
-		matches[sessionID] = protocol.SessionSearchMatch{
-			SessionID: sessionID,
-			TurnID:    event.TurnID,
-			Kind:      kind,
-			Snippet:   snippet,
+		if err != nil {
+			return nil, err
 		}
-	}
-	for _, event := range events {
-		switch data := event.Data.(type) {
-		case *protocol.TurnStartedData:
-			prompt := data.DisplayPrompt
-			if prompt == "" {
-				prompt = data.Prompt
+		for _, event := range events {
+			sessionID := byThread[event.ThreadID]
+			if sessionID == "" {
+				continue
 			}
-			record(event, "user_request", prompt)
-		case *protocol.TurnCompletedData:
-			record(event, "agent_output", data.Text)
-		case *protocol.ExecutionReceiptData:
-			for _, change := range data.Changes {
-				record(event, "path", change.Path)
+			kind, snippet, ok := history.MatchSearchFields(history.SearchFields(event), query)
+			if !ok {
+				continue
 			}
-			for _, reference := range data.EditorContext {
-				record(event, "path", reference.Path)
-				if reference.Symbol != nil {
-					record(event, "symbol", reference.Symbol.Name)
-				}
+			matches[sessionID] = protocol.SessionSearchMatch{
+				SessionID: sessionID, TurnID: event.TurnID,
+				Kind: kind, Snippet: snippet,
 			}
 		}
 	}
@@ -198,7 +175,7 @@ func (r *SessionService) searchSessionEvents(
 			result = append(result, match)
 			continue
 		}
-		if snippet, ok := searchSnippet(summary.Title, query); ok &&
+		if snippet, ok := history.SearchSnippet(summary.Title, query); ok &&
 			summary.LatestTurnID != "" {
 			result = append(result, protocol.SessionSearchMatch{
 				SessionID: summary.SessionID,
@@ -209,34 +186,6 @@ func (r *SessionService) searchSessionEvents(
 		}
 	}
 	return result, nil
-}
-
-func searchSnippet(value, query string) (string, bool) {
-	const limit = 240
-	valueRunes := []rune(value)
-	lower := []rune(strings.ToLower(value))
-	needle := []rune(strings.ToLower(query))
-	index := -1
-	for candidate := 0; candidate+len(needle) <= len(lower); candidate++ {
-		if string(lower[candidate:candidate+len(needle)]) == string(needle) {
-			index = candidate
-			break
-		}
-	}
-	if index < 0 {
-		return "", false
-	}
-	start := max(0, index-limit/3)
-	end := min(len(valueRunes), start+limit)
-	start = max(0, end-limit)
-	snippet := strings.TrimSpace(string(valueRunes[start:end]))
-	if start > 0 {
-		snippet = "..." + snippet
-	}
-	if end < len(valueRunes) {
-		snippet += "..."
-	}
-	return snippet, true
 }
 
 func (r *SessionService) SessionStatus(
@@ -265,46 +214,20 @@ func (r *SessionService) projectSessionActivity(
 	ctx context.Context,
 	summary protocol.SessionSummary,
 ) (protocol.SessionSummary, error) {
-	if summary.LatestTurnID != "" {
-		withdrawn, err := r.TurnWithdrawn(ctx, summary.ThreadID, summary.LatestTurnID)
-		if err != nil {
-			return protocol.SessionSummary{}, err
-		}
-		summary.LatestTurnWithdrawn = withdrawn
-		if withdrawn {
-			summary.Status = protocol.SessionStatusIdle
-		}
-	}
-	threadIDs, err := r.sessionLifecycle.ThreadIDs(ctx, summary.SessionID)
+	summaries, _, err := r.projectSessionActivities(ctx, []protocol.SessionSummary{summary})
 	if err != nil {
 		return protocol.SessionSummary{}, err
 	}
+	return summaries[0], nil
+}
+
+func (r *SessionService) projectSessionLiveActivity(
+	summary protocol.SessionSummary,
+	threadIDs []protocol.ThreadID,
+) protocol.SessionSummary {
 	threads := make(map[protocol.ThreadID]struct{}, len(threadIDs))
 	for _, threadID := range threadIDs {
 		threads[threadID] = struct{}{}
-	}
-	if r.sessionArtifacts != nil {
-		checkpointCount, err := r.sessionArtifacts.CountCheckpoints(
-			ctx,
-			summary.SessionID,
-		)
-		if err != nil {
-			return protocol.SessionSummary{}, err
-		}
-		summary.CheckpointCount = checkpointCount
-		if checkpointCount > 0 {
-			checkpoints, err := r.sessionArtifacts.ListCheckpoints(
-				ctx,
-				summary.SessionID,
-				1,
-			)
-			if err != nil {
-				return protocol.SessionSummary{}, err
-			}
-			if len(checkpoints) == 1 {
-				summary.ChangedFiles = checkpoints[0].ChangedFiles
-			}
-		}
 	}
 	active := false
 	for threadID := range threads {
@@ -338,7 +261,7 @@ func (r *SessionService) projectSessionActivity(
 	case active, pendingOperation:
 		summary.Status = protocol.SessionStatusRunning
 	}
-	return summary, nil
+	return summary
 }
 
 func ensureSessionQuiescent(

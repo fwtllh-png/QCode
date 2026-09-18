@@ -96,6 +96,16 @@ type SessionArtifactStore interface {
 	) (protocol.SessionPlanArtifact, bool, error)
 }
 
+type SessionCheckpointSummary struct {
+	Count        int
+	ChangedFiles int
+}
+
+// SessionCheckpointSummaryStore optionally batches the sidebar projection.
+type SessionCheckpointSummaryStore interface {
+	CheckpointSummaries(context.Context, []string) (map[string]SessionCheckpointSummary, error)
+}
+
 type ContextSessionArtifactStore interface {
 	SessionArtifactStore
 	SaveContextCheckpoint(

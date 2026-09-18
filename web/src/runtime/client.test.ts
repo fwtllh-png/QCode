@@ -59,6 +59,50 @@ async function startClient(client: RuntimeClient): Promise<FakeWebSocket> {
   return socket;
 }
 
+function deferProgressReads() {
+  type Read = {
+    resolve: (response: Response) => void;
+    signal: AbortSignal | null | undefined;
+    sessionID: string;
+    workspaceID: string | null;
+  };
+  const plans: Read[] = [];
+  const agents: Read[] = [];
+  const originalFetch = globalThis.fetch;
+  vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    const route = String(input);
+    const pending = route.endsWith("/plan/get") ? plans
+      : route.endsWith("/agent/list") ? agents : undefined;
+    if (!pending) return originalFetch(input, init);
+    return new Promise<Response>((resolve) => pending.push({
+      resolve,
+      signal: init?.signal,
+      sessionID: JSON.parse(String(init?.body)).session_id,
+      workspaceID: new Headers(init?.headers).get("X-QCode-Workspace-ID")
+    }));
+  }));
+  return {plans, agents};
+}
+
+function deferSessionReads() {
+  const reads: Array<{
+    resolve: (response: Response) => void;
+    signal: AbortSignal | null | undefined;
+    query: string;
+    workspaceID: string | null;
+  }> = [];
+  const originalFetch = globalThis.fetch;
+  vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    if (!String(input).endsWith("/session/list")) return originalFetch(input, init);
+    return new Promise<Response>((resolve) => reads.push({
+      resolve, signal: init?.signal,
+      query: JSON.parse(String(init?.body)).query,
+      workspaceID: new Headers(init?.headers).get("X-QCode-Workspace-ID")
+    }));
+  }));
+  return {reads, originalFetch};
+}
+
 describe("RuntimeClient", () => {
   const requests: Array<{
     route: string;
@@ -1039,6 +1083,129 @@ describe("RuntimeClient", () => {
     await old;
     expect(client.getSnapshot().trace?.turns[0]?.complete).toBe(true);
     client.stop();
+  });
+
+  it("coalesces progress events and never publishes a read superseded while in flight", async () => {
+    activePlan = true;
+    const client = new RuntimeClient();
+    const socket = await startClient(client);
+    const initialPlan = client.getSnapshot().plan!;
+    const reads = deferProgressReads();
+    const revisions: number[] = [];
+    const unsubscribe = client.subscribe(() => {
+      revisions.push(client.getSnapshot().plan?.document?.revision ?? 0);
+    });
+    const emit = (sequence: number, kind: string) => socket.emit("message", {
+      type: "event", protocol_version: 1, session_id: "session", sequence,
+      event: runtimeEvent(sequence, kind)
+    });
+    emit(1, "plan.delta");
+    await vi.waitFor(() => expect(reads.plans).toHaveLength(1));
+    for (let sequence = 2; sequence <= 8; sequence++) emit(sequence, "agent.status");
+    emit(9, "turn.completed");
+    expect(reads.plans).toHaveLength(1);
+    expect(reads.agents).toHaveLength(1);
+    reads.plans[0].resolve(envelope({
+      version: 2, artifact: {...initialPlan, document: {...initialPlan.document, revision: 2}}
+    }));
+    reads.agents[0].resolve(envelope({agents: [{agent_id: "agent", status: "running"}]}));
+    await vi.waitFor(() => expect(reads.plans).toHaveLength(2));
+    expect(revisions).not.toContain(2);
+    expect(client.getSnapshot().agents).toEqual([]);
+    reads.plans[1].resolve(envelope({
+      version: 2, artifact: {...initialPlan, document: {...initialPlan.document, revision: 3}}
+    }));
+    reads.agents[1].resolve(envelope({agents: [{agent_id: "agent", status: "completed"}]}));
+    await vi.waitFor(() => {
+      expect(client.getSnapshot().plan?.document?.revision).toBe(3);
+      expect(client.getSnapshot().agents[0]?.status).toBe("completed");
+    });
+    expect(reads.plans).toHaveLength(2);
+    expect(reads.agents).toHaveLength(2);
+    unsubscribe();
+    client.stop();
+  });
+
+  it("shares progress hydration with live refresh and retains successful data after a partial failure", async () => {
+    activePlan = true;
+    const client = new RuntimeClient();
+    const socket = await startClient(client);
+    const initialPlan = client.getSnapshot().plan!;
+    const reads = deferProgressReads();
+    const selecting = client.selectSession("session");
+    await vi.waitFor(() => expect(reads.plans).toHaveLength(1));
+    socket.emit("message", {
+      type: "event", protocol_version: 1, session_id: "session", sequence: 1,
+      event: runtimeEvent(1, "agent.status")
+    });
+    expect(reads.plans).toHaveLength(1);
+    reads.plans[0].resolve(envelope({version: 1}));
+    reads.agents[0].resolve(envelope({agents: [{agent_id: "agent", status: "running"}]}));
+    await vi.waitFor(() => expect(reads.plans).toHaveLength(2));
+    reads.plans[1].resolve(envelopeProblem("unavailable", "plan unavailable", true));
+    reads.agents[1].resolve(envelope({agents: [{agent_id: "agent", status: "completed"}]}));
+    await selecting;
+    expect(client.getSnapshot().agents[0]?.status).toBe("completed");
+    socket.emit("message", {
+      type: "event", protocol_version: 1, session_id: "session", sequence: 2,
+      event: runtimeEvent(2, "plan.delta")
+    });
+    await vi.waitFor(() => expect(reads.plans).toHaveLength(3));
+    reads.plans[2].resolve(envelope({
+      version: 2, artifact: {...initialPlan, document: {...initialPlan.document, revision: 2}}
+    }));
+    reads.agents[2].resolve(envelopeProblem("unavailable", "agents unavailable", true));
+    await vi.waitFor(() => expect(client.getSnapshot().plan?.document?.revision).toBe(2));
+    expect(client.getSnapshot().agents[0]?.status).toBe("completed");
+    client.stop();
+  });
+
+  it.each(["session", "workspace"])("cancels old progress on %s selection and ignores late responses", async (scope) => {
+    multipleWorkspaces = true;
+    const client = new RuntimeClient();
+    await startClient(client);
+    const reads = deferProgressReads();
+    const oldSelection = client.selectSession("session");
+    await vi.waitFor(() => expect(reads.plans).toHaveLength(1));
+    const newSelection = scope === "session"
+      ? client.selectSession("session") : client.selectWorkspace("workspace-b-id");
+    if (scope === "workspace") {
+      await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(2));
+      const socket = FakeWebSocket.instances[1];
+      socket.emit("open");
+      socket.emit("message", {type: "hello", protocol_version: 1, sequence: 0});
+    }
+    await vi.waitFor(() => expect(reads.plans).toHaveLength(2));
+    expect(reads.plans[0].signal?.aborted).toBe(true);
+    expect(reads.agents[0].signal?.aborted).toBe(true);
+    expect(reads.plans[1].workspaceID).toBe(scope === "session" ? "workspace-id" : "workspace-b-id");
+    expect(reads.agents[1].sessionID).toBe(scope === "session" ? "session" : "session-b");
+    reads.plans[1].resolve(envelope({version: 1}));
+    reads.agents[1].resolve(envelope({agents: [{agent_id: "current", status: "completed"}]}));
+    await newSelection;
+    const accepted = client.getSnapshot();
+    // The fake transport deliberately completes even after abort.
+    reads.plans[0].resolve(envelope({version: 1}));
+    reads.agents[0].resolve(envelope({agents: [{agent_id: "old", status: "running"}]}));
+    await oldSelection;
+    expect(client.getSnapshot()).toBe(accepted);
+    client.stop();
+  });
+
+  it("cancels progress reads on stop without publishing their late responses", async () => {
+    const client = new RuntimeClient();
+    await startClient(client);
+    const reads = deferProgressReads();
+    const selecting = client.selectSession("session");
+    await vi.waitFor(() => expect(reads.plans).toHaveLength(1));
+    client.stop();
+    const stopped = client.getSnapshot();
+    expect(reads.plans[0].signal?.aborted).toBe(true);
+    expect(reads.agents[0].signal?.aborted).toBe(true);
+    reads.plans[0].resolve(envelope({version: 1}));
+    reads.agents[0].resolve(envelope({agents: [{agent_id: "late", status: "running"}]}));
+    await selecting;
+    expect(client.getSnapshot()).toBe(stopped);
   });
 
   it("queries only incomplete and newly loaded Turns and merges their traces", async () => {
@@ -2075,6 +2242,121 @@ describe("RuntimeClient", () => {
     client.stop();
   });
 
+  it("coalesces in-flight activity across event tasks and preserves other Workspace search results", async () => {
+    multipleWorkspaces = true;
+    const client = new RuntimeClient(new MemoryBrowserStorage());
+    const socket = await startClient(client);
+    await client.refreshSessions("needle");
+    const before = client.getSnapshot();
+    const primary = before.sessions.find((session) => session.session_id === "session")!;
+    const secondary = before.sessions.find((session) => session.session_id === "session-b")!;
+    const {reads} = deferSessionReads();
+    const emit = (sequence: number) => socket.emit("message", {
+      type: "event", protocol_version: 1, session_id: "unknown-session", sequence,
+      event: runtimeEvent(sequence, "session.title.updated")
+    });
+    emit(20);
+    await vi.waitFor(() => expect(reads).toHaveLength(2));
+    for (let sequence = 21; sequence < 26; sequence++) {
+      emit(sequence);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    expect(reads).toHaveLength(2);
+    expect(reads.every((read) => !read.signal?.aborted)).toBe(true);
+    for (const read of reads.slice()) {
+      read.resolve(envelope({version: 1, sessions: [{...primary, title: "First"}]}));
+    }
+    await vi.waitFor(() => expect(reads).toHaveLength(4));
+    expect(reads.map((read) => read.workspaceID))
+      .toEqual(Array(4).fill("workspace-id"));
+    expect(reads.map((read) => read.query)).toEqual(["", "needle", "", "needle"]);
+    for (const read of reads.slice(2)) {
+      read.resolve(envelope({version: 1, sessions: [{...primary, title: "Latest"}]}));
+    }
+    await vi.waitFor(() => expect(client.getSnapshot().sessions
+      .find((session) => session.session_id === "session")?.title).toBe("Latest"));
+    expect(reads).toHaveLength(4);
+    expect(client.getSnapshot().sessions.find((session) => session.session_id === "session-b"))
+      .toBe(secondary);
+    expect(client.getSnapshot().sessionSearchResults.find((session) => session.session_id === "session-b"))
+      .toBe(secondary);
+    expect(client.getSnapshot().sessionSearchQuery).toBe("needle");
+    expect(client.getSnapshot().selectedSessionID).toBe(before.selectedSessionID);
+    expect(client.getSnapshot().profile).toBe(before.profile);
+    client.stop();
+  });
+
+  it("waits for an in-flight search before applying scoped activity invalidation", async () => {
+    multipleWorkspaces = true;
+    const client = new RuntimeClient(new MemoryBrowserStorage());
+    const socket = await startClient(client);
+    const sessions = client.getSnapshot().sessions;
+    const {reads} = deferSessionReads();
+    const searching = client.refreshSessions("needle");
+    expect(reads).toHaveLength(2);
+    socket.emit("message", {
+      type: "event", protocol_version: 1, session_id: "unknown-session", sequence: 20,
+      event: runtimeEvent(20, "session.title.updated")
+    });
+    await Promise.resolve();
+    expect(reads).toHaveLength(2);
+    expect(reads.every((read) => !read.signal?.aborted)).toBe(true);
+    for (const read of reads.slice()) {
+      read.resolve(envelope({version: 1, sessions: sessions.filter((session) =>
+        session.workspace_root === (read.workspaceID === "workspace-id" ? "/workspace" : "/workspace-b"))}));
+    }
+    await searching;
+    await vi.waitFor(() => expect(reads).toHaveLength(4));
+    expect(reads.slice(2).map((read) => read.workspaceID)).toEqual(["workspace-id", "workspace-id"]);
+    const replacement = client.refreshSessions("latest");
+    expect(reads.slice(2, 4).every((read) => read.signal?.aborted)).toBe(true);
+    // The old transport deliberately ignores cancellation.
+    for (const read of reads.slice(2, 4)) read.resolve(envelope({version: 1, sessions: []}));
+    for (const read of reads.slice(4)) read.resolve(envelope({version: 1, sessions: []}));
+    await replacement;
+    await vi.waitFor(() => expect(reads).toHaveLength(8));
+    expect(reads.slice(6).map((read) => read.query)).toEqual(["", "latest"]);
+    for (const read of reads.slice(6)) read.resolve(envelope({version: 1, sessions: []}));
+    await vi.waitFor(() => expect(client.getSnapshot().sessionSearchResults).toEqual([]));
+    expect(client.getSnapshot().sessionSearchQuery).toBe("latest");
+    client.stop();
+  });
+
+  it.each(["stop", "switch"])("discards queued activity and late list responses on %s", async (action) => {
+    multipleWorkspaces = true;
+    const client = new RuntimeClient(new MemoryBrowserStorage());
+    const socket = await startClient(client);
+    const {reads, originalFetch} = deferSessionReads();
+    for (const sequence of [20, 21]) {
+      socket.emit("message", {
+        type: "event", protocol_version: 1, session_id: "unknown-session", sequence,
+        event: runtimeEvent(sequence, "session.title.updated")
+      });
+      await Promise.resolve();
+    }
+    expect(reads).toHaveLength(1);
+    vi.stubGlobal("fetch", originalFetch);
+    if (action === "stop") {
+      client.stop();
+    } else {
+      const switching = client.selectWorkspace("workspace-b-id");
+      await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(2));
+      const nextSocket = FakeWebSocket.instances[1]!;
+      nextSocket.emit("open");
+      nextSocket.emit("message", {type: "hello", protocol_version: 1, sequence: 0});
+      await switching;
+      expect(client.getSnapshot().selectedWorkspaceID).toBe("workspace-b-id");
+    }
+    expect(reads[0]!.signal?.aborted).toBe(true);
+    const before = client.getSnapshot();
+    const count = requests.filter((request) => request.route.endsWith("/session/list")).length;
+    reads[0]!.resolve(envelope({version: 1, sessions: []}));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(client.getSnapshot()).toBe(before);
+    expect(requests.filter((request) => request.route.endsWith("/session/list"))).toHaveLength(count);
+    client.stop();
+  });
+
   it.each(["session", "foreign-session"])("refreshes automatic titles for %s without a chat message", async (sessionID) => {
     const client = new RuntimeClient();
     const socket = await startClient(client);
@@ -2348,6 +2630,104 @@ describe("RuntimeClient", () => {
       .toEqual(["turn.started", "commentary.completed", "turn.completed"]);
     expect(requests.filter((request) => request.route.endsWith("/session/snapshot")))
       .toHaveLength(1);
+    client.stop();
+  });
+
+  it("keeps search results and the active session through activity refresh and empty results", async () => {
+    createdSession = true;
+    const client = new RuntimeClient(new MemoryBrowserStorage());
+    const socket = await startClient(client);
+    const originalFetch = globalThis.fetch;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const result = await originalFetch(input, init);
+      if (!String(input).endsWith("/session/list")) return result;
+      const body = JSON.parse(String(init?.body ?? "{}"));
+      if (!body.query) return result;
+      return envelope({
+        version: 1, query: body.query,
+        sessions: body.query === "needle"
+          ? client.getSnapshot().sessions.filter((session) => session.session_id === "session-new")
+          : []
+      });
+    }));
+    const before = client.getSnapshot();
+    const activations = requests.filter((request) => request.route.endsWith("/session/activate")).length;
+    await client.refreshSessions("needle");
+    expect(client.getSnapshot().sessionSearchResults.map((session) => session.session_id))
+      .toEqual(["session-new"]);
+    expect(client.getSnapshot().sessions).toHaveLength(2);
+    expect(client.getSnapshot().selectedSessionID).toBe(before.selectedSessionID);
+    expect(client.getSnapshot().profile).toBe(before.profile);
+    requests.length = 0;
+    socket.emit("message", {
+      type: "event", protocol_version: 1, session_id: "session", sequence: 1,
+      event: runtimeEvent(1, "turn.completed")
+    });
+    await vi.waitFor(() => expect(requests.some((request) =>
+      request.route.endsWith("/session/list") && request.body.query === "needle")).toBe(true));
+    expect(client.getSnapshot().sessionSearchQuery).toBe("needle");
+    expect(client.getSnapshot().sessionSearchResults.map((session) => session.session_id))
+      .toEqual(["session-new"]);
+    await client.refreshSessions("no match");
+    expect(client.getSnapshot().sessionSearchResults).toEqual([]);
+    expect(client.getSnapshot().selectedSessionID).toBe(before.selectedSessionID);
+    await client.refreshSessions("");
+    expect(client.getSnapshot().sessionSearchQuery).toBe("");
+    expect(client.getSnapshot().sessions).toHaveLength(2);
+    expect(client.getSnapshot().selectedSessionID).toBe(before.selectedSessionID);
+    // No filter change should submit a session activation.
+    expect(activations).toBeGreaterThan(0);
+    expect(requests.filter((request) => request.route.endsWith("/session/activate"))).toEqual([]);
+    client.stop();
+  });
+
+  it("aborts superseded search requests and ignores responses after replacement or stop", async () => {
+    const client = new RuntimeClient(new MemoryBrowserStorage());
+    await startClient(client);
+    const originalFetch = globalThis.fetch;
+    const pending = new Map<string, {
+      signal: AbortSignal; release: () => void;
+    }>();
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const query = JSON.parse(String(init?.body ?? "{}")).query;
+      if (String(input).endsWith("/session/list") && query) {
+        // Ignore abort in this fake transport to exercise the late-response guard.
+        await new Promise<void>((resolve) => pending.set(query, {
+          signal: init!.signal!, release: resolve
+        }));
+      }
+      return originalFetch(input, init);
+    }));
+    const old = client.refreshSessions("old");
+    const latest = client.refreshSessions("latest");
+    expect(pending.get("old")!.signal.aborted).toBe(true);
+    pending.get("latest")!.release();
+    await latest;
+    const accepted = client.getSnapshot();
+    pending.get("old")!.release();
+    await old;
+    expect(client.getSnapshot()).toBe(accepted);
+    const stopped = client.refreshSessions("stopped");
+    client.stop();
+    const stoppedSnapshot = client.getSnapshot();
+    expect(pending.get("stopped")!.signal.aborted).toBe(true);
+    pending.get("stopped")!.release();
+    await stopped;
+    expect(client.getSnapshot()).toBe(stoppedSnapshot);
+  });
+
+  it("preserves search when toggling archived sessions", async () => {
+    const client = new RuntimeClient(new MemoryBrowserStorage());
+    await startClient(client);
+    await client.refreshSessions("中文");
+    requests.length = 0;
+    await client.setArchivedVisible(true);
+    expect(client.getSnapshot().sessionSearchQuery).toBe("中文");
+    expect(requests.filter((request) => request.route.endsWith("/session/list"))
+      .map((request) => request.body)).toEqual([
+      {query: "", include_archived: true, limit: 200},
+      {query: "中文", include_archived: true, limit: 200}
+    ]);
     client.stop();
   });
 

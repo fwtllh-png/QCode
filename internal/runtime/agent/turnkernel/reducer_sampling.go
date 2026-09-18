@@ -445,23 +445,33 @@ func applyObserveProgress(
 	if command.CompletedSamples < progress.ObservedSamples {
 		return illegal(current, command, "completed samples regressed")
 	}
-	repeatedCall := progress.Signature == signature &&
-		identity != "" &&
-		identity == progress.SampleIdentity
-	// Establishing the first tool identity is not progress. Only a new Work
-	// Item signature or a switch between two non-empty identities renews.
-	identityChanged := progress.SampleIdentity != "" &&
-		identity != progress.SampleIdentity
-	if progress.Signature == "" || progress.Signature != signature ||
-		identityChanged {
-		progress.Signature = signature
+	resultDigest := strings.TrimSpace(command.ResultDigest)
+	if resultDigest == "" {
+		resultDigest = FormatResultDigest(progress.PendingResultDigests)
+	}
+	observationKey := FormatObservationKey(
+		signature,
+		FormatWorkspaceContent(current.WorkItem),
+		resultDigest,
+	)
+	revisited := seenObservation(progress, observationKey)
+	if !revisited {
 		progress.NoProgressSamples = 0
 		progress.Stage = ProgressStageNone
+		progress.StallKind = ProgressStallNone
+		rememberObservation(&progress, observationKey)
 	} else {
 		progress.NoProgressSamples +=
 			command.CompletedSamples - progress.ObservedSamples
+		if liveToolIdentity(identity) && identity == progress.SampleIdentity {
+			progress.StallKind = ProgressStallIdenticalCall
+		} else {
+			progress.StallKind = ProgressStallCycle
+		}
 	}
+	progress.Signature = signature
 	progress.SampleIdentity = identity
+	progress.ObservationKey = observationKey
 	progress.ObservedSamples = command.CompletedSamples
 	policy := current.Policy.Convergence
 	convergeAt := policy.ProgressConverge
@@ -473,13 +483,14 @@ func applyObserveProgress(
 		finishOnlyAt = policy.ResearchFinishOnly
 		limit = policy.ResearchLimit
 	}
-	if repeatedCall && current.Policy.ImplementNoProgressSamples > 0 {
+	if progress.StallKind == ProgressStallIdenticalCall &&
+		current.Policy.ImplementNoProgressSamples > 0 {
 		lease := current.Policy.ImplementNoProgressSamples
 		convergeAt = max(uint32(1), lease/2)
 		finishOnlyAt = lease
-		// The implement lease bounds identical tool-call repeats. Distinct
-		// arguments keep the MaxSteps-derived lease so verify/fix tails
-		// are not treated as stalls.
+		// The implement lease bounds an identical work-state repeat. A
+		// seen observation with a different identity keeps the
+		// MaxSteps-derived lease so A/B cycles cannot reset the clock.
 		repairReserve := current.Policy.CompletionRepairLimit +
 			current.Policy.WorkspaceRepairLimit +
 			current.Policy.DeclarationRepairLimit +

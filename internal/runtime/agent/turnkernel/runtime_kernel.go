@@ -45,6 +45,7 @@ type ProgressObservation struct {
 	NoProgressSamples uint32
 	ReadOnlyResearch  bool
 	StageChanged      bool
+	StallKind         ProgressStallKind
 }
 
 type FrozenTerminalState struct {
@@ -927,9 +928,9 @@ func FormatRepairProgressKey(state State) string {
 	)
 }
 
-// FormatProgressSignature names durable Turn progress from the Work Item
-// path sets. Same-path edits, rejected declarations, and call counts do not
-// renew the lease.
+// FormatProgressSignature names the public Work Item path-set. Same-path
+// edits, rejected declarations, and call counts do not change it. Anti-spin
+// still fingerprints workspace content versions and result digests.
 func FormatProgressSignature(
 	state State,
 	completedPlanSteps int,
@@ -1004,6 +1005,7 @@ func (s *RuntimeKernel) ObserveProgress(
 		ReadOnlyResearch: IsResearchIntent(s.state.Intent) &&
 			s.state.MutationRevision == 0,
 		StageChanged: s.state.Progress.Stage != previousStage,
+		StallKind:    s.state.Progress.StallKind,
 	}, nil
 }
 
@@ -1016,6 +1018,7 @@ func (s *RuntimeKernel) ProgressObservation() ProgressObservation {
 		NoProgressSamples: s.state.Progress.NoProgressSamples,
 		ReadOnlyResearch: IsResearchIntent(s.state.Intent) &&
 			s.state.MutationRevision == 0,
+		StallKind: s.state.Progress.StallKind,
 	}
 }
 
@@ -1025,7 +1028,9 @@ func ObservedChanges(
 	changes := make([]ObservedChange, 0, len(fileChanges))
 	for _, change := range fileChanges {
 		changes = append(changes, ObservedChange{
-			Path: change.Path, Kind: string(change.Kind),
+			Path:          change.Path,
+			Kind:          string(change.Kind),
+			ContentDigest: strings.TrimSpace(change.AfterDigest),
 		})
 	}
 	return changes

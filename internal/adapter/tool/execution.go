@@ -189,11 +189,12 @@ const (
 )
 
 type WorkspaceChange struct {
-	Path    string `json:"path"`
-	Kind    string `json:"kind"`
-	Added   int    `json:"added,omitempty"`
-	Removed int    `json:"removed,omitempty"`
-	Summary string `json:"summary,omitempty"`
+	Path        string `json:"path"`
+	Kind        string `json:"kind"`
+	Added       int    `json:"added,omitempty"`
+	Removed     int    `json:"removed,omitempty"`
+	Summary     string `json:"summary,omitempty"`
+	AfterDigest string `json:"after_digest,omitempty"`
 }
 
 type FailureFact struct {

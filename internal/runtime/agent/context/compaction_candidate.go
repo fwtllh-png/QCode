@@ -131,6 +131,7 @@ type CompactionCandidateInput struct {
 	Turn             uint64
 	SummaryMaxBytes  int
 	IncludeNarrative bool
+	PinnedUser       *provider.Message
 }
 
 // BuildCompactionCandidate performs the deterministic portion of compaction:
@@ -201,11 +202,21 @@ func BuildCompactionCandidate(
 	if err != nil {
 		return CompactionCandidate{}, err
 	}
-	compacted := provider.TextMessage(provider.RoleSystem, rendered.Text)
-	history := append(
-		[]provider.Message{compacted},
-		CloneMessages(input.Tail)...,
-	)
+	assemble := func(rendered StructuredRender) []provider.Message {
+		compacted := provider.TextMessage(provider.RoleSystem, rendered.Text)
+		if input.PinnedUser != nil {
+			compacted.Turn = input.PinnedUser.Turn
+			return append(
+				[]provider.Message{CloneMessage(*input.PinnedUser), compacted},
+				CloneMessages(input.Tail)...,
+			)
+		}
+		return append(
+			[]provider.Message{compacted},
+			CloneMessages(input.Tail)...,
+		)
+	}
+	history := assemble(rendered)
 	if HistoryBytes(history) >= HistoryBytes(input.OriginalHistory) &&
 		(rendered.NarrativeIncluded || len(rendered.Sections) > 1) {
 		rendered, err = RenderStructured(
@@ -217,11 +228,7 @@ func BuildCompactionCandidate(
 		if err != nil {
 			return CompactionCandidate{}, err
 		}
-		compacted = provider.TextMessage(provider.RoleSystem, rendered.Text)
-		history = append(
-			[]provider.Message{compacted},
-			CloneMessages(input.Tail)...,
-		)
+		history = assemble(rendered)
 	}
 	return CompactionCandidate{
 		Cut: input.Cut, History: history,

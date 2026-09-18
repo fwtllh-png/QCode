@@ -220,7 +220,7 @@ export function App({client}: Props) {
     client.getSnapshot,
     client.getSnapshot
   );
-  const [query, setQuery] = useState("");
+  const query = snapshot.sessionSearchQuery;
   const [sessionSearchOpen, setSessionSearchOpen] = useState(false);
   const [collapsedWorkspaceIDs, setCollapsedWorkspaceIDs] =
     useState<ReadonlySet<string>>(() => new Set());
@@ -927,7 +927,7 @@ export function App({client}: Props) {
       if (document.visibilityState === "hidden") return;
       void Promise.all([
         client.refreshWorkspaces(),
-        client.refreshSessions("", false)
+        client.refreshSessions(undefined, false)
       ]).catch(() => undefined);
     };
     document.addEventListener("visibilitychange", refresh);
@@ -1410,23 +1410,20 @@ export function App({client}: Props) {
               placeholder="Search sessions"
               onChange={(event) => {
                 const value = event.target.value;
-                setQuery(value);
                 void client.refreshSessions(value);
               }}
               onKeyDown={(event) => {
                 if (event.key !== "Escape") return;
-                setQuery("");
                 setSessionSearchOpen(false);
-                void client.refreshSessions();
+                void client.refreshSessions("");
               }}
             />
             <button
               className="clearSearch"
               aria-label="Close session search"
               onClick={() => {
-                setQuery("");
                 setSessionSearchOpen(false);
-                void client.refreshSessions();
+                void client.refreshSessions("");
               }}
             >
               <X size={14} />
@@ -1449,7 +1446,8 @@ export function App({client}: Props) {
             {snapshot.workspaces.map((workspace) => {
               const expanded = Boolean(query) ||
                 !collapsedWorkspaceIDs.has(workspace.id);
-              const workspaceSessions = snapshot.sessions.filter(
+              const workspaceSessions = (query.trim()
+                ? snapshot.sessionSearchResults : snapshot.sessions).filter(
                 (session) => session.workspace_root === workspace.root
               );
               return (

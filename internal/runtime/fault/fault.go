@@ -115,6 +115,7 @@ const (
 type Metadata struct {
 	Origin         Origin            `json:"origin"`
 	Disposition    Disposition       `json:"disposition"`
+	Reason         string            `json:"reason,omitempty"`
 	SideEffects    SideEffectState   `json:"side_effects,omitempty"`
 	Stage          Stage             `json:"stage,omitempty"`
 	OperationID    string            `json:"operation_id,omitempty"`

@@ -161,9 +161,9 @@ type Index struct {
 	// ranking. The damping default is the standard value from the original
 	// PageRank paper (Brin & Page, 1998); the iteration limit and convergence
 	// threshold bound the refinement loop.
-	RankDamping        float64 `json:"rank_damping_factor" toml:"rank_damping_factor"`
-	RankIterations     int     `json:"rank_iteration_limit" toml:"rank_iteration_limit"`
-	RankConvergence    float64 `json:"rank_convergence_threshold" toml:"rank_convergence_threshold"`
+	RankDamping     float64 `json:"rank_damping_factor" toml:"rank_damping_factor"`
+	RankIterations  int     `json:"rank_iteration_limit" toml:"rank_iteration_limit"`
+	RankConvergence float64 `json:"rank_convergence_threshold" toml:"rank_convergence_threshold"`
 	// Impact bounds the reverse dependency walk behind affected-test
 	// answers: how many hops a change reaches through and how many files one
 	// answer may name.
@@ -183,9 +183,11 @@ type Execution struct {
 	MaxOutputTokens uint64 `json:"max_output_tokens" toml:"max_output_tokens"`
 	MaxSteps        int    `json:"max_steps" toml:"max_steps"`
 	// ImplementNoProgressSamples is the finish-only lease for consecutive
-	// Samples that repeat the same tool-call identity. Zero inherits the
-	// MaxSteps-derived 2/3 finish-only lease. Distinct arguments on the
-	// same path set do not consume it.
+	// Samples that repeat the same work-state observation with the same
+	// tool-call identity. Zero inherits the MaxSteps-derived 2/3
+	// finish-only lease. A new workspace version or tool-result digest
+	// renews both clocks; a seen observation with a different identity
+	// consumes the MaxSteps-derived lease instead.
 	ImplementNoProgressSamples int `json:"implement_no_progress_samples" toml:"implement_no_progress_samples"`
 	// Timeout covers connection establishment, TLS negotiation, and response
 	// headers. Streaming body lifetime is governed by the caller Context and

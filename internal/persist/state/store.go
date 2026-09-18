@@ -45,10 +45,10 @@ type Options struct {
 }
 
 type Store struct {
-	// mu serializes durable writes and guards closed. Replay, ReplayLimit,
-	// LastSequence, and EventByID take read locks so a slow consumer replay
-	// never blocks appends; the append-only log and the single SQLite write
-	// connection keep the read paths consistent with committed state.
+	// mu serializes durable writes and guards closed. Event readers hold it
+	// only to freeze committed cursors or identity, never during log I/O.
+	// readers keeps storage open for those reads without blocking appends.
+	readers sync.RWMutex
 	mu      sync.RWMutex
 	root    string
 	sqlite  *sqlitestate.Store
@@ -109,6 +109,9 @@ func Open(ctx context.Context, options Options) (_ *Store, resultErr error) {
 
 	store := &Store{
 		root: root, sqlite: database, events: log, content: content,
+	}
+	if err := store.ensureSessionSearch(ctx); err != nil {
+		return nil, err
 	}
 	if err := store.reconcile(ctx); err != nil {
 		return nil, err
@@ -198,9 +201,6 @@ func (s *Store) appendOneLocked(ctx context.Context, event protocol.Event) error
 	}
 
 	if !persist {
-		if err := s.markReservation(ctx, event.Sequence, "abandoned"); err != nil {
-			return err
-		}
 		return nil
 	}
 
@@ -285,35 +285,19 @@ func (s *Store) PatchThreadMeta(ctx context.Context, patch ThreadMetaPatch) erro
 }
 
 func (s *Store) Replay(ctx context.Context, cursor protocol.Cursor) ([]protocol.Event, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	if s.closed {
-		return nil, ErrClosed
-	}
-	highWatermark, err := s.lastReserved(ctx)
-	if err != nil {
-		return nil, err
-	}
-	if cursor > highWatermark {
-		return nil, &eventlog.CursorError{Requested: cursor, Latest: highWatermark}
-	}
-	logLast, err := s.events.LastSequence(ctx)
-	if err != nil {
-		return nil, err
-	}
-	if cursor > logLast {
-		return []protocol.Event{}, nil
-	}
-	return s.events.Replay(ctx, cursor)
+	events, _, err := s.replay(ctx, cursor, nil, 0)
+	return events, err
 }
 
 func (s *Store) EventByID(
 	ctx context.Context,
 	eventID protocol.EventID,
 ) (protocol.Event, bool, error) {
+	s.readers.RLock()
+	defer s.readers.RUnlock()
 	s.mu.RLock()
-	defer s.mu.RUnlock()
 	if s.closed {
+		s.mu.RUnlock()
 		return protocol.Event{}, false, ErrClosed
 	}
 	var sequence protocol.Cursor
@@ -322,6 +306,7 @@ func (s *Store) EventByID(
 		`SELECT sequence FROM event_index WHERE event_id = ?`,
 		eventID,
 	).Scan(&sequence)
+	s.mu.RUnlock()
 	if errors.Is(err, sql.ErrNoRows) {
 		return protocol.Event{}, false, nil
 	}
@@ -344,33 +329,58 @@ func (s *Store) EventByID(
 	return record.Event, true, nil
 }
 
-// ReplayLimit bounds durable replay while preserving the store lock used to
-// serialize replay with appends.
+// ReplayLimit bounds durable replay at a frozen committed watermark.
 func (s *Store) ReplayLimit(
 	ctx context.Context,
 	cursor protocol.Cursor,
 	limit int,
 ) ([]protocol.Event, bool, error) {
+	if limit <= 0 {
+		return nil, false, errors.New("event replay limit must be positive")
+	}
+	return s.replay(ctx, cursor, nil, limit)
+}
+
+// ReplayThrough reads (cursor, through], excluding concurrent appends.
+// A nonpositive limit returns the entire range.
+func (s *Store) ReplayThrough(ctx context.Context, cursor, through protocol.Cursor, limit int) ([]protocol.Event, bool, error) {
+	return s.replay(ctx, cursor, &through, limit)
+}
+
+func (s *Store) replay(ctx context.Context, cursor protocol.Cursor, through *protocol.Cursor, limit int) ([]protocol.Event, bool, error) {
+	s.readers.RLock()
+	defer s.readers.RUnlock()
+	fence, err := s.replayFence(ctx, cursor)
+	if err != nil {
+		return nil, false, err
+	}
+	if through != nil {
+		fence = min(fence, *through)
+	}
+	if cursor >= fence {
+		return []protocol.Event{}, false, nil
+	}
+	return s.events.ReplayThrough(ctx, cursor, fence, limit)
+}
+
+func (s *Store) replayFence(ctx context.Context, cursor protocol.Cursor) (protocol.Cursor, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	if s.closed {
-		return nil, false, ErrClosed
+		return 0, ErrClosed
 	}
 	highWatermark, err := s.lastReserved(ctx)
 	if err != nil {
-		return nil, false, err
+		return 0, err
 	}
 	if cursor > highWatermark {
-		return nil, false, &eventlog.CursorError{Requested: cursor, Latest: highWatermark}
+		return 0, &eventlog.CursorError{Requested: cursor, Latest: highWatermark}
 	}
 	logLast, err := s.events.LastSequence(ctx)
 	if err != nil {
-		return nil, false, err
+		return 0, err
 	}
-	if cursor > logLast {
-		return []protocol.Event{}, false, nil
-	}
-	return s.events.ReplayLimit(ctx, cursor, limit)
+	return min(highWatermark, logLast), nil
 }
 
 func (s *Store) LastSequence(ctx context.Context) (protocol.Cursor, error) {
@@ -383,6 +393,8 @@ func (s *Store) LastSequence(ctx context.Context) (protocol.Cursor, error) {
 }
 
 func (s *Store) Close(ctx context.Context) error {
+	s.readers.Lock()
+	defer s.readers.Unlock()
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
@@ -398,6 +410,12 @@ func (s *Store) CloseAll(ctx context.Context) error {
 }
 
 func (s *Store) reserve(ctx context.Context, event protocol.Event) error {
+	status := "reserved"
+	if !eventlog.ShouldPersist(event.Kind) {
+		// No log append follows streaming noise. Reserve its sequence in the
+		// final state atomically instead of committing a second UPDATE.
+		status = "abandoned"
+	}
 	return s.sqlite.Transaction(ctx, func(tx *sql.Tx) error {
 		var last protocol.Cursor
 		if err := tx.QueryRowContext(
@@ -414,8 +432,8 @@ func (s *Store) reserve(ctx context.Context, event protocol.Event) error {
 		_, err := tx.ExecContext(
 			ctx,
 			`INSERT INTO event_reservations(sequence, event_id, status, created_at, updated_at)
-			 VALUES (?, ?, 'reserved', ?, ?)`,
-			event.Sequence, event.ID, timestamp(event.CreatedAt), timestamp(time.Now()),
+			 VALUES (?, ?, ?, ?, ?)`,
+			event.Sequence, event.ID, status, timestamp(event.CreatedAt), timestamp(time.Now()),
 		)
 		if err != nil {
 			return fmt.Errorf("reserve event sequence %d: %w", event.Sequence, err)
@@ -498,7 +516,7 @@ func (s *Store) commitProjection(
 		if err := projectAgentGraphTx(ctx, tx, event); err != nil {
 			return fmt.Errorf("project agent graph %d: %w", event.Sequence, err)
 		}
-		return nil
+		return projectSessionSearchTx(ctx, tx, event)
 	})
 }
 
@@ -595,7 +613,7 @@ func (s *Store) reconcile(ctx context.Context) error {
 			return fmt.Errorf("abandon interrupted event reservation %d: %w", sequence, err)
 		}
 	}
-	return nil
+	return s.reconcileSessionSearch(ctx, records)
 }
 
 type committedEventProjection struct {

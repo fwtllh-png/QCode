@@ -141,6 +141,7 @@ func TestToolResultPruningSkipsMalformedAndRetrievalResults(t *testing.T) {
 		agentcontext.NewMessageLedger(agentcontext.LedgerInput{}).Snapshot(),
 		128,
 		true,
+		false,
 		0,
 		nil,
 	)

@@ -179,34 +179,55 @@ func (c *AgentControl) activeDelegates(parentID string) int {
 	return count
 }
 
-// ClassifySettlement derives a stable reason from a child's terminal notes.
-func ClassifySettlement(status Status, notes []string, summary string) (
+// SettlementFailure contains only the primary terminal failure. Receipt notes
+// and model output are display text, not evidence of failure or retryability.
+type SettlementFailure struct {
+	Code    protocol.ErrorCode
+	Message string
+	Fault   *protocol.FaultMetadata
+}
+
+// ClassifySettlement derives a stable reason from the terminal status and fault.
+func ClassifySettlement(
+	status Status, failure SettlementFailure, notes []string, summary string,
+) (
 	reasonCode, message string, retryable bool,
 ) {
-	joined := strings.ToLower(strings.Join(notes, "\n") + "\n" + summary)
-	switch {
-	case status == StatusInterrupted:
+	switch status {
+	case StatusInterrupted:
 		return ReasonInterrupted, firstNonEmpty(summary, "interrupted"), false
-	case strings.Contains(joined, "token budget exhausted") ||
-		strings.Contains(joined, "resource_exhausted") ||
-		strings.Contains(joined, "cost budget exhausted"):
-		return ReasonBudgetExhausted, firstSettlementNote(notes, summary,
-			"token budget exhausted"), true
-	case strings.Contains(joined, "rate limit"):
-		return ReasonProviderRateLimited, firstSettlementNote(notes, summary,
-			"provider rate limit retry budget exhausted"), true
-	case status == StatusFailed, status == StatusErrored:
-		return ReasonTaskFailed, firstSettlementNote(notes, summary, "task failed"),
-			false
+	case StatusFailed:
 	default:
 		return "", strings.TrimSpace(summary), false
 	}
+	message = strings.TrimSpace(failure.Message)
+	if message == "" {
+		message = firstSettlementNote(notes, summary, "task failed")
+	}
+	if fault := failure.Fault; fault != nil {
+		switch fault.Reason {
+		case protocol.ProblemReasonTokenBudgetExhausted,
+			protocol.ProblemReasonCostBudgetExhausted:
+			if failure.Code == protocol.CodeResourceExhausted &&
+				fault.Origin == protocol.FaultOriginRuntime {
+				return ReasonBudgetExhausted, message,
+					protocol.FaultAllowsTurnRecovery(fault)
+			}
+		case protocol.ProblemReasonProviderRateLimited:
+			if failure.Code == protocol.CodeUnavailable &&
+				fault.Origin == protocol.FaultOriginProvider {
+				return ReasonProviderRateLimited, message,
+					protocol.FaultAllowsTurnRecovery(fault)
+			}
+		}
+	}
+	return ReasonTaskFailed, message, false
 }
 
 func SuggestedAction(reasonCode string) string {
 	switch reasonCode {
 	case ReasonBudgetExhausted:
-		return "raise the child's max_tokens to the projected first-window size, then followup_task"
+		return "increase or replenish the exhausted explicit token or cost budget, then followup_task"
 	case ReasonProviderRateLimited:
 		return "wait for the shared provider cooldown, then followup_task"
 	case ReasonInterrupted:

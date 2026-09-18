@@ -115,20 +115,31 @@ func NoProgressFeedback(
 	turn uint64,
 	samples uint32,
 	stage string,
+	stallKind string,
 ) provider.Message {
+	reason := "The last model samples repeated the same tool-call identity. " +
+		"Do not resubmit that exact call. Change the arguments, pick a " +
+		"different tool, or call turn_complete."
+	if stallKind == "cycle" {
+		reason = "These steps already produced the same workspace content " +
+			"and tool-result digest. Do not cycle through previously seen " +
+			"calls. Advance the workspace, read a new window, or call " +
+			"turn_complete."
+	}
 	return feedback(turn, fmt.Sprintf(
 		"[no_progress]\n"+
 			"steps_without_structured_progress=%d\n"+
 			"stage=%s\n"+
+			"stall_kind=%s\n"+
 			"required_action=converge\n"+
-			"The last model samples repeated the same tool-call identity. "+
-			"Do not resubmit that exact call. Change the arguments, pick a "+
-			"different tool, or call turn_complete. Distinct edits or checks "+
-			"on already-known paths are still progress. If the work cannot "+
+			"%s Distinct edits or checks that change file content or "+
+			"result digests are still progress. If the work cannot "+
 			"continue, call turn_complete with status=incomplete and concrete "+
 			"pending_actions.",
 		samples,
 		stage,
+		stallKind,
+		reason,
 	))
 }
 

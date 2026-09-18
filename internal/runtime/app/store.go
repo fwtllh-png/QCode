@@ -77,29 +77,46 @@ func (s *MemoryEventStore) Append(ctx context.Context, event protocol.Event) err
 }
 
 func (s *MemoryEventStore) Replay(ctx context.Context, cursor protocol.Cursor) ([]protocol.Event, error) {
+	events, _, err := s.replay(ctx, cursor, nil, 0)
+	return events, err
+}
+
+// ReplayThrough reads a fixed inclusive fence, including the same eviction
+// checks as Replay. A nonpositive limit returns the entire range.
+func (s *MemoryEventStore) ReplayThrough(ctx context.Context, cursor, through protocol.Cursor, limit int) ([]protocol.Event, bool, error) {
+	return s.replay(ctx, cursor, &through, limit)
+}
+
+func (s *MemoryEventStore) replay(ctx context.Context, cursor protocol.Cursor, through *protocol.Cursor, limit int) ([]protocol.Event, bool, error) {
 	if err := ctx.Err(); err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed {
-		return nil, ErrClosed
+		return nil, false, ErrClosed
 	}
 	if cursor > s.last {
-		return nil, ErrCursorAhead
+		return nil, false, ErrCursorAhead
 	}
 	if len(s.events) != 0 && cursor+1 < s.events[0].Sequence {
-		return nil, &CursorGapError{
+		return nil, false, &CursorGapError{
 			Requested: cursor, OldestAvailable: s.events[0].Sequence, Latest: s.last,
 		}
 	}
 	result := make([]protocol.Event, 0, len(s.events))
 	for _, event := range s.events {
+		if through != nil && event.Sequence > *through {
+			break
+		}
 		if event.Sequence > cursor {
+			if limit > 0 && len(result) == limit {
+				return result, true, nil
+			}
 			result = append(result, event)
 		}
 	}
-	return result, nil
+	return result, false, nil
 }
 
 func (s *MemoryEventStore) EventByID(

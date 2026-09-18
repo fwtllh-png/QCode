@@ -36,14 +36,52 @@ func TestStatelessProjectionKeepsWorldPatchesAndToolCallReasoning(t *testing.T) 
 	history = append(history, pending)
 	projected := ProjectStatelessHistory(history)
 	if len(projected) != 5 || projected[0].Text() != "world v1" ||
-		len(projected[1].Blocks) != 2 ||
+		len(projected[1].Blocks) != 3 ||
 		projected[1].Blocks[0].Type != provider.ContentReasoning ||
-		projected[1].Blocks[1].ToolCall == nil ||
+		projected[1].Blocks[1].Type != provider.ContentText ||
+		projected[1].Blocks[1].Text != "running the tool" ||
+		projected[1].Blocks[2].ToolCall == nil ||
 		projected[3].Text() != "world v2" ||
 		projected[4].Blocks[0].Type != provider.ContentReasoning {
 		t.Fatalf("projected messages = %+v", projected)
 	}
 	if history[1].Blocks[0].Type != provider.ContentReasoning {
+		t.Fatal("durable history was mutated")
+	}
+}
+
+func TestStatelessProjectionKeepsClosedRoundAnalysisText(t *testing.T) {
+	history := []provider.Message{
+		{
+			Role: provider.RoleUser, Turn: 1,
+			Blocks: []provider.ContentBlock{{
+				Type: provider.ContentText, Text: "why is settlement failing",
+			}},
+		},
+		{
+			Role: provider.RoleAssistant, Turn: 1,
+			Blocks: []provider.ContentBlock{
+				{
+					Type: provider.ContentText,
+					Text: "已排除缓存问题，下一步只修改取消结算路径",
+				},
+				{
+					Type: provider.ContentToolCall,
+					ToolCall: &provider.ToolCall{
+						ID: "search-1", Name: "search_text",
+						Arguments: `{"query":"cancel settlement"}`,
+					},
+				},
+			},
+		},
+		statelessToolResult("search-1", 1),
+	}
+	projected := ProjectStatelessHistory(history)
+	if projected[1].Text() != "已排除缓存问题，下一步只修改取消结算路径" ||
+		projected[1].Blocks[1].ToolCall == nil {
+		t.Fatalf("closed-round analysis was dropped: %+v", projected[1])
+	}
+	if history[1].Text() != "已排除缓存问题，下一步只修改取消结算路径" {
 		t.Fatal("durable history was mutated")
 	}
 }

@@ -220,6 +220,14 @@ Event 分类是 Protocol 数据，而不是 Host Policy。`event_traits.json` �
 Class、Item Owner、Durability、Correlation 或 Terminal Trait 时生成直接失败。
 Go Benchmark 消费 `eventview` 的 Typed Semantic Update，不再分类 `Event.Data`。
 
+Provider Delta 按消费进度合并：`Recv` 立即交付已有片段，不等待字节阈值或定时窗口；
+只有下游忙碌、上一批尚未取走时才合并同类型、同索引且工具身份兼容的片段。公开合同
+`assembly.MaxCoalescedDeltaBytes` 沿用原有 1 KiB 批次预算，作为待消费批次的载荷上限，
+不作为交付条件；追加片段会超过预算时停止合并。单个超预算 Provider Event 原样交付，
+不拆分协议事件。每条流最多保留一个待消费批次和一个正在读取或等待交接的源事件，
+满批与类型、索引、工具身份、用量、终止或错误边界均向上游施加背压。
+关闭会唤醒消费者和等待交接的生产者，并关闭源流以终止阻塞读取。
+
 阶段说明使用独立的 `commentary.completed` 持久事件，包含稳定 Message ID、Sample ID、
 正文与关联 Call ID；Thread/Turn 归属来自事件信封。普通协议在完整逻辑采样成功后，
 将伴随常规工具调用的普通文本分类为阶段说明，并随采样结果原子写入 Kernel 状态，
@@ -229,8 +237,10 @@ Go Benchmark 消费 `eventview` 的 Typed Semantic Update，不再分类 `Event.
 再次补发遗漏消息，与实时发布共用稳定 Event ID 去重，不新增消息数据库或后台摘要任务。
 Web 按 Message ID 保留独立节点，迟到补发的说明依据关联工具恢复 Chat 位置，不修改
 审计事件的 Sequence。Child Thread 复用同一链路，阶段说明留在对应 Subagent 执行块。
-原始 assistant history 保留正文，模型上下文仍服从已有的无状态投影和窗口策略，不把
-阶段说明重复注入 System 分区或升级为权威事实。
+原始 assistant history 保留正文。无状态投影不再因为正文伴随已闭合工具调用就删除
+它；可见 Tail 里的阶段说明仍作为普通 assistant 正文发给模型。超硬输入时，这些
+正文随已闭合因果组进入 Truth Capsule，或被收成带 tool-call 来源的非权威摘要。
+不把阶段说明重复注入 System 分区或升级为权威事实。
 
 会话自动命名是独立的非权威元数据操作：`SessionService` 在未命名会话的 Turn 被接受后
 立即调度无工具 `summary` 采样，不等待 Turn 成功结束，也不把 Prompt 截取为临时标题。
@@ -259,6 +269,10 @@ Cursor；只有对应 Runtime 明确报告 Retention Gap 时才进入 Desync。
 Snapshot 与加载期间缓冲的 Live Event 合并后立即显示正文，Profile、队列与辅助面板
 独立更新；Profile 和队列未成功就绪前仍禁止提交会话操作。切换 Session 时取消旧加载，
 并用选择代次拒绝迟到结果，旧辅助查询不能覆盖已经由实时事件刷新的面板。
+计划与 Agent 进度的初次加载和事件刷新共用一条单次在途查询链，两个查询并行执行。
+查询期间收到的进度或终态事件合并为后续刷新，已失效的响应不写回面板；
+单项失败保留该项最后成功的结果，其他成功结果仍可更新。切换 Session、Workspace、
+重置投影或停止客户端时取消查询，迟到响应不能覆盖新选择的进度。
 Composer 草稿在输入事件中立即写入当前 Workspace/Session 的浏览器内存，
 仅持久化层合并写入 IndexedDB；切换 Session、Workspace 或离开页面不等待 UI 防抖。
 草稿读取同步使用内存，Workspace 的存储 Scope、草稿和选中身份一起切换；
@@ -369,19 +383,22 @@ Control State。Cancel、Steer、Approval、Input 统一进入 `ControlPort`；�
     非零 `MaxSteps` 是连续无进展的 Progress Lease。进展签名仍来自 Kernel Work Item
     的路径集合（Goal、已读路径、已改路径、验证覆盖、Plan 完成步、接受的
     Completion、未关闭 Process Session），用于续期长任务；停轮不看「同一路径是否
-    又改过一次」。No-progress 计数只在相邻 Sample 的工具调用身份（工具名 +
-    规范化 arguments）完全相同且签名也未变时递增。不同 arguments 的同路径
-    `file_edit`、验证命令或收尾声明都算仍在工作，与 Codex / Cursor 一样把
-    「模型停止发工具 / 提交 complete」当作正常结束，把「同一调用空转」当作循环。
+    又改过一次」。No-progress 计数看 Turn 内已见工作状态：观察键未出现才清零。
+    换工具身份但内容版本与结果 digest 已见时继续累加长租约。同一观察且同一身份
+    才走短租约。翻页、新内容版本或新结果 digest 都算仍在工作，与 Codex / Cursor 一样把
+    「模型停止发工具 / 提交 complete」当作正常结束，把「同一工作状态空转或循环」当作循环。
     已知路径的 `file_read` 仅在规范化请求参数一致且文件摘要未变时回放原结果；
     回放保留原始分页信息、截断状态和结果句柄，不把有限窗口扩展为已读到 EOF。
     翻页、扩大读取窗口或更换 PDF 页码时放行必要重读。Continue 上的
     `git_status` / `git_diff` 放行，不因巡视失败消耗采样。约三分之一时提示收敛；
     Finish-only 与 Token/Cost 预算只建议收尾，不再收窄工具目录。完整 Lease 耗尽后
-    进入一次只保留 Terminal/Input 能力的 Finalization。连续重复同一工具身份时改用
+    进入一次只保留 Terminal/Input 能力的 Finalization。工作状态
+    （Workspace 内容版本、Work Item 签名、工具结果 digest）首次出现才算进展；
+    身份切换本身不清零。回到已见观察且调用身份相同，改用
     `execution.implement_no_progress_samples`（默认 6）作为三个阶段的一致权威：
     一半时提示收敛、全值进入 Finish-only、再保留与 Step Lease 相同构造的 Repair
-    预算（默认 2+1+1+1=5）后强制 Finalization；`0` 仍继承 `max_steps` 的 2/3。
+    预算（默认 2+1+1+1=5）后强制 Finalization。回到已见观察但换了身份，继续走
+    `max_steps` 派生的长租约。该值为 `0` 仍继承 `max_steps` 的 2/3。
     该策略完全由调用方显式预算与公开合同字段派生，不使用模型档位或绝对经验阈值。
     默认 Verify 失败记录风险，不撤销已接受的 complete；仅 Hard + MustPass
     才使声明失效。
@@ -529,15 +546,40 @@ Event Log 与 SQLite 投影之间的一致性以事件日志为准：启动时�
 结果保留预留状态，交由下一次对账裁决，不会写入重复记录；此前的干净失败则允许
 重试诚实地补写日志。
 
-事件日志与状态存储的读路径与追加并发执行：已提交区域只追加不收缩，失败回滚只
-影响上一个已提交末尾之后的字节，因此重放、单条读取和高水位查询都持读锁，慢消费
-者的重放不再阻塞写入。`EventByID` 经 `event_index` 的偏移证据直达读取日志记录，
-不重放日志前缀。
+非持久流事件只用一次 SQLite 事务插入最终 `abandoned` 序号预留，不写 JSONL，
+不再先插入 `reserved` 再单独更新。相同 Event ID 重试不写入，重启仍保留全局序号
+高水位，已占用序号及水位以下的空洞不能分配给新事件。持久事件继续使用预留、
+日志追加与投影提交的原有恢复流程。
+
+事件日志与状态存储的读路径与追加并发执行：锁内固定已提交高水位和不可变的偏移
+证据，锁外读取、校验和解码日志；独立的读取生命周期锁保证关闭文件前等待读取完成，
+追加不获取这把锁。已提交区域只追加不收缩，失败回滚只影响上一个已提交末尾之后
+的字节。`EventByID` 经 `event_index` 的偏移证据直达读取日志记录，不重放日志前缀。
+EventHub 只在固定读取栅栏和注册订阅时持发布锁，历史回放在锁外执行。订阅使用配置
+的 Buffer 容量缓存栅栏后的实时事件，回放完成后依次交接历史与缓存；栅栏内稳定事件
+的重试不重复推送。缓存溢出则取消本次回放、移除订阅并返回错误，调用方可从已消费
+游标重新连接。Workspace 分页沿用同一栅栏，不追随并发追加。
 倒序 Session 历史与 Presentation Snapshot 使用日志归属索引定位目标记录。
 索引在启动日志校验及成功追加时建立，显式 Session 归属优先于 Thread 归属；
 Workspace 过滤及日志字节摘要校验仍执行。分页只解码目标页，Snapshot 从读取栅栏
 向前取尾部，达到既有正文预算即停止，保持截断游标及至少保留最新事件的语义。
 无持久索引的内存 Runtime 继续使用原有重放路径。
+
+会话内容搜索使用可重建的 `session_event_search` 缓存，记录用户可见请求、最终
+回复、变更路径与编辑器符号，并与事件索引在同一事务内更新。启动复用已校验的日志
+重建缺失或损坏的缓存；缓存不是独立事实来源，不改变公开 Schema 版本。
+查询按 Thread 索引限定候选会话，验证 Workspace 和 Session 归属，再从预先执行
+Unicode 小写转换的文本中进行字面子串匹配，只解码各会话最新命中的搜索字段，
+不回放全局 Event Log。中文单字、大小写不敏感匹配及既有 240 字符摘要窗口保持不变。
+Web 将搜索词、筛选结果与会话列表分开保存，后台活动刷新保留搜索词，输入新查询
+取消旧请求并拒绝迟到结果；筛选和清空筛选不触发会话切换。
+
+侧栏列表先按既有排序选出候选页，再按页批量读取最新 Turn、事件水位与用量汇总。
+Runtime 批量读取线程归属、检查点数量及最新检查点摘要、Turn 撤回状态；搜索复用
+同一份线程归属。SQLite 查询次数不随页内会话数增长，检查点元数据仍执行完整校验；
+未提供批量能力的存储实现沿用单会话读取。Web 活动事件仅刷新其事件流绑定的
+Workspace，保留其他 Workspace 的列表和筛选结果。请求期间的新事件合并为一次
+后续刷新，不用定时阈值，也不反复取消进行中的查询。
 
 Persistent Runtime Wiring 在创建 Engine 前注入 SQLite Turn Coordinator Store。每个
 已接受 Transition 都在 State Commit 或 Effect Dispatch 前追加 Domain Fact。热路径恢复
@@ -618,10 +660,14 @@ Terminal Envelope 不再重复写入完整 Session Snapshot，而是引用 CAS �
 Manifest。CAS 先按 Digest 幂等 Stage，SQLite 再提交 Manifest 可达性和 Terminal
 事实。采样路径按公开合同 `context.view.recent_tail_turns` 和剩余硬输入（或显式
 `context.view.history_token_ceiling`）投影原文，超窗时再用一次 Visible Tail
-Fold；Fold 后仍超硬输入的 Turn 先做一层受控降级——已闭合工具结果的面被替换为
-带 `result_get` Handle 的有界投影（最新一批永不降级），并推进 Token Window 使
-前缀缓存按降级后的前缀重建；降级后仍超限才以 `resource_exhausted` 失败。
-History Replacement 只发生在显式 `thread.compact` 或 Turn 终态维护。
+Fold。Fold 后仍超硬输入时，对当前 Turn 做钉死用户请求的 working-set 替换：
+已闭合因果组收成一条 Truth Capsule，当前 Turn 的 world patch 收成最新基线；
+若仍超限，已闭合及最新一批工具结果、调用参数、已消费 reasoning 和过长的闭合轮次
+分析正文都可降级为有界投影（正文收成带来源的非权威摘要；工具原文留在
+ResultStore / Journal，可通过 `result_get` 回读），并推进 Token Window。进行中的 Turn 继续降级到不可再缩前缀——Stable、`session_state`、
+工具定义、当前用户请求原文和 output reserve。只有该前缀仍超硬输入，或部分
+Provider 续写无法放入窗口时，才以 `resource_exhausted` 失败。
+跨 Turn 的完整 History Replacement 仍留给显式 `thread.compact` 与 Turn 终态维护。
 `context.view.narrative_mode=post_turn` 写独立 Digest 分区，不阻塞下一轮 Sample。
 带出处的未完成工作提升为 Plan Todo 后进入 `session_state`；每个闭合 Turn 在
 Dynamic（History 之后）追加一块 write-once Checkpoint。旧 Turn 原文通过
@@ -630,10 +676,11 @@ Dynamic（History 之后）追加一块 write-once Checkpoint。旧 Turn 原文�
 Plan 已有完成步骤或已读路径时，`session_state` 另带 Resume Fact，避免
 Continue / Retry / 新 prompt 把已读文件再读一遍；有行号命中时列出
 `Located sites`。搜索命中后对该路径的 `file_read` 必须带 `start_line`。
-相邻 Sample 重复同一工具调用身份达到
+相邻 Sample 在同一工作状态上重复同一工具身份达到
 `execution.implement_no_progress_samples`（默认 6）即进入 Finish-only；该阶段
-不允许 `git_status` / `git_diff` 或整文件读取。不同 arguments 的验证或同路径
-修正不进入该短租约。已知路径整文件 `file_read` 与
+不允许 `git_status` / `git_diff` 或整文件读取。新的内容版本、翻页窗口或新的
+工具结果 digest 会同时续期长短租约；A/B 交替但观察键已见时只走 `max_steps`
+长租约。已知路径整文件 `file_read` 与
 Continue 巡视 git 在工具执行前被拒绝，不续租。脏的 `git_status` /
 `git_diff` 或可见 Tail 没有那次读取都不是重读理由，应走 `turn_history` /
 `result_get`。取消和失败 Checkpoint 均保留下一项 Plan 与已读路径指针，但不带未提交的半开
@@ -819,7 +866,13 @@ Parent Turn
 - **Session Parent**：顶层 Child 的 `ParentID` 固定为 `parent`，completion 与
   context 投递同一收件人；Mailbox Drain 失败不得丢消息。
 - **Typed Settlement**：`completed` / `retryable`（预算、rate-limit） / `failed` /
-  `interrupted`，并带稳定 `reason_code`。
+  `interrupted`，并带稳定 `reason_code`。分类只读取终态及其 `Fault`，不扫描正文、
+  Receipt Note 或 Secondary Issue 的关键词。可选 `fault.reason` 随终态冻结、持久化和
+  投递，明确携带 `token_budget_exhausted`、`cost_budget_exhausted` 或
+  `provider_rate_limited`；旧记录缺少该字段时不推断原因。只有来源、错误码、原因和
+  恢复 Disposition 一致的预算或瞬时限流失败才标记 `retryable`，表示条件满足后可
+  `followup_task`，不表示立即自动重试。恢复建议优先使用该 Fault 的 `recovery_action`，
+  区分 Token 与费用预算；供应商硬配额、上下文不足不误归为 Child Token 预算。
 - **取消与结算**：`interrupt_agent` 只提交活动 Turn 的取消请求，返回当前真实状态。
   取消结果到达前保留活动状态和 Manager 的预算预留；真实结果经 `Settle` 一次性提交
   终态、结果、用量与 completion 消息。父 Agent 通过 `wait_agent` 等待结算后再

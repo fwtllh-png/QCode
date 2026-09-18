@@ -38,6 +38,7 @@ func TestBudgetExhaustionIsStructuredAndResumable(t *testing.T) {
 				problem.Retryable ||
 				problem.Fault == nil ||
 				problem.Fault.Disposition != FaultResumeTurn ||
+				problem.Fault.Reason != testCase.reason ||
 				problem.Fault.SideEffects != SideEffectDraft ||
 				problem.Fault.RecoveryAction == "" ||
 				problem.Details == nil ||

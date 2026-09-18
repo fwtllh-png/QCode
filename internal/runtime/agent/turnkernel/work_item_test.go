@@ -136,8 +136,8 @@ func TestAnswerTurnKnownWorkItemFinishOnlyAtImplementLease(t *testing.T) {
 	}).State
 	signature := FormatProgressSignature(state, 0, false)
 	state = apply(t, state, ObserveProgress{
-		Signature:      signature,
-		SampleIdentity: "exec_command\nnode --test",
+		Signature:        signature,
+		SampleIdentity:   "exec_command\nnode --test",
 		CompletedSamples: 0,
 	}).State
 	for _, test := range []struct {
@@ -185,18 +185,151 @@ func TestDistinctToolIdentityDoesNotConsumeImplementLease(t *testing.T) {
 			SampleIdentity:   "exec_command\ncheck-" + strconv.FormatUint(uint64(samples), 10),
 			CompletedSamples: samples,
 		}).State
-		want := uint32(0)
-		if samples == 1 {
-			want = 1
-		}
 		if state.Progress.Stage != ProgressStageNone ||
-			state.Progress.NoProgressSamples != want {
+			state.Progress.NoProgressSamples != samples ||
+			state.Progress.StallKind != ProgressStallCycle {
 			t.Fatalf(
-				"distinct tool identity consumed lease: samples=%d progress=%+v",
+				"distinct tool identity consumed short lease or reset long clock: samples=%d progress=%+v",
 				samples,
 				state.Progress,
 			)
 		}
+	}
+}
+
+func TestAlternatingToolIdentityUsesMaxStepsLease(t *testing.T) {
+	state := startSampling(t, protocol.TurnIntentAnswer)
+	state.Policy.Convergence = ConvergencePolicyForStepLimit(64)
+	state.Policy.ImplementNoProgressSamples = 6
+	state = apply(t, state, BindWorkItem{
+		Goal: "search the chapter",
+		KnownReads: map[string]WorkItemRead{
+			"readme.md": {Window: "full"},
+		},
+	}).State
+	signature := FormatProgressSignature(state, 0, false)
+	state = apply(t, state, ObserveProgress{
+		Signature: signature, CompletedSamples: 0,
+	}).State
+	identities := []string{
+		"search_text\nquery=A",
+		"search_text\nquery=B",
+		"search_text\nquery=A",
+		"search_text\nquery=B",
+		"search_text\nquery=A",
+		"search_text\nquery=B",
+	}
+	for index, identity := range identities {
+		samples := uint32(index + 1)
+		state = apply(t, state, ObserveProgress{
+			Signature:        signature,
+			SampleIdentity:   identity,
+			CompletedSamples: samples,
+		}).State
+		if state.Progress.Stage != ProgressStageNone ||
+			state.Progress.NoProgressSamples != samples ||
+			state.Progress.StallKind != ProgressStallCycle {
+			t.Fatalf(
+				"A/B cycle used short lease: samples=%d progress=%+v",
+				samples,
+				state.Progress,
+			)
+		}
+	}
+}
+
+func TestNewResultDigestRenewsNoProgress(t *testing.T) {
+	state := startSampling(t, protocol.TurnIntentAnswer)
+	state.Policy.Convergence = ConvergencePolicyForStepLimit(64)
+	state.Policy.ImplementNoProgressSamples = 6
+	signature := FormatProgressSignature(state, 0, false)
+	state = apply(t, state, ObserveProgress{
+		Signature:        signature,
+		SampleIdentity:   "exec_command\nnode --test",
+		ResultDigest:     "ok;content=sha256:one",
+		CompletedSamples: 0,
+	}).State
+	state = apply(t, state, ObserveProgress{
+		Signature:        signature,
+		SampleIdentity:   "exec_command\nnode --test --name=other",
+		ResultDigest:     "ok;content=sha256:two",
+		CompletedSamples: 3,
+	}).State
+	if state.Progress.NoProgressSamples != 0 ||
+		state.Progress.Stage != ProgressStageNone ||
+		state.Progress.StallKind != ProgressStallNone {
+		t.Fatalf("new result digest did not renew: %+v", state.Progress)
+	}
+}
+
+func TestSeenWorkStateDoesNotResetOnReturn(t *testing.T) {
+	state := startSampling(t, protocol.TurnIntentWorkspaceChange)
+	state.Policy.Convergence = ConvergencePolicyForStepLimit(64)
+	state.Policy.ImplementNoProgressSamples = 6
+	state = apply(t, state, BindWorkItem{
+		Goal: "toggle the flag",
+		KnownEdits: map[string]WorkItemEdit{
+			"flag.go": {ContentDigest: "sha256:a"},
+		},
+	}).State
+	first := FormatProgressSignature(state, 0, false)
+	state = apply(t, state, ObserveProgress{
+		Signature:        first,
+		SampleIdentity:   "file_edit\nflag.go",
+		ResultDigest:     "ok;read=sha256:a",
+		CompletedSamples: 0,
+	}).State
+	state.WorkItem.KnownEdits["flag.go"] = WorkItemEdit{ContentDigest: "sha256:b"}
+	second := FormatProgressSignature(state, 0, false)
+	state = apply(t, state, ObserveProgress{
+		Signature:        second,
+		SampleIdentity:   "file_edit\nflag.go",
+		ResultDigest:     "ok;read=sha256:b",
+		CompletedSamples: 1,
+	}).State
+	if state.Progress.NoProgressSamples != 0 {
+		t.Fatalf("new content version did not renew: %+v", state.Progress)
+	}
+	state.WorkItem.KnownEdits["flag.go"] = WorkItemEdit{ContentDigest: "sha256:a"}
+	state = apply(t, state, ObserveProgress{
+		Signature:        first,
+		SampleIdentity:   "file_edit\nflag.go",
+		ResultDigest:     "ok;read=sha256:a",
+		CompletedSamples: 2,
+	}).State
+	if state.Progress.NoProgressSamples != 1 ||
+		state.Progress.StallKind != ProgressStallIdenticalCall {
+		t.Fatalf("returned content version reset clock: %+v", state.Progress)
+	}
+}
+
+func TestPaginationReadRenewsObservation(t *testing.T) {
+	state := startSampling(t, protocol.TurnIntentAnswer)
+	state.Policy.Convergence = ConvergencePolicyForStepLimit(64)
+	state = apply(t, state, BindWorkItem{
+		Goal: "read the transport",
+		KnownReads: map[string]WorkItemRead{
+			"socket_transport.cpp": {Window: "40", StartLine: 40, EndLine: 80},
+		},
+	}).State
+	signature := FormatProgressSignature(state, 0, false)
+	state = apply(t, state, ObserveProgress{
+		Signature:        signature,
+		SampleIdentity:   "file_read\nsocket_transport.cpp",
+		ResultDigest:     "ok;read=sha256:page1",
+		CompletedSamples: 0,
+	}).State
+	state.WorkItem.KnownReads["socket_transport.cpp"] = WorkItemRead{
+		Window: "80", StartLine: 80, EndLine: 120,
+	}
+	state = apply(t, state, ObserveProgress{
+		Signature:        signature,
+		SampleIdentity:   "file_read\nsocket_transport.cpp",
+		ResultDigest:     "ok;read=sha256:page2",
+		CompletedSamples: 2,
+	}).State
+	if state.Progress.NoProgressSamples != 0 {
+		t.Fatalf("pagination did not renew: %+v", state.Progress)
 	}
 }
 
@@ -334,8 +467,8 @@ func TestImplementLeaseExhaustsAtLeasePlusRepairReserve(t *testing.T) {
 	}).State
 	signature := FormatProgressSignature(state, 0, false)
 	state = apply(t, state, ObserveProgress{
-		Signature:      signature,
-		SampleIdentity: "file_read\nsocket_transport.cpp",
+		Signature:        signature,
+		SampleIdentity:   "file_read\nsocket_transport.cpp",
 		CompletedSamples: 0,
 	}).State
 	// Between finish-only and lease+repair-reserve the stage stays
@@ -410,8 +543,8 @@ func TestImplementLeaseWithoutRepairReserveExhaustsAtLeasePlusOne(t *testing.T) 
 	}).State
 	signature := FormatProgressSignature(state, 0, false)
 	state = apply(t, state, ObserveProgress{
-		Signature:      signature,
-		SampleIdentity: "file_read\nsocket_transport.cpp",
+		Signature:        signature,
+		SampleIdentity:   "file_read\nsocket_transport.cpp",
 		CompletedSamples: 0,
 	}).State
 	state = apply(t, state, ObserveProgress{

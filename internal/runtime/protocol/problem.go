@@ -30,6 +30,7 @@ const (
 	ProblemReasonUnsupported          = "unsupported"
 	ProblemReasonWrongSession         = "wrong_session"
 	ProblemReasonProviderThroughput   = "provider_throughput"
+	ProblemReasonProviderRateLimited  = "provider_rate_limited"
 )
 
 func NewProblem(code ErrorCode, message string, retryable bool, cause error) *Problem {

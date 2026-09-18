@@ -93,6 +93,7 @@ func NewBudgetExhausted(
 		FaultMetadata{
 			Origin:         FaultOriginRuntime,
 			Disposition:    FaultResumeTurn,
+			Reason:         reason,
 			SideEffects:    sideEffects,
 			RecoveryAction: recoveryAction,
 		},

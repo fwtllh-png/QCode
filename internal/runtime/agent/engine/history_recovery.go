@@ -120,45 +120,11 @@ func (e *Engine) runCompactGate(
 		}
 		overHard = window.hardLimit != 0 && window.total > window.hardLimit
 	}
-	// Controlled degradation before failing the turn: shrink closed tool
-	// result surfaces to handle-backed projections. The latest batch stays
-	// intact and every original remains retrievable through result_get, so
-	// an over-pressure turn keeps running instead of terminating as
-	// resource-exhausted with all of its work lost.
-	if overHard {
-		beforeWindow := window
-		if stats, pruned, pruneErr := e.pruneToolResultSurfaces(
-			history, input, outputReserve, true, economicInput, projectHistory,
-		); pruneErr == nil && stats.results > 0 {
-			window = pruned
-			// Rewriting already-sent surfaces breaks the append-only prefix
-			// the provider cache assumed; advance the window so the next
-			// request re-establishes cacheability on the degraded prefix.
-			e.advanceTokenWindow()
-			receipt := &promptcontext.CompactionReceipt{
-				Status: "pruned", Mode: "surface", Phase: phase,
-				OriginalTokens: beforeWindow.total, RetainedTokens: pruned.total,
-				PrunedToolResults: stats.results, PrunedBytes: stats.bytes,
-			}
-			if err := send(Compacting, Event{Compaction: receipt}); err != nil {
-				return tokenWindow{}, err
-			}
-			overHard = window.hardLimit != 0 && window.total > window.hardLimit
-		}
-	}
-	if err == nil &&
-		window.hardLimit != 0 &&
-		window.total > window.hardLimit &&
-		len(baseInput.Partition(agentcontext.KindContinuation)) != 0 {
-		return window, protocol.NewProblem(
-			protocol.CodeResourceExhausted,
-			"partial provider output cannot be compacted within the model context window",
-			false,
-			nil,
-		)
-	}
 	if err == nil && overHard {
-		return window, compactionBudgetError(window)
+		return e.relieveCurrentTurnPressure(
+			history, baseInput, outputReserve, economicInput, phase,
+			send, projectHistory, window,
+		)
 	}
 	return window, err
 }
@@ -427,6 +393,7 @@ func (e *Engine) compactHistoryWithPolicy(
 					snapshot,
 					reserve,
 					forced,
+					false,
 					economicInput,
 					projectHistory,
 				)

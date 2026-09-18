@@ -284,10 +284,11 @@ func TestBodyScopeStillCompactsBeforeTheHardTotalWindow(t *testing.T) {
 func TestCompactGateMeasuresStatelessProviderProjection(t *testing.T) {
 	engine := newEngine(t, &scriptedProvider{}, tool.NewRegistry(nil, nil))
 	engine.options.Context.Window.AutoTokens = 1_800
+	decision := "已排除缓存问题，下一步只修改取消结算路径"
 	call := toolCallMessage(1, "closed", "file_read", `{}`)
 	call.Blocks = append([]provider.ContentBlock{{
 		Type: provider.ContentText,
-		Text: strings.Repeat("provider replay only ", 2_000),
+		Text: decision,
 	}}, call.Blocks...)
 	history := []provider.Message{
 		call,
@@ -318,8 +319,12 @@ func TestCompactGateMeasuresStatelessProviderProjection(t *testing.T) {
 	if receipt != nil || window.active >= window.compactLimit {
 		t.Fatalf("window=%+v receipt=%+v", window, receipt)
 	}
+	projected := project(history)
+	if projected[0].Text() != decision {
+		t.Fatalf("stateless projection dropped analysis: %+v", projected[0])
+	}
 	if agentcontext.HistoryBytes(history) != originalBytes ||
-		history[0].Blocks[0].Type != provider.ContentText {
+		history[0].Blocks[0].Text != decision {
 		t.Fatalf("durable history was compacted: %+v", history)
 	}
 }

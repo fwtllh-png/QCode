@@ -14,8 +14,10 @@ import (
 )
 
 // WorkItem is the Kernel-owned next-step fact for one Turn. It persists with
-// Domain Facts / Snapshots. Progress is a path-set signature, not a mutation
-// or successful-call counter.
+// Domain Facts / Snapshots. The public progress signature stays a path-set
+// plus coverage facts. Anti-spin additionally fingerprints workspace content
+// versions and the latest tool-result digest so identity changes cannot
+// hide a cycle.
 type WorkItem struct {
 	GoalDigest     string                  `json:"goal_digest,omitempty"`
 	KnownReads     map[string]WorkItemRead `json:"known_reads,omitempty"`
@@ -40,6 +42,7 @@ type WorkItemRead struct {
 
 type WorkItemEdit struct {
 	MutationRevision uint64 `json:"mutation_revision"`
+	ContentDigest    string `json:"content_digest,omitempty"`
 }
 
 type WorkItemOpen struct {
@@ -62,6 +65,7 @@ type WorkItemObservation struct {
 	OpenSession   string   `json:"open_session,omitempty"`
 	CloseSession  string   `json:"close_session,omitempty"`
 	CoveredPaths  []string `json:"covered_paths,omitempty"`
+	ResultDigest  string   `json:"result_digest,omitempty"`
 }
 
 func GoalDigest(goal string) string {
@@ -258,9 +262,12 @@ func applyWorkItemObservation(
 		if item.KnownEdits == nil {
 			item.KnownEdits = make(map[string]WorkItemEdit)
 		}
-		item.KnownEdits[path] = WorkItemEdit{
-			MutationRevision: state.MutationRevision,
+		edit := item.KnownEdits[path]
+		edit.MutationRevision = state.MutationRevision
+		if digest := strings.TrimSpace(change.ContentDigest); digest != "" {
+			edit.ContentDigest = digest
 		}
+		item.KnownEdits[path] = edit
 		item.Open.UnverifiedPaths = mergeUniqueSorted(
 			item.Open.UnverifiedPaths,
 			path,
@@ -291,6 +298,7 @@ func ObserveWorkItemResult(
 	result tool.Result,
 ) WorkItemObservation {
 	var observation WorkItemObservation
+	observation.ResultDigest = ResultObservationDigest(result)
 	if result.IsError {
 		return observation
 	}
@@ -372,8 +380,9 @@ func ParseFileReadWindow(raw string) (string, int, bool) {
 // tool batch through PendingIdentity.
 const EmptySampleIdentity = "none"
 
-// FormatToolCallsIdentity names one Sample's tool batch. Identical name and
-// canonical arguments repeat a stall; distinct arguments do not.
+// FormatToolCallsIdentity names one Sample's tool batch. The identity is one
+// coordinate of the Turn-scoped work-state key; changing it does not itself
+// renew the no-progress clocks.
 func FormatToolCallsIdentity(calls []ToolCallState) string {
 	if len(calls) == 0 {
 		return EmptySampleIdentity

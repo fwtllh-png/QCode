@@ -115,6 +115,8 @@ export interface RuntimeSnapshot {
   contextResources: readonly EditorContextReference[];
   messageFeedback: Readonly<Record<string, "positive" | "negative">>;
   sessions: readonly SessionSummary[];
+  sessionSearchQuery: string;
+  sessionSearchResults: readonly SessionSummary[];
   selectedSessionID: string;
   hydratingSessionID: string;
   events: readonly RuntimeEvent[];
@@ -156,6 +158,8 @@ const emptySnapshot: RuntimeSnapshot = {
   contextResources: [],
   messageFeedback: {},
   sessions: [],
+  sessionSearchQuery: "",
+  sessionSearchResults: [],
   selectedSessionID: "",
   hydratingSessionID: "",
   events: [],
@@ -218,14 +222,25 @@ export class RuntimeClient {
   private cursor = 0;
   private socket?: WebSocket;
   private sessionRefreshQueued = false;
+  private sessionRefreshPending = new Set<string>();
+  private sessionListRequest?: {
+    promise: Promise<void>;
+    workspaceIDs?: ReadonlySet<string>;
+  };
   private reconnectTimer?: number;
   private bootTimer?: number;
   private generation = 0;
   private sessionListGeneration = 0;
+  private sessionListController?: AbortController;
   private sessionListHydrationRequested = false;
   private sessionWorkspaceIDs = new Map<string, string>();
   private selectionGeneration = 0;
   private selectionController?: AbortController;
+  private progressRequest?: {
+    controller: AbortController;
+    promise: Promise<void>;
+    dirty: boolean;
+  };
   private traceTurns = new Set<string>();
   private tracePending = new Set<string>();
   private traceInFlight?: Promise<void>;
@@ -361,6 +376,9 @@ export class RuntimeClient {
   }
 
   stop(): void {
+    this.cancelSessionRefresh();
+    this.sessionListHydrationRequested = false;
+    this.cancelProgressRefresh();
     this.selectionController?.abort();
     this.selectionGeneration += 1;
     this.cancelEarlierHistory();
@@ -378,38 +396,120 @@ export class RuntimeClient {
     this.socket = undefined;
   }
 
-  async refreshSessions(
-    query = "",
-    hydrate = true,
+  refreshSessions(
+    query?: string,
+    hydrate = query === undefined,
     includeArchived = this.state.includeArchived
   ): Promise<void> {
+    return this.startSessionRefresh(query, hydrate, includeArchived);
+  }
+
+  private async startSessionRefresh(
+    query: string | undefined,
+    hydrate: boolean,
+    includeArchived: boolean,
+    workspaceIDs?: ReadonlySet<string>
+  ): Promise<void> {
+    // If an explicit query replaces a scoped activity read, keep its
+    // invalidation so the catalog is updated after the new search finishes.
+    for (const id of this.sessionListRequest?.workspaceIDs ?? []) {
+      this.sessionRefreshPending.add(id);
+    }
+    const request = {
+      promise: this.refreshSessionLists(query, hydrate, includeArchived, workspaceIDs),
+      workspaceIDs
+    };
+    this.sessionListRequest = request;
+    try {
+      await request.promise;
+    } finally {
+      if (this.sessionListRequest === request) {
+        this.sessionListRequest = undefined;
+        this.queueSessionRefresh();
+      }
+    }
+  }
+
+  private async refreshSessionLists(
+    query: string | undefined,
+    hydrate: boolean,
+    includeArchived: boolean,
+    workspaceIDs?: ReadonlySet<string>
+  ): Promise<void> {
     this.sessionListHydrationRequested ||= hydrate;
+    this.sessionListController?.abort();
+    const controller = new AbortController();
+    this.sessionListController = controller;
     const generation = ++this.sessionListGeneration;
-    const workspaces = this.state.workspaces.filter((workspace) => workspace.ready);
-    const lists = await Promise.allSettled(workspaces.map((workspace) =>
+    const searchQuery = query ?? this.state.sessionSearchQuery;
+    const searching = Boolean(searchQuery.trim());
+    const loadCatalog = query === undefined || !searching ||
+      this.sessionListHydrationRequested;
+    if (searchQuery !== this.state.sessionSearchQuery ||
+        includeArchived !== this.state.includeArchived) {
+      this.update({
+        sessionSearchQuery: searchQuery,
+        includeArchived,
+        ...(searchQuery !== this.state.sessionSearchQuery
+          ? {sessionSearchResults: []} : {})
+      });
+    }
+    const workspaces = this.state.workspaces.filter((workspace) =>
+      workspace.ready && (!workspaceIDs || workspaceIDs.has(workspace.id)));
+    const list = (workspace: WorkspaceDescriptor, value: string) =>
       this.call<SessionList>("session/list", {
-        query,
+        query: value,
         include_archived: includeArchived,
         limit: 200
-      }, {workspaceID: workspace.id})
-    ));
-    if (generation !== this.sessionListGeneration) return;
+      }, {workspaceID: workspace.id, signal: controller.signal});
+    const requests = workspaces.map(async (workspace) => {
+      const [catalog, search] = await Promise.allSettled([
+        loadCatalog ? list(workspace, "") : Promise.resolve(undefined),
+        searching ? list(workspace, searchQuery) : Promise.resolve(undefined)
+      ]);
+      return {workspace, catalog, search};
+    });
+    const lists = await Promise.all(requests);
+    if (controller.signal.aborted || generation !== this.sessionListGeneration) return;
     // A newer background list may supersede the startup list, but it must
     // inherit the request to restore the selected session's full history.
     const hydrateSelected = this.sessionListHydrationRequested;
     this.sessionListHydrationRequested = false;
     const sessionWorkspaceIDs = new Map<string, string>();
-    const sessions = lists.flatMap((list, index) => {
-      const workspace = workspaces[index];
-      const values = list.status === "fulfilled"
-        ? list.value.sessions
+    const sessionSearchResults: SessionSummary[] = [];
+    const byWorkspace = new Map(lists.map((list) => [list.workspace.id, list]));
+    const currentWorkspaces = this.state.workspaces.filter((workspace) => workspace.ready);
+    const sessions = currentWorkspaces.flatMap((workspace) => {
+      const {catalog, search} = byWorkspace.get(workspace.id) ?? {};
+      const values = catalog?.status === "fulfilled" && catalog.value
+        ? catalog.value.sessions
         : this.state.sessions.filter(
-          (session) => session.workspace_root === workspace?.root
+          (session) => session.workspace_root === workspace.root
         );
-      for (const session of values) {
-        if (workspace) sessionWorkspaceIDs.set(session.session_id, workspace.id);
+      const results = search?.status === "fulfilled" && search.value
+        ? search.value.sessions
+        : this.state.sessionSearchResults.filter(
+          (session) => session.workspace_root === workspace.root
+        );
+      if (searching) sessionSearchResults.push(...results);
+      // Searching may find an older session beyond the catalog's first page.
+      // Merge its metadata without replacing the authoritative session list.
+      const merged = new Map(values.map((session) => [session.session_id, session]));
+      if (searching) {
+        for (const session of results) merged.set(session.session_id, session);
       }
-      return values;
+      if (searching || query !== undefined) {
+        const active = this.state.sessions.find((session) =>
+          session.session_id === this.state.selectedSessionID &&
+          session.workspace_root === workspace.root);
+        if (active && !merged.has(active.session_id)) {
+          merged.set(active.session_id, active);
+        }
+      }
+      for (const session of merged.values()) {
+        sessionWorkspaceIDs.set(session.session_id, workspace.id);
+      }
+      return [...merged.values()];
     });
     this.sessionWorkspaceIDs = sessionWorkspaceIDs;
     const selected = this.state.selectedSessionID || this.stored.selectedSessionID;
@@ -418,12 +518,15 @@ export class RuntimeClient {
         this.state.selectedWorkspaceID
     );
     const candidates = this.state.selectedWorkspaceID ? preferred : sessions;
-    const nextSelected =
-      selected && candidates.some((item) => item.session_id === selected)
+    const nextSelected = (query !== undefined && !hydrateSelected) ||
+      (searching && Boolean(this.state.selectedSessionID))
+      ? this.state.selectedSessionID
+      : selected && candidates.some((item) => item.session_id === selected)
         ? selected
         : (candidates[0]?.session_id ?? "");
     this.update({
       sessions,
+      sessionSearchResults,
       selectedSessionID: nextSelected,
       includeArchived
     });
@@ -433,7 +536,14 @@ export class RuntimeClient {
   }
 
   async setArchivedVisible(includeArchived: boolean): Promise<void> {
-    await this.refreshSessions("", true, includeArchived);
+    await this.refreshSessions(undefined, true, includeArchived);
+  }
+
+  private cancelSessionRefresh(): void {
+    this.sessionListController?.abort();
+    this.sessionListGeneration += 1;
+    this.sessionListRequest = undefined;
+    this.sessionRefreshPending.clear();
   }
 
   async refreshWorkspaces(): Promise<WorkspaceCatalog> {
@@ -478,10 +588,12 @@ export class RuntimeClient {
       await this.switchWorkspace(fallback.id, true);
       return;
     }
+    this.cancelSessionRefresh();
     this.cancelEarlierHistory();
     this.eventNotifier.cancel();
     this.pendingSelectedEvents = [];
     this.hydration = undefined;
+    this.cancelProgressRefresh();
     this.selectionGeneration += 1;
     this.generation += 1;
     this.socket?.close(1000, "last workspace removed");
@@ -491,6 +603,7 @@ export class RuntimeClient {
       workspaceRoot: "",
       selectedWorkspaceID: "",
       sessions: [],
+      sessionSearchResults: [],
       selectedSessionID: "",
       hydratingSessionID: "",
       events: [],
@@ -588,10 +701,12 @@ export class RuntimeClient {
       if (hydrate) await this.refreshSessions();
       return;
     }
+    this.cancelSessionRefresh();
     this.cancelEarlierHistory();
     this.eventNotifier.cancel();
     this.pendingSelectedEvents = [];
     this.hydration = undefined;
+    this.cancelProgressRefresh();
     this.selectionGeneration += 1;
     this.generation += 1;
     this.socket?.close(1000, "workspace changed");
@@ -631,7 +746,7 @@ export class RuntimeClient {
     }
     await this.connect();
     await this.refreshModelCatalog();
-    await this.refreshSessions("", hydrate);
+    await this.refreshSessions(undefined, hydrate);
   }
 
   async createSession(
@@ -656,7 +771,7 @@ export class RuntimeClient {
       {session_id: sessionID, isolation},
       {idempotencyKey, retryNetwork: true}
     );
-    await this.refreshSessions("", false);
+    await this.refreshSessions(undefined, false);
     await this.selectSession(binding.session_id);
     if (profilePatch && Object.keys(profilePatch).length > 0) {
       await this.updateProfile(profilePatch);
@@ -701,6 +816,7 @@ export class RuntimeClient {
       discard
     }, {workspaceID: this.workspaceIDForSession(sessionID)});
     if (this.state.selectedSessionID === sessionID) {
+      this.cancelProgressRefresh();
       this.selectionGeneration += 1;
       this.hydration = undefined;
       this.update({
@@ -739,6 +855,7 @@ export class RuntimeClient {
     this.eventNotifier.cancel();
     this.pendingSelectedEvents = [];
     const previousSessionID = this.state.selectedSessionID;
+    this.cancelProgressRefresh();
     const generation = ++this.selectionGeneration;
     this.selectionController?.abort();
     const controller = new AbortController();
@@ -819,7 +936,7 @@ export class RuntimeClient {
     });
     this.persistSelectedSession(sessionID);
     if (refreshForForeignEvent || refreshForDefaultTitle || refreshForTitle) {
-      void this.refreshSessions("", false);
+      void this.refreshSessions(undefined, false);
     }
     this.traceWatermark = snapshot.through_sequence;
     const current = () => generation === this.selectionGeneration &&
@@ -835,9 +952,7 @@ export class RuntimeClient {
       // A slower initial response must not overwrite their newer projection.
       const advanced = this.state.events.some((event) =>
         event.sequence > requestedAt &&
-        ((route === "plan/get" && (event.kind === "plan.delta" || isTerminal(event.kind))) ||
-          (route === "agent/list" && (progressEventKinds.has(event.kind) || isTerminal(event.kind))) ||
-          (route === "usage/query" && isTerminal(event.kind)))
+        route === "usage/query" && isTerminal(event.kind)
       );
       if (!advanced) this.update(project(value));
     };
@@ -864,10 +979,7 @@ export class RuntimeClient {
         (catalog) => ({tools: catalog.tools ?? []})),
       detail<CheckpointList>("checkpoint/list", {session_id: sessionID, limit: 20},
         (value) => ({checkpoints: value.checkpoints ?? []})),
-      detail<SessionPlanSnapshot>("plan/get", {session_id: sessionID},
-        (value) => ({plan: hydratePlanArtifact(value.artifact)})),
-      detail<AgentList>("agent/list", {session_id: sessionID, limit: 20},
-        (value) => ({agents: value.agents ?? []})),
+      this.refreshProgress(sessionID),
       detail<UsageQueryResult>("usage/query",
         {session_id: sessionID, include_children: true, limit: 100},
         (value) => ({usage: value.rollup})),
@@ -905,7 +1017,7 @@ export class RuntimeClient {
       }
     });
     this.update({contextResources: []});
-    await this.refreshSessions("", false);
+    await this.refreshSessions(undefined, false);
     return receipt;
   }
 
@@ -1810,6 +1922,7 @@ export class RuntimeClient {
     this.eventNotifier.cancel();
     this.pendingSelectedEvents = [];
     this.commitCursor(0, true);
+    this.cancelProgressRefresh();
     this.selectionGeneration += 1;
     this.hydration = undefined;
     this.update({
@@ -1926,24 +2039,63 @@ export class RuntimeClient {
   }
 
   private async refreshProgress(sessionID: string): Promise<void> {
-    const generation = this.selectionGeneration;
-    try {
-      const [plan, agents] = await Promise.all([
-        this.call<SessionPlanSnapshot>("plan/get", {session_id: sessionID}),
-        this.call<AgentList>("agent/list", {session_id: sessionID, limit: 20})
-      ]);
-      if (
-        generation === this.selectionGeneration &&
-        sessionID === this.state.selectedSessionID
-      ) {
-        this.update({
-          plan: hydratePlanArtifact(plan.artifact),
-          agents: agents.agents ?? []
-        });
-      }
-    } catch {
-      // Initial hydration remains the last authoritative read model.
+    if (!sessionID || sessionID !== this.state.selectedSessionID) return;
+    if (this.progressRequest) {
+      this.progressRequest.dirty = true;
+      return this.progressRequest.promise;
     }
+    const generation = this.selectionGeneration;
+    const workspaceID = this.state.selectedWorkspaceID;
+    const request = {
+      controller: new AbortController(),
+      promise: Promise.resolve(),
+      dirty: false
+    };
+    this.progressRequest = request;
+    const current = () => this.progressRequest === request &&
+      generation === this.selectionGeneration &&
+      workspaceID === this.state.selectedWorkspaceID &&
+      sessionID === this.state.selectedSessionID &&
+      !request.controller.signal.aborted;
+    const options = {workspaceID, signal: request.controller.signal};
+    request.promise = (async () => {
+      try {
+        // Merge invalidations already queued in this task without a fixed delay.
+        await Promise.resolve();
+        while (current()) {
+          request.dirty = false;
+          const [plan, agents] = await Promise.allSettled([
+            this.call<SessionPlanSnapshot>("plan/get", {session_id: sessionID}, options),
+            this.call<AgentList>("agent/list", {session_id: sessionID, limit: 20}, options)
+          ]);
+          if (!current()) return;
+          // Events received during the read invalidate both projections. Read
+          // once more after they settle; never publish that older response.
+          if (request.dirty) continue;
+          const patch: Partial<RuntimeSnapshot> = {};
+          if (plan.status === "fulfilled") {
+            try {
+              patch.plan = hydratePlanArtifact(plan.value.artifact);
+            } catch {
+              // Preserve the last valid plan if its document cannot be decoded.
+            }
+          }
+          if (agents.status === "fulfilled") patch.agents = agents.value.agents ?? [];
+          if (Object.keys(patch).length > 0) this.update(patch);
+          if (!request.dirty) return;
+        }
+      } finally {
+        if (this.progressRequest === request) {
+          this.progressRequest = undefined;
+        }
+      }
+    })();
+    return request.promise;
+  }
+
+  private cancelProgressRefresh(): void {
+    this.progressRequest?.controller.abort();
+    this.progressRequest = undefined;
   }
 
   async refreshTrace(sessionID = this.state.selectedSessionID): Promise<void> {
@@ -2003,13 +2155,28 @@ export class RuntimeClient {
   }
 
   private scheduleSessionRefresh(): void {
-    if (this.sessionRefreshQueued) return;
+    // The event socket is bound to the selected Workspace, including events
+    // for Sessions that have not appeared in the catalog yet.
+    if (this.state.selectedWorkspaceID) {
+      this.sessionRefreshPending.add(this.state.selectedWorkspaceID);
+    }
+    this.queueSessionRefresh();
+  }
+
+  private queueSessionRefresh(): void {
+    if (this.sessionRefreshQueued || this.sessionListRequest ||
+        this.sessionRefreshPending.size === 0) return;
     this.sessionRefreshQueued = true;
     const generation = this.generation;
     queueMicrotask(() => {
       this.sessionRefreshQueued = false;
       if (generation !== this.generation) return;
-      void this.refreshSessions("", false);
+      if (this.sessionListRequest || this.sessionRefreshPending.size === 0) return;
+      const workspaceIDs = new Set(this.sessionRefreshPending);
+      this.sessionRefreshPending.clear();
+      void this.startSessionRefresh(
+        undefined, false, this.state.includeArchived, workspaceIDs
+      );
     });
   }
 

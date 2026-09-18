@@ -384,6 +384,22 @@ describe("projectTranscript", () => {
     });
   });
 
+  it("filters the sidebar without hiding the active conversation", () => {
+    const value = snapshot([
+      event(1, "turn.completed", {text: "Active conversation content"})
+    ]);
+    value.sessionSearchQuery = "no match";
+    const client = mockClient(value);
+    render(<App client={client} />);
+    expect((screen.getByRole("textbox", {name: "Search sessions"}) as HTMLInputElement).value)
+      .toBe("no match");
+    expect(document.querySelectorAll(".sessionGroup .sessionRow")).toHaveLength(0);
+    expect(screen.getByText("Active conversation content")).toBeTruthy();
+    fireEvent.keyDown(screen.getByRole("textbox", {name: "Search sessions"}), {key: "Escape"});
+    expect(client.refreshSessions).toHaveBeenCalledWith("");
+    expect(client.selectSession).not.toHaveBeenCalled();
+  });
+
   it("renders lifecycle, workspace, profile, and governed tool controls", async () => {
     const client = mockClient(snapshot());
     render(<App client={client} />);
@@ -3133,6 +3149,8 @@ function snapshot(events: RuntimeEvent[] = []): RuntimeSnapshot {
     contextResources: [],
     messageFeedback: {},
     sessions: [session],
+    sessionSearchQuery: "",
+    sessionSearchResults: [],
     selectedSessionID: session.session_id,
     hydratingSessionID: "",
     events,

@@ -1083,6 +1083,7 @@ func (s *Scope) Run(ctx context.Context) (result Result, resultErr error) {
 					e.turn,
 					progress.NoProgressSamples,
 					string(progress.Stage),
+					string(progress.StallKind),
 				),
 			)
 		}

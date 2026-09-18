@@ -186,6 +186,16 @@ func Validate(state State) error {
 	if state.Progress.NoProgressSamples > state.Progress.ObservedSamples {
 		return errors.New("no-progress samples exceed observed samples")
 	}
+	switch state.Progress.StallKind {
+	case ProgressStallNone,
+		ProgressStallIdenticalCall,
+		ProgressStallCycle:
+	default:
+		return fmt.Errorf(
+			"invalid progress stall kind %q",
+			state.Progress.StallKind,
+		)
+	}
 	if state.Convergence != nil {
 		if state.Convergence.Cause != ConvergenceIncomplete &&
 			(state.Convergence.Used < state.Convergence.Limit ||
@@ -571,6 +581,7 @@ func cloneState(state State) State {
 		value.VerificationCalls = append([]string(nil), state.Completion.VerificationCalls...)
 		cloned.Completion = &value
 	}
+	cloned.Progress = cloneProgressState(state.Progress)
 	cloned.WorkItem = cloneWorkItem(state.WorkItem)
 	cloned.Convergence = cloneConvergence(state.Convergence)
 	if state.PendingTerminal != nil {

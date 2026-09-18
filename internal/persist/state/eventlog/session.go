@@ -47,12 +47,18 @@ func (l *Log) ReplaySessionBefore(ctx context.Context, sessionID string, threads
 	if limit <= 0 {
 		return nil, false, errors.New("event replay limit must be positive")
 	}
+	if err := ctx.Err(); err != nil {
+		return nil, false, err
+	}
+	l.readers.RLock()
+	defer l.readers.RUnlock()
 	l.mu.RLock()
-	defer l.mu.RUnlock()
 	if l.closed {
+		l.mu.RUnlock()
 		return nil, false, ErrClosed
 	}
 	if err := ctx.Err(); err != nil {
+		l.mu.RUnlock()
 		return nil, false, err
 	}
 	var owners reverseOwners
@@ -74,20 +80,30 @@ func (l *Log) ReplaySessionBefore(ctx context.Context, sessionID string, threads
 		}
 	}
 	heap.Init(&owners)
-	events := make([]protocol.Event, 0, limit)
-	for len(owners) > 0 && len(events) < limit {
+	entries := make([]Evidence, 0, min(limit, len(l.entries)))
+	for len(owners) > 0 && len(entries) < limit {
 		if err := ctx.Err(); err != nil {
+			l.mu.RUnlock()
 			return nil, false, err
 		}
 		indices := heap.Pop(&owners).([]int)
-		record, err := l.readVerifiedRecord(l.entries[indices[len(indices)-1]])
-		if err != nil {
-			return nil, false, err
-		}
-		events = append(events, record.Event)
+		entries = append(entries, l.entries[indices[len(indices)-1]])
 		if len(indices) > 1 {
 			heap.Push(&owners, indices[:len(indices)-1])
 		}
 	}
-	return events, len(owners) > 0, nil
+	more := len(owners) > 0
+	l.mu.RUnlock()
+	events := make([]protocol.Event, 0, len(entries))
+	for _, evidence := range entries {
+		if err := ctx.Err(); err != nil {
+			return nil, false, err
+		}
+		record, err := l.readVerifiedRecord(evidence)
+		if err != nil {
+			return nil, false, err
+		}
+		events = append(events, record.Event)
+	}
+	return events, more, ctx.Err()
 }

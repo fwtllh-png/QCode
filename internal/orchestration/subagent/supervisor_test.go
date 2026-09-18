@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/fwtllh-png/QCode/internal/orchestration/subagent"
+	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
 )
 
 type estimatingRuntime struct {
@@ -152,21 +153,85 @@ func TestDelegateSerializesWhenProviderIsHot(t *testing.T) {
 }
 
 func TestClassifySettlementReasonCodes(t *testing.T) {
-	reason, message, retryable := subagent.ClassifySettlement(
-		subagent.StatusFailed,
-		[]string{"resource_exhausted: token budget exhausted: projected 17698, limit 15000"},
-		"",
+	token := protocol.NewBudgetExhausted(protocol.BudgetExhaustion{
+		Resource: protocol.BudgetResourceTokens, Scope: "agent:test",
+		Used: 17698, Limit: 15000, Projected: true,
+	}, nil)
+	cost := protocol.NewBudgetExhausted(protocol.BudgetExhaustion{
+		Resource: protocol.BudgetResourceCostMicrounits, Scope: "agent:test",
+		Used: 2, Limit: 1,
+	}, nil)
+	rate := protocol.NewFault(
+		protocol.CodeUnavailable, "请求暂时过于频繁", true,
+		protocol.FaultMetadata{
+			Origin: protocol.FaultOriginProvider, Disposition: protocol.FaultRetryTurn,
+			Reason: protocol.ProblemReasonProviderRateLimited,
+		}, nil,
 	)
-	if reason != subagent.ReasonBudgetExhausted || !retryable ||
-		!strings.Contains(message, "projected 17698") {
-		t.Fatalf("budget classification = %q %q %v", reason, message, retryable)
+	quota := protocol.NewFault(
+		protocol.CodeResourceExhausted, "provider quota exhausted", false,
+		protocol.FaultMetadata{
+			Origin: protocol.FaultOriginProvider, Disposition: protocol.FaultResumeTurn,
+		}, nil,
+	)
+	overflow := protocol.NewProblem(
+		protocol.CodeResourceExhausted, "context window exceeded", false, nil,
+	)
+	wrongOrigin := protocol.ProblemOf(token)
+	wrongOrigin.Fault.Origin = protocol.FaultOriginTool
+	wrongCode := protocol.ProblemOf(rate)
+	wrongCode.Code = protocol.CodeResourceExhausted
+	permanent := protocol.ProblemOf(rate)
+	permanent.Fault.Disposition = protocol.FaultFailTurn
+	// The machine-readable facts must work independently of message language.
+	token.Message, cost.Message = "令牌预算不足", "费用预算不足"
+	testCases := []struct {
+		name      string
+		status    subagent.Status
+		problem   *protocol.Problem
+		reason    string
+		retryable bool
+	}{
+		{"completed", subagent.StatusCompleted, nil, "", false},
+		{"completed ignores failure", subagent.StatusCompleted, rate, "", false},
+		{"interrupted", subagent.StatusInterrupted, token, subagent.ReasonInterrupted, false},
+		{"notes only", subagent.StatusFailed, nil, subagent.ReasonTaskFailed, false},
+		{"token budget", subagent.StatusFailed, token, subagent.ReasonBudgetExhausted, true},
+		{"cost budget", subagent.StatusFailed, cost, subagent.ReasonBudgetExhausted, true},
+		{"provider limit", subagent.StatusErrored, rate, subagent.ReasonProviderRateLimited, true},
+		{"provider quota", subagent.StatusFailed, quota, subagent.ReasonTaskFailed, false},
+		{"context overflow", subagent.StatusFailed, overflow, subagent.ReasonTaskFailed, false},
+		{"wrong origin", subagent.StatusFailed, wrongOrigin, subagent.ReasonTaskFailed, false},
+		{"wrong code", subagent.StatusFailed, wrongCode, subagent.ReasonTaskFailed, false},
+		{"no recovery", subagent.StatusFailed, permanent, subagent.ReasonProviderRateLimited, false},
 	}
-	reason, _, retryable = subagent.ClassifySettlement(
-		subagent.StatusFailed,
-		[]string{"unavailable: provider rate limit retry budget exhausted"},
-		"",
-	)
-	if reason != subagent.ReasonProviderRateLimited || !retryable {
-		t.Fatalf("rate-limit classification = %q %v", reason, retryable)
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			failure := subagent.SettlementFailure{}
+			if problem := testCase.problem; problem != nil {
+				failure = subagent.SettlementFailure{
+					Code: problem.Code, Message: problem.Message, Fault: problem.Fault,
+				}
+			}
+			summary := "reviewed rate limit and resource_exhausted handling"
+			notes := []string{"token budget exhausted; cost budget exhausted"}
+			reason, message, retryable := subagent.ClassifySettlement(
+				testCase.status, failure, notes, summary,
+			)
+			if reason != testCase.reason || retryable != testCase.retryable {
+				t.Fatalf("classification = %q %v, want %q %v",
+					reason, retryable, testCase.reason, testCase.retryable)
+			}
+			wantMessage := summary
+			if testCase.status == subagent.StatusFailed {
+				wantMessage = notes[0]
+				if failure.Message != "" {
+					wantMessage = failure.Message
+				}
+			}
+			if message != wantMessage {
+				t.Fatalf("message = %q, want %q", message, wantMessage)
+			}
+		})
 	}
 }

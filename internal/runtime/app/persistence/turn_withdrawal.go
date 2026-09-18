@@ -84,6 +84,48 @@ func (r *ContextRebaseRepository) TurnWithdrawn(
 	return found, err
 }
 
+func (r *ContextRebaseRepository) TurnsWithdrawn(
+	ctx context.Context, turns map[protocol.ThreadID]protocol.TurnID,
+) (map[protocol.ThreadID]bool, error) {
+	result := make(map[protocol.ThreadID]bool, len(turns))
+	if len(turns) == 0 {
+		return result, nil
+	}
+	type identity struct {
+		ID     string            `json:"id"`
+		Thread protocol.ThreadID `json:"thread"`
+		Turn   protocol.TurnID   `json:"turn"`
+	}
+	identities := make([]identity, 0, len(turns))
+	for thread, turn := range turns {
+		identities = append(identities, identity{
+			ID: turnContextID("turn-withdrawn", thread, turn), Thread: thread, Turn: turn,
+		})
+	}
+	raw, err := json.Marshal(identities)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := r.store.SQLite().DB().QueryContext(ctx, `
+		SELECT c.thread_id FROM json_each(?) p
+		JOIN context_rebases c
+		  ON c.compaction_id = json_extract(p.value, '$.id')
+		 AND c.thread_id = json_extract(p.value, '$.thread')
+		 AND c.turn_id = json_extract(p.value, '$.turn')`, string(raw))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var thread protocol.ThreadID
+		if err := rows.Scan(&thread); err != nil {
+			return nil, err
+		}
+		result[thread] = true
+	}
+	return result, rows.Err()
+}
+
 func (r *ContextRebaseRepository) CommitTurnWithdrawal(
 	ctx context.Context, thread protocol.ThreadID, turn protocol.TurnID, snapshot agentcontext.ContextSnapshot,
 ) error {

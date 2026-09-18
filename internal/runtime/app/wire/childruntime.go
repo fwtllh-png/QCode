@@ -63,6 +63,7 @@ type childTurn struct {
 	verify            *protocol.TurnVerificationData
 	text              string
 	notes             []string
+	failure           subagent.SettlementFailure
 	deadline          context.CancelFunc
 	leaseRenewal      chan struct{}
 	timedOut          bool
@@ -772,6 +773,10 @@ func (c *childRuntime) observe(event protocol.Event) {
 		}
 		settle, status = true, subagent.StatusCompleted
 	case *protocol.TurnFailedData:
+		turn.failure = subagent.SettlementFailure{
+			Code: data.Code, Message: data.Message,
+			Fault: protocol.CloneFaultMetadata(data.Fault),
+		}
 		turn.notes = append(turn.notes, fmt.Sprintf("%s: %s", data.Code, data.Message))
 		settle, status = true, subagent.StatusErrored
 	case *protocol.TurnCanceledData:
@@ -782,6 +787,10 @@ func (c *childRuntime) observe(event protocol.Event) {
 			data.Message,
 		))
 		if event.OperationID == turn.startOperation {
+			turn.failure = subagent.SettlementFailure{
+				Code: data.Code, Message: data.Message,
+				Fault: protocol.CloneFaultMetadata(data.Fault),
+			}
 			settle, status = true, subagent.StatusErrored
 		}
 	}
@@ -1039,11 +1048,18 @@ func (t *childTurn) result(threadID protocol.ThreadID, status subagent.Status) s
 		result.Verification.Verify = t.verify.Status
 	}
 	result.ReasonCode, result.Summary, result.Retryable = subagent.ClassifySettlement(
-		status, result.Unresolved, result.Summary,
+		status, t.failure, result.Unresolved, result.Summary,
 	)
 	if result.Summary == "" {
 		result.Summary = t.text
 	}
-	result.SuggestedAction = subagent.SuggestedAction(result.ReasonCode)
+	if result.Retryable || status == subagent.StatusInterrupted {
+		result.SuggestedAction = subagent.SuggestedAction(result.ReasonCode)
+	}
+	if status == subagent.StatusFailed && t.failure.Fault != nil {
+		if action := strings.TrimSpace(t.failure.Fault.RecoveryAction); action != "" {
+			result.SuggestedAction = action
+		}
+	}
 	return result
 }

@@ -137,13 +137,25 @@ const (
 	ProgressStageExhausted  ProgressStage = "exhausted"
 )
 
+type ProgressStallKind string
+
+const (
+	ProgressStallNone          ProgressStallKind = ""
+	ProgressStallIdenticalCall ProgressStallKind = "identical_call"
+	ProgressStallCycle         ProgressStallKind = "cycle"
+)
+
 type ProgressState struct {
-	Signature         string        `json:"signature,omitempty"`
-	SampleIdentity    string        `json:"sample_identity,omitempty"`
-	PendingIdentity   string        `json:"pending_identity,omitempty"`
-	ObservedSamples   uint32        `json:"observed_samples"`
-	NoProgressSamples uint32        `json:"no_progress_samples"`
-	Stage             ProgressStage `json:"stage,omitempty"`
+	Signature            string            `json:"signature,omitempty"`
+	SampleIdentity       string            `json:"sample_identity,omitempty"`
+	PendingIdentity      string            `json:"pending_identity,omitempty"`
+	ObservationKey       string            `json:"observation_key,omitempty"`
+	SeenObservations     []string          `json:"seen_observations,omitempty"`
+	PendingResultDigests []string          `json:"pending_result_digests,omitempty"`
+	ObservedSamples      uint32            `json:"observed_samples"`
+	NoProgressSamples    uint32            `json:"no_progress_samples"`
+	Stage                ProgressStage     `json:"stage,omitempty"`
+	StallKind            ProgressStallKind `json:"stall_kind,omitempty"`
 }
 
 type ConvergenceState struct {
@@ -182,9 +194,12 @@ type Policy struct {
 	JournalRequired    bool              `json:"journal_required"`
 	Convergence        ConvergencePolicy `json:"convergence"`
 	// ImplementNoProgressSamples is the public finish-only lease for
-	// consecutive Samples that repeat the same tool-call identity. Zero
-	// inherits the MaxSteps-derived 2/3 finish-only lease. Distinct
-	// tool arguments on the same Work Item path set are not a stall.
+	// consecutive Samples that repeat the same work-state observation
+	// (workspace content, Work Item signature, and tool-result digest)
+	// with the same tool-call identity. Zero inherits the MaxSteps-derived
+	// 2/3 finish-only lease. A new observation key renews both clocks.
+	// Returning to a seen key with a different identity consumes the
+	// MaxSteps-derived lease instead.
 	ImplementNoProgressSamples uint32 `json:"implement_no_progress_samples,omitempty"`
 }
 
@@ -232,8 +247,9 @@ type ToolResultState struct {
 }
 
 type ObservedChange struct {
-	Path string `json:"path"`
-	Kind string `json:"kind"`
+	Path          string `json:"path"`
+	Kind          string `json:"kind"`
+	ContentDigest string `json:"content_digest,omitempty"`
 }
 
 type ApprovalState struct {

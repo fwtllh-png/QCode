@@ -367,43 +367,42 @@ func (r *Repository) ListCheckpoints(
 	defer rows.Close()
 	result := make([]protocol.SessionCheckpoint, 0)
 	for rows.Next() {
-		var value Snapshot
-		var turnID sql.NullString
-		var metadata, createdAt string
-		if err := rows.Scan(
-			&value.ID, &value.ThreadID, &turnID, &value.Cursor,
-			&metadata, &createdAt,
-		); err != nil {
-			return nil, err
-		}
-		value.TurnID = protocol.TurnID(turnID.String)
-		value.Kind = KindSessionCheckpoint
-		value.Metadata, err = sqlkit.CanonicalObject(json.RawMessage(metadata))
-		if err != nil {
-			return nil, &IntegrityError{
-				ID: value.ID,
-				Err: fmt.Errorf(
-					"decode persisted checkpoint metadata: %w",
-					err,
-				),
-			}
-		}
-		if value.CreatedAt, err = time.Parse(time.RFC3339Nano, createdAt); err != nil {
-			return nil, &IntegrityError{ID: value.ID, Err: err}
-		}
-		checkpoint, err := decodeCheckpointSummary(value)
+		checkpoint, err := scanCheckpointSummary(rows)
 		if err != nil {
 			return nil, err
 		}
 		if checkpoint.SessionID != sessionID {
 			return nil, &IntegrityError{
-				ID:  value.ID,
+				ID:  checkpoint.ID,
 				Err: errors.New("checkpoint crosses Session identity"),
 			}
 		}
 		result = append(result, checkpoint)
 	}
 	return result, rows.Err()
+}
+
+func scanCheckpointSummary(row interface{ Scan(...any) error }, extra ...any) (protocol.SessionCheckpoint, error) {
+	var value Snapshot
+	var turnID sql.NullString
+	var metadata, createdAt string
+	dest := []any{&value.ID, &value.ThreadID, &turnID, &value.Cursor, &metadata, &createdAt}
+	if err := row.Scan(append(dest, extra...)...); err != nil {
+		return protocol.SessionCheckpoint{}, err
+	}
+	value.TurnID = protocol.TurnID(turnID.String)
+	value.Kind = KindSessionCheckpoint
+	var err error
+	value.Metadata, err = sqlkit.CanonicalObject(json.RawMessage(metadata))
+	if err != nil {
+		return protocol.SessionCheckpoint{}, &IntegrityError{
+			ID: value.ID, Err: fmt.Errorf("decode persisted checkpoint metadata: %w", err),
+		}
+	}
+	if value.CreatedAt, err = time.Parse(time.RFC3339Nano, createdAt); err != nil {
+		return protocol.SessionCheckpoint{}, &IntegrityError{ID: value.ID, Err: err}
+	}
+	return decodeCheckpointSummary(value)
 }
 
 func (r *Repository) CountCheckpoints(
