@@ -10,6 +10,8 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/fwtllh-png/QCode/internal/platform/tokenestimate"
 )
 
 const (
@@ -604,12 +606,17 @@ func cloneSelection(value Selection) Selection {
 }
 
 func estimateMetadataTokens(values []Summary) uint64 {
-	var bytes int
+	var tokens uint64
 	for _, value := range values {
-		bytes += len(value.Name) + len(value.Description) + len(value.Source) +
-			len(value.Handle) + 32
+		tokens += tokenestimate.Text(value.Name) +
+			tokenestimate.Text(value.Description) +
+			tokenestimate.Text(string(value.Source)) +
+			tokenestimate.Text(value.Handle) +
+			// Structural overhead of one catalog entry (key names, quotes,
+			// separators) beyond its text fields.
+			32
 	}
-	return uint64((bytes + 3) / 4)
+	return tokens
 }
 
 func summaryDisabledForModel(value Summary) bool {

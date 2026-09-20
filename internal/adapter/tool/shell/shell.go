@@ -22,6 +22,16 @@ import (
 // ForegroundTimeoutHint steers agents from a bounded read toward the session protocol.
 const ForegroundTimeoutHint = "timed out; rerun with exec_command and continue via write_stdin"
 
+// DefaultForegroundTimeout bounds a foreground read-only command that does not
+// request an explicit timeout_ms. Foreground reads are bounded inspections —
+// status output, greps, single-file compiles — while longer work belongs to
+// the exec_command session protocol, whose wait windows are separately capped
+// by maxProcessYield. Without this bound a hung command occupies the turn
+// until external cancellation. Expiry reports ForegroundTimeoutHint so the
+// model reruns the work as a polled session instead of retrying the read.
+// Boundary tests lock the value.
+const DefaultForegroundTimeout = 60 * time.Second
+
 type Tool struct {
 	workspace *sandbox.Workspace
 	backend   sandbox.Backend
@@ -100,9 +110,12 @@ func (t *Tool) Descriptor() tool.Descriptor {
 	description += " Commands run under POSIX sh, not Bash. Do not use Bash-only " +
 		"syntax such as process substitution (<(...))."
 	properties := map[string]any{
-		"command":     map[string]any{"type": "string", "minLength": float64(1)},
-		"cwd":         map[string]any{"type": "string"},
-		"timeout_ms":  map[string]any{"type": "integer"},
+		"command": map[string]any{"type": "string", "minLength": float64(1)},
+		"cwd":     map[string]any{"type": "string"},
+		"timeout_ms": map[string]any{
+			"type":        "integer",
+			"description": "Hard deadline that kills the process group; defaults to 60000. Longer work belongs to exec_command sessions polled via write_stdin.",
+		},
 		"description": map[string]any{"type": "string"},
 	}
 	return tool.Descriptor{
@@ -189,11 +202,9 @@ func (t *Tool) execute(ctx context.Context, input foregroundInput) (tool.Result,
 	if err != nil {
 		return tool.Result{}, fmt.Errorf("resolve shell write paths: %w", err)
 	}
-	if input.TimeoutMS > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, time.Duration(input.TimeoutMS)*time.Millisecond)
-		defer cancel()
-	}
+	var cancel context.CancelFunc
+	ctx, cancel = context.WithTimeout(ctx, foregroundTimeout(input))
+	defer cancel()
 	sandboxBackend, requireStrong := processSandbox(ctx, t.backend)
 	started := time.Now()
 	command := input.Command
@@ -283,6 +294,16 @@ func (t *Tool) execute(ctx context.Context, input foregroundInput) (tool.Result,
 		IsError:  result.ExitCode != 0,
 		Metadata: metadata,
 	}, nil
+}
+
+// foregroundTimeout resolves the effective deadline for one foreground read:
+// an explicit timeout_ms wins; otherwise the documented default bounds the
+// inspection so a hung command cannot occupy the turn indefinitely.
+func foregroundTimeout(input foregroundInput) time.Duration {
+	if input.TimeoutMS > 0 {
+		return time.Duration(input.TimeoutMS) * time.Millisecond
+	}
+	return DefaultForegroundTimeout
 }
 
 func newForegroundExecutor(implementation *Tool) (tool.Executor, error) {

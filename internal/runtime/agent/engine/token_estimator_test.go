@@ -154,3 +154,21 @@ func TestEngineTokenCalibrationConvergesWindowProjection(t *testing.T) {
 		}
 	}
 }
+
+// Capacity decisions before the first provider observation run on the
+// dense-script baseline, and the same decisions must adopt the learned ratio
+// afterwards instead of staying on the baseline.
+func TestEngineEstimateMessageTokensAdoptsCalibration(t *testing.T) {
+	engine := newEngine(t, &scriptedProvider{}, nil)
+	messages := []provider.Message{
+		provider.TextMessage(provider.RoleUser, "配置文件内容"),
+	}
+	base := engine.EstimateMessageTokens(messages)
+	if base != 6 {
+		t.Fatalf("baseline estimate = %d, want 6 dense-script tokens", base)
+	}
+	engine.tokenCalibration.Observe(base, base*2)
+	if got := engine.EstimateMessageTokens(messages); got != base*2 {
+		t.Fatalf("calibrated estimate = %d, want %d", got, base*2)
+	}
+}

@@ -21,6 +21,7 @@ import (
 	"github.com/fwtllh-png/QCode/internal/adapter/provider"
 	"github.com/fwtllh-png/QCode/internal/observability/diagnostics"
 	"github.com/fwtllh-png/QCode/internal/persist/contentstore"
+	"github.com/fwtllh-png/QCode/internal/platform/tokenestimate"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
 	"github.com/santhosh-tekuri/jsonschema/v6"
 )
@@ -807,6 +808,15 @@ func (r *Registry) PruneResultSurface(
 	return r.results.PruneSurface(name, result, maxBytes)
 }
 
+// PruneRawSurface spills a raw tool-result surface; see
+// ResultStore.PruneRawSurface.
+func (r *Registry) PruneRawSurface(
+	name, content string,
+	maxBytes int,
+) (Result, bool) {
+	return r.results.PruneRawSurface(name, content, maxBytes)
+}
+
 func (r *Registry) AdmitResult(
 	name string,
 	result Result,
@@ -1075,7 +1085,7 @@ func (s *ResultStore) Route(result Result) Result {
 }
 
 func (s *ResultStore) TokenCapacity() uint64 {
-	return uint64((s.maxInline + 3) / 4)
+	return tokenestimate.MaxTokensForBytes(uint64(s.maxInline))
 }
 
 func (s *ResultStore) RouteFor(name string, result Result) Result {
@@ -1317,11 +1327,75 @@ func (s *ResultStore) PruneSurface(
 		RetainedTokens: retainedTokens,
 		TokenLimit: max(
 			retainedTokens,
-			uint64(max(1, (maxBytes+3)/4)),
+			tokenestimate.MaxTokensForBytes(uint64(max(1, maxBytes))),
 		),
 		Truncated: true,
 	}
 	return result, true
+}
+
+// PruneRawSurface spills a raw (non-tool.Result) tool result that exceeds
+// maxBytes and replaces it with the same handle-backed head-and-tail notice
+// the structured path uses. A silent cut would be indistinguishable from an
+// absence — the model could not tell pruned evidence from a tool that
+// returned nothing — so the notice states the original size, marks the
+// omitted middle, and names the handle that pages the content back.
+// Retrieval tools are exempt, mirroring PruneSurface.
+func (s *ResultStore) PruneRawSurface(
+	name, content string,
+	maxBytes int,
+) (Result, bool) {
+	unchanged := func() (Result, bool) {
+		return Result{Content: content}, false
+	}
+	if name == "result_get" || name == "handle_read" || maxBytes <= 0 ||
+		len(content) <= maxBytes {
+		return unchanged()
+	}
+	headBytes := maxBytes * 3 / 4
+	tailBytes := maxBytes - headBytes
+	head, _ := boundedSlice(content, 0, headBytes)
+	tail, _ := boundedSlice(content, len(content)-tailBytes, tailBytes)
+	handle := ""
+	notice := func(processHandle string) string {
+		return SurfaceTruncationNotice(len(content), processHandle, head, tail)
+	}
+	// A notice larger than the original would grow the surface it is meant
+	// to relieve; borderline inputs stay raw.
+	if len(notice(handle)) >= len(content) {
+		return unchanged()
+	}
+	full := storedResult{Content: content}
+	data, err := json.Marshal(full)
+	if err != nil {
+		return unchanged()
+	}
+	handle = contentstore.StableHandle("result", data)
+	if err := s.store.Put(context.Background(), handle, data); err != nil {
+		return unchanged()
+	}
+	retained := notice(handle)
+	retainedTokens := estimateResultTokens(retained)
+	return Result{
+		Content: retained, Truncated: true,
+		OriginalBytes: len(content), Handle: handle,
+		Metadata: map[string]any{
+			"original_bytes": len(content), "truncated": true,
+			"handle": handle, "projection_kind": "raw_surface",
+		},
+		Admission: &adaptercontent.AdmissionReceipt{
+			Kind: "raw_surface", Reason: "pressure_limit",
+			Digest: resultDigest(content), Handle: handle,
+			OriginalBytes: len(content), RetainedBytes: len(retained),
+			OriginalTokens: estimateResultTokens(content),
+			RetainedTokens: retainedTokens,
+			TokenLimit: max(
+				retainedTokens,
+				tokenestimate.MaxTokensForBytes(uint64(max(1, maxBytes))),
+			),
+			Truncated: true,
+		},
+	}, true
 }
 
 func (s *ResultStore) projectionLimit(
@@ -1350,20 +1424,20 @@ func (s *ResultStore) projectionLimit(
 	if maxTokens == 0 || maxTokens > storeTokens {
 		maxTokens = storeTokens
 	}
-	return min(s.maxInline, len(content), int(maxTokens*4)), kind, maxTokens
+	return min(
+		s.maxInline, len(content),
+		tokenestimate.BudgetedByteLen(content, maxTokens),
+	), kind, maxTokens
 }
 
 func estimateResultTokens(value string) uint64 {
-	if value == "" {
-		return 0
-	}
-	return uint64((utf8.RuneCountInString(value) + 3) / 4)
+	return tokenestimate.Text(value)
 }
 
 func (s *ResultStore) validAdmission(result Result) bool {
 	receipt := result.Admission
 	if receipt == nil || receipt.TokenLimit == 0 ||
-		receipt.TokenLimit > uint64((s.maxInline+3)/4) ||
+		receipt.TokenLimit > tokenestimate.MaxTokensForBytes(uint64(s.maxInline)) ||
 		receipt.RetainedBytes != len(result.Content) ||
 		receipt.RetainedTokens != estimateResultTokens(result.Content) ||
 		receipt.RetainedTokens > receipt.TokenLimit {
@@ -1396,7 +1470,12 @@ func fitTruncationNotice(
 	maxBodyBytes int,
 	tokenLimit uint64,
 ) string {
-	low, high := 0, min(len(original), maxBodyBytes)
+	// The notice header is constant for a given original and handle, so the
+	// byte ceiling has to reserve room for it: bounding only the body would
+	// let the assembled result exceed the inline limit once the token ceiling
+	// stops coinciding with it.
+	reserved := len(TruncationNotice(len(original), handle, ""))
+	low, high := 0, min(len(original), max(0, maxBodyBytes-reserved))
 	best := TruncationNotice(len(original), handle, "")
 	for low <= high {
 		middle := low + (high-low)/2
@@ -1418,7 +1497,8 @@ func fitTailTruncationNotice(
 	maxBodyBytes int,
 	tokenLimit uint64,
 ) string {
-	low, high := 0, min(len(original), maxBodyBytes)
+	reserved := len(TurnHistoryTruncationNotice(len(original), handle, ""))
+	low, high := 0, min(len(original), max(0, maxBodyBytes-reserved))
 	best := TurnHistoryTruncationNotice(len(original), handle, "")
 	for low <= high {
 		middle := low + (high-low)/2
@@ -1483,7 +1563,12 @@ func ModelResult(name string, result Result) Result {
 			// retry against the real current window even when the excerpt in
 			// the content was truncated by result admission.
 			"failed_change", "match_count", "start_line", "end_line",
-			"current_excerpt":
+			"current_excerpt",
+			// Pagination cursors must survive projection so a paged read can
+			// continue at the advertised line instead of counting the lines
+			// it received. They are facts about what the tool returned, so
+			// they stay valid even when admission truncates the content.
+			"has_more", "next_start_line", "returned_lines":
 			metadata[key] = value
 		case "session_id", "cursor", "running", "exit_code", "timed_out",
 			"tty", "archived", "pending_bytes", "omitted_bytes":

@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/fwtllh-png/QCode/internal/adapter/provider"
+	"github.com/fwtllh-png/QCode/internal/platform/tokenestimate"
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
 )
 
@@ -141,7 +142,7 @@ func (s MessageSnapshot) Measure(
 				encodeErr,
 			)
 		}
-		result.ToolDefinitionTokens = uint64((len(encoded) + 3) / 4)
+		result.ToolDefinitionTokens = tokenestimate.Text(string(encoded))
 		for _, definition := range s.definitions {
 			itemData, marshalErr := json.Marshal(definition)
 			if marshalErr != nil {
@@ -153,7 +154,7 @@ func (s MessageSnapshot) Measure(
 			}
 			result.MaxItemTokens = max(
 				result.MaxItemTokens,
-				uint64((len(itemData)+3)/4),
+				tokenestimate.Text(string(itemData)),
 			)
 		}
 	}

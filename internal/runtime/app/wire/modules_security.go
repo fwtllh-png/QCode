@@ -79,7 +79,7 @@ func (securityModule) Build(
 		workspace: execution.Workspace, workspaceID: state.config.workspaceStateID,
 		journal: journal, diagnostics: diagnosticRunner,
 		permissions: permissionStore, leaseAuthority: state.platform.leaseAuthority, leaseTTL: execution.LeaseTimeout, approvalTTL: execution.ApprovalTimeout,
-		onNetworkAllow:  state.provider.egress.AllowTarget,
+		onNetworkAllow:  toolNetworkAllow(state.platform.webEgress, state.platform.processEgress),
 		forceEditReview: state.options.ForceEditPlanApproval,
 	}
 	guard, err := factory.Build(ctx)

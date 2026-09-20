@@ -84,7 +84,7 @@ func (g *Guard) authorize(
 			if decision.Code == "auto_review_allowed" {
 				g.observeApproval("auto_allowed", policyInvocation, decision, reviewLatency)
 			}
-			g.grantNetworkHosts(invocation.Resources)
+			g.grantNetworkHosts(ctx, policyInvocation)
 			return preparedExecution{
 				invocation: invocation, executor: executor,
 				arguments: arguments, runtime: runtime,
@@ -108,6 +108,9 @@ func (g *Guard) authorize(
 				}, err
 			}
 			if authorized {
+				if invocation.Binding.Capability == tool.CapabilityNetwork {
+					g.grantNetworkHosts(ctx, policyInvocation)
+				}
 				return preparedExecution{
 					invocation: invocation, executor: executor,
 					arguments: arguments, runtime: runtime,
@@ -215,7 +218,7 @@ func (g *Guard) authorizeAsk(
 		case policy.ActionAllow:
 			return false, replacement, waited, nil
 		case policy.ActionAsk:
-			if err := g.cacheApproval(replacementInvocation, approval); err != nil {
+			if err := g.cacheApproval(ctx, replacementInvocation, approval); err != nil {
 				return false, nil, waited, err
 			}
 			return false, replacement, waited, nil
@@ -225,7 +228,7 @@ func (g *Guard) authorizeAsk(
 			}
 		}
 	}
-	if err := g.cacheApproval(policyInvocation, approval); err != nil {
+	if err := g.cacheApproval(ctx, policyInvocation, approval); err != nil {
 		return false, nil, waited, err
 	}
 	return false, nil, waited, nil

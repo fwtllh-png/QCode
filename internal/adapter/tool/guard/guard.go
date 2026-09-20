@@ -7,10 +7,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -63,7 +66,8 @@ type NetworkApprovalContext struct {
 	Mode         string   `json:"mode"`
 }
 
-type NetworkAllow func(egress.Target)
+// NetworkAllow routes grants using the invocation's trusted capability.
+type NetworkAllow func(tool.Capability, egress.Target)
 
 type ApprovalDecision struct {
 	RequestID            string
@@ -290,32 +294,20 @@ func policyInput(callID string, invocation Invocation) policy.Invocation {
 	}
 }
 
-func egressDeniedTarget(outcome tool.Outcome, executeErr error) (host, protocol string, ok bool) {
-	protocol = "https"
+func egressDeniedTarget(outcome tool.Outcome, executeErr error) (tool.NetworkTarget, bool) {
 	if outcome.Security != nil && outcome.Security.EgressDenied != nil {
-		host = strings.ToLower(strings.TrimSpace(outcome.Security.EgressDenied.Host))
-		if value := strings.TrimSpace(outcome.Security.EgressDenied.Protocol); value != "" {
-			protocol = value
-		}
-		if host != "" {
-			return host, protocol, true
+		target := *outcome.Security.EgressDenied
+		if strings.TrimSpace(target.Host) != "" {
+			return target, true
 		}
 	}
-	if executeErr != nil && errors.Is(executeErr, egress.ErrDenied) {
-		host, protocol = hostProtocolFromEgressError(executeErr)
-		if host != "" {
-			return host, protocol, true
-		}
+	if denied, ok := egress.DeniedTarget(executeErr); ok {
+		return tool.NetworkTarget{
+			Host: denied.Host, Protocol: denied.Protocol,
+			Port: denied.Port, Method: denied.Method,
+		}, true
 	}
-	return "", "", false
-}
-
-func hostProtocolFromEgressError(err error) (host, protocol string) {
-	host, protocol, ok := egress.DeniedTarget(err)
-	if !ok {
-		return "", ""
-	}
-	return host, protocol
+	return tool.NetworkTarget{}, false
 }
 
 func softFailEgressApproval(err error) bool {
@@ -332,19 +324,41 @@ func softFailEgressApproval(err error) bool {
 	return false
 }
 
-func (g *Guard) approveEgressHost(
-	ctx context.Context, invocation Invocation, callID, host, protocol string,
+func (g *Guard) approveEgressTarget(
+	ctx context.Context, invocation Invocation, callID string, target tool.NetworkTarget,
 ) error {
+	host := strings.ToLower(strings.TrimSpace(target.Host))
+	protocol := strings.ToLower(strings.TrimSpace(target.Protocol))
 	if protocol == "" {
 		protocol = "https"
 	}
-	host = strings.ToLower(strings.TrimSpace(host))
 	if host == "" {
 		return errors.New("egress approval requires a host")
 	}
+	endpoint := &url.URL{Scheme: protocol, Host: host, Path: "/"}
+	if target.Port != 0 {
+		endpoint.Host = net.JoinHostPort(host, strconv.Itoa(int(target.Port)))
+	} else if net.ParseIP(host) != nil && strings.Contains(host, ":") {
+		endpoint.Host = "[" + host + "]"
+	}
+	parsed, ok := policy.ParseNetworkTarget(endpoint.String())
+	if !ok || parsed.Host != host || (protocol != "http" && protocol != "https") {
+		return errors.New("egress approval requires a valid HTTP target")
+	}
+	method := strings.ToUpper(strings.TrimSpace(target.Method))
+	if strings.ContainsAny(method, " \t\r\n") {
+		return errors.New("egress approval requires a valid HTTP method")
+	}
+	var methods []string
+	if method != "" {
+		methods = []string{method}
+	}
+	hostResource := policy.HostResource(parsed, tool.AccessRead)
+	hostResource.Methods = methods
+	hostResource.AllowPrivate = true
 	resources := []tool.Resource{
-		{Kind: "host", ID: host, Access: tool.AccessRead},
-		{Kind: "url", ID: protocol + "://" + host + "/", Access: tool.AccessRead},
+		hostResource,
+		{Kind: "url", ID: endpoint.String(), Access: tool.AccessRead, Methods: methods},
 	}
 	policyInvocation := policyInput(callID, invocation)
 	policyInvocation.Resources = resources
@@ -360,13 +374,13 @@ func (g *Guard) approveEgressHost(
 		if decision.Code == "auto_review_allowed" {
 			g.observeApproval("auto_allowed", policyInvocation, decision, reviewLatency)
 		}
-		g.grantNetworkHosts(resources)
+		g.grantNetworkHosts(ctx, policyInvocation)
 		return nil
 	}
 	now := g.now()
 	if g.policy.Approvals != nil && g.policy.Approvals.MatchInvocation(policyInvocation, now) {
 		g.observeApproval("grant_hit", policyInvocation, decision, 0)
-		g.grantNetworkHosts(resources)
+		g.grantNetworkHosts(ctx, policyInvocation)
 		return nil
 	}
 	g.observeApproval("human_required", policyInvocation, decision, reviewLatency)
@@ -375,7 +389,9 @@ func (g *Guard) approveEgressHost(
 		approvalAsk{
 			Code: ApprovalReasonNetworkHost,
 			Network: &NetworkApprovalContext{
-				Host: host, Protocol: protocol, Mode: string(policy.NetworkImmediate),
+				Host: parsed.Host, Protocol: parsed.Protocol, Port: parsed.Port,
+				Methods: methods, AllowPrivate: hostResource.AllowPrivate,
+				Mode: string(policy.NetworkImmediate),
 			},
 			DisableReplace: true,
 		},
@@ -383,10 +399,14 @@ func (g *Guard) approveEgressHost(
 	if err != nil {
 		return err
 	}
-	if err := g.cacheApproval(policyInvocation, approval); err != nil {
-		return err
+	// This approval is consumed by the retry of the current call. A once entry
+	// must not survive in the session cache for a later, identical redirect.
+	if approval.Scope != policy.ApprovalOnce {
+		if err := g.cacheApproval(ctx, policyInvocation, approval); err != nil {
+			return err
+		}
 	}
-	g.grantNetworkHosts(resources)
+	g.grantNetworkHosts(ctx, policyInvocation)
 	return nil
 }
 
@@ -1143,7 +1163,7 @@ func (g *Guard) RestoreApproval(request ApprovalRequest) error {
 }
 
 func (g *Guard) cacheApproval(
-	invocation policy.Invocation, decision ApprovalDecision,
+	ctx context.Context, invocation policy.Invocation, decision ApprovalDecision,
 ) error {
 	if decision.Scope == policy.ApprovalAlways {
 		if g.persistAllow != nil {
@@ -1153,7 +1173,6 @@ func (g *Guard) cacheApproval(
 		}
 		decision.Scope = policy.ApprovalSession
 	}
-	g.grantNetworkHosts(invocation.Resources)
 	request, err := policy.NewApprovalRequestForScope(
 		invocation, decision.Scope, decision.ExpiresAt,
 	)
@@ -1166,6 +1185,7 @@ func (g *Guard) cacheApproval(
 	if err := g.policy.Approvals.Add(request, decision.Scope); err != nil {
 		return err
 	}
+	g.grantNetworkHosts(ctx, invocation)
 	return nil
 }
 
@@ -1207,24 +1227,32 @@ func networkApprovalAsk(
 	}
 }
 
-func (g *Guard) grantNetworkHosts(resources []tool.Resource) {
-	if g == nil || g.onNetworkAllow == nil {
+func (g *Guard) grantNetworkHosts(ctx context.Context, invocation policy.Invocation) {
+	if g == nil {
 		return
 	}
-	for _, resource := range resources {
+	allow := func(target egress.Target) {
+		if invocation.Capability == tool.CapabilityNetwork {
+			egress.AllowInScope(ctx, target)
+		} else if g.onNetworkAllow != nil {
+			g.onNetworkAllow(invocation.Capability, target)
+		}
+	}
+	for _, resource := range invocation.Resources {
 		switch resource.Kind {
 		case "host":
 			if resource.Protocol == "loopback" {
 				continue
 			}
-			g.onNetworkAllow(egress.Target{
+			allow(egress.Target{
 				Host: resource.ID, Protocol: resource.Protocol, Port: resource.Port,
 				Methods: resource.Methods, AllowPrivate: resource.AllowPrivate,
 			})
 		case "url":
 			if target, ok := policy.ParseNetworkTarget(resource.ID); ok {
-				g.onNetworkAllow(egress.Target{
+				allow(egress.Target{
 					Host: target.Host, Protocol: target.Protocol, Port: target.Port,
+					Methods:      resource.Methods,
 					AllowPrivate: true,
 				})
 			}
@@ -1782,6 +1810,9 @@ func randomID(prefix string) string {
 }
 
 func canonicalizeRuleResource(rule *policy.Rule, workspace string) error {
+	rule.ResourcePath = ""
+	// A rule may apply to both path and ID resources. Preserve its literal
+	// spelling and resolve only the filesystem interpretation separately.
 	if rule.Resource == "" || rule.Resource == "*" || !isPathRule(rule.Resource) {
 		return nil
 	}
@@ -1790,7 +1821,7 @@ func canonicalizeRuleResource(rule *policy.Rule, workspace string) error {
 		if err != nil {
 			return err
 		}
-		rule.Resource = canonical
+		rule.ResourcePath = canonical
 		return nil
 	}
 	clean := filepath.Clean(rule.Resource)
@@ -1801,11 +1832,14 @@ func canonicalizeRuleResource(rule *policy.Rule, workspace string) error {
 	if err != nil {
 		return err
 	}
-	rule.Resource = canonical
+	rule.ResourcePath = canonical
 	return nil
 }
 
 func isPathRule(value string) bool {
+	if parsed, err := url.Parse(value); err == nil && parsed.IsAbs() && parsed.Host != "" {
+		return false
+	}
 	return strings.Contains(value, "/") || strings.Contains(value, `\`) ||
 		value == "." || !strings.Contains(value, ":")
 }

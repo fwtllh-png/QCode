@@ -147,6 +147,8 @@ const (
 type NetworkTarget struct {
 	Host     string `json:"host"`
 	Protocol string `json:"protocol"`
+	Port     uint16 `json:"port,omitempty"`
+	Method   string `json:"method,omitempty"`
 }
 
 // SecuritySignal carries policy-relevant output outside arbitrary Metadata.

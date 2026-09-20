@@ -320,10 +320,23 @@ Child 返回结构化 Problem 与 `approval_denied` Tool Result。
 
 QCode 在二进制中内置版本化的 `system-code-review`、`system-debugging`、
 `system-refactor` 和 `system-test-expansion` Skill。它们提供领域工作流及 Subagent
-拆分建议，不承载安全或委派授权。Skill 同名覆盖顺序为 Workspace、显式配置目录、
-User、Builtin；因此项目可以替换默认工作流。Builtin Skill 可通过现有 Skill Control
+拆分建议，不承载安全或委派授权。Skill 同名覆盖顺序为 Workspace 目录、显式配置目录、
+当前 Workspace 的沙箱 Home、宿主 User、Builtin；因此项目可以替换默认工作流。Builtin Skill 可通过现有 Skill Control
 禁用，其版本、来源和内容摘要会进入 Catalog 与 Receipt；由于内容随二进制固定，
 单独使用 Builtin Skill 不要求 Workspace Lock。
+
+沙箱中执行 `npx skills add <package> -g` 时，`-g` 指向当前 Workspace 的私有 HOME，
+不会写入宿主用户目录或其他 Workspace。Skill 发现会扫描该 HOME 下的
+`.agents/skills`、`.claude/skills` 和 `.qcode/skills`，来源标记为 `workspace`，
+设置页与模型工具使用相同的沙箱 Home。目录不能通过符号链接逃出该 Home；
+Manifest、Lock 和内容摘要校验保持不变。Catalog 在 Runtime 构造时加载，安装完成后
+需重启 Runtime 才会发现新 Skill，浏览器刷新不会重新扫描磁盘。
+
+包含 `skill.toml` 的外部 Skill 必须通过 Skill Control 显式锁定后才能加载内容。
+Lock 缺失或与新 Catalog 不一致时，Runtime 和管理入口仍可启动；可先执行 `verify`
+查看错误，再执行 `lock` 接受当前已发现的内容和依赖。启动不会自动接受新内容。
+Lock 覆盖已发现的受治理包及其依赖，包括禁用项；启停 Skill 不修改锁定集合。
+禁用独立 Skill 不会影响其他已锁定 Skill，依赖被禁用 Skill 的加载则仍会拒绝。
 
 Bundled `openai-responses` 路由只有在显式广告 Incremental Transport 时，才会
 按 Sticky Session Key 复用 Provider 所有的 WebSocket。第一个 Sample 发送完整

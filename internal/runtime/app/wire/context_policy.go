@@ -9,6 +9,7 @@ import (
 	"github.com/fwtllh-png/QCode/internal/adapter/model"
 	"github.com/fwtllh-png/QCode/internal/config"
 	"github.com/fwtllh-png/QCode/internal/persist/state"
+	"github.com/fwtllh-png/QCode/internal/platform/tokenestimate"
 	turnstate "github.com/fwtllh-png/QCode/internal/persist/state/turnstate"
 	agentcontext "github.com/fwtllh-png/QCode/internal/runtime/agent/context"
 	agentengine "github.com/fwtllh-png/QCode/internal/runtime/agent/engine"
@@ -156,7 +157,7 @@ func memorySnapshotSource(
 			maxBytes = min(maxBytes, budget.MaxBytes)
 		}
 		if budget.MaxTokens > 0 {
-			maxBytes = min(maxBytes, int(budget.MaxTokens*4))
+			maxBytes = min(maxBytes, int(tokenestimate.BytesForTokens(budget.MaxTokens)))
 		}
 		block, selection, err := store.SelectBlock(memorystore.Query{
 			Text:          query,

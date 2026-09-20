@@ -13,6 +13,7 @@ import (
 	"github.com/fwtllh-png/QCode/internal/buildinfo"
 	"github.com/fwtllh-png/QCode/internal/persist/extensioncontrol"
 	extensionapp "github.com/fwtllh-png/QCode/internal/runtime/app/extension"
+	"github.com/fwtllh-png/QCode/internal/security/sandbox"
 )
 
 // SkillOptions is the explicit production configuration surface for
@@ -40,9 +41,14 @@ type SkillControlHandle struct {
 	Service *extensionapp.SkillService
 }
 
-func OpenSkillControl(
+func (s *Session) OpenSkillControl(paths SkillPaths, workspace string) (*SkillControlHandle, error) {
+	policy, _ := sandbox.BackendPolicy(s.sandbox)
+	return openSkillControl(paths, workspace, policy.PrivateTemp)
+}
+
+func openSkillControl(
 	paths SkillPaths,
-	workspace string,
+	workspace, sandboxHome string,
 ) (*SkillControlHandle, error) {
 	state, err := skillruntime.NewStateStore(paths.SkillsStatePath)
 	if err != nil {
@@ -55,6 +61,7 @@ func OpenSkillControl(
 	skills, err := skillruntime.Discover(skillruntime.DiscoveryOptions{
 		Workspace: workspace, ConfiguredDir: paths.SkillsConfiguredDir,
 		UserHome: paths.UserHome, Locale: paths.SkillsLocale,
+		SandboxHome:     sandboxHome,
 		IncludeBuiltins: true,
 		State:           state, Lock: lock, RuntimeVersion: buildinfo.Version,
 	})

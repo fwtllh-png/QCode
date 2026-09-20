@@ -62,8 +62,11 @@ type Invocation struct {
 }
 
 type Rule struct {
-	Tool          string `json:"tool"`
-	Resource      string `json:"resource,omitempty"`
+	Tool     string `json:"tool"`
+	Resource string `json:"resource,omitempty"`
+	// ResourcePath is the Guard-resolved filesystem interpretation of Resource.
+	// Non-path resources always match the original Resource; this is not config.
+	ResourcePath  string `json:"-"`
 	CommandPrefix string `json:"command_prefix,omitempty"`
 	GrantKey      string `json:"grant_key,omitempty"`
 	Action        Action `json:"action"`
@@ -71,12 +74,14 @@ type Rule struct {
 }
 
 type Runtime struct {
-	mu             sync.RWMutex
-	Revision       uint64
-	Mode           Mode
-	Permission     Permission
-	PlanningPolicy PlanningPolicy
-	PlanSubmitted  bool
+	mu                sync.RWMutex
+	userSource        UserRuleSource
+	userSourceVersion uint64
+	Revision          uint64
+	Mode              Mode
+	Permission        Permission
+	PlanningPolicy    PlanningPolicy
+	PlanSubmitted     bool
 	// DisableAutoReview is the fail-closed operational kill switch.
 	DisableAutoReview        bool
 	Grants, User, Repository []Rule
@@ -253,8 +258,9 @@ func (r *Runtime) CloneSampling() *Runtime {
 	if r == nil {
 		return nil
 	}
-	r.mu.RLock()
-	defer r.mu.RUnlock()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.refreshUserRulesLocked()
 	return &Runtime{
 		Revision: r.Revision, Mode: r.Mode, Permission: r.Permission,
 		PlanningPolicy:    r.PlanningPolicy,
@@ -456,11 +462,14 @@ func ruleMatches(rule Rule, invocation Invocation) bool {
 		matched := false
 		for _, resource := range invocation.Resources {
 			value := resource.Path
+			pattern := rule.Resource
 			if value == "" {
 				value = resource.ID
+			} else if rule.ResourcePath != "" {
+				pattern = rule.ResourcePath
 			}
 			value = filepath.ToSlash(filepath.Clean(value))
-			pattern := filepath.ToSlash(filepath.Clean(rule.Resource))
+			pattern = filepath.ToSlash(filepath.Clean(pattern))
 			if value == pattern || strings.HasPrefix(value, strings.TrimSuffix(pattern, "/")+"/") {
 				matched = true
 				break

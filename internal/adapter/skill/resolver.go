@@ -20,7 +20,7 @@ type ResolvedSkill struct {
 }
 
 func (c *Catalog) Resolve(ctx context.Context) ([]ResolvedSkill, error) {
-	items, err := c.resolveAll(ctx)
+	items, err := c.resolveInventory(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -31,7 +31,7 @@ func (c *Catalog) WriteLock(ctx context.Context) (Lockfile, error) {
 	if c == nil || c.lock == nil {
 		return Lockfile{}, fmt.Errorf("%w: lock store is not configured", ErrLockDrift)
 	}
-	items, err := c.resolveAll(ctx)
+	items, err := c.resolveInventory(ctx)
 	if err != nil {
 		return Lockfile{}, err
 	}
@@ -51,7 +51,7 @@ func (c *Catalog) Verify(ctx context.Context) error {
 	if c == nil {
 		return errors.New("skill catalog is required")
 	}
-	items, err := c.resolveAll(ctx)
+	items, err := c.resolveInventory(ctx)
 	if err != nil {
 		return err
 	}
@@ -119,20 +119,18 @@ func (c *Catalog) LoadPlan(ctx context.Context, name string) ([]Loaded, error) {
 	return result, nil
 }
 
-func (c *Catalog) resolveAll(ctx context.Context) ([]candidate, error) {
+// resolveInventory locks discovered packages and their dependencies independently
+// of enablement. LoadPlan still checks enablement for every requested dependency.
+func (c *Catalog) resolveInventory(ctx context.Context) ([]candidate, error) {
 	entries, order, _ := c.snapshot()
-	state, stateErr := c.stateSnapshot()
-	if stateErr != nil {
-		return nil, stateErr
-	}
 	var roots []string
 	for _, name := range order {
 		item := entries[name]
-		if requiresWorkspaceLock(item) && enabledFor(item, state, nil) {
+		if requiresWorkspaceLock(item) {
 			roots = append(roots, name)
 		}
 	}
-	return c.resolveEntries(ctx, entries, state, roots, true)
+	return c.resolveEntries(ctx, entries, nil, roots, true)
 }
 
 func (c *Catalog) resolveRoots(

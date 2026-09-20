@@ -216,8 +216,10 @@ func TestRawTailTokenBudgetUsesLeftoverHardInputNotWindowPercent(t *testing.T) {
 
 func TestSummaryBudgetUsesHardInputCapacityUnlessConfigured(t *testing.T) {
 	engine := newEngine(t, &scriptedProvider{}, nil)
+	// The default summary byte budget derives from the hard input capacity at
+	// dense-script density: three bytes per token.
 	if got, want := engine.summaryBudget(),
-		int(engine.contextCapacity().HardInputTokens*4); got != want {
+		int(engine.contextCapacity().HardInputTokens*3); got != want {
 		t.Fatalf("summary budget = %d, want %d", got, want)
 	}
 	engine.options.SummaryMaxBytes = 4096

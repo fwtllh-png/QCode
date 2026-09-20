@@ -469,7 +469,11 @@ Turn 开始时冻结 `ContextCapacity`：模型 Context Window 扣除模型能�
 Ceiling 和 Turn/Session Budget 共同确定的 Output Reserve 后，得到硬输入容量。
 默认 Prepare、Auto Compact 与 Emergency 都等于该容量，不再按百分比提前触发；
 Operator 可显式配置更小的成本或延迟 Ceiling。Transport 类型不得暗中套用固定档位。
-Token 估算默认使用字符数启发式；Provider 首次上报真实 Input Tokens 后，Runtime
+Token 估算默认使用字符数启发式：拉丁文本按约四字符一 Token，CJK 表意文字、假名、
+谚文及其标点按每字符一 Token（主流分词器对密集文字的实际密度；旧的统一四字符
+除法会把中文低估约四倍，导致会话首样本即溢出测量窗口）。没有原文可依据的
+字节↔Token 预算换算按密集文字的 UTF-8 密度（三字节一 Token）取安全侧。Provider
+首次上报真实 Input Tokens 后，Runtime
 按同请求的 `真实值 / 原始启发式估算` 比率校准后续估算。反馈先除去当前倍率还原
 原始基准再学习，因此连续反馈收敛到真实倍率，而不会因分母随倍率变化在真实
 倍率与 1 之间震荡（比率限定在记录于源码并有边界测试锁定的可信区间内，区间外
@@ -486,7 +490,9 @@ Tool Result 在执行边界按硬输入容量、并行 Batch 大小与 ResultSto
 本次 Token Budget；完整原文保存在 Durable Content Store，模型只接收带稳定
 `result_get` Handle 的有界投影。若 `输入 + Output Reserve` 仍超出模型窗口，Gate
 先进一步缩减可重新获取的 Surface，再选择保持 Goal 和 Tool Pair 闭合的最小 History
-Replacement。新 Turn 投影只保留每个历史 World Section 的最新有效版本；当前 Turn
+Replacement。Surface 缩减对结构化与 Raw（非 Tool Result JSON）结果一视同仁：原文
+落盘，保留头尾摘录并显式标注省略的中间部分与取回句柄，模型始终能区分"被裁剪"与
+"本来就没有"。新 Turn 投影只保留每个历史 World Section 的最新有效版本；当前 Turn
 的 World 前缀保持追加语义，删除分区不会在下一轮重新出现。已闭合 Tool Round 的
 冗余 Assistant Text 可以投影掉，但工具调用所需的 Reasoning 与 Provider Replay
 保持不变。Durable History、World Patch 链和原始 Tool Result 不被改写。
@@ -859,6 +865,20 @@ Binding 隔离避免单个 Server 故障污染全部工具。当前 stdio Server
 ### Skill
 
 Skill 打包指令和资源。Discovery、Manifest、Lock 与 Enablement State 让最终内容可见。
+Runtime 构造时从实际 Sandbox Policy 取得私有 Home，将其中的标准 Skill 目录以
+Workspace 来源加入 Catalog；模型工具和 Web Skill Control 使用同一 Home，不根据
+宿主 HOME 或另算的 Workspace ID 推断安装位置。私有 Skill 根不得经符号链接逃出
+该 Home。Catalog 保持构造期快照，新安装内容在 Runtime 重启后发现。
+隔离 Chat 与使用独立工具集的子 Agent 同样构造各自的 Catalog，并将
+`skills_list`、`skills_read` 和 Turn Selection 绑定到这一份 Catalog。发现范围使用
+子 Workspace、实际子 Sandbox Home 及已配置的公共 Skill 目录，不继承父或兄弟的
+私有 Home；启用状态与 Lock 路径沿用所属 Runtime 的配置。Lock 缺失或漂移不会
+阻断 Runtime 和 Skill Control 构造，也不会自动改写 Lock；受治理内容加载仍须
+通过完整校验。子工具集释放后重建会重新发现其持久 Home 内安装的 Skill；
+共享 Workspace 工具集的子 Agent 继续使用父 Catalog。
+Lock 记录 Catalog 中已发现的受治理包及其依赖库存，包含禁用项，不随启用状态增删。
+禁用独立 Skill 不影响其他已锁定 Skill；加载依赖被禁用项的 Skill 时仍拒绝。
+安装或更新后的新 Catalog 可通过 Skill Control 显式锁定，恢复受治理内容加载。
 Turn Selection 会先保留被精确点名、Required 以及此前使用过的 Skill，再应用有界词法
 候选上限。Turn 会冻结 Name-to-handle Binding；加载时重新校验 Content Digest、
 Dependency Plan 与 Lock。`skills_read` 接受该冻结条目广告的

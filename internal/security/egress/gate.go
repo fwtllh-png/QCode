@@ -48,23 +48,34 @@ func (e *DeniedError) Error() string {
 
 func (*DeniedError) Unwrap() error { return ErrDenied }
 
-func DeniedTarget(err error) (host, protocol string, ok bool) {
+// DeniedTarget preserves the request destination and method through wrapped errors.
+func DeniedTarget(err error) (DeniedError, bool) {
 	var denied *DeniedError
 	if !errors.As(err, &denied) || denied == nil || denied.Host == "" {
-		return "", "", false
+		return DeniedError{}, false
 	}
-	return denied.Host, denied.Protocol, true
+	return *denied, true
 }
 
 // Gate is a session-scoped host allowlist. A zero Gate denies everything once
 // Enforce is true; with Enforce false (or a nil *Gate on WrapClient) traffic
 // passes through unchanged so unit tests that never wired a broker keep working.
 type Gate struct {
-	mu       sync.RWMutex
-	Enforce  bool
-	LookupIP func(context.Context, string) ([]net.IP, error)
-	allowed  map[string]Target
-	receipts []Receipt
+	mu      sync.RWMutex
+	Enforce bool
+	// UseCallScope binds Web tool traffic to Guard's dynamic call grants.
+	// Provider and process gates retain their independently configured grants.
+	UseCallScope bool
+	LookupIP     func(context.Context, string) ([]net.IP, error)
+	allowed      map[string]targetGrant
+	receipts     []Receipt
+}
+
+// Private access is attached to each method, never shared across methods.
+type targetGrant struct {
+	allMethods bool
+	allPrivate bool
+	methods    map[string]bool
 }
 
 type Target struct {
@@ -105,6 +116,8 @@ func (g *Gate) Allow(host, protocol string) {
 	g.AllowTarget(target)
 }
 
+// AllowTarget adds a grant without revoking earlier grants for the same origin.
+// An empty Methods list grants all methods at this target's private-access level.
 func (g *Gate) AllowTarget(target Target) {
 	if g == nil {
 		return
@@ -116,9 +129,22 @@ func (g *Gate) AllowTarget(target Target) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if g.allowed == nil {
-		g.allowed = make(map[string]Target)
+		g.allowed = make(map[string]targetGrant)
 	}
-	g.allowed[key(target)] = target
+	origin := key(target)
+	grant := g.allowed[origin]
+	if len(target.Methods) == 0 {
+		grant.allMethods = true
+		grant.allPrivate = grant.allPrivate || target.AllowPrivate
+	} else {
+		if grant.methods == nil {
+			grant.methods = make(map[string]bool)
+		}
+		for _, method := range target.Methods {
+			grant.methods[method] = grant.methods[method] || target.AllowPrivate
+		}
+	}
+	g.allowed[origin] = grant
 }
 
 // AllowURL grants the host+scheme of a URL or bare endpoint string.
@@ -198,10 +224,17 @@ func (g *Gate) Authorize(
 	if g == nil || !g.Enforce {
 		return nil, nil
 	}
-	g.mu.RLock()
-	grant, allowed := g.allowed[key(request)]
-	g.mu.RUnlock()
-	if !allowed || !methodsAllowed(grant.Methods, request.Methods) {
+	scoped, allowed, allowPrivate := false, false, false
+	if g.UseCallScope {
+		scoped, allowed, allowPrivate = scopedPermissions(ctx, request)
+	}
+	if !scoped {
+		g.mu.RLock()
+		grant := g.allowed[key(request)]
+		allowed, allowPrivate = grant.permissions(request.Methods)
+		g.mu.RUnlock()
+	}
+	if !allowed {
 		err := &DeniedError{
 			Host: request.Host, Protocol: request.Protocol,
 			Port: request.Port, Method: firstMethod(request.Methods),
@@ -215,15 +248,17 @@ func (g *Gate) Authorize(
 		g.recordDenied(source, request, "DNS resolution failed")
 		return nil, &DeniedError{
 			Host: request.Host, Protocol: request.Protocol,
-			Port: request.Port, Reason: "DNS resolution failed",
+			Port: request.Port, Method: firstMethod(request.Methods),
+			Reason: "DNS resolution failed",
 		}
 	}
 	for _, ip := range ips {
-		if nonPublicIP(ip) && !grant.AllowPrivate {
+		if nonPublicIP(ip) && !allowPrivate {
 			g.recordDenied(source, request, "local or private address is not granted")
 			return nil, &DeniedError{
 				Host: request.Host, Protocol: request.Protocol,
-				Port: request.Port, Reason: "local or private address is not granted",
+				Port: request.Port, Method: firstMethod(request.Methods),
+				Reason: "local or private address is not granted",
 			}
 		}
 	}
@@ -370,16 +405,21 @@ func requestPort(value *url.URL) (uint16, error) {
 	}
 }
 
-func methodsAllowed(granted, requested []string) bool {
-	if len(granted) == 0 || len(requested) == 0 {
-		return true
+// permissions runs under Gate.mu so Authorize retains only immutable decisions
+// while resolving DNS. A request without methods requires an unrestricted grant.
+func (g targetGrant) permissions(requested []string) (allowed, allowPrivate bool) {
+	if len(requested) == 0 {
+		return g.allMethods, g.allPrivate
 	}
+	allowPrivate = true
 	for _, method := range requested {
-		if !slices.Contains(granted, method) {
-			return false
+		private, exists := g.methods[method]
+		if !g.allMethods && !exists {
+			return false, false
 		}
+		allowPrivate = allowPrivate && (g.allPrivate || private)
 	}
-	return true
+	return true, allowPrivate
 }
 
 func firstMethod(methods []string) string {

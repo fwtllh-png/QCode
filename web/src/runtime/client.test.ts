@@ -984,6 +984,44 @@ describe("RuntimeClient", () => {
     client.stop();
   });
 
+  it("streams drafts of a live turn below hydrated conversation turns", async () => {
+    snapshotSequence = 3;
+    snapshotEvents = [
+      runtimeEvent(1, "turn.started", {display_prompt: "first question"}),
+      runtimeEvent(2, "output.delta", {text: "first answer"}),
+      runtimeEvent(3, "turn.completed", {text: "first answer"})
+    ];
+    const client = new RuntimeClient();
+    const socket = await startClient(client);
+
+    const frame = (sequence: number, turnID: string, kind: string, data: Record<string, unknown> = {}) =>
+      socket.emit("message", {
+        type: "event",
+        protocol_version: 1,
+        session_id: "session",
+        sequence,
+        event: {...runtimeEvent(sequence, kind, data), turn_id: turnID, id: `${turnID}-event-${sequence}`}
+      });
+    frame(4, "turn2", "turn.started", {display_prompt: "second question"});
+    frame(5, "turn2", "output.draft", {text: "streaming ", sample_id: "s1"});
+    frame(6, "turn2", "output.draft", {text: "draft", sample_id: "s1"});
+    await vi.waitFor(() => {
+      expect(client.getSnapshot().events.at(-1)?.sequence).toBe(6);
+    });
+    const conversation = client.getSnapshot().conversation;
+    const rendered = conversation.order.flatMap((id) => {
+      const node = conversation.nodes.get(id);
+      return node ? [`${node.kind}:${node.id}`] : [];
+    });
+    expect(rendered).toEqual([
+      "user:event-1",
+      "assistant:output-turn",
+      "user:turn2-event-4",
+      "assistant:output-turn2"
+    ]);
+    client.stop();
+  });
+
   it("queries trace timing against the hydrated event watermark", async () => {
     snapshotSequence = 3;
     snapshotEvents = [

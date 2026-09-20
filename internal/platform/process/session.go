@@ -105,6 +105,7 @@ type Session struct {
 	callID       string
 	createdAt    time.Time
 	command      *exec.Cmd
+	process      *sessionProcess
 	input        io.WriteCloser
 	outputReader io.ReadCloser
 	terminal     *os.File
@@ -195,6 +196,8 @@ func (m *SessionManager) Create(
 	if err != nil {
 		return "", err
 	}
+	owner := &sessionProcess{command: command}
+	command.Cancel = owner.terminate
 	rows, cols := options.Rows, options.Cols
 	if rows == 0 {
 		rows = 24
@@ -248,7 +251,7 @@ func (m *SessionManager) Create(
 		turnID:       strings.TrimSpace(options.TurnID),
 		callID:       strings.TrimSpace(options.CallID),
 		createdAt:    createdAt,
-		command:      command, input: input, outputReader: output,
+		command:      command, process: owner, input: input, outputReader: output,
 		terminal: terminal, tty: options.PTY,
 		running: true, exitCode: -1,
 		waitDone: make(chan struct{}), readDone: make(chan struct{}),
@@ -507,7 +510,7 @@ func (m *SessionManager) Signal(id, threadID string, signal syscall.Signal) erro
 	session.mu.Lock()
 	session.terminated = true
 	session.mu.Unlock()
-	return signalProcessGroup(session.command.Process, signal)
+	return session.process.signal(signal)
 }
 
 func (m *SessionManager) Close(id, threadID string) error {
@@ -702,7 +705,7 @@ func (s *Session) readLoop() {
 }
 
 func (s *Session) waitLoop() {
-	err := s.command.Wait()
+	err := s.process.wait()
 	if s.terminal != nil {
 		_ = s.terminal.Close()
 	}
@@ -719,15 +722,13 @@ func (s *Session) waitLoop() {
 
 func (s *Session) close() {
 	s.closeOnce.Do(func() {
-		s.mu.RLock()
-		running := s.running
-		s.mu.RUnlock()
-		if running {
-			s.mu.Lock()
-			s.terminated = true
-			s.mu.Unlock()
-			_ = terminateProcessGroup(s.command.Process)
+		s.mu.Lock()
+		if s.running {
+			if err := s.process.terminate(); err == nil {
+				s.terminated = true
+			}
 		}
+		s.mu.Unlock()
 		_ = s.input.Close()
 		<-s.waitDone
 	})

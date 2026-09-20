@@ -203,7 +203,10 @@ navigate、DOM snapshot、click 与 fill；`QCODE_BROWSER_BINARY` 可覆盖自�
 本地开发地址必须显式传入 `allow_loopback`，不要把 `localhost` 或端口 `0` 写进
 `network_targets`。进程启动成功或存活不等于测试通过。`exec_command` 第一次只等到 `yield_time_ms`；
 进程还在跑时会返回 `session_id`，用 `write_stdin` 继续收输出或关闭，并可用
-`timeout_ms` 杀掉进程组。`http_request` 支持结构化
+`timeout_ms` 杀掉进程组（声明值不得超过一个工作日，24 小时；更长的任务应组织为
+显式轮询的会话而不是单一无限期限）。`shell_read` 未显式传 `timeout_ms` 时按
+60 秒默认前台期限执行并在超时结果中提示改用 `exec_command` 会话，挂起命令不再
+占用整个 Turn。`http_request` 支持结构化
 GET/POST/PUT/PATCH/DELETE/HEAD、响应状态断言和有界 Body；它拒绝
 Authorization、Cookie、API Key 等会被持久化进 Tool Call 的敏感 Header。
 

@@ -122,6 +122,10 @@ Web Markdown 不执行原始 HTML 或危险 URL。同源图片可以直接显示
   Deadline 会收紧它。Lease 消费后，运行中资源的回收不受 Lease 到期影响。
 - `execution.approval_timeout` 控制人工审批等待；默认 `0`，表示只随 Turn/Session
   生命周期结束。非零值启用独立过期，过期请求继续 Fail Closed。
+- “始终允许”先写入工作区权限文件，成功后发布共享的版本化规则。同工作区已有
+  会话和新建会话在下一次工具授权时读取最新规则，无需重启；单次和会话级审批缓存
+  仍各自隔离。持久权限不覆盖 Managed/Repository Deny、只读模式或子 Agent 的工具
+  限制；已冻结的执行快照不被追溯修改，其他工作区不订阅该规则源。
 - Attempt Receipt 持久记录 Operation Digest、Lease ID/State、Effect、Workspace、
   Subject、Policy 和 Sandbox 绑定。当前兼容 Facade 保持原有 Policy Decision、
   Approval Scope、Typed Denial 与 Amendment 语义不变。
@@ -151,6 +155,9 @@ Web Markdown 不执行原始 HTML 或危险 URL。同源图片可以直接显示
   Review 精确的只读目标。Sandbox 只能连接代理端口，直连和未声明目标均 Fail
   Closed。该 Loopback Proxy 返回 CONNECT 403 表示目标未声明或未授权，并不表示
   远端服务不可达。Linux 在 namespace proxy bridge 交付前保持进程全禁网。
+  macOS 的代理能力通过启动时的精确端口允许/拒绝探测单独确认，不从默认禁网状态
+  推断。获批目标的 Effective Profile 保留代理端口，进程环境注入 Runtime 代理；
+  没有声明目标的命令仍禁网，也不注入代理变量。
 - 测试 Fixture 或本地开发服务必须绑定并连接临时 Localhost 端口时，
   `exec_command` 可声明 `allow_loopback`。
   该能力默认关闭；Strong Sandbox 内仅包含精确 Localhost Grant 且没有 Workspace
@@ -158,7 +165,12 @@ Web Markdown 不执行原始 HTML 或危险 URL。同源图片可以直接显示
   macOS Profile 只增加 Localhost Inbound/Outbound Seatbelt Rule；非 Loopback
   流量仍必须声明精确 Proxy Target。Loopback-only Effective Profile 不绑定托管
   代理端口；执行器不得因为 enclosing sandbox 仍持有 Runtime Proxy 而拒绝已批准的
-  Localhost Grant。若代理端口仍与 Profile 错位，工具结果必须带
+  Localhost Grant。该调用的命令策略与环境均移除代理配置，Prepared Controls 根据
+  后端已探测能力声明 `loopback_exact`；同时获批 Proxy Target 与 Loopback 的调用
+  仍使用 `proxy_targets` 并保留代理端口。共享 Workspace Policy 不随单次调用改变。
+  Guard 在汇总全部网络资源后确定租约的 Required Controls，与 Effective Profile
+  保持一致；主机排序和参数顺序不改变混合调用的控制要求，也不隐式授予 Loopback。
+  若代理端口仍与 Profile 错位，工具结果必须带
   `required_action=keep_allow_loopback_omit_network_targets`，不能把临时端口
   写进 `network_targets`。Effective Profile 与 Attempt Receipt 都会记录该
   Loopback Grant。
@@ -177,6 +189,18 @@ Web Markdown 不执行原始 HTML 或危险 URL。同源图片可以直接显示
   通用 `http_request` 都按不可逆 External Mutation 要求单次审批；Loopback 导航必须
   显式声明。`http_request` 拒绝 Authorization、Cookie 和 API Key Header，并从返回
   Metadata 中删除 Set-Cookie 与认证挑战 Header。
+- 权限规则保留原始 Resource。文件资源使用 Guard 解析出的规范化路径匹配，主机、
+  URL 等 ID 资源使用原值匹配；通配工具或同时涉及文件和网络的工具也遵循该区分。
+  相对文件规则继续拒绝 `..` 逃逸并解析符号链接，不根据名称是否含点猜测资源类型。
+- Web HTTP 工具的动态网络许可仅属于当前 Guard 调用，覆盖该调用内的重试，结束或
+  取消后失效。每个 HTTP 请求与重定向都检查当前调用的目标许可；新目标仍须通过
+  Guard 策略和审批，不能复用其他工具、会话或已完成调用的传输许可。会话级审批
+  缓存仍可按原策略复用，但必须重新绑定本次调用。配置的搜索后端继续作为声明资源
+  接受审批，固定 Gate 许可不能代替调用许可；Provider 与进程代理使用独立 Gate。
+  重定向拒绝信号保留实际目标的协议、主机、端口和 HTTP Method，审批展示与本次
+  传输放行使用同一目标；例如批准 `https://cdn.example:8443` 后按 8443 重试，
+  不退回默认 443。303/307 等重定向使用跳转后的实际 Method；缺少结构化目标的
+  网络拒绝不会根据原始 URL 猜测目标并追加审批。
 - Git merge、rebase、cherry-pick、restore、stash、tag 和 amend 均通过 VCS Broker
   的固定 argv 白名单执行；不提供任意 Git 参数、force push 或隐式远端。可能改写历史、
   产生冲突或丢弃内容的操作要求单次审批。
@@ -198,6 +222,9 @@ Web Markdown 不执行原始 HTML 或危险 URL。同源图片可以直接显示
   行为。`exec_command` 是唯一通用 Command Start 路径；首次 Sample 只等到
   `yield_time_ms`，进程未退出则返回 `session_id`。`write_stdin` 在每次
   Session 交互前校验当前 Thread Lease；`timeout_ms` 只杀进程组。
+  macOS/Linux 下父 shell 正常退出后，Session 先终止同组残留后台进程，再发布
+  完成状态及释放 Session/Turn 记录；后台进程是否关闭输出不影响回收。终止与最终
+  Reap 同步，父进程身份在组清理前保持有效，避免延迟按已复用的 PID/PGID 发信号。
 - Process Tool 通过有界 Fair Budget 与精确 Resource Claim Admission。不同 Session
   与无关 Path 可并发，冲突 Claim 保持顺序。
 - Cancellation Terminal Ownership 遵循声明的 Execution Disposition；Process
@@ -241,6 +268,14 @@ make secret-leak-test
 - 服务默认监听 `127.0.0.1`。
 - 非 Loopback 部署必须使用经过 Review 的认证网关。
 - Provider Base URL 与 Redirect 属于安全敏感配置。
+- Provider、Web 工具和进程代理分别使用独立 Egress Gate。固定 Provider Endpoint
+  与 Web Search Backend 的授权不会授予进程代理；Guard 按可信 Tool Capability
+  将获批目标交给对应的 Web 或 Process Gate，工具审批不修改 Provider Gate。
+- 同一个 Gate 按 Protocol、Host、Port 累计授权，新增 Method 不撤销已有 Method。
+  `allow_private` 只作用于同次获批的 Method；例如公网 GET 与私网 POST 合并后，
+  私网 GET 仍拒绝。空 Method 授权表示所有方法，后续精确方法授权不能将其收窄；
+  请求省略 Method 时则必须具有所有方法的授权。
+  当前进程代理的目标授权在 Runtime 会话内共享，并非逐进程身份或租约的独立授权表。
 - Native/Web Search Result 仍是不可信内容。
 - 可记录 Endpoint Inventory，但不能记录 Credential。
 

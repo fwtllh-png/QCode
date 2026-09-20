@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -849,18 +850,14 @@ func TestEgressDeniedAsksThenRetries(t *testing.T) {
 	runtime := policy.DefaultRuntime(policy.ModeAct, policy.PermissionSuggest)
 	runtime.DisableAutoReview = true
 	requests := make(chan ApprovalRequest, 2)
-	var grantedMu sync.Mutex
-	var granted []string
 	guard, err := New(Options{
 		Registry: registry, Policy: runtime, Workspace: t.TempDir(),
 		Approvals: func(_ context.Context, request ApprovalRequest) error {
 			requests <- request
 			return nil
 		},
-		OnNetworkAllow: func(target egress.Target) {
-			grantedMu.Lock()
-			granted = append(granted, target.Host)
-			grantedMu.Unlock()
+		OnNetworkAllow: func(capability tool.Capability, target egress.Target) {
+			t.Errorf("Web grant escaped call scope: %q %+v", capability, target)
 		},
 	})
 	if err != nil {
@@ -904,36 +901,20 @@ func TestEgressDeniedAsksThenRetries(t *testing.T) {
 	if executor.calls.Load() != 2 {
 		t.Fatalf("calls = %d, want retry after grant", executor.calls.Load())
 	}
-	grantedMu.Lock()
-	defer grantedMu.Unlock()
-	found := false
-	for _, host := range granted {
-		if host == "cdn.example" {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Fatalf("granted hosts = %v, want cdn.example", granted)
-	}
 }
 
 func TestEgressDeniedBypassAutoGrantsWithoutAsk(t *testing.T) {
 	executor := &egressRetryExecutor{descriptor: networkFetchDescriptor()}
 	registry := newTestRegistry(t, nil, executor)
 	runtime := policy.DefaultRuntime(policy.ModeAct, policy.PermissionBypass)
-	var grantedMu sync.Mutex
-	var granted []string
 	guard, err := New(Options{
 		Registry: registry, Policy: runtime, Workspace: t.TempDir(),
 		Approvals: func(context.Context, ApprovalRequest) error {
 			t.Fatal("bypass must not ask for mid-flight egress hosts")
 			return nil
 		},
-		OnNetworkAllow: func(target egress.Target) {
-			grantedMu.Lock()
-			granted = append(granted, target.Host)
-			grantedMu.Unlock()
+		OnNetworkAllow: func(capability tool.Capability, target egress.Target) {
+			t.Errorf("Web grant escaped call scope: %q %+v", capability, target)
 		},
 	})
 	if err != nil {
@@ -951,18 +932,6 @@ func TestEgressDeniedBypassAutoGrantsWithoutAsk(t *testing.T) {
 	}
 	if executor.calls.Load() != 2 {
 		t.Fatalf("calls = %d, want retry after auto-grant", executor.calls.Load())
-	}
-	grantedMu.Lock()
-	defer grantedMu.Unlock()
-	found := false
-	for _, host := range granted {
-		if host == "cdn.example" {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Fatalf("granted hosts = %v, want cdn.example", granted)
 	}
 }
 
@@ -1020,7 +989,7 @@ type egressRetryExecutor struct {
 
 func (e *egressRetryExecutor) Descriptor() tool.Descriptor { return e.descriptor }
 
-func (e *egressRetryExecutor) Execute(_ context.Context, _ json.RawMessage) (tool.Result, error) {
+func (e *egressRetryExecutor) Execute(ctx context.Context, _ json.RawMessage) (tool.Result, error) {
 	if e.calls.Add(1) == 1 {
 		return tool.Result{
 			Content: "egress denied · host=cdn.example", IsError: true,
@@ -1037,6 +1006,15 @@ func (e *egressRetryExecutor) Execute(_ context.Context, _ json.RawMessage) (too
 				},
 			},
 		}, nil
+	}
+	gate := &egress.Gate{
+		Enforce: true, UseCallScope: true,
+		LookupIP: func(context.Context, string) ([]net.IP, error) {
+			return []net.IP{net.ParseIP("203.0.113.10")}, nil
+		},
+	}
+	if _, err := gate.Authorize(ctx, egress.Target{Host: "cdn.example", Protocol: "https"}, "test"); err != nil {
+		return tool.Result{}, err
 	}
 	return tool.Result{Content: `{"ok":true}`}, nil
 }
@@ -1128,7 +1106,10 @@ func TestProcessNetworkTargetRequiresApprovalUnderSuggest(t *testing.T) {
 			requests <- request
 			return nil
 		},
-		OnNetworkAllow: func(target egress.Target) {
+		OnNetworkAllow: func(capability tool.Capability, target egress.Target) {
+			if capability != tool.CapabilityProcess {
+				t.Errorf("grant capability = %q, want process", capability)
+			}
 			grants <- target
 		},
 	})

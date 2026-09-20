@@ -39,6 +39,7 @@ func TestManagedProxyForwardsOnlyGrantedHTTPMethod(t *testing.T) {
 	t.Cleanup(func() { _ = proxy.Close(context.Background()) })
 	proxyURL, _ := url.Parse(proxy.URL())
 	client := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL)}}
+	t.Cleanup(client.CloseIdleConnections)
 
 	response, err := client.Get(upstream.URL + "/allowed")
 	if err != nil {
@@ -57,6 +58,29 @@ func TestManagedProxyForwardsOnlyGrantedHTTPMethod(t *testing.T) {
 	response.Body.Close()
 	if response.StatusCode != http.StatusForbidden {
 		t.Fatalf("POST status = %d", response.StatusCode)
+	}
+	gate.AllowTarget(egress.Target{
+		Host: targetURL.Hostname(), Protocol: "http", Port: port,
+		Methods: []string{http.MethodPost}, AllowPrivate: true,
+	})
+	for _, method := range []string{http.MethodPost, http.MethodGet, http.MethodDelete} {
+		request, _ := http.NewRequest(method, upstream.URL, nil)
+		response, err := client.Do(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, err := io.ReadAll(response.Body)
+		response.Body.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if method == http.MethodDelete {
+			if response.StatusCode != http.StatusForbidden {
+				t.Fatalf("unapproved DELETE status = %d", response.StatusCode)
+			}
+		} else if response.StatusCode != http.StatusOK || string(body) != method+" ok" {
+			t.Fatalf("after POST grant: %s status=%d body=%q", method, response.StatusCode, body)
+		}
 	}
 }
 

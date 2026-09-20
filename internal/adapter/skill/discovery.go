@@ -29,6 +29,7 @@ type DiscoveryOptions struct {
 	Workspace       string
 	ConfiguredDir   string
 	UserHome        string
+	SandboxHome     string
 	Locale          string
 	IncludeBuiltins bool
 	Limits          Limits
@@ -38,8 +39,9 @@ type DiscoveryOptions struct {
 }
 
 type rootSpec struct {
-	path   string
-	source Source
+	path     string
+	source   Source
+	boundary string
 }
 
 type candidate struct {
@@ -72,6 +74,14 @@ func discoverNative(options DiscoveryOptions) ([]candidate, []Issue, error) {
 			configured = filepath.Join(workspace, configured)
 		}
 		roots = append(roots, rootSpec{path: filepath.Clean(configured), source: SourceConfigured})
+	}
+	if options.SandboxHome != "" {
+		for _, relative := range userSkillDirectories {
+			roots = append(roots, rootSpec{
+				path: filepath.Join(options.SandboxHome, relative), source: SourceWorkspace,
+				boundary: options.SandboxHome,
+			})
+		}
 	}
 	home := options.UserHome
 	if home == "" {
@@ -135,6 +145,17 @@ func walkSkillRoot(
 	root, err := secureDirectory(spec.path, false)
 	if err != nil {
 		return nil, nil, err
+	}
+	if spec.boundary != "" {
+		boundary, boundaryErr := secureDirectory(spec.boundary, true)
+		if boundaryErr != nil {
+			return nil, nil, boundaryErr
+		}
+		relative, relErr := filepath.Rel(boundary, root)
+		if relErr != nil || relative == ".." ||
+			strings.HasPrefix(relative, ".."+string(filepath.Separator)) || filepath.IsAbs(relative) {
+			return nil, nil, errors.New("skill directory escapes sandbox home")
+		}
 	}
 	var result []candidate
 	var issues []Issue

@@ -351,7 +351,7 @@ func requestJSON(
 	}
 	response, err := client.Do(req)
 	if err != nil {
-		failure := httpTransportFailure(err, endpoint)
+		failure := httpTransportFailure(err)
 		return nil, nil, &failure, nil
 	}
 	defer response.Body.Close()

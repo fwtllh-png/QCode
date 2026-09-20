@@ -2,9 +2,23 @@ package wire
 
 import (
 	"github.com/fwtllh-png/QCode/internal/adapter/model"
+	"github.com/fwtllh-png/QCode/internal/adapter/tool"
+	toolguard "github.com/fwtllh-png/QCode/internal/adapter/tool/guard"
 	webtool "github.com/fwtllh-png/QCode/internal/adapter/tool/web"
 	"github.com/fwtllh-png/QCode/internal/security/egress"
 )
+
+// Tool approvals never mutate provider grants or cross the web/process boundary.
+func toolNetworkAllow(webGate, processGate *egress.Gate) toolguard.NetworkAllow {
+	return func(capability tool.Capability, target egress.Target) {
+		switch capability {
+		case tool.CapabilityNetwork:
+			webGate.AllowTarget(target)
+		case tool.CapabilityProcess:
+			processGate.AllowTarget(target)
+		}
+	}
+}
 
 func grantRouteHosts(gate *egress.Gate, routes model.RouteSet) {
 	if gate == nil || !routes.Ready() {

@@ -3,7 +3,7 @@ package engine
 import (
 	"context"
 	"encoding/json"
-	"sync"
+	"net"
 	"sync/atomic"
 	"testing"
 
@@ -12,11 +12,8 @@ import (
 	"github.com/fwtllh-png/QCode/internal/security/policy"
 )
 
-// Engine used to allocate a Guard without OnNetworkAllow while wire kept the
-// callback on a different Guard instance. Approvals then succeeded but the
-// session Gate never learned the host, so the retry still got egress denied.
-// Under Bypass, mid-flight hosts auto-grant (no ask); this still proves the
-// engine-owned Guard owns OnNetworkAllow.
+// The engine-owned Guard must make approvals usable by the current HTTP
+// attempt without granting the target to unrelated calls.
 func TestAllocatedGuardGrantsEgressAfterApproval(t *testing.T) {
 	registry := tool.NewRegistry(nil, nil)
 	executor := &egressRetryTool{}
@@ -24,15 +21,10 @@ func TestAllocatedGuardGrantsEgressAfterApproval(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	var grantedMu sync.Mutex
-	var granted []string
-
 	engine, err := newTestEngine(Options{ProviderConfig: ProviderConfig{Provider: &scriptedProvider{}, Route: testRoute(t)}, ToolConfig: ToolConfig{Tools: registry,
 
-		OnNetworkAllow: func(target egress.Target) {
-			grantedMu.Lock()
-			granted = append(granted, target.Host)
-			grantedMu.Unlock()
+		OnNetworkAllow: func(capability tool.Capability, target egress.Target) {
+			t.Errorf("Web grant escaped call scope: %q %+v", capability, target)
 		}}, SecurityConfig: SecurityConfig{Workspace: t.TempDir(),
 		Security: policy.DefaultRuntime(policy.ModeAct, policy.PermissionBypass)},
 	})
@@ -52,18 +44,6 @@ func TestAllocatedGuardGrantsEgressAfterApproval(t *testing.T) {
 	}
 	if executor.calls.Load() != 2 {
 		t.Fatalf("calls = %d, want retry after grant", executor.calls.Load())
-	}
-	grantedMu.Lock()
-	defer grantedMu.Unlock()
-	found := false
-	for _, host := range granted {
-		if host == "cdn.example" {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Fatalf("OnNetworkAllow never saw cdn.example: %v", granted)
 	}
 }
 
@@ -90,7 +70,7 @@ func (e *egressRetryTool) Descriptor() tool.Descriptor {
 	}
 }
 
-func (e *egressRetryTool) Execute(context.Context, json.RawMessage) (tool.Result, error) {
+func (e *egressRetryTool) Execute(ctx context.Context, _ json.RawMessage) (tool.Result, error) {
 	if e.calls.Add(1) == 1 {
 		return tool.Result{
 			Content: "egress denied · host=cdn.example", IsError: true,
@@ -107,6 +87,15 @@ func (e *egressRetryTool) Execute(context.Context, json.RawMessage) (tool.Result
 				},
 			},
 		}, nil
+	}
+	gate := &egress.Gate{
+		Enforce: true, UseCallScope: true,
+		LookupIP: func(context.Context, string) ([]net.IP, error) {
+			return []net.IP{net.ParseIP("203.0.113.10")}, nil
+		},
+	}
+	if _, err := gate.Authorize(ctx, egress.Target{Host: "cdn.example", Protocol: "https"}, "test"); err != nil {
+		return tool.Result{}, err
 	}
 	return tool.Result{Content: `{"ok":true}`}, nil
 }

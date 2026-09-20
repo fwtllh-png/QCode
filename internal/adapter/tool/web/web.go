@@ -331,7 +331,7 @@ func (t *Tool) httpRequest(ctx context.Context, value input) (tool.Result, error
 	}
 	response, err := client.Do(request)
 	if err != nil {
-		return httpTransportFailure(err, value.URL), nil
+		return httpTransportFailure(err), nil
 	}
 	defer response.Body.Close()
 	limit := resolveBodyLimit(value.MaxBytes)
@@ -736,7 +736,7 @@ func request(
 	}
 	response, err := client.Do(req)
 	if err != nil {
-		failure := httpTransportFailure(err, endpoint)
+		failure := httpTransportFailure(err)
 		return nil, nil, &failure, nil
 	}
 	defer response.Body.Close()
@@ -805,7 +805,7 @@ func webFailure(category string, status int, message string) tool.Result {
 // httpTransportFailure classifies Dial/RoundTrip errors. Egress policy denials
 // are a distinct category so Guard can ask to Grant the host and retry; plain
 // timeouts and connection failures stay non-approvable.
-func httpTransportFailure(err error, requestURL string) tool.Result {
+func httpTransportFailure(err error) tool.Result {
 	category := "network"
 	message := err.Error()
 	meta := map[string]any{"error_category": category, "status_code": 0}
@@ -816,11 +816,17 @@ func httpTransportFailure(err error, requestURL string) tool.Result {
 	case errors.Is(err, egress.ErrDenied):
 		category = "egress_denied"
 		meta["error_category"] = category
-		host, protocol := hostFromDeniedRequest(err, requestURL)
-		if host != "" {
-			meta["host"] = host
-			meta["protocol"] = protocol
-			message = fmt.Sprintf("egress denied · host=%s", host)
+		var target *tool.NetworkTarget
+		if denied, ok := egress.DeniedTarget(err); ok {
+			target = &tool.NetworkTarget{
+				Host: denied.Host, Protocol: denied.Protocol,
+				Port: denied.Port, Method: denied.Method,
+			}
+			meta["host"] = target.Host
+			meta["protocol"] = target.Protocol
+			meta["port"] = target.Port
+			meta["method"] = target.Method
+			message = fmt.Sprintf("egress denied · host=%s · port=%d", target.Host, target.Port)
 		} else {
 			message = "egress denied"
 		}
@@ -829,7 +835,7 @@ func httpTransportFailure(err error, requestURL string) tool.Result {
 			Outcome: &tool.Outcome{
 				Status: tool.OutcomeFailed,
 				Security: &tool.SecuritySignal{
-					EgressDenied: &tool.NetworkTarget{Host: host, Protocol: protocol},
+					EgressDenied: target,
 				},
 			},
 		}
@@ -838,21 +844,6 @@ func httpTransportFailure(err error, requestURL string) tool.Result {
 		meta["error_category"] = category
 	}
 	return tool.Result{Content: message, IsError: true, Metadata: meta}
-}
-
-func hostFromDeniedRequest(err error, requestURL string) (host, protocol string) {
-	if host, protocol, ok := egress.DeniedTarget(err); ok {
-		return host, protocol
-	}
-	protocol = "https"
-	if requestURL != "" {
-		if parsed, parseErr := url.Parse(requestURL); parseErr == nil {
-			if h, p, ok := egress.HostOf(parsed); ok {
-				return h, p
-			}
-		}
-	}
-	return host, protocol
 }
 
 func validHTTPURL(value string) bool {

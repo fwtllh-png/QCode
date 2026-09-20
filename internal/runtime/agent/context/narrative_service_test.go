@@ -13,7 +13,8 @@ func TestNarrativeOutputBudgetUsesAdvertisedModelLimit(t *testing.T) {
 		model.Limits{ContextTokens: 8192, MaxOutputTokens: 2048},
 		256,
 	)
-	if err != nil || tokens != 2048 || outputBytes != 8192 {
+	// Byte budgets convert at dense-script density (three bytes per token).
+	if err != nil || tokens != 2048 || outputBytes != 6144 {
 		t.Fatalf("budget = %d tokens / %d bytes err=%v", tokens, outputBytes, err)
 	}
 }
@@ -24,7 +25,8 @@ func TestNarrativeOutputBudgetHonorsOperatorCeiling(t *testing.T) {
 		model.Limits{ContextTokens: 8192, MaxOutputTokens: 2048},
 		256,
 	)
-	if err != nil || tokens != 512 || outputBytes != 2048 {
+	// 2048 bytes are ceil(2048/3) = 683 dense-script tokens.
+	if err != nil || tokens != 683 || outputBytes != 2048 {
 		t.Fatalf("budget = %d tokens / %d bytes err=%v", tokens, outputBytes, err)
 	}
 }
@@ -36,7 +38,7 @@ func TestNarrativeOutputBudgetUsesRemainingContextWindow(t *testing.T) {
 		800,
 	)
 	want := uint64(1024 - 800 - narrativeFramingReserve)
-	if err != nil || tokens != want || outputBytes != int(want*4) {
+	if err != nil || tokens != want || outputBytes != int(want*3) {
 		t.Fatalf("budget = %d tokens / %d bytes err=%v want %d", tokens, outputBytes, err, want)
 	}
 }

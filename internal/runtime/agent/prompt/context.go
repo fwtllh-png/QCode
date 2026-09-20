@@ -12,6 +12,7 @@ import (
 
 	"github.com/fwtllh-png/QCode/internal/adapter/memory"
 	"github.com/fwtllh-png/QCode/internal/adapter/provider"
+	"github.com/fwtllh-png/QCode/internal/platform/tokenestimate"
 )
 
 var repositoryInstructionNames = []string{
@@ -69,13 +70,13 @@ type TokenCounter interface {
 	Count(string) uint64
 }
 
+// HeuristicTokenCounter is the baseline token counter for prompt partitions:
+// dense-script text counts per character, everything else at four characters
+// per token. See internal/platform/tokenestimate for the rationale.
 type HeuristicTokenCounter struct{}
 
 func (HeuristicTokenCounter) Count(value string) uint64 {
-	if value == "" {
-		return 0
-	}
-	return uint64((utf8.RuneCountInString(value) + 3) / 4)
+	return tokenestimate.Text(value)
 }
 
 type Receipt struct {

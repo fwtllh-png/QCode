@@ -211,6 +211,7 @@ func NewCommand(ctx context.Context, options Options) (*exec.Cmd, error) {
 		AllowLoopback: authorityBound &&
 			executionAuthority.AllowLoopback &&
 			!options.DenyNetwork,
+		LoopbackOnly: authorityBound && executionAuthority.LoopbackOnly(),
 	}
 	if authorityBound {
 		commandSpec.AuthorityDigest = executionAuthority.Digest
@@ -270,6 +271,7 @@ func NewCommand(ctx context.Context, options Options) (*exec.Cmd, error) {
 		if options.RequireSandbox && !ok {
 			return nil, errors.New("strong sandbox backend has no prepared policy identity")
 		}
+		policy = sandbox.CommandNetworkPolicy(policy, commandSpec)
 		environment = sandboxEnvironment(environment, policy, options.DenyNetwork)
 		commandSpec.Env = environment
 		commandSpec, err = options.Sandbox.Prepare(ctx, commandSpec)

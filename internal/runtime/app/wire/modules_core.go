@@ -7,14 +7,14 @@ import (
 	"net/http"
 	"os"
 
-	"github.com/fwtllh-png/QCode/internal/adapter/tool"
 	"github.com/fwtllh-png/QCode/internal/adapter/lsp"
-	"github.com/fwtllh-png/QCode/internal/platform/symbols"
+	"github.com/fwtllh-png/QCode/internal/adapter/tool"
 	"github.com/fwtllh-png/QCode/internal/adapter/tool/builtin"
 	webtool "github.com/fwtllh-png/QCode/internal/adapter/tool/web"
 	"github.com/fwtllh-png/QCode/internal/config"
 	"github.com/fwtllh-png/QCode/internal/persist/contentstore"
 	"github.com/fwtllh-png/QCode/internal/platform/process"
+	"github.com/fwtllh-png/QCode/internal/platform/symbols"
 	"github.com/fwtllh-png/QCode/internal/security/egress"
 )
 
@@ -85,6 +85,7 @@ func (platformModule) Build(_ context.Context, state *buildState) error {
 	}
 	session.processes = processes
 	state.platform.processes = processes
+	state.platform.processEgress = &egress.Gate{Enforce: true}
 	state.platform.leaseAuthority = newLeaseAuthority()
 	helperPath, err := os.Executable()
 	if err != nil {
@@ -107,28 +108,20 @@ func (platformModule) Build(_ context.Context, state *buildState) error {
 	)
 	session.repositoryIndex = index
 	session.metrics.SetRepositoryIndexState(status)
+	state.platform.helperPath = helperPath
+	state.platform.backend = backend
+	state.platform.repositoryIndex = index
 	if !execution.Tools {
-		state.platform = platformBuildState{
-			helperPath: helperPath, backend: backend, processes: processes,
-			leaseAuthority:  state.platform.leaseAuthority,
-			repositoryIndex: index,
-		}
 		return nil
 	}
 	webOptions := webtool.OptionsFromEnv()
 	if search := state.config.snapshot.Config.Web.SearchBackend; search != "" {
 		webOptions.SearchBackend = search
 	}
-	grantWebBackendHosts(state.provider.egress, webOptions)
-	webOptions.HTTP = egress.WrapClient(&http.Client{}, state.provider.egress)
-	state.platform = platformBuildState{
-		helperPath:      helperPath,
-		backend:         backend,
-		web:             webOptions,
-		processes:       processes,
-		leaseAuthority:  state.platform.leaseAuthority,
-		repositoryIndex: index,
-	}
+	state.platform.webEgress = &egress.Gate{Enforce: true, UseCallScope: true}
+	grantWebBackendHosts(state.platform.webEgress, webOptions)
+	webOptions.HTTP = egress.WrapClient(&http.Client{}, state.platform.webEgress)
+	state.platform.web = webOptions
 	return nil
 }
 
@@ -182,7 +175,7 @@ func (builtinToolsModule) Build(
 	var semantic symbols.Provider
 	if lspSettings := state.config.snapshot.Config.Context.LSP; lspSettings.ResidentEnabled {
 		pool := lsp.NewResident(lsp.Checker{
-			Root: state.config.execution.Workspace,
+			Root:    state.config.execution.Workspace,
 			Sandbox: state.platform.backend,
 		}, lsp.ResidentOptions{
 			IdleTimeout:   lspSettings.IdleTimeout,

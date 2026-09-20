@@ -54,7 +54,7 @@ func (s *Source) Snapshot(
 	}
 	contextSnapshot := engine.ContextSnapshot()
 	history := contextSnapshot.Partition(agentcontext.KindHistory)
-	usedTokens := agentcontext.EstimateMessageTokens(contextSnapshot.Messages())
+	usedTokens := engine.EstimateMessageTokens(contextSnapshot.Messages())
 	availableTokens := spec.Limits.Context.HardInputTokens -
 		min(spec.Limits.Context.HardInputTokens, usedTokens)
 	workspaceRules := promptcontext.PartitionTexts(

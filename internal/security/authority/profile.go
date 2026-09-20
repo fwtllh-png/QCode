@@ -273,10 +273,7 @@ func compileSandboxCeiling(profile *EffectivePermissionProfile, input CompileInp
 		desiredMode = "direct"
 		desiredControl = controlmatrix.NetworkDirect
 	}
-	if controlmatrix.CanEnforceNetwork(
-		input.Capability.Effective.Network,
-		desiredControl,
-	) {
+	if sandbox.CanEnforceNetwork(input.Capability, desiredControl) {
 		profile.Network.Mode = desiredMode
 		profile.Controls.Network = desiredControl
 	} else {

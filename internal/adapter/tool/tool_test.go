@@ -181,7 +181,8 @@ func TestResultAdmissionShrinksHundredKiBAndRetainsOriginalByHandle(t *testing.T
 		receipt.OriginalBytes != 100<<10 ||
 		receipt.RetainedBytes != len(admitted.Content) ||
 		receipt.RetainedBytes > 32<<10 ||
-		receipt.RetainedTokens > 8_192 ||
+		// ASCII inline bytes stay under the dense-script token ceiling.
+		receipt.RetainedTokens > store.TokenCapacity() ||
 		receipt.Reason != "token_limit" ||
 		receipt.Digest == "" {
 		t.Fatalf("admitted=%+v receipt=%+v", admitted, receipt)
@@ -803,5 +804,56 @@ func TestAdmitBatchWithinItemCapBoundsSingleResult(t *testing.T) {
 	)
 	if !admitted[0].Truncated || admitted[0].Admission.TokenLimit != 1000 {
 		t.Fatalf("item cap not enforced: %+v", admitted[0].Admission)
+	}
+}
+
+// A Chinese tool result must be admitted against its dense-script token
+// count, not a quarter of it: otherwise CJK sessions inline four times the
+// budgeted tokens before pressure pruning notices.
+func TestResultAdmissionCountsDenseScriptTokens(t *testing.T) {
+	store := NewResultStore(32 << 10)
+	payload := strings.Repeat("配置文件内容", 100) // 600 runes, 1800 bytes
+	admitted, receipt := store.Admit("file_read", Result{Content: payload})
+	if admitted.Truncated {
+		t.Fatalf("dense result was truncated: %+v", receipt)
+	}
+	if receipt.RetainedTokens != 600 {
+		t.Fatalf("retained tokens = %d, want 600 dense-script tokens", receipt.RetainedTokens)
+	}
+	if receipt.TokenLimit < receipt.RetainedTokens {
+		t.Fatalf("token limit %d below retained %d", receipt.TokenLimit, receipt.RetainedTokens)
+	}
+}
+
+// A paged file_read continues at metadata.next_start_line instead of counting
+// returned lines. The cursor has to survive both result admission (content
+// truncation) and the model projection whitelist.
+func TestModelResultPreservesReadPaginationCursor(t *testing.T) {
+	input := Result{
+		Content: "line-002\nline-003", Truncated: true,
+		Metadata: map[string]any{
+			"bytes": 4096, "start_line": 2, "returned_lines": 2,
+			"max_lines": 2, "has_more": true, "next_start_line": 4,
+		},
+	}
+	store := NewResultStore(16)
+	admitted, receipt := store.Admit("file_read", input)
+	if !admitted.Truncated || receipt.Handle == "" {
+		t.Fatalf("admission = %+v receipt = %+v", admitted, receipt)
+	}
+	projected := ModelResult("file_read", admitted)
+	metadata := projected.Metadata
+	if metadata["has_more"] != true ||
+		metadata["next_start_line"] != 4 ||
+		metadata["returned_lines"] != 2 ||
+		metadata["start_line"] != 2 {
+		t.Fatalf("pagination cursor lost in projection: %#v", metadata)
+	}
+	data, err := json.Marshal(projected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"next_start_line":4`) {
+		t.Fatalf("model payload hides the cursor: %s", data)
 	}
 }

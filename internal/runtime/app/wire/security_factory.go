@@ -16,12 +16,9 @@ func (f guardFactory) Build(context.Context) (*toolguard.Guard, error) {
 		ReadTracker: f.readTracker, Journal: f.journal,
 	}
 	if f.permissions != nil {
+		f.runtime.BindUserRuleSource(f.permissions)
 		options.PersistAllow = func(invocation policy.Invocation) error {
-			rule, err := f.permissions.AppendAllow(invocation)
-			if err != nil {
-				return err
-			}
-			_, err = f.runtime.AppendUserRule(rule)
+			_, err := f.permissions.AppendAllow(invocation)
 			return err
 		}
 	}

@@ -8,11 +8,12 @@ import (
 	agentcontext "github.com/fwtllh-png/QCode/internal/runtime/agent/context"
 )
 
-// The runes-per-four heuristic undercounts dense writing systems by roughly
-// 4x and overcounts sparse prose by roughly 2x. A reported ratio outside
-// [minObservedEstimateRatio, maxObservedEstimateRatio] therefore indicates a
-// provider accounting anomaly rather than content density, and is not
-// learned. Boundary tests lock the exact behavior at both ends.
+// The baseline heuristic (dense scripts per rune, other text at four
+// characters per token) still overcounts sparse prose by roughly 2x and
+// undercounts tokenizer-heavy scripts by up to roughly 2x. A reported ratio
+// outside [minObservedEstimateRatio, maxObservedEstimateRatio] therefore
+// indicates a provider accounting anomaly rather than content density, and is
+// not learned. Boundary tests lock the exact behavior at both ends.
 const (
 	minObservedEstimateRatio = 0.25
 	maxObservedEstimateRatio = 8
@@ -98,4 +99,23 @@ func (c *calibratedTokenEstimator) CalibrationRatio() float64 {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.ratio
+}
+
+// estimateMessageTokens reports the engine's best current estimate for the
+// messages: the calibrated estimator once provider usage has been observed,
+// the dense-script-aware heuristic before that. Capacity decisions compared
+// against calibrated window measurements must use the same estimator, or the
+// two disagree about what a token is until the first observation arrives.
+func (e *Engine) estimateMessageTokens(messages []provider.Message) uint64 {
+	if estimate, err := e.options.TokenEstimator.Estimate(messages); err == nil &&
+		estimate != 0 {
+		return estimate
+	}
+	return agentcontext.EstimateMessageTokens(messages)
+}
+
+// EstimateMessageTokens exposes the calibrated estimate to hosts that budget
+// against the same window, such as parent-context forking.
+func (e *Engine) EstimateMessageTokens(messages []provider.Message) uint64 {
+	return e.estimateMessageTokens(messages)
 }

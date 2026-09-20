@@ -222,3 +222,18 @@ func TestAssembleSharesCapacityAcrossPartitions(t *testing.T) {
 		t.Fatalf("retained tokens = %d, want shared ceiling 3", retained)
 	}
 }
+
+func TestHeuristicTokenCounterCountsDenseScriptPerRune(t *testing.T) {
+	counter := HeuristicTokenCounter{}
+	if got := counter.Count("配置文件"); got != 4 {
+		t.Fatalf("dense count = %d, want 4", got)
+	}
+	// Two dense runes plus seven ASCII characters (space included) at four
+	// characters per token.
+	if got := counter.Count("配置 config"); got != 4 {
+		t.Fatalf("mixed count = %d, want 4", got)
+	}
+	if got := counter.Count(""); got != 0 {
+		t.Fatalf("empty count = %d", got)
+	}
+}

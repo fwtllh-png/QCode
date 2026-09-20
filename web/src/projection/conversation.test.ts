@@ -518,6 +518,67 @@ describe("ConversationProjection", () => {
     });
   });
 
+  it("renders the streamed answer below the turn's tool work it follows", () => {
+    // The narration draft creates the assistant node before the tools run;
+    // after retraction and the final sample, the surviving answer must render
+    // below the tool activity, not above it.
+    const snapshot = projectConversation([
+      event(1, "turn.started", {display_prompt: "inspect"}),
+      event(2, "output.draft", {text: "I will check.", sample_id: "s1"}),
+      event(3, "output.discarded", {sample_id: "s1", reason: "narration"}),
+      event(4, "tool.start", {
+        call_id: "call",
+        tool: "file_read",
+        arguments: {path: "a.go"}
+      }),
+      event(5, "tool.result", {call_id: "call", output: "ok", is_error: false}),
+      event(6, "output.draft", {text: "The file is fine.", sample_id: "s2"}),
+      event(7, "turn.completed", {text: "The file is fine."})
+    ]);
+    const kinds = snapshot.order.flatMap((id) => {
+      const node = snapshot.nodes.get(id);
+      return node ? [node.kind] : [];
+    });
+    expect(kinds).toEqual(["user", "tool", "assistant"]);
+    const answer = snapshot.nodes.get("output-turn");
+    expect(answer).toMatchObject({kind: "assistant", text: "The file is fine."});
+  });
+
+  it("keeps replayed answers after tool work and live answers at the stream tail", () => {
+    // Replayed turns (durable output.delta only) already order correctly; a
+    // second live turn with narration before its tools must not disturb them.
+    const snapshot = projectConversation([
+      event(1, "turn.started", {display_prompt: "first"}),
+      event(2, "tool.start", {
+        call_id: "call-1",
+        tool: "file_read",
+        arguments: {path: "a.go"}
+      }),
+      event(3, "tool.result", {call_id: "call-1", output: "ok", is_error: false}),
+      event(4, "output.delta", {text: "first answer"}),
+      event(5, "turn.completed", {text: "first answer"}),
+      turnEvent(6, "turn2", "turn.started", {display_prompt: "second"}),
+      turnEvent(7, "turn2", "output.draft", {text: "Let me look.", sample_id: "n1"}),
+      turnEvent(8, "turn2", "output.discarded", {sample_id: "n1", reason: "narration"}),
+      turnEvent(9, "turn2", "tool.start", {
+        call_id: "call-2",
+        tool: "file_read",
+        arguments: {path: "b.go"}
+      }),
+      turnEvent(10, "turn2", "tool.result", {call_id: "call-2", output: "ok", is_error: false}),
+      turnEvent(11, "turn2", "output.draft", {text: "second answer", sample_id: "s1"}),
+      turnEvent(12, "turn2", "turn.completed", {text: "second answer"})
+    ]);
+    expect(snapshot.order).toEqual([
+      "event-1",
+      "tool-call-1",
+      "output-turn",
+      "turn2-event-6",
+      "tool-call-2",
+      "output-turn2"
+    ]);
+  });
+
   it("ignores retraction for an unknown sample or turn", () => {
     const projection = new ConversationProjection();
     projection.apply(event(1, "turn.started", {display_prompt: "Answer"}));

@@ -131,9 +131,11 @@ func TestNarrativeGenerationHonorsOperatorOutputCeiling(t *testing.T) {
 	runtime.streams[0].(*providerfixture.SliceStream).Events[0].Text =
 		narrativePreferenceJSON(input.Excerpts[0].MessageID)
 	result, err := engine.GenerateNarrative(t.Context(), truth, input, 2, "")
+	// 2048 output bytes are a ceil(2048/3) = 683-token ceiling at
+	// dense-script density.
 	if err != nil || result.Fallback ||
 		len(runtime.requests) != 1 ||
-		runtime.requests[0].MaxOutputTokens != 512 {
+		runtime.requests[0].MaxOutputTokens != 683 {
 		t.Fatalf("result=%+v request=%+v err=%v", result, runtime.requests, err)
 	}
 }

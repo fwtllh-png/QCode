@@ -81,7 +81,7 @@ func (persistenceModule) Contract() ModuleContract {
 func (platformModule) Contract() ModuleContract {
 	return ModuleContract{
 		Writes: []buildDomain{domainPlatform},
-		Reads:  []buildDomain{domainConfig, domainPersistence, domainProvider},
+		Reads:  []buildDomain{domainConfig, domainPersistence},
 	}
 }
 
@@ -102,7 +102,7 @@ func (capabilityToolsModule) Contract() ModuleContract {
 func (securityModule) Contract() ModuleContract {
 	return ModuleContract{
 		Writes: []buildDomain{domainSecurity},
-		Reads:  []buildDomain{domainConfig, domainPlatform, domainProvider, domainTools},
+		Reads:  []buildDomain{domainConfig, domainPlatform, domainTools},
 	}
 }
 

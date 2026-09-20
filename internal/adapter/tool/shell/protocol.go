@@ -12,6 +12,7 @@ import (
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
 	"github.com/fwtllh-png/QCode/internal/adapter/tool/typed"
 	"github.com/fwtllh-png/QCode/internal/platform/process"
+	"github.com/fwtllh-png/QCode/internal/platform/tokenestimate"
 	"github.com/fwtllh-png/QCode/internal/security/controlmatrix"
 	"github.com/fwtllh-png/QCode/internal/security/egress"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
@@ -23,6 +24,12 @@ const (
 	maxProcessYield        = 30 * time.Second
 	defaultOutputTokens    = 4096
 	maxOutputTokens        = 10_000
+	// maxProcessTimeout caps a declared process deadline. A session whose
+	// deadline exceeds a working day is indistinguishable from a leaked
+	// process: longer work must be structured as a polled session with
+	// explicit write_stdin wait windows instead of one unbounded deadline.
+	// Boundary tests lock the value.
+	maxProcessTimeout = 24 * time.Hour
 )
 
 type execCommandInput struct {
@@ -273,7 +280,7 @@ func execCommandDescriptor() tool.Descriptor {
 				},
 				"timeout_ms": map[string]any{
 					"type":        "integer",
-					"description": "Hard deadline that kills the process group. Omit only when write_stdin will poll or close a still-running session.",
+					"description": "Hard deadline that kills the process group; must not exceed 86400000. Omit only when write_stdin will poll or close a still-running session.",
 				},
 				"output_tokens": map[string]any{"type": "integer"},
 				"rows":          map[string]any{"type": "integer"},
@@ -505,7 +512,7 @@ func (p *commandProtocol) execCommand(
 		id,
 		threadID,
 		yield,
-		outputTokens*4,
+		int(tokenestimate.BytesForTokens(uint64(outputTokens))),
 	)
 	if err != nil {
 		teardownStarted := time.Now()
@@ -800,7 +807,8 @@ func (p *commandProtocol) writeStdin(
 		)
 	} else {
 		wait, collected, err = p.waitSessionOutput(
-			ctx, input.SessionID, threadID, yield, outputTokens*4,
+			ctx, input.SessionID, threadID, yield,
+			int(tokenestimate.BytesForTokens(uint64(outputTokens))),
 		)
 	}
 	if err != nil {
@@ -849,7 +857,11 @@ func processTimeout(value int64) (time.Duration, error) {
 	if value < 0 {
 		return 0, errors.New("timeout must not be negative")
 	}
-	return time.Duration(value) * time.Millisecond, nil
+	timeout := time.Duration(value) * time.Millisecond
+	if timeout > maxProcessTimeout {
+		return 0, fmt.Errorf("timeout exceeds %s", maxProcessTimeout)
+	}
+	return timeout, nil
 }
 
 func processOutputTokens(value int) (int, error) {

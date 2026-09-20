@@ -13,6 +13,35 @@ const (
 	SourceRepository AuthoritySource = "repository"
 )
 
+// UserRuleSource publishes validated, immutable workspace rules. Versions are
+// nonzero and monotonic; an unchanged version returns no rules. Implementations
+// must not perform I/O or call back into Runtime while serving a snapshot.
+type UserRuleSource interface {
+	UserRulesSince(version uint64) (rules []Rule, current uint64)
+}
+
+// BindUserRuleSource is a construction-time binding. CloneSampling freezes the
+// current source version without transferring this live binding to the clone.
+func (r *Runtime) BindUserRuleSource(source UserRuleSource) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.userSource, r.userSourceVersion = source, 0
+	r.refreshUserRulesLocked()
+}
+
+func (r *Runtime) refreshUserRulesLocked() {
+	if r.userSource == nil {
+		return
+	}
+	rules, version := r.userSource.UserRulesSince(r.userSourceVersion)
+	if version <= r.userSourceVersion {
+		return
+	}
+	r.User = rules
+	r.userSourceVersion = version
+	r.bumpRevisionLocked()
+}
+
 func (r *Runtime) ReloadSources(user, repository []Rule) (uint64, error) {
 	if r == nil {
 		return 0, errors.New("policy runtime is required")
@@ -25,6 +54,7 @@ func (r *Runtime) ReloadSources(user, repository []Rule) (uint64, error) {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.userSource, r.userSourceVersion = nil, 0
 	r.User = append([]Rule(nil), user...)
 	r.Repository = append([]Rule(nil), repository...)
 	return r.bumpRevisionLocked(), nil

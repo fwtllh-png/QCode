@@ -10,30 +10,37 @@ import (
 
 	"github.com/fwtllh-png/QCode/internal/adapter/model"
 	"github.com/fwtllh-png/QCode/internal/adapter/provider"
+	"github.com/fwtllh-png/QCode/internal/platform/tokenestimate"
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
 )
 
 func EstimateMessageTokens(messages []provider.Message) uint64 {
-	characters := 0
+	var tokens uint64
 	for _, message := range messages {
 		for _, block := range message.Blocks {
-			characters += len([]rune(block.Text))
+			tokens += tokenestimate.Text(block.Text)
 			if block.ToolCall != nil {
-				characters += len([]rune(
+				tokens += tokenestimate.Text(
 					block.ToolCall.Name + block.ToolCall.Arguments,
-				))
+				)
 			}
 			if block.ToolResult != nil {
-				characters += len([]rune(block.ToolResult.Content))
+				tokens += tokenestimate.Text(block.ToolResult.Content)
 			}
 			if block.Type == provider.ContentImage && block.Attachment != nil {
-				characters += int(EstimateImageTokens(*block.Attachment) * 4)
+				tokens += EstimateImageTokens(*block.Attachment)
 			}
 		}
 	}
-	return uint64(max(1, (characters+3)/4))
+	return uint64(max(1, tokens))
 }
 
+// EstimateImageTokens reproduces the documented vision tokenization shared by
+// provider image pricing: a base 85 tokens per image plus 170 tokens per
+// 512×512 tile after the long edge is capped at 2048 and the short edge at
+// 768 (Anthropic, "Vision estimates"). Payloads that cannot be decoded fall
+// back to one tile per 512 KiB, an upper bound on the tile count of any
+// image that encodes to that many bytes.
 func EstimateImageTokens(attachment provider.Attachment) uint64 {
 	config, _, err := image.DecodeConfig(bytes.NewReader(attachment.Data))
 	if err != nil || config.Width <= 0 || config.Height <= 0 {

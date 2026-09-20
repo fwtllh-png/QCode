@@ -297,3 +297,97 @@ func TestRecoverResultStructuresPolicyDenialForWriteTools(t *testing.T) {
 		t.Fatal("unknown decision code became a structured result")
 	}
 }
+
+// A raw (non-tool.Result) surface must never be cut silently: force pruning
+// replaces it with a handle-backed notice that states the original size and
+// marks the omitted middle, and the full content stays retrievable.
+func TestPruneSurfacesMarksRawResultsInsteadOfSilentCuts(t *testing.T) {
+	store := tool.NewResultStore(32 << 10)
+	registry := tool.NewRegistry(nil, store)
+	raw := strings.Repeat("raw-evidence ", 200) // 2600 bytes, not tool.Result JSON
+	history := []provider.Message{
+		toolCallMessage("call-raw", "shell_read"),
+		rawToolResultMessage("call-raw", raw),
+	}
+	stats, _, err := PruneSurfaces(
+		&history, registry, 256, true, true,
+		func([]provider.Message) (PruneWindow, error) {
+			return PruneWindow{}, nil
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Results != 1 {
+		t.Fatalf("stats = %+v", stats)
+	}
+	block := history[1].Blocks[0].ToolResult
+	if !strings.Contains(block.Content, "pruned tool result") ||
+		!strings.Contains(block.Content, "pruned middle") ||
+		!strings.Contains(block.Content, "result_get") {
+		t.Fatalf("raw cut is silent: %q", block.Content[:120])
+	}
+	if block.Admission == nil || !block.Admission.Truncated ||
+		block.Admission.Handle == "" ||
+		block.Admission.OriginalBytes != len(raw) ||
+		block.Admission.RetainedBytes != len(block.Content) {
+		t.Fatalf("admission = %+v", block.Admission)
+	}
+	full, found := store.Get(block.Admission.Handle)
+	if !found || full != raw {
+		t.Fatalf("original recovered=%t", found)
+	}
+	if len(block.Content) >= len(raw) {
+		t.Fatalf("notice grew the surface: %d >= %d", len(block.Content), len(raw))
+	}
+}
+
+func TestPruneSurfacesLeavesRawResultsAloneWithoutForce(t *testing.T) {
+	registry := tool.NewRegistry(nil, tool.NewResultStore(32<<10))
+	raw := strings.Repeat("raw-evidence ", 200)
+	history := []provider.Message{
+		toolCallMessage("call-raw", "shell_read"),
+		rawToolResultMessage("call-raw", raw),
+	}
+	stats, _, err := PruneSurfaces(
+		&history, registry, 256, false, true,
+		func([]provider.Message) (PruneWindow, error) {
+			return PruneWindow{}, nil
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Results != 0 || history[1].Blocks[0].ToolResult.Content != raw {
+		t.Fatalf("non-force pass touched a raw result: %+v", stats)
+	}
+}
+
+func TestPruneRawSurfaceExemptsRetrievalAndSmallContent(t *testing.T) {
+	store := tool.NewResultStore(32 << 10)
+	registry := tool.NewRegistry(nil, store)
+	big := strings.Repeat("page ", 200)
+	if _, changed := registry.PruneRawSurface("result_get", big, 64); changed {
+		t.Fatal("retrieval page was pruned")
+	}
+	if _, changed := registry.PruneRawSurface("file_read", "small", 64); changed {
+		t.Fatal("small raw result was pruned")
+	}
+	// Borderline content where the notice would not shrink the surface stays
+	// raw instead of growing it.
+	if _, changed := registry.PruneRawSurface("file_read", "1234567890123456", 8); changed {
+		t.Fatal("borderline raw result grew into a notice")
+	}
+}
+
+func rawToolResultMessage(id, content string) provider.Message {
+	return provider.Message{
+		Role: provider.RoleTool,
+		Blocks: []provider.ContentBlock{{
+			Type: provider.ContentToolResult,
+			ToolResult: &provider.ToolResult{
+				CallID: id, Content: content,
+			},
+		}},
+	}
+}

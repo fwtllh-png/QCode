@@ -45,6 +45,8 @@ type platformBuildState struct {
 	helperPath      string
 	backend         sandbox.Backend
 	web             webtool.Options
+	webEgress       *egress.Gate
+	processEgress   *egress.Gate
 	processes       *process.SessionManager
 	leaseAuthority  *toolguard.LeaseAuthority
 	repositoryIndex *repoindex.Index

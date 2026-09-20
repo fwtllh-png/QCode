@@ -4,6 +4,7 @@ package process_test
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -13,8 +14,12 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/fwtllh-png/QCode/internal/adapter/tool"
 	"github.com/fwtllh-png/QCode/internal/platform/process"
+	"github.com/fwtllh-png/QCode/internal/security/authority"
+	"github.com/fwtllh-png/QCode/internal/security/controlmatrix"
 	"github.com/fwtllh-png/QCode/internal/security/egress"
+	"github.com/fwtllh-png/QCode/internal/security/policy"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
 )
 
@@ -63,11 +68,35 @@ func TestRealManagedProxyBlocksDirectEgress(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer pinned.Close()
-	ctx, err := sandbox.WithExecutionAuthority(t.Context(), sandbox.ExecutionAuthority{
-		Digest: strings.Repeat("f", 64), Enforcement: "strong",
-		WorkspaceRoot: root, AllowNetwork: true, AllowProcess: true,
-		ReadPaths: []string{root}, ManagedProxyPort: proxy.Port(),
+	sandboxPolicy, _ := sandbox.BackendPolicy(backend)
+	profile, err := authority.Compile(authority.CompileInput{
+		Runtime: policy.DefaultRuntime(policy.ModeAct, policy.PermissionSuggest),
+		Invocation: policy.Invocation{
+			CallID: "approved-network", Tool: "exec_command",
+			Arguments: json.RawMessage(`{"command":"curl"}`), Validated: true,
+			Capability: tool.CapabilityProcess, Access: tool.AccessRead,
+			Sandbox: tool.SandboxStrong,
+			Resources: []tool.Resource{
+				{Kind: "repo", Path: root, Access: tool.AccessRead, Tree: true},
+				{Kind: "host", ID: targetURL.Hostname(), Protocol: "http",
+					Port: uint16(portValue), Methods: []string{"GET"}, AllowPrivate: true,
+					Access: tool.AccessWrite},
+			},
+		},
+		Authorized: true, Decision: policy.Decision{Action: policy.ActionAsk},
+		Revision: 1, Enforcement: "strong",
+		Capability: backend.Capability(), SandboxPolicy: sandboxPolicy,
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile.Network.Mode != "managed" || profile.Network.ProxyPort != proxy.Port() {
+		t.Fatalf("approved target lost proxy authority: %+v", profile.Network)
+	}
+	execution := profile.ExecutionAuthorityFor(authority.ExecutionOperation{
+		Required: authority.RequiredControls{Network: controlmatrix.NetworkProxyTargets},
+	})
+	ctx, err := sandbox.WithExecutionAuthority(t.Context(), execution)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,6 +107,14 @@ func TestRealManagedProxyBlocksDirectEgress(t *testing.T) {
 	})
 	if err != nil || allowed.Stdout != "managed-ok" {
 		t.Fatalf("managed request = %+v error=%v", allowed, err)
+	}
+	undeclared, err := process.Run(ctx, process.Options{
+		Command: shellQuote(curl) + " -fsS --noproxy '' -X POST " + shellQuote(upstream.URL),
+		Dir:     root, DirFile: pinned, Sandbox: backend,
+		RequireSandbox: true, WorkspaceReadOnly: true,
+	})
+	if err != nil || undeclared.ExitCode == 0 {
+		t.Fatalf("undeclared method = %+v error=%v", undeclared, err)
 	}
 	direct, err := process.Run(ctx, process.Options{
 		Command: "/usr/bin/nc -w 1 127.0.0.1 " + targetURL.Port(),

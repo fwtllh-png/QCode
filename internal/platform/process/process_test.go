@@ -770,6 +770,9 @@ func TestRunAllowsLoopbackOnlyAuthorityOnManagedProxyBackend(t *testing.T) {
 		WorkspaceRoot: root, AllowNetwork: true, AllowProcess: true,
 		ReadPaths: []string{root}, AllowLoopback: true,
 		NetworkTargets: []string{"loopback://localhost:0"},
+		RequiredControls: controlmatrix.Requirements{
+			Network: controlmatrix.NetworkLoopbackExact,
+		},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -785,6 +788,14 @@ func TestRunAllowsLoopbackOnlyAuthorityOnManagedProxyBackend(t *testing.T) {
 	}
 	if !backend.command.AllowLoopback {
 		t.Fatal("loopback-only authority was not bound to the sandbox command")
+	}
+	if !backend.command.LoopbackOnly {
+		t.Fatal("loopback-only authority retained the workspace proxy grant")
+	}
+	for _, entry := range backend.command.Env {
+		if proxyEnvironmentEntry(entry) {
+			t.Fatalf("loopback-only command inherited proxy environment %q", entry)
+		}
 	}
 }
 
@@ -856,10 +867,7 @@ func (b *recordingBackend) Prepare(_ context.Context, command sandbox.Command) (
 		)
 		command.PreparedNetworkDenied = command.DenyNetwork
 		command.PreparedLoopbackAllowed = command.AllowLoopback && !command.DenyNetwork
-		command.PreparedProxyPort = b.proxyPort
-		if command.DenyNetwork {
-			command.PreparedProxyPort = 0
-		}
+		command.PreparedProxyPort = sandbox.CommandNetworkPolicy(b.Policy(), command).ManagedProxyPort
 		if !b.ignoreWritePaths {
 			command.PreparedWritePaths = append(
 				[]string(nil), command.WorkspaceWritePaths...,

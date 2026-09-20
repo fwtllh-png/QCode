@@ -1009,8 +1009,10 @@ func TestRunToolsEnforcesRecordedEconomicSurfaceBudget(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The 40-byte surface budget is a ceil(40/3) = 14-token ceiling at
+	// dense-script density.
 	if len(results) != 1 || results[0].Admission == nil ||
-		results[0].Admission.TokenLimit != 10 ||
+		results[0].Admission.TokenLimit != 14 ||
 		!results[0].Admission.Truncated {
 		t.Fatalf("economic result admission = %+v", results)
 	}
@@ -1026,9 +1028,9 @@ func TestRunToolsPoolAdmitsMixedBatchByDemand(t *testing.T) {
 	}
 	engine := newEngine(t, &scriptedProvider{}, registry)
 	scope := engine.executionScope()
-	// Pool of 200 units: the equal split would cap both results at 100 and
-	// truncate the large one; the pool admits the 19-unit result whole and
-	// grants the large one the reclaimed 181.
+	// Pool of ceil(800/3) = 267 units: the equal split would cap both results
+	// at 133 and truncate the large one; the pool admits the 19-unit result
+	// whole and grants the large one the reclaimed 248.
 	scope.mu.Lock()
 	scope.state.toolSurfaceMaxBytes = 800
 	scope.state.toolSurfaceItemBytes = 800
@@ -1064,7 +1066,7 @@ func TestRunToolsPoolAdmitsMixedBatchByDemand(t *testing.T) {
 	}
 	large := results[1]
 	if !large.Truncated || large.Admission == nil ||
-		large.Admission.TokenLimit != 181 {
+		large.Admission.TokenLimit != 248 {
 		t.Fatalf("pooled large admission = %+v", large)
 	}
 }

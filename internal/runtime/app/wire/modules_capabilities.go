@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	mcpruntime "github.com/fwtllh-png/QCode/internal/adapter/mcp"
+	"github.com/fwtllh-png/QCode/internal/security/sandbox"
 )
 
 type capabilityToolsModule struct{}
@@ -24,9 +25,10 @@ func (capabilityToolsModule) Build(
 		return errors.New("shared tool registry is required")
 	}
 	output := &state.capabilities
+	sandboxPolicy, _ := sandbox.BackendPolicy(state.platform.backend)
 	if err := (skillContributor{
 		paths: state.config.skillPaths, workspace: state.config.execution.Workspace,
-		output: output,
+		sandboxHome: sandboxPolicy.PrivateTemp, output: output,
 	}).Contribute(ctx, registry); err != nil {
 		return fmt.Errorf("skills: %w", err)
 	}

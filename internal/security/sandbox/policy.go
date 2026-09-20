@@ -250,10 +250,29 @@ func EffectiveControls(
 	case policy.AllowNetwork:
 		desired = controlmatrix.NetworkDirect
 	}
-	if controlmatrix.CanEnforceNetwork(controls.Network, desired) {
+	if CanEnforceNetwork(capability, desired) {
 		controls.Network = desired
 	}
 	return controls
+}
+
+// CanEnforceNetwork separates a backend's probed ability to allow a managed
+// proxy from its default network-denied execution posture.
+func CanEnforceNetwork(capability Capability, desired controlmatrix.Network) bool {
+	if desired == controlmatrix.NetworkProxyTargets && capability.ManagedProxy {
+		return capability.Available
+	}
+	return controlmatrix.CanEnforceNetwork(capability.Effective.Network, desired)
+}
+
+// CommandNetworkPolicy narrows the base policy for one execution. The base
+// identity is retained; the command's authority digest binds the reduction.
+func CommandNetworkPolicy(policy Policy, command Command) Policy {
+	if command.DenyNetwork || command.LoopbackOnly {
+		policy.AllowNetwork = false
+		policy.ManagedProxyPort = 0
+	}
+	return policy
 }
 
 func CommandControls(
@@ -261,17 +280,18 @@ func CommandControls(
 	policy Policy,
 	command Command,
 ) controlmatrix.Matrix {
+	policy = CommandNetworkPolicy(policy, command)
 	controls := EffectiveControls(capability, policy)
 	if command.DenyNetwork {
-		if controlmatrix.CanEnforceNetwork(
-			controls.Network,
+		if CanEnforceNetwork(
+			capability,
 			controlmatrix.NetworkDenied,
 		) {
 			controls.Network = controlmatrix.NetworkDenied
 		}
-	} else if command.AllowLoopback {
-		if controlmatrix.CanEnforceNetwork(
-			controls.Network,
+	} else if command.AllowLoopback && policy.ManagedProxyPort == 0 {
+		if CanEnforceNetwork(
+			capability,
 			controlmatrix.NetworkLoopbackExact,
 		) {
 			controls.Network = controlmatrix.NetworkLoopbackExact

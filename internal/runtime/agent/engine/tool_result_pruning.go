@@ -1,10 +1,9 @@
 package engine
 
 import (
-	"unicode/utf8"
-
 	"github.com/fwtllh-png/QCode/internal/adapter/provider"
 	toolresult "github.com/fwtllh-png/QCode/internal/adapter/tool/result"
+	"github.com/fwtllh-png/QCode/internal/platform/tokenestimate"
 	agentcontext "github.com/fwtllh-png/QCode/internal/runtime/agent/context"
 	contextview "github.com/fwtllh-png/QCode/internal/runtime/agent/contextview"
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
@@ -97,14 +96,15 @@ func (e *Engine) dynamicToolResultSurfaceBytes(
 		}
 		return 0
 	}
-	var resultRunes, resultCount uint64
+	var resultCount uint64
+	resultTokens := uint64(0)
+	resultBytes := uint64(0)
 	for _, message := range history {
 		for _, block := range message.Blocks {
 			if block.Type == provider.ContentToolResult &&
 				block.ToolResult != nil {
-				resultRunes += uint64(utf8.RuneCountInString(
-					block.ToolResult.Content,
-				))
+				resultTokens += tokenestimate.Text(block.ToolResult.Content)
+				resultBytes += uint64(len(block.ToolResult.Content))
 				resultCount++
 			}
 		}
@@ -112,14 +112,24 @@ func (e *Engine) dynamicToolResultSurfaceBytes(
 	if resultCount == 0 {
 		return 0
 	}
-	resultTokens := (resultRunes + 3) / 4
 	baseTokens := window.active - min(window.active, resultTokens)
 	availableTokens := window.compactLimit - min(
 		window.compactLimit,
 		baseTokens,
 	)
+	// Convert the spare token budget into per-result bytes at the density the
+	// retained results actually have, so a CJK-heavy surface is budgeted at
+	// its real bytes-per-token instead of the ASCII ratio.
+	bytesPerToken := uint64(4)
+	if resultTokens != 0 {
+		bytesPerToken = min(uint64(4), max(uint64(1), resultBytes/resultTokens))
+	}
 	maxInt := uint64(^uint(0) >> 1)
-	bytes := min(maxInt, availableTokens*4/resultCount)
+	allowance := maxInt
+	if availableTokens <= maxInt/bytesPerToken {
+		allowance = availableTokens * bytesPerToken
+	}
+	bytes := min(maxInt, allowance/resultCount)
 	if bytes == 0 {
 		return 1
 	}

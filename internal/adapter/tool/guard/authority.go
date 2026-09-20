@@ -224,7 +224,7 @@ func leaseValidation(
 func requiredControls(invocation Invocation) authority.RequiredControls {
 	required := invocation.Binding.Required
 	if invocation.Binding.SandboxRequirement == tool.SandboxStrong {
-		required.Network = controlmatrix.NetworkDenied
+		var hasNetworkTargets, allowLoopback bool
 		for _, resource := range invocation.Resources {
 			if resource.Access == tool.AccessWrite &&
 				isPathKind(resource.Kind) {
@@ -232,12 +232,20 @@ func requiredControls(invocation Invocation) authority.RequiredControls {
 				required.PathIdentity = controlmatrix.PathIdentityDescriptorRelative
 			}
 			if resource.Kind == "host" || resource.Kind == "url" {
-				if resource.Protocol == "loopback" {
-					required.Network = controlmatrix.NetworkLoopbackExact
+				if resource.Kind == "host" && resource.Protocol == "loopback" {
+					allowLoopback = true
 				} else {
-					required.Network = controlmatrix.NetworkProxyTargets
+					hasNetworkTargets = true
 				}
 			}
+		}
+		switch {
+		case hasNetworkTargets:
+			required.Network = controlmatrix.NetworkProxyTargets
+		case allowLoopback:
+			required.Network = controlmatrix.NetworkLoopbackExact
+		default:
+			required.Network = controlmatrix.NetworkDenied
 		}
 	}
 	return authority.RequiredControls(required)

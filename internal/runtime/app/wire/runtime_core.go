@@ -39,6 +39,11 @@ func (b runtimeCoreBuilder) BuildChild(spec app.ChildSpec) (*app.EngineAdapter, 
 		}
 		openedToolset = spec.Workspace
 		options.Tools = toolset.registry
+		options.TurnSnapshots.SkillSelection = func(
+			query string,
+		) ([]agentengine.SkillSummary, agentengine.SkillSelectionMetrics, error) {
+			return selectTurnSkills(toolset.skillCatalog, query)
+		}
 		options.Journal, options.InputHost = toolset.journal, toolset.inputHost
 		options.ReadTracker = workspacejournal.NewReadTracker()
 		options.Diagnostics = toolset.diagnostics

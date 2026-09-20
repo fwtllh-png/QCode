@@ -33,7 +33,9 @@ type Capability struct {
 	Backend   string               `json:"backend"`
 	Available bool                 `json:"available"`
 	Effective controlmatrix.Matrix `json:"effective_controls"`
-	Reason    string               `json:"reason,omitempty"`
+	// ManagedProxy is advertised only after an exact-port allow/deny probe.
+	ManagedProxy bool   `json:"managed_proxy,omitempty"`
+	Reason       string `json:"reason,omitempty"`
 }
 
 type Command struct {
@@ -48,6 +50,7 @@ type Command struct {
 	WorkspaceHiddenPaths    []string
 	DenyNetwork             bool
 	AllowLoopback           bool
+	LoopbackOnly            bool // Removes the workspace proxy grant for this command.
 	AuthorityDigest         string
 	PreparedPolicyID        string
 	PreparedAuthorityDigest string
@@ -284,8 +287,9 @@ func (b *seatbeltBackend) Prepare(ctx context.Context, command Command) (Command
 	if err != nil {
 		return Command{}, err
 	}
+	policy := CommandNetworkPolicy(b.policy, command)
 	profile := seatbeltProfileForCommand(
-		b.policy,
+		policy,
 		executable,
 		command.WorkspaceReadOnly,
 		readPaths,
@@ -303,10 +307,7 @@ func (b *seatbeltBackend) Prepare(ctx context.Context, command Command) (Command
 	}
 	args := []string{sandboxExec, "-p", profile, "--", executable}
 	args = append(args, command.Args[1:]...)
-	preparedProxyPort := b.policy.ManagedProxyPort
-	if command.DenyNetwork {
-		preparedProxyPort = 0
-	}
+	preparedProxyPort := policy.ManagedProxyPort
 	return Command{
 		Path: sandboxExec, Args: args, Dir: command.Dir, Env: command.Env,
 		DirectoryFD: command.DirectoryFD, PreparedPolicyID: b.policy.ID,
@@ -1191,7 +1192,41 @@ EOF
 		candidate.Reason = reason
 		return candidate
 	}
+	if runtime.GOOS == "darwin" && listener != nil {
+		candidate.ManagedProxy = probeManagedProxy(ctx, ws, policy, candidate, listener)
+	}
 	return candidate
+}
+
+func probeManagedProxy(
+	ctx context.Context,
+	workspace *Workspace,
+	policy Policy,
+	capability Capability,
+	allowed net.Listener,
+) bool {
+	denied, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		return false
+	}
+	defer denied.Close()
+	policy.ManagedProxyPort = uint16(allowed.Addr().(*net.TCPAddr).Port)
+	backend := &seatbeltBackend{workspace: workspace, policy: policy, capability: capability}
+	script := fmt.Sprintf(
+		"/usr/bin/nc -z -w 1 127.0.0.1 %d && ! /usr/bin/nc -z -w 1 127.0.0.1 %d",
+		policy.ManagedProxyPort, denied.Addr().(*net.TCPAddr).Port,
+	)
+	prepared, err := backend.Prepare(ctx, Command{
+		Path: "/bin/sh", Args: []string{"/bin/sh", "-c", script},
+		Dir: policy.WorkspaceRoot, Env: []string{"PATH=/usr/bin:/bin"},
+		WorkspaceReadOnly: true,
+	})
+	if err != nil {
+		return false
+	}
+	command := exec.CommandContext(ctx, prepared.Path, prepared.Args[1:]...)
+	command.Dir, command.Env = prepared.Dir, prepared.Env
+	return command.Run() == nil
 }
 
 func validateWorkspaceLinks(ctx context.Context, workspace *Workspace) error {

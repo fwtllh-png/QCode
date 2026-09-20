@@ -2,6 +2,7 @@ package engine
 
 import (
 	"github.com/fwtllh-png/QCode/internal/adapter/provider"
+	"github.com/fwtllh-png/QCode/internal/platform/tokenestimate"
 	agentcontext "github.com/fwtllh-png/QCode/internal/runtime/agent/context"
 )
 
@@ -41,8 +42,7 @@ func (e *Engine) summaryBudget() int {
 	if e.options.SummaryMaxBytes > 0 {
 		return e.options.SummaryMaxBytes
 	}
-	return int(min(
+	return int(tokenestimate.BytesForTokens(
 		e.contextCapacity().HardInputTokens,
-		uint64(^uint(0)>>1)/4,
-	) * 4)
+	))
 }

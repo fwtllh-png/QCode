@@ -13,6 +13,7 @@ import (
 
 	"github.com/fwtllh-png/QCode/internal/adapter/model"
 	"github.com/fwtllh-png/QCode/internal/adapter/provider"
+	"github.com/fwtllh-png/QCode/internal/platform/tokenestimate"
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
 )
 
@@ -243,14 +244,14 @@ func NarrativeOutputBudget(
 		tokens = min(tokens, limit-estimatedInput-narrativeFramingReserve)
 	}
 	if limits.MaxOutputBytes > 0 {
-		tokens = min(tokens, uint64(max(1, limits.MaxOutputBytes/4)))
+		tokens = min(tokens, tokenestimate.MaxTokensForBytes(uint64(limits.MaxOutputBytes)))
 	}
 	if tokens == 0 {
 		return 0, 0, errors.New(
 			"narrative request exceeds the summary route context window",
 		)
 	}
-	outputBytes := int(tokens * 4)
+	outputBytes := int(tokenestimate.BytesForTokens(tokens))
 	if limits.MaxOutputBytes > 0 {
 		outputBytes = min(outputBytes, limits.MaxOutputBytes)
 	}

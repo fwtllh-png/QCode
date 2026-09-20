@@ -18,7 +18,7 @@ func newWorkspaceSandbox(
 			"sandbox-home",
 		)
 	}
-	return egress.NewManagedBackend(state.provider.egress, sandbox.Options{
+	return egress.NewManagedBackend(state.platform.processEgress, sandbox.Options{
 		WorkspaceRoot: state.config.execution.Workspace,
 		HelperPath:    helperPath,
 		PrivateTemp:   privateHome,

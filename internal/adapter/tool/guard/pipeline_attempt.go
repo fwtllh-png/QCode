@@ -11,6 +11,7 @@ import (
 	"github.com/fwtllh-png/QCode/internal/persist/workspacejournal"
 	"github.com/fwtllh-png/QCode/internal/security/authority"
 	"github.com/fwtllh-png/QCode/internal/security/controlmatrix"
+	"github.com/fwtllh-png/QCode/internal/security/egress"
 	"github.com/fwtllh-png/QCode/internal/security/policy"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
 )
@@ -29,8 +30,7 @@ type attemptRun struct {
 	outcome      tool.Outcome
 	err          error
 	retry        retryKind
-	host         string
-	protocol     string
+	target       tool.NetworkTarget
 	receipt      tool.AttemptReceipt
 	dispatchWait time.Duration
 	claimWait    time.Duration
@@ -46,6 +46,8 @@ func (g *Guard) executePipeline(
 	raw json.RawMessage,
 	binding tool.CatalogBinding,
 ) (tool.Result, error) {
+	ctx, closeNetworkScope := egress.WithScope(ctx)
+	defer closeNetworkScope()
 	mode := SandboxModeStrong
 	egressRetried := false
 	permissionRetried := false
@@ -197,12 +199,11 @@ func (g *Guard) executePipeline(
 		case retryEgress:
 			egressRetried = true
 			started := g.now()
-			approvalErr := g.approveEgressHost(
+			approvalErr := g.approveEgressTarget(
 				ctx,
 				prepared.invocation,
 				callID,
-				attempt.host,
-				attempt.protocol,
+				attempt.target,
 			)
 			receipt.ApprovalWait += g.now().Sub(started)
 			if approvalErr == nil {
@@ -609,9 +610,9 @@ func (g *Guard) runAttempt(
 			reason = "sandbox_denied_fail_closed"
 		}
 	} else if !egressRetried {
-		if host, protocol, ok := egressDeniedTarget(run.outcome, run.err); ok {
+		if target, ok := egressDeniedTarget(run.outcome, run.err); ok {
 			run.retry, reason = retryEgress, string(retryEgress)
-			run.host, run.protocol = host, protocol
+			run.target = target
 		} else if run.err != nil {
 			reason = "execute_error"
 		} else if run.result.IsError {
@@ -838,7 +839,7 @@ func (g *Guard) reauthorizeAdditionalPermission(
 			Code: decision.Code, Reason: decision.Reason,
 		}
 	case policy.ActionAsk:
-		if err := g.cacheApproval(invocation, approval); err != nil {
+		if err := g.cacheApproval(ctx, invocation, approval); err != nil {
 			return preparedExecution{}, err
 		}
 		if runtime.Approvals == nil ||
@@ -856,7 +857,7 @@ func (g *Guard) reauthorizeAdditionalPermission(
 	}
 	prepared.runtime = runtime
 	prepared.decision = decision
-	g.grantNetworkHosts(resources)
+	g.grantNetworkHosts(ctx, invocation)
 	return prepared, nil
 }
 

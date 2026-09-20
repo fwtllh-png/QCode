@@ -11,15 +11,19 @@ import (
 )
 
 type skillContributor struct {
-	paths     SkillPaths
-	workspace string
-	output    *capabilityBuildState
+	paths       SkillPaths
+	workspace   string
+	sandboxHome string
+	output      *capabilityBuildState
 }
 
 func (c skillContributor) Contribute(
 	ctx context.Context,
 	registry *tool.Registry,
 ) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	stateStore, err := skill.NewStateStore(c.paths.SkillsStatePath)
 	if err != nil {
 		return fmt.Errorf("skill state: %w", err)
@@ -31,15 +35,15 @@ func (c skillContributor) Contribute(
 	catalog, err := skill.Discover(skill.DiscoveryOptions{
 		Workspace: c.workspace, ConfiguredDir: c.paths.SkillsConfiguredDir,
 		UserHome: c.paths.UserHome, Locale: c.paths.SkillsLocale,
+		SandboxHome:     c.sandboxHome,
 		IncludeBuiltins: true,
 		State:           stateStore, Lock: lockStore, RuntimeVersion: buildinfo.Version,
 	})
 	if err != nil {
 		return fmt.Errorf("skill discovery: %w", err)
 	}
-	if err := catalog.Verify(ctx); err != nil {
-		return fmt.Errorf("skill lock verify: %w", err)
-	}
+	// Keep the runtime and its repair control plane reachable on lock drift.
+	// Catalog.LoadPlan verifies integrity before exposing governed content.
 	if err := skilltool.RegisterDiscovery(registry, catalog); err != nil {
 		return fmt.Errorf("skill discovery tools: %w", err)
 	}

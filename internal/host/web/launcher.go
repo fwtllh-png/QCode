@@ -887,7 +887,7 @@ func prepareWebRuntime(
 		closeWebRuntime(application)
 		return nil, fmt.Errorf("extension paths: %w", err)
 	}
-	extensions, err := wire.OpenSkillControl(skillPaths, workspaceRoot)
+	extensions, err := application.OpenSkillControl(skillPaths, workspaceRoot)
 	if err != nil {
 		closeWebRuntime(application)
 		return nil, fmt.Errorf("extension control: %w", err)

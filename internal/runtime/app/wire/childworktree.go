@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/fwtllh-png/QCode/internal/adapter/skill"
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
 	agenttool "github.com/fwtllh-png/QCode/internal/adapter/tool/agent"
 	"github.com/fwtllh-png/QCode/internal/adapter/tool/builtin"
@@ -305,15 +306,16 @@ func worktreeGitReadRoots(root, expectedCommonDir string) ([]string, error) {
 // childToolset roots one child's registry, sandbox and journal at its worktree;
 // reusing the parent's registry would redirect child writes into the parent.
 type childToolset struct {
-	registry    *tool.Registry
-	backend     sandbox.Backend
-	processes   *process.SessionManager
-	journal     *workspacejournal.Manager
-	jobLogs     *joblog.Store
-	inputHost   *interacttool.Host
-	diagnostics diagnostics.Runner
-	verify      verify.Runner
-	files       *filetool.Tools
+	registry     *tool.Registry
+	backend      sandbox.Backend
+	processes    *process.SessionManager
+	journal      *workspacejournal.Manager
+	jobLogs      *joblog.Store
+	inputHost    *interacttool.Host
+	diagnostics  diagnostics.Runner
+	verify       verify.Runner
+	files        *filetool.Tools
+	skillCatalog *skill.Catalog
 }
 
 func (t *childToolset) close() {
@@ -345,6 +347,7 @@ type childToolsets struct {
 	gitCommonDir        string
 	managedProxyPort    uint16
 	workspaceStateRoot  string
+	skillPaths          SkillPaths
 	agents              *subagent.AgentControl
 	agentSession        string
 	agentRelease        func(string)
@@ -384,6 +387,7 @@ func newChildToolsets(
 	diagnosticReadFiles []string,
 	gitCommonDir string, managedProxyPort uint16,
 	workspaceStateRoot string,
+	skillPaths SkillPaths,
 ) *childToolsets {
 	return &childToolsets{
 		helperPath: helperPath, content: content, web: web, verify: verifyConfig,
@@ -393,6 +397,7 @@ func newChildToolsets(
 		gitCommonDir:        gitCommonDir,
 		managedProxyPort:    managedProxyPort,
 		workspaceStateRoot:  workspaceStateRoot,
+		skillPaths:          skillPaths,
 		built:               make(map[string]*childToolset),
 	}
 }
@@ -513,6 +518,18 @@ func (c *childToolsets) open(
 		diagnostics: diagnostics.NewCommandRunner(root, backend, c.diagnosticCommands),
 		verify:      runner, files: files,
 	}
+	// Keep the owner's enablement and lock policy, but discover only this
+	// child's workspace and execution HOME alongside configured/user skills.
+	policy, _ := sandbox.BackendPolicy(backend)
+	var capabilities capabilityBuildState
+	if err := (skillContributor{
+		paths: c.skillPaths, workspace: root, sandboxHome: policy.PrivateTemp,
+		output: &capabilities,
+	}).Contribute(context.Background(), registry); err != nil {
+		toolset.close()
+		return nil, fmt.Errorf("child skills: %w", err)
+	}
+	toolset.skillCatalog = capabilities.skillCatalog
 	c.mu.Lock()
 	if existing := c.built[root]; existing != nil {
 		c.mu.Unlock()

@@ -10,6 +10,7 @@ import (
 	toolresult "github.com/fwtllh-png/QCode/internal/adapter/tool/result"
 	"github.com/fwtllh-png/QCode/internal/adapter/tool/toolsearch"
 	"github.com/fwtllh-png/QCode/internal/observability/diagnostics"
+	"github.com/fwtllh-png/QCode/internal/platform/tokenestimate"
 	agentcontext "github.com/fwtllh-png/QCode/internal/runtime/agent/context"
 	"github.com/fwtllh-png/QCode/internal/runtime/agent/turnkernel"
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
@@ -66,8 +67,8 @@ func (e *Engine) runToolsWithCache(
 	surfaceItemBytes := scope.state.toolSurfaceItemBytes
 	scope.mu.Unlock()
 	if surfaceItemBytes > 0 && surfaceMaxBytes > 0 {
-		itemTokens := max(uint64(1), uint64((surfaceItemBytes+3)/4))
-		totalTokens := max(uint64(1), uint64((surfaceMaxBytes+3)/4))
+		itemTokens := max(uint64(1), tokenestimate.MaxTokensForBytes(uint64(surfaceItemBytes)))
+		totalTokens := max(uint64(1), tokenestimate.MaxTokensForBytes(uint64(surfaceMaxBytes)))
 		resultBudget = min(resultBudget, itemTokens)
 		batchBudget = min(batchBudget, totalTokens)
 	}

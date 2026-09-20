@@ -2,7 +2,6 @@ package result
 
 import (
 	"encoding/json"
-	"unicode/utf8"
 
 	adaptercontent "github.com/fwtllh-png/QCode/internal/adapter/content"
 	"github.com/fwtllh-png/QCode/internal/adapter/provider"
@@ -55,9 +54,24 @@ func PruneSurfaces(
 				&value,
 			); err != nil {
 				original := len(block.ToolResult.Content)
-				if !force || !truncateRawToolResult(block.ToolResult, maxBytes) {
+				if !force {
 					continue
 				}
+				// Raw surfaces have no structured projection to shrink, but a
+				// silent cut is indistinguishable from an absence: spill the
+				// original and replace it with a handle-backed notice.
+				pruned, changed := registry.PruneRawSurface(
+					name,
+					block.ToolResult.Content,
+					maxBytes,
+				)
+				if !changed {
+					continue
+				}
+				block.ToolResult.Content = pruned.Content
+				block.ToolResult.Admission = adaptercontent.CloneAdmissionReceipt(
+					pruned.Admission,
+				)
 				stats.Results++
 				stats.Bytes += original - len(block.ToolResult.Content)
 				window, err = measure(*history)
@@ -202,22 +216,4 @@ func ToolCallNames(messages []provider.Message) map[string]string {
 		}
 	}
 	return names
-}
-
-func truncateRawToolResult(result *provider.ToolResult, maxBytes int) bool {
-	if result == nil {
-		return false
-	}
-	if maxBytes <= 0 {
-		maxBytes = 1
-	}
-	if len(result.Content) <= maxBytes {
-		return false
-	}
-	value := result.Content[:maxBytes]
-	for !utf8.ValidString(value) && len(value) > 0 {
-		value = value[:len(value)-1]
-	}
-	result.Content = value
-	return true
 }

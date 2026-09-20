@@ -2,6 +2,7 @@ package contextview
 
 import (
 	"github.com/fwtllh-png/QCode/internal/adapter/provider"
+	"github.com/fwtllh-png/QCode/internal/platform/tokenestimate"
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
 )
 
@@ -103,11 +104,7 @@ func ToolSurfaceBudget(
 }
 
 func tokenByteLimit(tokens uint64) int {
-	maximum := uint64(^uint(0) >> 1)
-	if tokens > maximum/4 {
-		return int(maximum)
-	}
-	return int(tokens * 4)
+	return int(tokenestimate.BytesForTokens(tokens))
 }
 
 func BudgetStage(used, limit, outputReserve uint64) (uint8, bool) {

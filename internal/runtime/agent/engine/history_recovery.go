@@ -56,7 +56,7 @@ func (e *Engine) runCompactGate(
 	forceTailBudget := phase == CompactionPhasePostTurn &&
 		allowCurrentTurn &&
 		recentTailMaxTokens != 0 &&
-		agentcontext.EstimateMessageTokens(*history) > recentTailMaxTokens
+		e.estimateMessageTokens(*history) > recentTailMaxTokens
 	overHard := window.hardLimit != 0 && window.total > window.hardLimit
 	operatorCeiling := window.compactLimit != 0 &&
 		window.compactLimit < window.hardLimit &&
@@ -361,7 +361,7 @@ func (e *Engine) compactHistoryWithPolicy(
 			RecentTailMaxTokens: e.recentTailMaxTokens(),
 			WindowScope:         e.options.Context.Window.Scope,
 			AuthorityDigest:     authorityDigest,
-			EstimateMessages:    agentcontext.EstimateMessageTokens,
+			EstimateMessages:    e.estimateMessageTokens,
 			ProjectHistory:      projectHistory,
 			PruneBeforePressure: true,
 			Measure: func(

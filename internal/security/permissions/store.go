@@ -8,8 +8,10 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/fwtllh-png/QCode/internal/security/policy"
 )
@@ -69,9 +71,14 @@ func OpenWorkspaceStore(dataDir, workspace string) (*Store, error) {
 }
 
 type Store struct {
-	Path   string
-	bundle Bundle
-	mu     sync.Mutex
+	Path     string
+	mu       sync.Mutex
+	snapshot atomic.Pointer[ruleSnapshot]
+}
+
+type ruleSnapshot struct {
+	rules   []policy.Rule
+	version uint64
 }
 
 func OpenStore(path string) (*Store, error) {
@@ -79,15 +86,29 @@ func OpenStore(path string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Store{Path: path, bundle: bundle}, nil
+	store := &Store{Path: path}
+	store.snapshot.Store(&ruleSnapshot{rules: bundle.Rules, version: 1})
+	return store, nil
 }
 func (s *Store) Rules() []policy.Rule {
+	rules, _ := s.UserRulesSince(0)
+	return rules
+}
+
+// UserRulesSince is the in-memory policy source shared by workspace Guards.
+// Unchanged versions allocate nothing and never wait for a disk write.
+func (s *Store) UserRulesSince(version uint64) ([]policy.Rule, uint64) {
 	if s == nil {
-		return nil
+		return nil, 0
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return append([]policy.Rule(nil), s.bundle.Rules...)
+	snapshot := s.snapshot.Load()
+	if snapshot == nil {
+		return nil, 0
+	}
+	if snapshot.version == version {
+		return nil, version
+	}
+	return append([]policy.Rule(nil), snapshot.rules...), snapshot.version
 }
 func (s *Store) AppendAllow(
 	invocation policy.Invocation,
@@ -102,6 +123,9 @@ func (s *Store) AppendAllow(
 	if err != nil {
 		return policy.Rule{}, err
 	}
-	s.bundle = bundle
+	current := s.snapshot.Load()
+	if !slices.Equal(current.rules, bundle.Rules) {
+		s.snapshot.Store(&ruleSnapshot{rules: bundle.Rules, version: current.version + 1})
+	}
 	return rule, nil
 }

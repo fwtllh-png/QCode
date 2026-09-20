@@ -246,7 +246,11 @@ func (o *operation) Descriptor() tool.Descriptor {
 			"result_get for prior read text. If turn_history is truncated, call " +
 			"result_get before file_read. Locate a known defect with search_text " +
 			"or search_definition. After search_text returns line hits for a path, " +
-			"file_read only that window and edit; do not page the rest of the file."
+			"file_read only that window and edit; do not page the rest of the file. " +
+			"Line reads report pagination in metadata: has_more says whether lines " +
+			"remain, next_start_line is the start_line of the next window, and " +
+			"returned_lines is this window's line count. Continue with " +
+			"start_line=next_start_line; never count returned lines yourself."
 		properties["path"] = map[string]any{
 			"type":        "string",
 			"minLength":   float64(1),

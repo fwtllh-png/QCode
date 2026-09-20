@@ -20,7 +20,7 @@ func TestExtensionControlIsIdempotentReplayableAndNonBlocking(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	control, err := OpenSkillControl(paths, workspace)
+	control, err := openSkillControl(paths, workspace, "")
 	if err != nil {
 		t.Fatal(err)
 	}

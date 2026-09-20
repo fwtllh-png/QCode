@@ -510,7 +510,6 @@ export class ConversationProjection {
     sampleID: string
   ): void {
     const id = this.outputByTurn.get(event.turn_id) ?? `output-${event.turn_id}`;
-    const previous = this.nodes.get(id);
     const segments = this.outputSegments.get(id) ?? [];
     const last = segments.at(-1);
     if (last && last.sampleID === sampleID) {
@@ -524,14 +523,26 @@ export class ConversationProjection {
       id,
       kind: "assistant",
       turnID: event.turn_id,
-      sequence: previous?.sequence ?? event.sequence,
+      sequence: event.sequence,
       text: segments.map((segment) => segment.text).join("")
     });
+    // A streaming answer follows the activity it narrates. The node is born
+    // with the first narration draft, which can precede the turn's tool work
+    // and be retracted; without relocation the surviving text would render
+    // above that work instead of below it.
+    const index = this.order.indexOf(id);
+    if (index >= 0 && index !== this.order.length - 1) {
+      this.order.splice(index, 1);
+      this.order.push(id);
+      this.touch();
+    }
   }
 
   // A draft retraction drops the named sample's streamed text. The durable
   // owners (commentary, the terminal outbox) republish whatever survives, so
-  // the remaining segments keep their order.
+  // the remaining segments keep their order. An emptied node is removed: it
+  // would otherwise hover above the turn's tool work until the next sample
+  // recreates it at the streaming position.
   private retractDraft(event: RuntimeEvent, sampleID: string): void {
     if (!sampleID) return;
     const id = this.outputByTurn.get(event.turn_id);
@@ -539,6 +550,11 @@ export class ConversationProjection {
     const segments = this.outputSegments.get(id);
     if (!segments?.some((segment) => segment.sampleID === sampleID)) return;
     const kept = segments.filter((segment) => segment.sampleID !== sampleID);
+    if (kept.length === 0) {
+      this.outputSegments.delete(id);
+      this.remove(id);
+      return;
+    }
     this.outputSegments.set(id, kept);
     const previous = this.nodes.get(id);
     if (previous?.kind === "assistant") {
