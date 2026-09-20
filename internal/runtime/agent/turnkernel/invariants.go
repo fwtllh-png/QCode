@@ -488,12 +488,21 @@ func Digest(state State) (string, error) {
 	if err := Validate(state); err != nil {
 		return "", err
 	}
+	digest, _, err := digestValidated(state)
+	return digest, err
+}
+
+// digestValidated digests a state that is already known to be valid: the
+// reducer validates every state it publishes, so re-validating here would walk
+// the full state twice per command. It returns the canonical encoding next to
+// the digest so persistence can reuse it for snapshots and field deltas.
+func digestValidated(state State) (string, []byte, error) {
 	data, err := json.Marshal(state)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	sum := sha256.Sum256(data)
-	return "sha256:" + hex.EncodeToString(sum[:]), nil
+	return "sha256:" + hex.EncodeToString(sum[:]), data, nil
 }
 
 func cloneState(state State) State {

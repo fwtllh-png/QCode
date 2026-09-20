@@ -68,6 +68,135 @@ func (s *Store) AppendDomainFactsIdempotentTx(
 	)
 }
 
+// AppendVerifiedDomainFacts appends a coordinator-verified batch: turnkernel
+// computed the digests and canonical encodings once alongside the state, so
+// the store skips the per-fact digest recomputation and the durable-tail
+// decode. Sequence contiguity, terminal rejection, and digest-chain anchoring
+// against the durable tail are still enforced, and decode re-verifies every
+// stored fact.
+func (s *Store) AppendVerifiedDomainFacts(
+	ctx context.Context,
+	batch turnkernel.DomainFactBatch,
+) error {
+	if s == nil || s.database == nil || batch.TurnID == "" ||
+		len(batch.Facts) == 0 || batch.StateEncoding == nil {
+		return errors.New("verified domain fact append is incomplete")
+	}
+	return s.database.Transaction(ctx, func(tx *sql.Tx) error {
+		return s.appendVerifiedDomainFactsTx(ctx, tx, batch)
+	})
+}
+
+func (s *Store) appendVerifiedDomainFactsTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	batch turnkernel.DomainFactBatch,
+) error {
+	turnID := batch.TurnID
+	expectedNext := batch.ExpectedNext
+	var count, lastSequence uint64
+	if err := tx.QueryRowContext(
+		ctx,
+		`SELECT COUNT(*), COALESCE(MAX(sequence), 0)
+		 FROM turn_domain_facts WHERE turn_id = ?`,
+		turnID,
+	).Scan(&count, &lastSequence); err != nil {
+		return err
+	}
+	if count != lastSequence {
+		return errors.New("domain fact sequence is not contiguous")
+	}
+	if expectedNext != count+1 {
+		return fmt.Errorf(
+			"domain fact sequence conflict: got %d want %d",
+			expectedNext,
+			count+1,
+		)
+	}
+	var terminal int
+	if err := tx.QueryRowContext(
+		ctx,
+		`SELECT COUNT(*) FROM turn_terminal_envelopes WHERE turn_id = ?`,
+		turnID,
+	).Scan(&terminal); err != nil {
+		return err
+	}
+	if terminal != 0 {
+		return errors.New("terminal turn rejects new domain facts")
+	}
+	if count == 0 {
+		if batch.PreviousDigest != "" || batch.PreviousEncoding != nil {
+			return errors.New(
+				"verified append anchors to an empty fact tail",
+			)
+		}
+	} else {
+		if batch.PreviousEncoding == nil || batch.PreviousDigest == "" {
+			return errors.New(
+				"verified append is missing its tail anchor",
+			)
+		}
+		// One row read anchors the batch to the durable chain, guarding
+		// against an in-memory state that diverged from storage.
+		var encoded []byte
+		if err := tx.QueryRowContext(
+			ctx,
+			`SELECT fact_json FROM turn_domain_facts
+			 WHERE turn_id = ? AND sequence = ?`,
+			turnID,
+			count,
+		).Scan(&encoded); err != nil {
+			return err
+		}
+		durableDigest, err := decodeStoredFactDigest(encoded)
+		if err != nil {
+			return err
+		}
+		if durableDigest != batch.PreviousDigest {
+			return fmt.Errorf(
+				"verified append diverges from durable digest at sequence %d",
+				count,
+			)
+		}
+	}
+	previousDigest := batch.PreviousDigest
+	previousEncoding := batch.PreviousEncoding
+	for index, fact := range batch.Facts {
+		if fact.TurnID != turnID ||
+			fact.Sequence != expectedNext+uint64(index) {
+			return fmt.Errorf("invalid domain fact at index %d", index)
+		}
+		if fact.StateDigest == "" {
+			return fmt.Errorf(
+				"domain fact digest is missing at index %d",
+				index,
+			)
+		}
+		encoded, err := encodeVerifiedDomainFact(
+			fact,
+			batch.StateEncoding,
+			previousEncoding,
+			previousDigest,
+		)
+		if err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(
+			ctx,
+			`INSERT INTO turn_domain_facts(turn_id, sequence, fact_json)
+			 VALUES (?, ?, ?)`,
+			turnID,
+			fact.Sequence,
+			string(encoded),
+		); err != nil {
+			return err
+		}
+		previousEncoding = batch.StateEncoding
+		previousDigest = fact.StateDigest
+	}
+	return nil
+}
+
 func (s *Store) appendDomainFactsTx(
 	ctx context.Context,
 	tx *sql.Tx,

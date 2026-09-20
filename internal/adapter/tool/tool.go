@@ -69,6 +69,9 @@ type RecoveryHint struct {
 	EndLine        int
 	CurrentExcerpt string
 	CandidatePaths []string
+	// MatchLines lists where every exact occurrence of the old text sits,
+	// used when no unique anchor exists to excerpt around.
+	MatchLines []int
 }
 
 type recoveryHintError struct {
@@ -1563,7 +1566,7 @@ func ModelResult(name string, result Result) Result {
 			// retry against the real current window even when the excerpt in
 			// the content was truncated by result admission.
 			"failed_change", "match_count", "start_line", "end_line",
-			"current_excerpt",
+			"current_excerpt", "match_lines",
 			// Pagination cursors must survive projection so a paged read can
 			// continue at the advertised line instead of counting the lines
 			// it received. They are facts about what the tool returned, so

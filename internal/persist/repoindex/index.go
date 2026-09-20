@@ -98,13 +98,34 @@ type Index struct {
 
 	mu       sync.Mutex
 	snapshot Snapshot
-	// graphFiles is set only after a complete graph build. Comparing content
-	// digests also handles a previous refresh canceled after writing file rows.
+	// graphFiles holds the digests of the file set the stored graph describes.
+	// It is set only after a complete graph build, and the build now runs in
+	// the background: comparing content digests also handles a refresh that
+	// canceled after writing file rows.
 	graphFiles map[string]string
+	// fileGen counts completed refreshes; a graph build records its result
+	// only when the generation it computed from is still current.
+	fileGen uint64
+	// pending describes the graph work the last refresh queued; graphBuilding
+	// marks the single background builder that drains it.
+	pending       *graphWork
+	graphBuilding bool
 	// failures counts consecutive refreshes that could not trust the store. After
 	// the second one the index stays degraded rather than rebuilding on every
 	// call, because a database that fails twice will not start working.
 	failures int
+}
+
+// graphWork is one background graph build. A full rebuild recomputes every
+// edge from the recorded rows; the incremental form recomputes only the edges
+// of the affected sources — the changed files plus the files whose identifier
+// rows mention a name the changed files declared, before or after the change.
+type graphWork struct {
+	gen       uint64
+	files     map[string]File
+	full      bool
+	changed   []string
+	beforeIDs []string
 }
 
 // maxResetAttempts is how often a refresh may discard the stored rows and start
@@ -144,8 +165,15 @@ func (i *Index) Ensure(ctx context.Context) (Snapshot, error) {
 	if i == nil {
 		return Snapshot{Status: StatusDisabled}, nil
 	}
+	// Sample the clock before queueing on the mutex: a refresh that finished
+	// while this caller waited already covers this call's interval, so
+	// concurrent callers share one walk instead of each running their own.
+	entered := i.options.Now()
 	i.mu.Lock()
 	defer i.mu.Unlock()
+	if i.snapshot.Ready() && i.snapshot.Meta.RefreshedAt.After(entered) {
+		return i.snapshot, nil
+	}
 	if i.failures >= maxResetAttempts {
 		return i.snapshot, nil
 	}
@@ -176,6 +204,25 @@ func (i *Index) Symbols(ctx context.Context, query Query) ([]Symbol, Snapshot, e
 	snapshot, err := i.Ensure(ctx)
 	if err != nil || !snapshot.Ready() {
 		return nil, snapshot, err
+	}
+	found, err := i.store.Symbols(ctx, query)
+	if err != nil {
+		return nil, Snapshot{Status: StatusDegraded, Detail: err.Error()}, nil
+	}
+	return found, snapshot, nil
+}
+
+// SymbolsFrom answers a query against the rows a snapshot from the same call
+// chain already confirmed — one build refreshes once and queries many times,
+// instead of re-walking the repository between every query. A snapshot that is
+// not ready falls back to the refreshing path.
+func (i *Index) SymbolsFrom(
+	ctx context.Context,
+	snapshot Snapshot,
+	query Query,
+) ([]Symbol, Snapshot, error) {
+	if !snapshot.Ready() {
+		return i.Symbols(ctx, query)
 	}
 	found, err := i.store.Symbols(ctx, query)
 	if err != nil {
@@ -280,7 +327,14 @@ func (i *Index) refresh(ctx context.Context) (Snapshot, error) {
 		truncated = true
 	}
 
-	if err := i.reindex(ctx, i.stale(entries, existing)); err != nil {
+	stale := i.stale(entries, existing)
+	// Snapshot the names the graph-relevant paths declared before reindex
+	// overwrites them; an incremental build needs both sides of a rename.
+	beforeIDs, captureErr := i.captureBeforeNames(ctx, stale, entries)
+	if captureErr != nil {
+		return Snapshot{}, captureErr
+	}
+	if err := i.reindex(ctx, stale); err != nil {
 		return Snapshot{}, err
 	}
 	if err := i.prune(ctx, entries, existing); err != nil {
@@ -291,17 +345,25 @@ func (i *Index) refresh(ctx context.Context) (Snapshot, error) {
 	if err != nil {
 		return Snapshot{}, err
 	}
-	// The graph follows the file set: ranks a map would show must describe
-	// the files the refresh just confirmed. A graph failure degrades the
-	// ranks alone — the map falls back to declaration counts — and never
-	// fails the refresh.
-	if !i.graphMatches(files) {
-		i.graphFiles = nil
-		if err := i.rebuildGraph(ctx, files); err == nil {
-			i.graphFiles = make(map[string]string, len(files))
-			for path, file := range files {
-				i.graphFiles[path] = file.Digest
-			}
+	// The graph follows the file set, but in the background: the refresh
+	// itself completes with the confirmed file rows, and the builder brings
+	// edges and ranks along. Until it lands, ranks and impact answers
+	// describe the last completed graph build — a quality bound, not a
+	// correctness one, matching the existing degradation where a failed
+	// graph build leaves declaration counts as the ranking.
+	i.fileGen++
+	work := graphWork{
+		gen: i.fileGen, files: files,
+		full: true, beforeIDs: beforeIDs,
+	}
+	if i.graphFiles != nil {
+		work.full, work.changed = i.incrementalScope(files, existing)
+	}
+	if work.full || len(work.changed) != 0 {
+		i.pending = &work
+		if !i.graphBuilding {
+			i.graphBuilding = true
+			go i.drainGraphWork()
 		}
 	}
 	total := 0
@@ -329,6 +391,231 @@ func (i *Index) graphMatches(files map[string]File) bool {
 		}
 	}
 	return true
+}
+
+// captureBeforeNames records the top-level declarations of the paths whose
+// indexed content is about to move or disappear, before reindex overwrites
+// the rows. A rename only shows up as (before-name, after-name) pairs.
+func (i *Index) captureBeforeNames(
+	ctx context.Context,
+	stale []repowalk.Entry,
+	entries []repowalk.Entry,
+) ([]string, error) {
+	if i.graphFiles == nil {
+		return nil, nil
+	}
+	entrySet := make(map[string]struct{}, len(entries))
+	for _, entry := range entries {
+		entrySet[entry.Path] = struct{}{}
+	}
+	candidates := make(map[string]struct{}, len(stale))
+	for _, entry := range stale {
+		if _, known := i.graphFiles[entry.Path]; known {
+			candidates[entry.Path] = struct{}{}
+		}
+	}
+	for path := range i.graphFiles {
+		if _, listed := entrySet[path]; !listed {
+			candidates[path] = struct{}{}
+		}
+	}
+	if len(candidates) == 0 {
+		return nil, nil
+	}
+	paths := make([]string, 0, len(candidates))
+	for path := range candidates {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	return i.store.SymbolNames(ctx, paths)
+}
+
+// incrementalScope decides whether the graph update can run incrementally and
+// returns the changed paths. Content-only edits keep the path set, and a
+// digest change implies the language and package name moved with the content;
+// a package rename still forces a full rebuild because it changes other
+// files' scoped-reference fan-out without touching their own rows.
+func (i *Index) incrementalScope(
+	files map[string]File,
+	existing map[string]File,
+) (bool, []string) {
+	for path := range files {
+		if _, known := i.graphFiles[path]; !known {
+			return true, nil
+		}
+	}
+	for path := range i.graphFiles {
+		if _, kept := files[path]; !kept {
+			return true, nil
+		}
+	}
+	var changed []string
+	for path, file := range files {
+		if i.graphFiles[path] == file.Digest {
+			continue
+		}
+		if before, known := existing[path]; known &&
+			before.PackageName != file.PackageName {
+			return true, nil
+		}
+		changed = append(changed, path)
+	}
+	sort.Strings(changed)
+	return false, changed
+}
+
+// drainGraphWork runs the single background builder until no refresh queued
+// newer work. A build that raced a newer refresh falls back to a full rebuild
+// against the newest committed files rather than trusting mixed inputs.
+func (i *Index) drainGraphWork() {
+	for {
+		i.mu.Lock()
+		if i.pending == nil {
+			i.graphBuilding = false
+			i.mu.Unlock()
+			return
+		}
+		work := *i.pending
+		i.pending = nil
+		i.mu.Unlock()
+		if !i.runGraphWork(work) {
+			continue
+		}
+		i.mu.Lock()
+		files, err := i.store.Files(context.Background())
+		if err != nil {
+			i.graphBuilding = false
+			i.mu.Unlock()
+			return
+		}
+		i.pending = &graphWork{gen: i.fileGen, files: files, full: true}
+		i.mu.Unlock()
+	}
+}
+
+// runGraphWork computes and stores one graph build outside the index lock. It
+// reports whether a newer refresh generation landed while it ran, which means
+// the computed graph describes superseded inputs and the caller must retry.
+func (i *Index) runGraphWork(work graphWork) bool {
+	ctx := context.Background()
+	var err error
+	if work.full {
+		err = i.rebuildGraph(ctx, work.files)
+	} else {
+		err = i.rebuildGraphIncremental(
+			ctx, work.files, work.changed, work.beforeIDs,
+		)
+	}
+	if err != nil {
+		// A failed build is not cached as success: graphFiles drops to nil so
+		// the next refresh runs a full rebuild, exactly as the synchronous
+		// build behaved when its rebuild errored.
+		i.mu.Lock()
+		i.graphFiles = nil
+		i.mu.Unlock()
+		return false
+	}
+	i.mu.Lock()
+	superseded := i.fileGen != work.gen
+	if !superseded {
+		i.graphFiles = make(map[string]string, len(work.files))
+		for path, file := range work.files {
+			i.graphFiles[path] = file.Digest
+		}
+	}
+	i.mu.Unlock()
+	return superseded
+}
+
+// rebuildGraphIncremental recomputes the edges of the affected sources and the
+// ranks over the resulting graph. The affected set is the changed files plus
+// every file whose identifier rows mention a name the changed files declared
+// before or after the change, so moved declarations re-bind their referrers.
+func (i *Index) rebuildGraphIncremental(
+	ctx context.Context,
+	files map[string]File,
+	changed []string,
+	beforeIDs []string,
+) error {
+	afterIDs, err := i.store.SymbolNames(ctx, changed)
+	if err != nil {
+		return err
+	}
+	names := make(map[string]struct{}, len(beforeIDs)+len(afterIDs))
+	for _, name := range beforeIDs {
+		names[name] = struct{}{}
+	}
+	for _, name := range afterIDs {
+		names[name] = struct{}{}
+	}
+	nameList := make([]string, 0, len(names))
+	for name := range names {
+		nameList = append(nameList, name)
+	}
+	sort.Strings(nameList)
+	referrers, err := i.store.ReferrerPaths(ctx, nameList)
+	if err != nil {
+		return err
+	}
+	affected := make(map[string]struct{}, len(changed)+len(referrers))
+	affectedList := make([]string, 0, len(changed)+len(referrers))
+	for _, path := range changed {
+		if _, seen := affected[path]; !seen {
+			affected[path] = struct{}{}
+			affectedList = append(affectedList, path)
+		}
+	}
+	for _, path := range referrers {
+		if _, seen := affected[path]; !seen {
+			affected[path] = struct{}{}
+			affectedList = append(affectedList, path)
+		}
+	}
+	if err := i.store.DeleteEdgesFrom(ctx, affectedList); err != nil {
+		return err
+	}
+	specs, err := i.store.ImportsFor(ctx, affectedList)
+	if err != nil {
+		return err
+	}
+	edges := i.importEdgesFrom(specs, files)
+	reference, err := i.store.referenceEdgesFrom(ctx, affected)
+	if err != nil {
+		return err
+	}
+	edges = append(edges, reference...)
+	scoped, err := i.store.scopedReferenceEdgesFrom(ctx, affected)
+	if err != nil {
+		return err
+	}
+	edges = append(edges, scoped...)
+	if err := i.store.AppendEdges(ctx, edges); err != nil {
+		return err
+	}
+	all, err := i.store.Edges(ctx)
+	if err != nil {
+		return err
+	}
+	ranks := personalPageRank(files, all, i.options.Rank)
+	return i.store.ReplaceRanks(ctx, ranks)
+}
+
+// waitGraphSettled blocks until no graph work is queued or building. It keeps
+// tests deterministic against the background builder. A nil index is settled
+// by definition, matching the nil-behaves-disabled contract.
+func (i *Index) waitGraphSettled() {
+	if i == nil {
+		return
+	}
+	for {
+		i.mu.Lock()
+		busy := i.pending != nil || i.graphBuilding
+		i.mu.Unlock()
+		if !busy {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
 }
 
 // stale returns the entries that have to be read again. Size and modification

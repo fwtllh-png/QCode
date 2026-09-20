@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -55,6 +56,19 @@ type Store struct {
 	events  *eventlog.Log
 	content *cas.Store
 	closed  bool
+	// batchMu guards the group-commit queue: appends that arrive while a
+	// flush is active join its batch, sharing one reservation transaction,
+	// one eventlog fsync, and one projection transaction. Producers enqueue
+	// under batchMu and wait on their entry; a lazily started flush loop
+	// drains until the queue is empty.
+	batchMu    sync.Mutex
+	batchQueue []batchEntry
+	flushing   bool
+}
+
+type batchEntry struct {
+	event protocol.Event
+	done  chan error
 }
 
 func Open(ctx context.Context, options Options) (_ *Store, resultErr error) {
@@ -143,6 +157,11 @@ func (s *Store) AppendEvents(ctx context.Context, events ...protocol.Event) erro
 	return nil
 }
 
+// appendOne validates the event and joins the group-commit queue. Concurrent
+// appends — including noise reservations — coalesce into batches whose
+// durability wait covers one shared fsync instead of one per event. A
+// canceled producer context can no longer abort the append after this point:
+// the batch flushes to completion and the producer observes the outcome.
 func (s *Store) appendOne(ctx context.Context, event protocol.Event) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -150,9 +169,164 @@ func (s *Store) appendOne(ctx context.Context, event protocol.Event) error {
 	if err := event.Validate(); err != nil {
 		return fmt.Errorf("validate durable event: %w", err)
 	}
+	entry := batchEntry{event: event, done: make(chan error, 1)}
+	s.batchMu.Lock()
+	s.batchQueue = append(s.batchQueue, entry)
+	if !s.flushing {
+		s.flushing = true
+		go s.flushQueued()
+	}
+	s.batchMu.Unlock()
+	return <-entry.done
+}
+
+// flushQueued drains queued appends until the queue is empty, then releases
+// leadership. The empty-check and the leadership clear happen under one
+// batchMu hold, so an enqueue that still sees an active flush is either
+// picked up by this loop's next round or re-promotes a new one.
+func (s *Store) flushQueued() {
+	for {
+		s.batchMu.Lock()
+		if len(s.batchQueue) == 0 {
+			s.flushing = false
+			s.batchMu.Unlock()
+			return
+		}
+		batch := s.batchQueue
+		s.batchQueue = nil
+		s.batchMu.Unlock()
+		s.flushBatch(batch)
+	}
+}
+
+// flushBatch persists one drained batch under the store write lock. Sorting
+// by sequence keeps the durable log strictly increasing even when concurrent
+// publishers from different hubs interleave. Any batch-level failure falls
+// back to the single-event append with its exact conflict, idempotency, and
+// self-healing semantics.
+func (s *Store) flushBatch(batch []batchEntry) {
+	sort.SliceStable(batch, func(i, j int) bool {
+		return batch[i].event.Sequence < batch[j].event.Sequence
+	})
+	events := make([]protocol.Event, len(batch))
+	for index := range batch {
+		events[index] = batch[index].event
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.appendWithSelfHealLocked(ctx, event)
+	err := s.appendBatchLocked(context.Background(), events)
+	if err == nil {
+		for index := range batch {
+			batch[index].done <- nil
+		}
+		return
+	}
+	if errors.Is(err, ErrClosed) {
+		for index := range batch {
+			batch[index].done <- ErrClosed
+		}
+		return
+	}
+	for index := range batch {
+		batch[index].done <- s.appendWithSelfHealLocked(
+			context.Background(),
+			batch[index].event,
+		)
+	}
+}
+
+// appendBatchLocked persists a validated, sequence-sorted batch while the
+// caller owns s.mu: one reservation transaction, one eventlog batch fsync,
+// one projection transaction. It refuses the batch — without writing — when
+// any sequence already has a reservation, leaving those cases to the
+// single-event path.
+func (s *Store) appendBatchLocked(
+	ctx context.Context,
+	events []protocol.Event,
+) error {
+	if s.closed {
+		return ErrClosed
+	}
+	for _, event := range events {
+		status, eventID, err := s.reservation(ctx, event.Sequence)
+		if err != nil {
+			return err
+		}
+		if status != "" {
+			return fmt.Errorf(
+				"%w: sequence=%d status=%s event_id=%s",
+				ErrSequenceReserved, event.Sequence, status, eventID,
+			)
+		}
+	}
+	if err := s.reserveBatch(ctx, events); err != nil {
+		return err
+	}
+	persisted := make([]protocol.Event, 0, len(events))
+	for _, event := range events {
+		if eventlog.ShouldPersist(event.Kind) {
+			persisted = append(persisted, event)
+		}
+	}
+	if len(persisted) == 0 {
+		return nil
+	}
+	evidences, err := s.events.AppendBatchWithEvidence(ctx, persisted)
+	if err != nil {
+		if !errors.Is(err, eventlog.ErrIndeterminate) {
+			// A clean batch failure proves the log holds none of the batch;
+			// release the reservations so the fallback retries honestly.
+			for _, event := range persisted {
+				_ = s.markReservation(context.Background(), event.Sequence, "abandoned")
+			}
+		}
+		return err
+	}
+	if err := s.commitProjectionBatch(ctx, persisted, evidences); err != nil {
+		return errors.Join(ErrProjection, err)
+	}
+	return nil
+}
+
+// reserveBatch inserts one reservation row per event in a single
+// transaction, enforcing strict monotonicity against the durable watermark.
+func (s *Store) reserveBatch(
+	ctx context.Context,
+	events []protocol.Event,
+) error {
+	return s.sqlite.Transaction(ctx, func(tx *sql.Tx) error {
+		var last protocol.Cursor
+		if err := tx.QueryRowContext(
+			ctx, "SELECT COALESCE(MAX(sequence), 0) FROM event_reservations",
+		).Scan(&last); err != nil {
+			return fmt.Errorf("read event sequence high watermark: %w", err)
+		}
+		for _, event := range events {
+			if event.Sequence <= last {
+				return fmt.Errorf(
+					"%w: sequence=%d high_watermark=%d",
+					ErrSequenceReserved, event.Sequence, last,
+				)
+			}
+			status := "reserved"
+			if !eventlog.ShouldPersist(event.Kind) {
+				// No log append follows streaming noise. Reserve its
+				// sequence in the final state atomically instead of
+				// committing a second UPDATE.
+				status = "abandoned"
+			}
+			if _, err := tx.ExecContext(
+				ctx,
+				`INSERT INTO event_reservations(sequence, event_id, status, created_at, updated_at)
+				 VALUES (?, ?, ?, ?, ?)`,
+				event.Sequence, event.ID, status, timestamp(event.CreatedAt), timestamp(time.Now()),
+			); err != nil {
+				return fmt.Errorf("reserve event sequence %d: %w", event.Sequence, err)
+			}
+			last = event.Sequence
+		}
+		return nil
+	})
 }
 
 // appendWithSelfHealLocked appends one validated event while the caller owns
@@ -479,45 +653,73 @@ func (s *Store) commitProjection(
 	evidence eventlog.Evidence,
 ) error {
 	return s.sqlite.Transaction(ctx, func(tx *sql.Tx) error {
-		if _, err := tx.ExecContext(
-			ctx,
-			`INSERT INTO event_index(
-			 sequence, event_id, thread_id, turn_id, item_id, kind,
-			 log_offset, log_length, sha256, created_at
-			 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-			 ON CONFLICT(sequence) DO UPDATE SET
-			 event_id=excluded.event_id, thread_id=excluded.thread_id,
-			 turn_id=excluded.turn_id, item_id=excluded.item_id, kind=excluded.kind,
-			 log_offset=excluded.log_offset, log_length=excluded.log_length,
-			 sha256=excluded.sha256, created_at=excluded.created_at`,
-			event.Sequence, event.ID, nullString(event.ThreadID), nullString(event.TurnID),
-			nullString(event.ItemID), event.Kind, evidence.Offset, evidence.Length,
-			evidence.SHA256, timestamp(event.CreatedAt),
-		); err != nil {
-			return fmt.Errorf("project event index %d: %w", event.Sequence, err)
-		}
-		result, err := tx.ExecContext(
-			ctx,
-			`UPDATE event_reservations
-			 SET status = 'committed', updated_at = ?
-			 WHERE sequence = ? AND event_id = ?`,
-			timestamp(time.Now()), event.Sequence, event.ID,
-		)
-		if err != nil {
-			return fmt.Errorf("commit event reservation %d: %w", event.Sequence, err)
-		}
-		affected, err := result.RowsAffected()
-		if err != nil {
-			return err
-		}
-		if affected != 1 {
-			return fmt.Errorf("event reservation %d disappeared during commit", event.Sequence)
-		}
-		if err := projectAgentGraphTx(ctx, tx, event); err != nil {
-			return fmt.Errorf("project agent graph %d: %w", event.Sequence, err)
-		}
-		return projectSessionSearchTx(ctx, tx, event)
+		return s.commitProjectionTx(ctx, tx, event, evidence)
 	})
+}
+
+// commitProjectionBatch commits the projections of one durable batch in a
+// single transaction; the log records are already fsynced at this point.
+func (s *Store) commitProjectionBatch(
+	ctx context.Context,
+	events []protocol.Event,
+	evidences []eventlog.Evidence,
+) error {
+	return s.sqlite.Transaction(ctx, func(tx *sql.Tx) error {
+		for index := range events {
+			if err := s.commitProjectionTx(
+				ctx, tx, events[index], evidences[index],
+			); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+func (s *Store) commitProjectionTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	event protocol.Event,
+	evidence eventlog.Evidence,
+) error {
+	if _, err := tx.ExecContext(
+		ctx,
+		`INSERT INTO event_index(
+		 sequence, event_id, thread_id, turn_id, item_id, kind,
+		 log_offset, log_length, sha256, created_at
+		 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(sequence) DO UPDATE SET
+		 event_id=excluded.event_id, thread_id=excluded.thread_id,
+		 turn_id=excluded.turn_id, item_id=excluded.item_id, kind=excluded.kind,
+		 log_offset=excluded.log_offset, log_length=excluded.log_length,
+		 sha256=excluded.sha256, created_at=excluded.created_at`,
+		event.Sequence, event.ID, nullString(event.ThreadID), nullString(event.TurnID),
+		nullString(event.ItemID), event.Kind, evidence.Offset, evidence.Length,
+		evidence.SHA256, timestamp(event.CreatedAt),
+	); err != nil {
+		return fmt.Errorf("project event index %d: %w", event.Sequence, err)
+	}
+	result, err := tx.ExecContext(
+		ctx,
+		`UPDATE event_reservations
+		 SET status = 'committed', updated_at = ?
+		 WHERE sequence = ? AND event_id = ?`,
+		timestamp(time.Now()), event.Sequence, event.ID,
+	)
+	if err != nil {
+		return fmt.Errorf("commit event reservation %d: %w", event.Sequence, err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected != 1 {
+		return fmt.Errorf("event reservation %d disappeared during commit", event.Sequence)
+	}
+	if err := projectAgentGraphTx(ctx, tx, event); err != nil {
+		return fmt.Errorf("project agent graph %d: %w", event.Sequence, err)
+	}
+	return projectSessionSearchTx(ctx, tx, event)
 }
 
 func (s *Store) lastReserved(ctx context.Context) (protocol.Cursor, error) {

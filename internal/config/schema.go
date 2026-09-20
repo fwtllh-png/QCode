@@ -174,11 +174,15 @@ type Index struct {
 // Execution configures the main agent loop. MaxOutputTokens is an optional
 // operator ceiling; zero uses an adaptive ceiling bounded by the active model.
 type Execution struct {
-	Provider        string `json:"provider" toml:"provider"`
-	Model           string `json:"model" toml:"model"`
-	Protocol        string `json:"protocol" toml:"protocol"`
-	Mode            string `json:"mode" toml:"mode"`
-	Workspace       string `json:"workspace" toml:"workspace"`
+	Provider  string `json:"provider" toml:"provider"`
+	Model     string `json:"model" toml:"model"`
+	Protocol  string `json:"protocol" toml:"protocol"`
+	Mode      string `json:"mode" toml:"mode"`
+	Workspace string `json:"workspace" toml:"workspace"`
+	// BaseSystem overrides the default base system prompt. Empty uses the
+	// built-in persona plus the probed environment fingerprint; the
+	// base_system partition budget still bounds whatever is configured.
+	BaseSystem      string `json:"base_system" toml:"base_system"`
 	Tools           bool   `json:"tools" toml:"tools"`
 	MaxOutputTokens uint64 `json:"max_output_tokens" toml:"max_output_tokens"`
 	MaxSteps        int    `json:"max_steps" toml:"max_steps"`

@@ -218,7 +218,7 @@ func TestEnsureBuildsGraphAndRanksFiles(t *testing.T) {
 	writeFile(t, root, "misc/notes.md", "# notes\n")
 	index, store := newIndex(t, root, Options{})
 
-	snapshot, err := index.Ensure(t.Context())
+	snapshot, err := ensureSettled(t, index)
 	if err != nil || !snapshot.Ready() {
 		t.Fatalf("ensure: %v %+v", err, snapshot)
 	}

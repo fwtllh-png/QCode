@@ -55,12 +55,33 @@ func ApplyTransport(
 	}
 }
 
+// Measurement couples a sample's attribution with the per-item token
+// estimates it derived from, so downstream prefix accounting reuses the same
+// numbers instead of re-estimating the context.
+type Measurement struct {
+	Data       protocol.SampleContextData
+	ItemTokens []uint64
+}
+
 // Measure attributes the complete immutable MessageSnapshot used for one sample.
 func (s MessageSnapshot) Measure(
 	reason string,
 	reasoningEffort string,
 	estimate Estimator,
 ) (protocol.SampleContextData, error) {
+	measurement, err := s.MeasureDetailed(reason, reasoningEffort, estimate)
+	return measurement.Data, err
+}
+
+// MeasureDetailed is Measure plus the per-item estimates. One estimator pass
+// per item covers MaxItemTokens and the per-message history-role breakdown
+// (both are single-message granularities); partitions without role breakdowns
+// keep their whole-slice estimator calls so per-call rounding stays identical.
+func (s MessageSnapshot) MeasureDetailed(
+	reason string,
+	reasoningEffort string,
+	estimate Estimator,
+) (Measurement, error) {
 	stable := s.partitions[KindStable]
 	history := s.partitions[KindHistory]
 	dynamic := s.partitions[KindDynamic]
@@ -71,42 +92,41 @@ func (s MessageSnapshot) Measure(
 		MessageCount:        len(stable) + len(history) + len(dynamic) + len(continuation),
 		ToolDefinitionCount: len(s.definitions),
 	}
-	for _, item := range s.items {
+	measurement := Measurement{ItemTokens: make([]uint64, len(s.items))}
+	for index, item := range s.items {
 		tokens, itemErr := estimate.Estimate([]provider.Message{item.Message})
 		if itemErr != nil {
-			return protocol.SampleContextData{}, itemErr
+			return Measurement{}, itemErr
 		}
+		measurement.ItemTokens[index] = tokens
 		result.MaxItemTokens = max(result.MaxItemTokens, tokens)
+		if item.Kind != KindHistory {
+			continue
+		}
+		switch item.Role {
+		case provider.RoleUser:
+			result.HistoryUserTokens += tokens
+		case provider.RoleAssistant:
+			result.HistoryAssistantTokens += tokens
+		case provider.RoleTool:
+			result.HistoryToolTokens += tokens
+		default:
+			result.HistoryOtherTokens += tokens
+		}
 	}
 	digest, err := s.Digest()
 	if err != nil {
-		return protocol.SampleContextData{}, fmt.Errorf("digest context snapshot: %w", err)
+		return Measurement{}, fmt.Errorf("digest context snapshot: %w", err)
 	}
 	result.ContextDigest = digest
 	if result.StableTokens, err = countMessages(stable, estimate); err != nil {
-		return protocol.SampleContextData{}, err
-	}
-	groups := map[provider.Role]*uint64{
-		provider.RoleUser:      &result.HistoryUserTokens,
-		provider.RoleAssistant: &result.HistoryAssistantTokens,
-		provider.RoleTool:      &result.HistoryToolTokens,
-	}
-	for _, message := range history {
-		target := groups[message.Role]
-		if target == nil {
-			target = &result.HistoryOtherTokens
-		}
-		tokens, estimateErr := countMessages([]provider.Message{message}, estimate)
-		if estimateErr != nil {
-			return protocol.SampleContextData{}, estimateErr
-		}
-		*target += tokens
+		return Measurement{}, err
 	}
 	if result.DynamicTokens, err = countMessages(dynamic, estimate); err != nil {
-		return protocol.SampleContextData{}, err
+		return Measurement{}, err
 	}
 	if result.ContinuationTokens, err = countMessages(continuation, estimate); err != nil {
-		return protocol.SampleContextData{}, err
+		return Measurement{}, err
 	}
 	for _, message := range s.Messages() {
 		for _, block := range message.Blocks {
@@ -129,7 +149,7 @@ func (s MessageSnapshot) Measure(
 			}
 			tokens, estimateErr := imageEstimator.EstimateImage(*block.Attachment)
 			if estimateErr != nil {
-				return protocol.SampleContextData{}, estimateErr
+				return Measurement{}, estimateErr
 			}
 			result.ImageTokens += tokens
 		}
@@ -137,7 +157,7 @@ func (s MessageSnapshot) Measure(
 	if len(s.definitions) != 0 {
 		encoded, encodeErr := json.Marshal(s.definitions)
 		if encodeErr != nil {
-			return protocol.SampleContextData{}, fmt.Errorf(
+			return Measurement{}, fmt.Errorf(
 				"encode tool definitions: %w",
 				encodeErr,
 			)
@@ -146,7 +166,7 @@ func (s MessageSnapshot) Measure(
 		for _, definition := range s.definitions {
 			itemData, marshalErr := json.Marshal(definition)
 			if marshalErr != nil {
-				return protocol.SampleContextData{}, fmt.Errorf(
+				return Measurement{}, fmt.Errorf(
 					"marshal tool definition %q: %w",
 					definition.Name,
 					marshalErr,
@@ -168,7 +188,8 @@ func (s MessageSnapshot) Measure(
 		result.ProviderFramingTokens
 	result.TextTokens = result.EstimatedTokens -
 		min(result.EstimatedTokens, attributedNonText)
-	return result, nil
+	measurement.Data = result
+	return measurement, nil
 }
 
 func countMessages(messages []provider.Message, estimate Estimator) (uint64, error) {

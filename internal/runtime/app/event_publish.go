@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 
+	"github.com/fwtllh-png/QCode/internal/persist/state/eventlog"
 	"github.com/fwtllh-png/QCode/internal/runtime/app/eventhub"
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
 )
@@ -113,7 +114,12 @@ func (r *EventService) publishWithIdentity(
 	}
 	project := func(event protocol.Event) error {
 		var projectionErr error
-		if r.lifecycle != nil {
+		// Streaming noise never reaches the durable log, so lifecycle has no
+		// durable projection to mirror — its usage and item switches key on
+		// persisted kinds only. Skipping the call keeps a delta at one
+		// reservation transaction instead of adding a threads.updated_at
+		// commit per delta; persisted events still refresh updated_at.
+		if r.lifecycle != nil && eventlog.ShouldPersist(kind) {
 			projectionErr = r.lifecycle.Project(context.Background(), event)
 		}
 		if projectionErr == nil {

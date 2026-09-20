@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"runtime"
+	"sort"
 	"strings"
 	"time"
 
@@ -47,6 +48,7 @@ type execCommandInput struct {
 	AllowLoopback  bool                         `json:"allow_loopback"`
 	Verification   string                       `json:"verification"`
 	CoveredPaths   []string                     `json:"covered_paths"`
+	Env            map[string]string            `json:"env"`
 }
 
 type writeStdinInput struct {
@@ -274,6 +276,11 @@ func execCommandDescriptor() tool.Descriptor {
 				"command": map[string]any{"type": "string", "minLength": 1},
 				"cwd":     map[string]any{"type": "string"},
 				"tty":     map[string]any{"type": "boolean"},
+				"env": map[string]any{
+					"type":                 "object",
+					"additionalProperties": map[string]any{"type": "string"},
+					"description":          "Extra environment entries for this command only. Only allow-listed names are accepted (PATH, HOME, TMPDIR, LANG/LC_*, TERM, Go toolchain and proxy variables); secret-named variables are rejected.",
+				},
 				"yield_time_ms": map[string]any{
 					"type":        "integer",
 					"description": "Maximum time the first sample waits for exit. Still-running commands return session_id for write_stdin.",
@@ -483,12 +490,17 @@ func (p *commandProtocol) execCommand(
 	if err != nil {
 		return tool.Result{}, err
 	}
+	env, err := environmentEntries(input.Env)
+	if err != nil {
+		return tool.Result{}, err
+	}
 	id, err := p.manager.Create(
 		context.WithoutCancel(ctx),
 		process.SessionOptions{
 			Command:             command,
 			Dir:                 directory,
 			DirFile:             directoryFile,
+			Env:                 env,
 			ThreadID:            threadID,
 			TurnID:              identity.TurnID,
 			CallID:              identity.CallID,
@@ -851,6 +863,29 @@ func processYield(value int64, fallback time.Duration) (time.Duration, error) {
 		return 0, fmt.Errorf("yield-time exceeds %s", maxProcessYield)
 	}
 	return yield, nil
+}
+
+// environmentEntries converts the model-facing env map into the NAME=value
+// entries the process layer sanitizes. The child-process allow-list and the
+// secret-name rejection in process.SanitizedEnvironment stay authoritative:
+// this only shapes the input, it does not widen what may be set.
+func environmentEntries(values map[string]string) ([]string, error) {
+	if len(values) == 0 {
+		return nil, nil
+	}
+	entries := make([]string, 0, len(values))
+	names := make([]string, 0, len(values))
+	for name := range values {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		if strings.ContainsAny(name, "=\x00") {
+			return nil, fmt.Errorf("env name %q is invalid", name)
+		}
+		entries = append(entries, name+"="+values[name])
+	}
+	return entries, nil
 }
 
 func processTimeout(value int64) (time.Duration, error) {

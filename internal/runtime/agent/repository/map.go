@@ -21,6 +21,9 @@ import (
 type Index interface {
 	Files(context.Context) (map[string]repoindex.File, repoindex.Snapshot, error)
 	Symbols(context.Context, repoindex.Query) ([]repoindex.Symbol, repoindex.Snapshot, error)
+	// SymbolsFrom queries rows a snapshot this chain already confirmed, so one
+	// build refreshes once and queries many times.
+	SymbolsFrom(context.Context, repoindex.Snapshot, repoindex.Query) ([]repoindex.Symbol, repoindex.Snapshot, error)
 }
 
 // Defaults for options a caller leaves unset.
@@ -197,13 +200,21 @@ func Build(ctx context.Context, index Index, focus []string, options Options) Ma
 	// wants once the ranking has chosen the members.
 	sort.Slice(directories, func(i, j int) bool { return directories[i].Path < directories[j].Path })
 	result.Directories = directories
-	result.Outlines = outlines(ctx, index, focus, options)
+	result.Outlines = outlines(ctx, index, snapshot, focus, options)
 	return result
 }
 
-// outlines lists the declarations of the focused files. A file the index does not
-// know simply contributes nothing: the working set section still names it.
-func outlines(ctx context.Context, index Index, focus []string, options Options) []Outline {
+// outlines lists the declarations of the focused files against the snapshot the
+// build already confirmed — the query must not trigger a second refresh of the
+// same state. A file the index does not know simply contributes nothing: the
+// working set section still names it.
+func outlines(
+	ctx context.Context,
+	index Index,
+	snapshot repoindex.Snapshot,
+	focus []string,
+	options Options,
+) []Outline {
 	paths := make([]string, 0, len(focus))
 	seen := make(map[string]struct{}, len(focus))
 	for _, candidate := range focus {
@@ -224,8 +235,12 @@ func outlines(ctx context.Context, index Index, focus []string, options Options)
 		return nil
 	}
 	limit := options.MaxOutlineFiles * (options.MaxOutlineSymbols + 1)
-	found, snapshot, err := index.Symbols(ctx, repoindex.Query{Paths: paths, Limit: limit})
-	if err != nil || !snapshot.Ready() || len(found) == 0 {
+	found, _, err := index.SymbolsFrom(
+		ctx,
+		snapshot,
+		repoindex.Query{Paths: paths, Limit: limit},
+	)
+	if err != nil || len(found) == 0 {
 		return nil
 	}
 	byPath := make(map[string][]repoindex.Symbol, len(paths))

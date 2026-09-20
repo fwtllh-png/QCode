@@ -107,6 +107,8 @@ func (l *MessageLedger) Snapshot() MessageSnapshot {
 	for _, kind := range orderedKinds {
 		partitions[kind] = CloneMessages(l.partitions[kind])
 		occurrences := make(map[string]int)
+		// Items reference the partition copies — the snapshot is immutable,
+		// so cloning each message twice would only double the allocation.
 		for _, message := range partitions[kind] {
 			id := itemID(kind, message)
 			occurrence := occurrences[id]
@@ -116,7 +118,7 @@ func (l *MessageLedger) Snapshot() MessageSnapshot {
 			}
 			items = append(items, MessageItem{
 				ID: id, Kind: kind,
-				Role: message.Role, Message: CloneMessage(message),
+				Role: message.Role, Message: message,
 			})
 		}
 	}
@@ -139,6 +141,22 @@ func (s MessageSnapshot) Items() []MessageItem {
 	return result
 }
 
+// ItemRefs identifies the snapshot's items in order without cloning their
+// messages; prefix manifests and other token accounting that already hold the
+// estimates use it to align with MeasureDetailed's per-item results.
+func (s MessageSnapshot) ItemRefs() []ItemRef {
+	refs := make([]ItemRef, len(s.items))
+	for index, item := range s.items {
+		refs[index] = ItemRef{ID: item.ID, Kind: item.Kind}
+	}
+	return refs
+}
+
+type ItemRef struct {
+	ID   string
+	Kind MessageKind
+}
+
 func (s MessageSnapshot) Partition(kind MessageKind) []provider.Message {
 	return CloneMessages(s.partitions[kind])
 }
@@ -157,11 +175,18 @@ func (s MessageSnapshot) Messages() []provider.Message {
 
 // Digest identifies the complete model-visible message and definition content.
 func (s MessageSnapshot) Digest() (string, error) {
+	// Marshal reads the internal partitions directly; cloning every message
+	// first would only add allocations to an already O(context) pass. The
+	// slice stays nil for an empty snapshot so the encoding is unchanged.
+	var messages []provider.Message
+	for _, kind := range orderedKinds {
+		messages = append(messages, s.partitions[kind]...)
+	}
 	encoded, err := json.Marshal(struct {
 		Messages    []provider.Message        `json:"messages"`
 		Definitions []provider.ToolDefinition `json:"definitions,omitempty"`
 	}{
-		Messages: s.Messages(), Definitions: s.Definitions(),
+		Messages: messages, Definitions: s.definitions,
 	})
 	if err != nil {
 		return "", err

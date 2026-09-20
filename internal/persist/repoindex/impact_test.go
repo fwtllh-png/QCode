@@ -36,7 +36,7 @@ func TestImpactWalksReverseDependenciesWithHops(t *testing.T) {
 	writeImpactFixture(t, root)
 	index, _ := newIndex(t, root, Options{})
 
-	snapshot, err := index.Ensure(t.Context())
+	snapshot, err := ensureSettled(t, index)
 	if err != nil || !snapshot.Ready() {
 		t.Fatalf("ensure: %v %+v", err, snapshot)
 	}
@@ -86,7 +86,7 @@ func TestRelatedTestsMergesGraphAndConventionRoutes(t *testing.T) {
 	writeFile(t, root, "core/core_test.go", "package core\n\nimport \"testing\"\n\nfunc TestRun(t *testing.T) { _ = Run() }\n")
 	index, _ := newIndex(t, root, Options{})
 
-	if _, err := index.Ensure(t.Context()); err != nil {
+	if _, err := ensureSettled(t, index); err != nil {
 		t.Fatal(err)
 	}
 	related, snapshot, err := index.RelatedTests(t.Context(), []string{"core/core.go"})
@@ -138,7 +138,7 @@ func TestImpactRespectsTheResultBound(t *testing.T) {
 	index, _ := newIndex(t, root, Options{
 		Impact: ImpactOptions{MaxDepth: 3, MaxResults: 4},
 	})
-	if _, err := index.Ensure(t.Context()); err != nil {
+	if _, err := ensureSettled(t, index); err != nil {
 		t.Fatal(err)
 	}
 	impacted, truncated, err := index.Impact(t.Context(), []string{"core/core.go"})
@@ -160,7 +160,7 @@ func TestRelatedTestsKeepsConventionWhenGraphIsSilent(t *testing.T) {
 	writeFile(t, root, "api.go", "package api\n\nfunc Serve() {}\n")
 	writeFile(t, root, "api_test.go", "package api\n\nimport \"testing\"\n\nfunc TestServe(t *testing.T) {}\n")
 	index, _ := newIndex(t, root, Options{})
-	if _, err := index.Ensure(t.Context()); err != nil {
+	if _, err := ensureSettled(t, index); err != nil {
 		t.Fatal(err)
 	}
 	related, _, err := index.RelatedTests(t.Context(), []string{"api.go"})
@@ -186,6 +186,9 @@ func TestRelatedTestsAttributesEachSourceAndKeepsEvidenceChain(t *testing.T) {
 		writeFile(t, root, path, source)
 	}
 	index, _ := newIndex(t, root, Options{})
+	if _, err := ensureSettled(t, index); err != nil {
+		t.Fatal(err)
+	}
 	related, coverage, _, err := index.RelatedTestsWithEvidence(t.Context(), []string{"a/core.go", "b/core.go"})
 	if err != nil {
 		t.Fatal(err)
@@ -244,6 +247,9 @@ func TestQCodeRelatedTestsEvidence(t *testing.T) {
 		writeFile(t, root, path, string(data))
 	}
 	index, _ := newIndex(t, root, Options{})
+	if _, err := ensureSettled(t, index); err != nil {
+		t.Fatal(err)
+	}
 	related, _, _, err := index.RelatedTestsWithEvidence(t.Context(), []string{source})
 	if err != nil {
 		t.Fatal(err)
@@ -268,7 +274,7 @@ func TestRelatedTestsReportsUnavailableGraphAndPreservesConvention(t *testing.T)
 	writeFile(t, root, "api.go", "package p\nfunc Run(){}\n")
 	writeFile(t, root, "api_test.go", "package p\nfunc TestRun(){Run()}\n")
 	index, store := newIndex(t, root, Options{})
-	if _, err := index.Ensure(t.Context()); err != nil {
+	if _, err := ensureSettled(t, index); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.db.ExecContext(t.Context(), "DROP TABLE repo_index_edges"); err != nil {

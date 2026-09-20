@@ -277,6 +277,85 @@ func (l *Log) AppendWithEvidence(ctx context.Context, event protocol.Event) (Evi
 	return evidence, nil
 }
 
+// AppendBatchWithEvidence appends events in order and fsyncs once for the
+// whole batch. Any failure — a non-increasing sequence, a short write, or the
+// batch fsync — rolls the file back to the batch's start offset, so the
+// outcome is the whole batch or none of it; a rollback that itself fails is
+// reported as indeterminate exactly like a single-event append.
+func (l *Log) AppendBatchWithEvidence(
+	ctx context.Context,
+	events []protocol.Event,
+) ([]Evidence, error) {
+	if len(events) == 0 {
+		return nil, nil
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	records := make([][]byte, len(events))
+	for index, event := range events {
+		if err := event.Validate(); err != nil {
+			return nil, fmt.Errorf("validate event: %w", err)
+		}
+		payload, err := json.Marshal(event)
+		if err != nil {
+			return nil, fmt.Errorf("encode event: %w", err)
+		}
+		records[index] = append(payload, '\n')
+	}
+
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.closed {
+		return nil, ErrClosed
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	start := l.end
+	if _, err := l.file.Seek(start, io.SeekStart); err != nil {
+		return nil, fmt.Errorf("seek event log for append: %w", err)
+	}
+	rollback := func(sequence protocol.Cursor, cause error) error {
+		return l.rollbackFailedAppend(sequence, start, cause)
+	}
+	evidences := make([]Evidence, 0, len(events))
+	offset := start
+	last := l.last
+	for index, event := range events {
+		expected := last + 1
+		if event.Sequence < expected {
+			return nil, rollback(event.Sequence, &SequenceError{
+				Expected: expected, Actual: event.Sequence, Offset: offset,
+			})
+		}
+		if err := writeFull(l.file, records[index]); err != nil {
+			return nil, rollback(event.Sequence, err)
+		}
+		evidences = append(
+			evidences,
+			makeEvidence(event.Sequence, offset, records[index]),
+		)
+		offset += int64(len(records[index]))
+		last = event.Sequence
+	}
+	if err := l.file.Sync(); err != nil {
+		return nil, rollback(
+			events[len(events)-1].Sequence,
+			fmt.Errorf("fsync event batch: %w", err),
+		)
+	}
+	// Commit in-memory indexes only after the batch is durable, so a
+	// rollback never leaves owners pointing past the verified index.
+	for index, event := range events {
+		l.indexOwner(event, len(l.entries)+index)
+	}
+	l.entries = append(l.entries, evidences...)
+	l.last = last
+	l.end = offset
+	return evidences, nil
+}
+
 func writeFull(writer io.Writer, data []byte) error {
 	for len(data) > 0 {
 		written, err := writer.Write(data)

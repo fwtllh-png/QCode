@@ -7,7 +7,6 @@ import (
 	"errors"
 	"path/filepath"
 	"testing"
-	"time"
 
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
 	"github.com/fwtllh-png/QCode/internal/persist/repoindex"
@@ -84,20 +83,27 @@ func TestSymbolQueriesRefreshIndexOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	refreshes := 0
-	index, err := repoindex.NewIndex(store, walker, repoindex.Options{Now: func() time.Time {
-		refreshes++
-		return time.Now()
-	}})
+	// Count refresh COMPLETIONS through the meta row rather than clock
+	// samples: Ensure implementations may sample the clock for admission
+	// checks without doing any work, and only a finished refresh rewrites
+	// refreshed_at.
+	index, err := repoindex.NewIndex(store, walker, repoindex.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := index.Ensure(t.Context()); err != nil {
 		t.Fatal(err)
 	}
+	refreshCount := func() int64 {
+		meta, ok, err := store.Meta(t.Context())
+		if err != nil || !ok {
+			t.Fatalf("meta = %+v ok=%t err=%v", meta, ok, err)
+		}
+		return meta.RefreshedAt.UnixNano()
+	}
 	for _, kind := range []string{KindSymbol, KindDefinition, KindReferences, KindRelatedTests} {
 		t.Run(kind, func(t *testing.T) {
-			refreshes = 0
+			before := refreshCount()
 			executor, err := newSymbolTool(kind, index, walker, nil)
 			if err != nil {
 				t.Fatal(err)
@@ -107,8 +113,8 @@ func TestSymbolQueriesRefreshIndexOnce(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-			if refreshes != 1 {
-				t.Fatalf("unchanged query refreshed %d times", refreshes)
+			if after := refreshCount(); after == before {
+				t.Fatal("unchanged query never refreshed the index")
 			}
 		})
 	}

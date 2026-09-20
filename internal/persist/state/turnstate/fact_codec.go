@@ -60,8 +60,52 @@ func encodeDomainFact(
 		(fact.Sequence-1)%domainFactSnapshotEvery == 0 {
 		stored.Snapshot, err = json.Marshal(fact.State)
 	} else {
-		stored.Delta, stored.ObjectDelta, err =
-			stateDelta(*previous, fact.State)
+		var left, right map[string]json.RawMessage
+		if left, err = stateObject(*previous); err == nil {
+			right, err = stateObject(fact.State)
+		}
+		if err == nil {
+			stored.Delta, stored.ObjectDelta, err = fieldDelta(left, right)
+		}
+	}
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(stored)
+}
+
+// encodeVerifiedDomainFact encodes a fact whose StateDigest and canonical
+// encoding the turnkernel coordinator already computed (see
+// turnkernel.VerifiedDomainFactStore). It reuses those encodings for the
+// snapshot and the field delta instead of re-digesting the state; decode-side
+// verification still re-digests every stored fact.
+func encodeVerifiedDomainFact(
+	fact turnkernel.DomainFact,
+	stateEncoding []byte,
+	previousEncoding []byte,
+	previousDigest string,
+) ([]byte, error) {
+	stored := storedDomainFact{
+		StorageVersion:      domainFactStorageVersion,
+		TurnID:              fact.TurnID,
+		Sequence:            fact.Sequence,
+		Command:             fact.Command,
+		Event:               fact.Event,
+		PreviousStateDigest: previousDigest,
+		StateDigest:         fact.StateDigest,
+	}
+	var err error
+	if previousEncoding == nil ||
+		(fact.Sequence-1)%domainFactSnapshotEvery == 0 {
+		stored.Snapshot = stateEncoding
+	} else {
+		var left, right map[string]json.RawMessage
+		if err = json.Unmarshal(previousEncoding, &left); err == nil {
+			err = json.Unmarshal(stateEncoding, &right)
+		}
+		if err == nil {
+			stored.Delta, stored.ObjectDelta, err = fieldDelta(left, right)
+		}
 	}
 	if err != nil {
 		return nil, err
@@ -255,22 +299,17 @@ func restoreState(
 	return state, nil
 }
 
-func stateDelta(
-	previous turnkernel.State,
-	current turnkernel.State,
+// fieldDelta diffs two canonical state encodings at field granularity.
+// sample_ledger is diffed per sample so one new sample does not rewrite every
+// retained assembly.
+func fieldDelta(
+	left map[string]json.RawMessage,
+	right map[string]json.RawMessage,
 ) (
 	map[string]json.RawMessage,
 	map[string]map[string]json.RawMessage,
 	error,
 ) {
-	left, err := stateObject(previous)
-	if err != nil {
-		return nil, nil, err
-	}
-	right, err := stateObject(current)
-	if err != nil {
-		return nil, nil, err
-	}
 	delta := make(map[string]json.RawMessage)
 	objectDelta := make(map[string]map[string]json.RawMessage)
 	for key, value := range right {

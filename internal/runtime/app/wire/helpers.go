@@ -105,7 +105,7 @@ func openRepositoryIndex(
 		MaxFileBytes: settings.MaxFileBytes, MaxFiles: settings.MaxFiles,
 		SignatureMaxBytes: settings.SignatureMaxBytes,
 		DocstringMaxBytes: settings.DocstringMaxBytes,
-		ReferenceMaxCount:  settings.ReferenceMaxCount,
+		ReferenceMaxCount: settings.ReferenceMaxCount,
 		Rank: repoindex.RankOptions{
 			Damping:     settings.RankDamping,
 			Iterations:  settings.RankIterations,
@@ -119,8 +119,13 @@ func openRepositoryIndex(
 	if err != nil {
 		return nil, repoindex.StatusDegraded
 	}
-	// The build is deferred to the first query: paying for it during startup would
-	// delay every session, including the ones that never search.
+	// The first build runs in the background rather than inside the first
+	// query: that way it delays no session, including the ones that never
+	// search, and Ensure's overlap dedupe shares this one build with any
+	// query that arrives while it is still running.
+	go func() {
+		_, _ = index.Ensure(context.Background())
+	}()
 	return index, repoindex.StatusPending
 }
 
@@ -131,7 +136,10 @@ func openRepositoryIndex(
 // A nil index is not an error: the map degrades to a line saying so and the
 // working set, which is pure bookkeeping, is unaffected.
 func newRepoContext(
-	index *repoindex.Index, settings config.Context, budgets map[string]promptcontext.Budget,
+	index *repoindex.Index,
+	settings config.Context,
+	budgets map[string]promptcontext.Budget,
+	workspaceRoot string,
 ) *promptcontext.RepositoryProvider {
 	if !settings.RepoMap.Enabled && !settings.WorkingSet.Enabled && !settings.Evidence.Enabled {
 		return nil
@@ -161,10 +169,15 @@ func newRepoContext(
 	if index != nil {
 		source = index
 	}
+	root := ""
+	if absolute, err := filepath.Abs(workspaceRoot); err == nil {
+		root = absolute
+	}
 	return promptcontext.NewRepositoryProvider(source, promptcontext.RepositoryOptions{
 		RepoMap:    settings.RepoMap.Enabled,
 		WorkingSet: settings.WorkingSet.Enabled,
 		Evidence:   settings.Evidence.Enabled,
+		Root:       root,
 		Map: repository.Options{
 			MaxDirectories: settings.RepoMap.MaxDirectories,
 		},

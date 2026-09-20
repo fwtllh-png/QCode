@@ -19,7 +19,39 @@ type ReferenceRelation struct {
 }
 
 func (s *Store) ReferenceSites(ctx context.Context) (map[string][]symbols.ReferenceSite, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT path,name,target,module,kind,scope,start_byte,end_byte,line FROM repo_index_reference_sites WHERE root_path=? ORDER BY path,position`, s.root)
+	return s.referenceSites(ctx, nil)
+}
+
+// ReferenceSitesFor reads the sites of the given sources only, in the same
+// deterministic order as the full read.
+func (s *Store) ReferenceSitesFor(
+	ctx context.Context,
+	paths []string,
+) (map[string][]symbols.ReferenceSite, error) {
+	only := make(map[string]struct{}, len(paths))
+	for _, path := range paths {
+		only[path] = struct{}{}
+	}
+	return s.referenceSites(ctx, only)
+}
+
+func (s *Store) referenceSites(
+	ctx context.Context,
+	only map[string]struct{},
+) (map[string][]symbols.ReferenceSite, error) {
+	query := `SELECT path,name,target,module,kind,scope,start_byte,end_byte,line FROM repo_index_reference_sites WHERE root_path=?`
+	args := []any{s.root}
+	if len(only) != 0 {
+		paths := make([]string, 0, len(only))
+		for path := range only {
+			paths = append(paths, path)
+		}
+		sort.Strings(paths)
+		query += ` AND path IN (` + placeholders(len(paths)) + `)`
+		args = append(args, stringsToAny(paths)...)
+	}
+	query += ` ORDER BY path,position`
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -40,11 +72,27 @@ func (s *Store) ReferenceSites(ctx context.Context) (map[string][]symbols.Refere
 // narrow declarations. Module path resolution retains the index's existing
 // candidate semantics; aliases configured by build systems are not guessed.
 func (s *Store) ReferenceRelations(ctx context.Context) ([]ReferenceRelation, error) {
+	return s.referenceRelations(ctx, nil)
+}
+
+// ReferenceRelationsFor resolves only the given sources' sites; a nil set
+// resolves every scoped file, which is the full rebuild's shape.
+func (s *Store) ReferenceRelationsFor(
+	ctx context.Context,
+	only map[string]struct{},
+) ([]ReferenceRelation, error) {
+	return s.referenceRelations(ctx, only)
+}
+
+func (s *Store) referenceRelations(
+	ctx context.Context,
+	only map[string]struct{},
+) ([]ReferenceRelation, error) {
 	files, err := s.Files(ctx)
 	if err != nil {
 		return nil, err
 	}
-	sites, err := s.ReferenceSites(ctx)
+	sites, err := s.referenceSites(ctx, only)
 	if err != nil {
 		return nil, err
 	}
@@ -82,6 +130,11 @@ func (s *Store) ReferenceRelations(ctx context.Context) ([]ReferenceRelation, er
 	importedCandidates := map[string]map[string]bool{}
 	var result []ReferenceRelation
 	for _, source := range sortedFileKeys(files) {
+		if len(only) != 0 {
+			if _, keep := only[source]; !keep {
+				continue
+			}
+		}
 		file := files[source]
 		for _, site := range sites[source] {
 			candidates := map[string]bool{}
@@ -152,7 +205,16 @@ func (s *Store) ReferenceRelations(ctx context.Context) ([]ReferenceRelation, er
 func isExternalGoTest(name string) bool { return len(name) > 5 && name[len(name)-5:] == "_test" }
 
 func (s *Store) scopedReferenceEdges(ctx context.Context) ([]graphEdge, error) {
-	relations, err := s.ReferenceRelations(ctx)
+	return s.scopedReferenceEdgesFrom(ctx, nil)
+}
+
+// scopedReferenceEdgesFrom restricts the scoped resolution to the given
+// sources; a nil set means every file.
+func (s *Store) scopedReferenceEdgesFrom(
+	ctx context.Context,
+	only map[string]struct{},
+) ([]graphEdge, error) {
+	relations, err := s.referenceRelations(ctx, only)
 	if err != nil {
 		return nil, fmt.Errorf("resolve scoped references: %w", err)
 	}

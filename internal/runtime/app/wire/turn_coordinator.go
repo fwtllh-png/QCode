@@ -342,6 +342,25 @@ func (s leaseGuardedFactStore) AppendDomainFacts(
 	return s.store.AppendDomainFacts(ctx, turnID, expectedNext, facts)
 }
 
+func (s leaseGuardedFactStore) AppendVerifiedDomainFacts(
+	ctx context.Context,
+	batch turnkernel.DomainFactBatch,
+) error {
+	if err := s.runtime.health(); err != nil {
+		return err
+	}
+	verified, ok := s.store.(turnkernel.VerifiedDomainFactStore)
+	if !ok {
+		return s.store.AppendDomainFacts(
+			ctx,
+			batch.TurnID,
+			batch.ExpectedNext,
+			batch.Facts,
+		)
+	}
+	return verified.AppendVerifiedDomainFacts(ctx, batch)
+}
+
 func (s leaseGuardedFactStore) LoadDomainFacts(
 	ctx context.Context,
 	turnID string,

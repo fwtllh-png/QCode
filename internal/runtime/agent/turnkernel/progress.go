@@ -118,24 +118,27 @@ func ResultObservationDigest(result tool.Result) string {
 }
 
 func rememberObservation(progress *ProgressState, key string) {
-	if progress == nil || key == "" || seenObservation(*progress, key) {
+	if progress == nil || key == "" || progress.SeenObservations.contains(key) {
 		return
 	}
-	progress.SeenObservations = append(
-		append([]string(nil), progress.SeenObservations...),
-		key,
-	)
+	if progress.SeenObservations == nil {
+		progress.SeenObservations = &ObservationSet{}
+	}
+	progress.SeenObservations.add(key)
 }
 
 func seenObservation(progress ProgressState, key string) bool {
 	if key == "" {
 		return false
 	}
-	return slices.Contains(progress.SeenObservations, key)
+	return progress.SeenObservations.contains(key)
 }
 
 func cloneProgressState(progress ProgressState) ProgressState {
-	progress.SeenObservations = append([]string(nil), progress.SeenObservations...)
+	if progress.SeenObservations != nil {
+		observations := progress.SeenObservations.clone()
+		progress.SeenObservations = &observations
+	}
 	progress.PendingResultDigests = append(
 		[]string(nil),
 		progress.PendingResultDigests...,

@@ -24,6 +24,9 @@ func TestOpenCreatesSchemaAndConfiguresPragmas(t *testing.T) {
 	assertPragma(t, store.DB(), "journal_mode", "wal")
 	assertPragma(t, store.DB(), "foreign_keys", "1")
 	assertPragma(t, store.DB(), "busy_timeout", "137")
+	// WAL + NORMAL: commits stop fsyncing the log per transaction; the JSONL
+	// event log keeps its per-append fsync and remains the log of record.
+	assertPragma(t, store.DB(), "synchronous", "1")
 
 	wantTables := []string{
 		"workspaces", "sessions", "threads", "turns", "items", "operations",

@@ -281,12 +281,13 @@ func (e *Engine) modelStep(
 		}
 		requestTools = snapshot.Definitions()
 		e.recordSampledTools(scope, catalog, requestTools)
-		attribution, attributionErr := snapshot.Measure(
+		measurement, attributionErr := snapshot.MeasureDetailed(
 			sampleReason, reasoningEffort, e.options.TokenEstimator,
 		)
 		if attributionErr != nil {
 			return nil, nil, totalUsage, lastEstimate, attributionErr
 		}
+		attribution := measurement.Data
 		attribution.WorldRevision = worldProjection.Baseline.Revision
 		attribution.WorldDigest = worldProjection.Baseline.Digest
 		attribution.WorldMode = string(worldProjection.Mode)
@@ -316,9 +317,9 @@ func (e *Engine) modelStep(
 		routeDigest, propertyDigest := contextview.PrefixRequestIdentity(
 			route, maxOutputTokens, reasoningEffort, nativeSearch,
 		)
-		prefixManifest, prefixErr := contextview.BuildPrefixManifest(
+		prefixManifest, prefixErr := contextview.BuildPrefixManifestFromMeasurement(
 			snapshot,
-			e.options.TokenEstimator,
+			measurement,
 			routeDigest,
 			propertyDigest,
 		)

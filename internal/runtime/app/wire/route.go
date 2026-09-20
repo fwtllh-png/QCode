@@ -133,6 +133,7 @@ func defaultPromptBudgets(maxTokens uint64) map[string]promptcontext.Budget {
 		promptcontext.PartitionSkills, promptcontext.PartitionUserMemory,
 		promptcontext.PartitionConstitution, promptcontext.PartitionToolPrefix,
 		promptcontext.PartitionToolCatalog, promptcontext.PartitionRepoMap,
+		promptcontext.PartitionDirectoryRules,
 		promptcontext.PartitionWorkingSetLedger, promptcontext.PartitionEvidence,
 		promptcontext.PartitionCodingPolicy,
 	} {

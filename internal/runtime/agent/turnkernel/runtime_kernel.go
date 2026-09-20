@@ -1041,18 +1041,28 @@ func (s *RuntimeKernel) recordAcceptedLocked(
 	from Phase,
 ) {
 	s.state = s.coordinator.Snapshot()
-	digest, err := Digest(s.state)
 	record := TransitionRecord{
 		Command: CommandName(command),
 		From:    from,
 		To:      s.state.Phase,
 	}
-	if err != nil {
-		record.Drift = err.Error()
-	} else {
-		record.StateDigest = digest
-	}
+	record.StateDigest, record.Drift = s.committedDigestLocked()
 	s.recordLocked(record)
+}
+
+// committedDigestLocked prefers the coordinator's cached digest of the last
+// committed transition; recomputing it here would reserialize the full state
+// on every command. Drift is set only when no committed digest exists yet and
+// the local snapshot cannot be digested.
+func (s *RuntimeKernel) committedDigestLocked() (digest string, drift string) {
+	if cached, ok := s.coordinator.LastDigest(); ok {
+		return cached, ""
+	}
+	computed, err := Digest(s.state)
+	if err != nil {
+		return "", err.Error()
+	}
+	return computed, ""
 }
 
 func (s *RuntimeKernel) applyAuthoritative(
@@ -1075,7 +1085,7 @@ func (s *RuntimeKernel) applyAuthoritativeLocked(
 	}
 	if err != nil {
 		record.Rejection = err.Error()
-		record.StateDigest, _ = Digest(s.state)
+		record.StateDigest, _ = s.committedDigestLocked()
 		s.recordLocked(record)
 		var problem *protocol.Problem
 		if errors.As(err, &problem) &&
@@ -1097,9 +1107,8 @@ func (s *RuntimeKernel) applyAuthoritativeLocked(
 	}
 	s.state = s.coordinator.Snapshot()
 	record.To = s.state.Phase
-	record.StateDigest, err = Digest(s.state)
-	if err != nil {
-		record.Drift = err.Error()
+	record.StateDigest, record.Drift = s.committedDigestLocked()
+	if record.Drift != "" {
 		s.recordLocked(record)
 		return protocol.NewFault(
 			protocol.CodeInternal,
@@ -1110,7 +1119,7 @@ func (s *RuntimeKernel) applyAuthoritativeLocked(
 				Disposition: protocol.FaultFailTurn,
 				SideEffects: protocol.SideEffectUnknown,
 			},
-			err,
+			errors.New(record.Drift),
 		)
 	}
 	s.recordLocked(record)

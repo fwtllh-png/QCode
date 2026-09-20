@@ -97,7 +97,7 @@ func TestRepositoryUnderstandingEvaluation(t *testing.T) {
 			}
 			index, store := newIndex(t, root, Options{})
 			start := time.Now()
-			snapshot, err := index.Ensure(t.Context())
+			snapshot, err := ensureSettled(t, index)
 			elapsed := time.Since(start)
 			if err != nil || !snapshot.Ready() {
 				t.Fatalf("index=%+v err=%v", snapshot, err)

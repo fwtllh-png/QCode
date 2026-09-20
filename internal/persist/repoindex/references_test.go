@@ -11,7 +11,7 @@ func TestScopedReferencesRefreshAndPrune(t *testing.T) {
 	writeFile(t, root, "use.go", "package p\nfunc Use(){Run()}\n")
 	writeFile(t, root, "run.go", "package p\nfunc Run(){}\n")
 	index, store := newIndex(t, root, Options{})
-	if _, err := index.Ensure(t.Context()); err != nil {
+	if _, err := ensureSettled(t, index); err != nil {
 		t.Fatal(err)
 	}
 	relations, err := store.ReferenceRelations(t.Context())
@@ -20,7 +20,7 @@ func TestScopedReferencesRefreshAndPrune(t *testing.T) {
 	}
 	first := relations[0]
 	writeFile(t, root, "use.go", "package p\nfunc Use(Run func()){Run()}\n")
-	if _, err := index.Ensure(t.Context()); err != nil {
+	if _, err := ensureSettled(t, index); err != nil {
 		t.Fatal(err)
 	}
 	relations, err = store.ReferenceRelations(t.Context())
@@ -42,7 +42,7 @@ func TestScopedReferencesRefreshAndPrune(t *testing.T) {
 	if err := os.Remove(filepath.Join(root, "use.go")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := index.Ensure(t.Context()); err != nil {
+	if _, err := ensureSettled(t, index); err != nil {
 		t.Fatal(err)
 	}
 	sites, err = store.ReferenceSites(t.Context())
@@ -56,7 +56,7 @@ func TestReferenceSitesSurviveNewStoreAndReset(t *testing.T) {
 	writeFile(t, root, "use.ts", "import {run} from './engine';run();")
 	writeFile(t, root, "engine.ts", "export function run(){}")
 	index, store := newIndex(t, root, Options{})
-	if _, err := index.Ensure(t.Context()); err != nil {
+	if _, err := ensureSettled(t, index); err != nil {
 		t.Fatal(err)
 	}
 	reopened, err := NewStore(store.db, root)

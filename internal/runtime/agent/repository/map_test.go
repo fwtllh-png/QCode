@@ -15,13 +15,29 @@ type stubIndex struct {
 	snapshot repoindex.Snapshot
 	err      error
 	queries  []repoindex.Query
+	// refreshingQueries counts calls that took the refreshing Symbols path
+	// instead of the snapshot-pinned SymbolsFrom path.
+	refreshingQueries int
 }
 
 func (s *stubIndex) Files(context.Context) (map[string]repoindex.File, repoindex.Snapshot, error) {
 	return s.files, s.snapshot, s.err
 }
 
+func (s *stubIndex) SymbolsFrom(
+	_ context.Context,
+	_ repoindex.Snapshot,
+	query repoindex.Query,
+) ([]repoindex.Symbol, repoindex.Snapshot, error) {
+	return s.match(query)
+}
+
 func (s *stubIndex) Symbols(_ context.Context, query repoindex.Query) ([]repoindex.Symbol, repoindex.Snapshot, error) {
+	s.refreshingQueries++
+	return s.match(query)
+}
+
+func (s *stubIndex) match(query repoindex.Query) ([]repoindex.Symbol, repoindex.Snapshot, error) {
 	s.queries = append(s.queries, query)
 	if s.err != nil {
 		return nil, s.snapshot, s.err
@@ -240,8 +256,8 @@ func TestBuildPrefersRankOverDeclarationCountWhenChoosingDirectories(t *testing.
 
 func TestBuildFallsBackToDeclarationCountWithoutRanks(t *testing.T) {
 	files := map[string]repoindex.File{
-		"small/lib.go":  {Path: "small/lib.go", Language: "go", SymbolCount: 1},
-		"large/gen.go":  {Path: "large/gen.go", Language: "go", SymbolCount: 99},
+		"small/lib.go": {Path: "small/lib.go", Language: "go", SymbolCount: 1},
+		"large/gen.go": {Path: "large/gen.go", Language: "go", SymbolCount: 99},
 	}
 	// No ranks at all — the graph never ran. Declaration count is the
 	// previous behaviour and must remain the tiebreaker.
@@ -249,5 +265,34 @@ func TestBuildFallsBackToDeclarationCountWithoutRanks(t *testing.T) {
 		Options{MaxDirectories: 1})
 	if len(built.Directories) != 1 || built.Directories[0].Path != "large" {
 		t.Fatalf("directories = %v, want large by declaration count", built.Directories)
+	}
+}
+
+// A map build refreshes once (its Files call) and pins that snapshot for the
+// outline query: the second query must not take the refreshing path.
+func TestBuildPinsItsSnapshotForOutlines(t *testing.T) {
+	index := readyIndex(
+		map[string]repoindex.File{
+			"api.go": {Path: "api.go", Language: "go", SymbolCount: 1},
+		},
+		[]repoindex.Symbol{{Path: "api.go", Name: "Serve", Line: 3}},
+	)
+	result := Build(
+		t.Context(),
+		index,
+		[]string{"api.go"},
+		Options{Depth: DefaultDepth, MaxDirectories: 4, MaxEntryPoints: 2},
+	)
+	if !result.Ready() {
+		t.Fatalf("map = %+v", result)
+	}
+	if len(result.Outlines) != 1 || len(result.Outlines[0].Symbols) != 1 {
+		t.Fatalf("outlines = %+v", result.Outlines)
+	}
+	if index.refreshingQueries != 0 {
+		t.Fatalf(
+			"outline query refreshed %d times, want the pinned snapshot path",
+			index.refreshingQueries,
+		)
 	}
 }

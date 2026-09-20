@@ -632,6 +632,16 @@ stdio MCP 配置示例：
 
 ## 上下文控制
 
+- `execution.base_system`：覆盖默认系统提示词人格。留空使用内置人格加
+  探测到的环境指纹（操作系统与架构、登录 Shell、PATH 上 git/go/node/python3
+  的版本，进程内缓存、单次探测 2 秒上限）；配置后仍受 `base_system` 分区
+  预算约束；
+- 指令文件按三层发现：用户全局层（`~/.qcode/AGENTS.md`，回退
+  `~/.claude/CLAUDE.md`，取第一个存在者）、仓库根（`AGENTS.md` 与
+  `.qcode/instructions.md` 都注入；两者皆无时回退根 `CLAUDE.md`，避免双份）、
+  目录层（工作集触达路径的最近祖先目录下的 `AGENTS.md`，回退 `CLAUDE.md`，
+  最近者胜出、按目录去重，随工作集逐 Turn 重投影）。仓库根先于全局层注入，
+  共享预算紧张时更具体的规则优先存活；
 - `index`：有界符号提取；
 - `repo_map`：有界仓库结构与入口概览；
 - `working_set`：会话触达或 Pin 的路径；只列路径，不放正文。已读路径由

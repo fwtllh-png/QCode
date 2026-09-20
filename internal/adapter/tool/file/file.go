@@ -87,18 +87,19 @@ func newOperation(tools *Tools, kind string) (*operation, error) {
 }
 
 type operationInput struct {
-	Path      string          `json:"path"`
-	Content   string          `json:"content"`
-	Old       string          `json:"old"`
-	New       string          `json:"new"`
-	Patch     string          `json:"patch"`
-	Changes   []changeRequest `json:"changes"`
-	DryRun    bool            `json:"dry_run"`
-	StartLine int             `json:"start_line"`
-	MaxLines  int             `json:"max_lines"`
-	Pages     string          `json:"pages"`
-	Offset    int             `json:"offset"`
-	Limit     int             `json:"limit"`
+	Path        string          `json:"path"`
+	Content     string          `json:"content"`
+	Old         string          `json:"old"`
+	New         string          `json:"new"`
+	Patch       string          `json:"patch"`
+	Changes     []changeRequest `json:"changes"`
+	DryRun      bool            `json:"dry_run"`
+	StartLine   int             `json:"start_line"`
+	MaxLines    int             `json:"max_lines"`
+	Pages       string          `json:"pages"`
+	Offset      int             `json:"offset"`
+	Limit       int             `json:"limit"`
+	Occurrences int             `json:"occurrences"`
 }
 
 type preparedFileMutation struct {
@@ -151,18 +152,30 @@ func (o *operation) PlanEdit(
 	if err != nil {
 		return tool.EditPlan{}, err
 	}
-	var requests []changeRequest
-	switch o.kind {
-	case "file_write":
-		requests = []changeRequest{{Op: opWrite, Path: input.Path, Content: input.Content}}
-	case "file_edit":
-		requests = []changeRequest{{Op: opEdit, Path: input.Path, Old: input.Old, New: input.New}}
-	case "file_apply":
-		requests = input.Changes
-	default:
-		return tool.EditPlan{}, fmt.Errorf("tool %s does not support edit plans", o.kind)
+	requests, err := editRequests(o.kind, input)
+	if err != nil {
+		return tool.EditPlan{}, err
 	}
 	return o.tools.plan(ctx, requests)
+}
+
+// editRequests derives the change list one argument payload decodes into, so
+// planning and proof extraction share a single decode instead of each paying
+// for its own.
+func editRequests(kind string, input operationInput) ([]changeRequest, error) {
+	switch kind {
+	case "file_write":
+		return []changeRequest{{Op: opWrite, Path: input.Path, Content: input.Content}}, nil
+	case "file_edit":
+		return []changeRequest{{
+			Op: opEdit, Path: input.Path, Old: input.Old, New: input.New,
+			Occurrences: input.Occurrences,
+		}}, nil
+	case "file_apply":
+		return input.Changes, nil
+	default:
+		return nil, fmt.Errorf("tool %s does not support edit plans", kind)
+	}
 }
 
 func (o *operation) ExactEditProofs(
@@ -172,19 +185,17 @@ func (o *operation) ExactEditProofs(
 	if o.kind != "file_edit" && o.kind != "file_apply" {
 		return nil, nil
 	}
-	plan, err := o.PlanEdit(ctx, raw)
-	if err != nil {
-		return nil, err
-	}
 	input, err := typed.DecodeStrict[operationInput](raw)
 	if err != nil {
 		return nil, err
 	}
-	requests := input.Changes
-	if o.kind == "file_edit" {
-		requests = []changeRequest{{
-			Op: opEdit, Path: input.Path, Old: input.Old, New: input.New,
-		}}
+	requests, err := editRequests(o.kind, input)
+	if err != nil {
+		return nil, err
+	}
+	plan, err := o.tools.plan(ctx, requests)
+	if err != nil {
+		return nil, err
 	}
 	digests := make(map[string]string, len(plan.Files))
 	for _, file := range plan.Files {
@@ -276,11 +287,18 @@ func (o *operation) Descriptor() tool.Descriptor {
 		properties["content"] = map[string]any{"type": "string"}
 		required = append(required, "content")
 	case "file_edit":
-		description = "Atomically replace one exact text occurrence. path is workspace-relative. " +
+		description = "Atomically replace exact text occurrences. path is workspace-relative. " +
 			"The exact old text is a compare-and-swap precondition; call file_read first " +
-			"when the current text is not already known."
+			"when the current text is not already known. occurrences declares how many " +
+			"times old must appear (default 1): set it to the count search_text or " +
+			"file_read showed to rename every occurrence in one call; a mismatching " +
+			"count fails without changing the file and reports the actual match lines."
 		properties["old"] = map[string]any{"type": "string"}
 		properties["new"] = map[string]any{"type": "string"}
+		properties["occurrences"] = map[string]any{
+			"type":        "integer",
+			"description": "How many times old must appear for the edit to apply. Default 1; set to the observed count to replace every occurrence at once.",
+		}
 		required = append(required, "old", "new")
 	case "file_apply":
 		description = "Apply a set of file changes as one transaction: write, edit, " +
@@ -322,6 +340,10 @@ func (o *operation) Descriptor() tool.Descriptor {
 					"to": map[string]any{
 						"type":        "string",
 						"description": `Destination path for op "move"; it must not exist yet`,
+					},
+					"occurrences": map[string]any{
+						"type":        "integer",
+						"description": `For op "edit": how many times old must appear; default 1, set to the observed count to replace every occurrence at once`,
 					},
 				},
 				"required": []string{"op", "path"}, "additionalProperties": false,

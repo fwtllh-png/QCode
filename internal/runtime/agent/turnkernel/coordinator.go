@@ -17,10 +17,30 @@ type DomainFactStore interface {
 	LoadDomainFacts(context.Context, string) ([]DomainFact, error)
 }
 
+// VerifiedDomainFactStore is a DomainFactStore that accepts batches whose
+// digests and canonical encodings the coordinator already computed. Skipping
+// the redundant per-fact digest recomputation is safe because stores still
+// anchor every batch against the durable tail and decode re-verifies each
+// stored fact.
+type VerifiedDomainFactStore interface {
+	DomainFactStore
+	AppendVerifiedDomainFacts(context.Context, DomainFactBatch) error
+}
+
 type DomainFactBatch struct {
 	TurnID       string
 	ExpectedNext uint64
-	Facts        []DomainFact
+	// Facts share one immutable state per command; commits must not retain or
+	// mutate them beyond the call.
+	Facts []DomainFact
+	// StateEncoding is the canonical JSON encoding of the facts' shared
+	// state. PreviousDigest and PreviousEncoding describe the state of the
+	// previous committed fact and are zero when ExpectedNext is 1. Verified
+	// stores use them to encode without re-digesting or re-reading the
+	// durable tail; other stores may ignore them.
+	StateEncoding    []byte
+	PreviousDigest   string
+	PreviousEncoding []byte
 }
 
 type DomainFactCommit func(context.Context, DomainFactBatch) error
@@ -68,14 +88,16 @@ func (d SynchronousEffectDispatcher) Dispatch(
 }
 
 type TurnCoordinator struct {
-	mu         sync.Mutex
-	turnID     string
-	state      State
-	reducer    Reducer
-	store      DomainFactStore
-	dispatcher EffectDispatcher
-	observer   DomainFactObserver
-	nextFact   uint64
+	mu          sync.Mutex
+	turnID      string
+	state       State
+	reducer     Reducer
+	store       DomainFactStore
+	dispatcher  EffectDispatcher
+	observer    DomainFactObserver
+	nextFact    uint64
+	lastDigest  string
+	lastEncoded []byte
 }
 
 func (c *TurnCoordinator) SetDomainFactObserver(observer DomainFactObserver) {
@@ -157,9 +179,22 @@ func RestoreTurnCoordinator(
 		}
 		restored = cloneState(fact.State)
 	}
+	// Cache the digest and encoding of the durable tail so the next
+	// transition can anchor its batch without re-reading stored facts. The
+	// loop above already verified this digest against the last fact.
+	lastDigest, lastEncoded, err := digestValidated(restored)
+	if err != nil || lastDigest != facts[len(facts)-1].StateDigest {
+		return nil, fmt.Errorf(
+			"restored state diverges from digest at sequence %d: %w",
+			facts[len(facts)-1].Sequence,
+			err,
+		)
+	}
 	coordinator := &TurnCoordinator{
 		turnID: turnID, state: restored, store: store,
-		dispatcher: dispatcher, nextFact: facts[len(facts)-1].Sequence + 1,
+		dispatcher: dispatcher,
+		nextFact:   facts[len(facts)-1].Sequence + 1,
+		lastDigest: lastDigest, lastEncoded: lastEncoded,
 	}
 	for _, id := range sortedEffectIDs(restored.PendingEffects) {
 		if restored.PendingEffects[id].Status != EffectRunning {
@@ -185,6 +220,17 @@ func (c *TurnCoordinator) Snapshot() State {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return cloneState(c.state)
+}
+
+// LastDigest returns the digest of the most recently committed state. It is
+// unavailable before the first committed transition of a new turn.
+func (c *TurnCoordinator) LastDigest() (string, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.lastDigest == "" {
+		return "", false
+	}
+	return c.lastDigest, true
 }
 
 func (c *TurnCoordinator) TurnID() string {
@@ -234,15 +280,21 @@ func (c *TurnCoordinator) transition(
 	if err != nil {
 		return nil, err
 	}
-	digest, err := Digest(transition.State)
+	// Apply validates every state it publishes, so digesting skips
+	// re-validation and reuses the canonical encoding for persistence.
+	digest, encoded, err := digestValidated(transition.State)
 	if err != nil {
 		return nil, err
 	}
+	// Every state published by Apply is immutable, so one defensive copy per
+	// command separates the batch and observer from the coordinator's
+	// working state.
+	stateSnapshot := cloneState(transition.State)
 	facts := make([]DomainFact, 0, max(1, len(transition.Events)))
 	if len(transition.Events) == 0 {
 		facts = append(facts, DomainFact{
 			TurnID: c.turnID, Sequence: c.nextFact,
-			Command: CommandName(command), State: cloneState(transition.State),
+			Command: CommandName(command), State: stateSnapshot,
 			StateDigest: digest,
 		})
 	} else {
@@ -250,24 +302,24 @@ func (c *TurnCoordinator) transition(
 			facts = append(facts, DomainFact{
 				TurnID: c.turnID, Sequence: c.nextFact + uint64(index),
 				Command: CommandName(command), Event: event,
-				State: cloneState(transition.State), StateDigest: digest,
+				State: stateSnapshot, StateDigest: digest,
 			})
 		}
 	}
+	previousDigest, previousEncoding := c.lastDigest, c.lastEncoded
+	if c.nextFact == 1 {
+		previousDigest, previousEncoding = "", nil
+	}
 	if commit == nil {
-		commit = func(ctx context.Context, batch DomainFactBatch) error {
-			return c.store.AppendDomainFacts(
-				ctx,
-				batch.TurnID,
-				batch.ExpectedNext,
-				batch.Facts,
-			)
-		}
+		commit = c.defaultCommit()
 	}
 	if err := commit(ctx, DomainFactBatch{
-		TurnID:       c.turnID,
-		ExpectedNext: c.nextFact,
-		Facts:        cloneDomainFacts(facts),
+		TurnID:           c.turnID,
+		ExpectedNext:     c.nextFact,
+		Facts:            facts,
+		StateEncoding:    encoded,
+		PreviousDigest:   previousDigest,
+		PreviousEncoding: previousEncoding,
 	}); err != nil {
 		return nil, protocol.NewFault(
 			protocol.CodeUnavailable,
@@ -283,9 +335,25 @@ func (c *TurnCoordinator) transition(
 		)
 	}
 	c.state = transition.State
+	c.lastDigest = digest
+	c.lastEncoded = encoded
 	c.nextFact += uint64(len(facts))
 	c.observeFacts(facts)
 	return append([]Effect(nil), transition.Effects...), nil
+}
+
+func (c *TurnCoordinator) defaultCommit() DomainFactCommit {
+	if verified, ok := c.store.(VerifiedDomainFactStore); ok {
+		return verified.AppendVerifiedDomainFacts
+	}
+	return func(ctx context.Context, batch DomainFactBatch) error {
+		return c.store.AppendDomainFacts(
+			ctx,
+			batch.TurnID,
+			batch.ExpectedNext,
+			batch.Facts,
+		)
+	}
 }
 
 func (c *TurnCoordinator) observeFacts(facts []DomainFact) {

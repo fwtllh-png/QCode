@@ -5,15 +5,16 @@ import (
 	"strings"
 
 	"github.com/fwtllh-png/QCode/internal/adapter/provider"
+	"github.com/fwtllh-png/QCode/internal/persist/repoindex"
 	agentcontext "github.com/fwtllh-png/QCode/internal/runtime/agent/context"
 	"github.com/fwtllh-png/QCode/internal/runtime/agent/repository"
-	"github.com/fwtllh-png/QCode/internal/persist/repoindex"
 )
 
 const (
 	PartitionRepoMap          = "repo_map"
 	PartitionWorkingSetLedger = "working_set_ledger"
 	PartitionEvidence         = "evidence"
+	PartitionDirectoryRules   = "directory_rules"
 )
 
 // truncationNotice is reserved inside each section budget.
@@ -26,8 +27,13 @@ type TurnOptions struct {
 	RepoMap    repository.Map
 	WorkingSet []agentcontext.WorkingSetEntry
 	Evidence   agentcontext.EvidenceSnapshot
-	Budgets    map[string]Budget
-	Tokens     TokenCounter
+	// DirectoryInstructions are the nearest sub-root instruction files for
+	// the directories the working set touches. The section carries no turn
+	// number: its content only changes when a rule file changes, so the world
+	// baseline digest keeps it stable across turns.
+	DirectoryInstructions []DirectoryInstruction
+	Budgets               map[string]Budget
+	Tokens                TokenCounter
 }
 
 // TurnContext is a snapshot or replacement delta of repository state.
@@ -98,6 +104,13 @@ func AssembleTurn(options TurnOptions) TurnContext {
 	if options.RepoMap.Status != "" {
 		_, _ = appendSection(PartitionRepoMap, renderRepoMap(options), "session://repo-map")
 	}
+	if len(options.DirectoryInstructions) != 0 {
+		_, _ = appendSection(
+			PartitionDirectoryRules,
+			renderDirectoryRules(options),
+			"session://directory-rules",
+		)
+	}
 	if len(options.WorkingSet) != 0 {
 		text := renderWorkingSet(options)
 		retained, reason := appendSection(
@@ -116,7 +129,10 @@ func AssembleTurn(options TurnOptions) TurnContext {
 func renderRepoMap(options TurnOptions) string {
 	built := options.RepoMap
 	var b strings.Builder
-	fmt.Fprintf(&b, "[repo_map turn=%d index=%s]\n", options.Turn, built.Status)
+	// No turn number: the section digest must only change when the indexed
+	// repository changes, so an untouched map stays in the world baseline
+	// instead of being re-sent as a fresh delta every turn.
+	fmt.Fprintf(&b, "[repo_map index=%s]\n", built.Status)
 	if !built.Ready() {
 		// Naming the reason matters more than the map: a model that reads "not
 		// found" as "does not exist" will draw the wrong conclusion.
@@ -170,6 +186,21 @@ func renderRepoMap(options TurnOptions) string {
 				b.WriteString("    (more declarations not listed)\n")
 			}
 		}
+	}
+	return b.String()
+}
+
+// renderDirectoryRules injects the local rules of the directories the session
+// is actually working in. Root-level rules are not repeated.
+func renderDirectoryRules(options TurnOptions) string {
+	var b strings.Builder
+	b.WriteString("[directory_rules]\n")
+	b.WriteString(
+		"Local rules for directories this session is working in. " +
+			"Workspace-root rules above still apply.\n",
+	)
+	for _, instruction := range options.DirectoryInstructions {
+		fmt.Fprintf(&b, "%s — from %s:\n%s\n", instruction.Dir, instruction.Path, instruction.Text)
 	}
 	return b.String()
 }

@@ -151,6 +151,12 @@ func RecoverableFailure(err error) (string, bool) {
 					"until it matches exactly once"
 			}
 		}
+		if len(hint.MatchLines) != 0 {
+			content += fmt.Sprintf(
+				"; match_lines=%v",
+				hint.MatchLines,
+			)
+		}
 		if hint.CurrentExcerpt != "" {
 			content += fmt.Sprintf(
 				"; current_excerpt_lines=%d-%d:\n%s",
@@ -234,6 +240,9 @@ func FailureMetadata(err error) map[string]any {
 			metadata["start_line"] = hint.StartLine
 			metadata["end_line"] = hint.EndLine
 			metadata["current_excerpt"] = hint.CurrentExcerpt
+		}
+		if len(hint.MatchLines) != 0 {
+			metadata["match_lines"] = append([]int(nil), hint.MatchLines...)
 		}
 		if len(hint.CandidatePaths) != 0 {
 			metadata["candidate_paths"] = append(

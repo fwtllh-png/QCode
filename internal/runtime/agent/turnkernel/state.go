@@ -150,7 +150,7 @@ type ProgressState struct {
 	SampleIdentity       string            `json:"sample_identity,omitempty"`
 	PendingIdentity      string            `json:"pending_identity,omitempty"`
 	ObservationKey       string            `json:"observation_key,omitempty"`
-	SeenObservations     []string          `json:"seen_observations,omitempty"`
+	SeenObservations     *ObservationSet   `json:"seen_observations,omitempty"`
 	PendingResultDigests []string          `json:"pending_result_digests,omitempty"`
 	ObservedSamples      uint32            `json:"observed_samples"`
 	NoProgressSamples    uint32            `json:"no_progress_samples"`

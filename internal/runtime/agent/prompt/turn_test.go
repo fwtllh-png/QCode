@@ -62,7 +62,7 @@ func TestAssembleTurnRendersBothSectionsAsSystemMessages(t *testing.T) {
 	}
 	mapText := assembled.Messages[0].Text()
 	for _, want := range []string{
-		"[repo_map turn=7 index=ready]", "12 indexed files, 40 declarations",
+		"[repo_map index=ready]", "12 indexed files, 40 declarations",
 		"build: go.mod", "entry: cmd/app/main.go",
 		"internal/store — 8 files, 30 declarations, go",
 		"(3 more directories not listed)",
@@ -242,9 +242,26 @@ func TestAssembleTurnDigestsAreStableAcrossIdenticalTurns(t *testing.T) {
 			t.Fatalf("digest %d differs: %q vs %q", index, first.Receipts[index].Digest, second.Receipts[index].Digest)
 		}
 	}
-	// A different turn number is a different section, so the digest must move.
+	// A different turn number with an identical repository must not move the
+	// repo-map digest: an untouched map stays in the world baseline instead
+	// of being re-sent as a fresh delta every turn. The working set may move,
+	// because its entries legitimately reference the turn that touched them.
 	options.Turn = 5
-	if AssembleTurn(options).Receipts[0].Digest == first.Receipts[0].Digest {
-		t.Fatal("digest ignored the turn number")
+	moved := AssembleTurn(options)
+	if moved.Receipts[0].Digest != first.Receipts[0].Digest {
+		t.Fatal("repo-map digest moved with the turn number")
+	}
+	if !strings.Contains(moved.Messages[0].Text(), "[repo_map index=ready]") {
+		t.Fatalf("repo map still embeds turn-scoped text: %q", moved.Messages[0].Text())
+	}
+	var workingSetMoved bool
+	for index := range moved.Receipts {
+		if moved.Receipts[index].Kind == PartitionWorkingSetLedger &&
+			moved.Receipts[index].Digest != first.Receipts[index].Digest {
+			workingSetMoved = true
+		}
+	}
+	if !workingSetMoved {
+		t.Fatal("working-set digest ignored its turn references")
 	}
 }

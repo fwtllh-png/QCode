@@ -160,9 +160,11 @@ func Open(ctx context.Context, path string, options ...Options) (*Store, error) 
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite database: %w", err)
 	}
-	// Keeping one live connection ensures every operation uses the connection
-	// configured by the DSN pragmas. Separate Store handles still exercise
-	// SQLite's normal cross-connection locking behavior.
+	// The modernc driver applies DSN pragmas to every new connection, so the
+	// single connection is not required for them. It serializes in-process
+	// writers, keeping DEFERRED read-then-write transactions (sequence
+	// reservation, lifecycle projection) from racing into
+	// SQLITE_BUSY_SNAPSHOT; WAL still allows separate read handles.
 	db.SetMaxOpenConns(1)
 	db.SetMaxIdleConns(1)
 
@@ -218,11 +220,23 @@ func Open(ctx context.Context, path string, options ...Options) (*Store, error) 
 	return store, nil
 }
 
+// synchronousModeNormal is PRAGMA synchronous=1 (NORMAL). WAL + NORMAL syncs
+// the write-ahead log at checkpoints instead of on every commit, which
+// matters because each event append commits several transactions. Durability
+// contract: events-v1.jsonl keeps its per-append fsync and stays the log of
+// record; the SQLite tables are projections reconciled from it. After an OS
+// crash the projections — including the high-watermark rows that pin
+// sequence numbers for non-persisted streaming noise — may roll back to the
+// last checkpoint; the single-process runtime loses its in-flight
+// subscribers in the same crash, so no live cursor can observe reuse.
+const synchronousModeNormal = 1
+
 func sqliteDSN(path string, busyTimeout time.Duration) string {
 	u := &url.URL{Scheme: "file", Path: filepath.ToSlash(path)}
 	query := u.Query()
 	query.Add("_pragma", "foreign_keys(ON)")
 	query.Add("_pragma", "busy_timeout("+strconv.FormatInt(busyTimeout.Milliseconds(), 10)+")")
+	query.Add("_pragma", "synchronous(NORMAL)")
 	u.RawQuery = query.Encode()
 	return u.String()
 }
@@ -309,6 +323,16 @@ func (s *Store) verifyPragmas(ctx context.Context, timeout time.Duration) error 
 	}
 	if busyTimeout != timeout.Milliseconds() {
 		return fmt.Errorf("sqlite busy timeout is %dms, want %dms", busyTimeout, timeout.Milliseconds())
+	}
+	var synchronous int
+	if err := s.db.QueryRowContext(ctx, "PRAGMA synchronous").Scan(&synchronous); err != nil {
+		return s.classify("verify synchronous mode", err)
+	}
+	if synchronous != synchronousModeNormal {
+		return fmt.Errorf(
+			"sqlite synchronous mode is %d, want %d (NORMAL)",
+			synchronous, synchronousModeNormal,
+		)
 	}
 	return nil
 }

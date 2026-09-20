@@ -18,7 +18,7 @@ func TestEnsureBuildsThenRefreshesOnlyWhatChanged(t *testing.T) {
 	writeFile(t, root, "util.go", "package api\n\nfunc Helper() {}\n")
 	index, store := newIndex(t, root, Options{})
 
-	snapshot, err := index.Ensure(t.Context())
+	snapshot, err := ensureSettled(t, index)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -36,7 +36,7 @@ func TestEnsureBuildsThenRefreshesOnlyWhatChanged(t *testing.T) {
 	// Only the changed file is read again: the untouched one keeps the exact row
 	// the first build wrote, timestamp included.
 	writeFile(t, root, "api.go", "package api\n\nfunc Serve() {}\n\nfunc Close() {}\n")
-	if _, err := index.Ensure(t.Context()); err != nil {
+	if _, err := ensureSettled(t, index); err != nil {
 		t.Fatal(err)
 	}
 	after, err := store.Files(t.Context())
@@ -63,14 +63,14 @@ func TestEnsurePrunesDeletedFiles(t *testing.T) {
 	writeFile(t, root, "kept.go", "package api\n\nfunc Kept() {}\n")
 	writeFile(t, root, "gone.go", "package api\n\nfunc Gone() {}\n")
 	index, _ := newIndex(t, root, Options{})
-	if _, err := index.Ensure(t.Context()); err != nil {
+	if _, err := ensureSettled(t, index); err != nil {
 		t.Fatal(err)
 	}
 
 	if err := os.Remove(filepath.Join(root, "gone.go")); err != nil {
 		t.Fatal(err)
 	}
-	snapshot, err := index.Ensure(t.Context())
+	snapshot, err := ensureSettled(t, index)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,7 +90,7 @@ func TestEnsureReusesGraphUntilContentChanges(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, root, "api.go", "package api\nfunc Serve() {}\n")
 	index, store := newIndex(t, root, Options{})
-	if _, err := index.Ensure(t.Context()); err != nil {
+	if _, err := ensureSettled(t, index); err != nil {
 		t.Fatal(err)
 	}
 	// A write-rejecting trigger makes accidental rebuilds observable even though
@@ -100,30 +100,30 @@ func TestEnsureReusesGraphUntilContentChanges(t *testing.T) {
 		BEGIN SELECT RAISE(FAIL, 'graph write rejected'); END`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := index.Ensure(t.Context()); err != nil || index.graphFiles == nil {
+	if _, err := ensureSettled(t, index); err != nil || index.graphFiles == nil {
 		t.Fatalf("unchanged graph rebuilt: %v", err)
 	}
 	now := time.Now().Add(time.Hour)
 	if err := os.Chtimes(filepath.Join(root, "api.go"), now, now); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := index.Ensure(t.Context()); err != nil || index.graphFiles == nil {
+	if _, err := ensureSettled(t, index); err != nil || index.graphFiles == nil {
 		t.Fatalf("timestamp-only change rebuilt graph: %v", err)
 	}
 	writeFile(t, root, "api.go", "package api\nfunc Changed() {}\n")
-	if _, err := index.Ensure(t.Context()); err != nil || index.graphFiles != nil {
+	if _, err := ensureSettled(t, index); err != nil || index.graphFiles != nil {
 		t.Fatalf("failed graph build was cached: %v", err)
 	}
 	if _, err := store.db.ExecContext(t.Context(), "DROP TRIGGER reject_rank_write"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := index.Ensure(t.Context()); err != nil || index.graphFiles == nil {
+	if _, err := ensureSettled(t, index); err != nil || index.graphFiles == nil {
 		t.Fatalf("graph build did not recover: %v", err)
 	}
 	if err := os.Remove(filepath.Join(root, "api.go")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := index.Ensure(t.Context()); err != nil || len(index.graphFiles) != 0 {
+	if _, err := ensureSettled(t, index); err != nil || len(index.graphFiles) != 0 {
 		t.Fatalf("deleted graph node retained: %v", err)
 	}
 }
@@ -132,7 +132,7 @@ func TestEnsureRebuildsWhenTheIndexerVersionMoved(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, root, "api.go", "package api\n\nfunc Serve() {}\n")
 	index, store := newIndex(t, root, Options{})
-	if _, err := index.Ensure(t.Context()); err != nil {
+	if _, err := ensureSettled(t, index); err != nil {
 		t.Fatal(err)
 	}
 	// Rows produced by rules that no longer exist are discarded rather than mixed
@@ -182,7 +182,7 @@ func TestEnsureRecordsNoCompletionWhenCancelled(t *testing.T) {
 
 	// The next uncancelled call completes, so a cancelled build costs work and not
 	// correctness.
-	if snapshot, err = index.Ensure(t.Context()); err != nil || !snapshot.Ready() {
+	if snapshot, err = ensureSettled(t, index); err != nil || !snapshot.Ready() {
 		t.Fatalf("snapshot = %+v, err = %v", snapshot, err)
 	}
 	if snapshot.Meta.FileCount != 3 {
@@ -198,7 +198,7 @@ func TestEnsureDegradesWhenTheStoreCannotBeRead(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	snapshot, err := index.Ensure(t.Context())
+	snapshot, err := ensureSettled(t, index)
 	if err != nil {
 		t.Fatalf("a broken index failed the caller: %v", err)
 	}
@@ -212,7 +212,7 @@ func TestEnsureDegradesWhenTheStoreCannotBeRead(t *testing.T) {
 	// Repeated calls stop rebuilding once the store has failed twice: a database
 	// that cannot be read will not start working within one session.
 	for attempt := 0; attempt < 3; attempt++ {
-		if _, err := index.Ensure(t.Context()); err != nil {
+		if _, err := ensureSettled(t, index); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -227,7 +227,7 @@ func TestEnsureReportsTruncationAtTheFileCeiling(t *testing.T) {
 		writeFile(t, root, name, "package api\n\nfunc F() {}\n")
 	}
 	index, _ := newIndex(t, root, Options{MaxFiles: 2})
-	snapshot, err := index.Ensure(t.Context())
+	snapshot, err := ensureSettled(t, index)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -241,7 +241,7 @@ func TestEnsureIndexesUnsupportedAndRejectedFilesWithoutSymbols(t *testing.T) {
 	writeFile(t, root, "README.md", "# title\n")
 	writeFile(t, root, "big.go", "package api\n\nfunc Huge() {}\n")
 	index, store := newIndex(t, root, Options{MaxFileBytes: 8})
-	if _, err := index.Ensure(t.Context()); err != nil {
+	if _, err := ensureSettled(t, index); err != nil {
 		t.Fatal(err)
 	}
 	files, err := store.Files(t.Context())
@@ -269,7 +269,7 @@ func TestEnsureIndexesUnsupportedAndRejectedFilesWithoutSymbols(t *testing.T) {
 
 func TestNilIndexBehavesAsDisabled(t *testing.T) {
 	var index *Index
-	snapshot, err := index.Ensure(t.Context())
+	snapshot, err := ensureSettled(t, index)
 	if err != nil || snapshot.Status != StatusDisabled {
 		t.Fatalf("snapshot = %+v, err = %v", snapshot, err)
 	}
@@ -291,7 +291,7 @@ func TestSnapshotReportsPendingBeforeTheFirstBuild(t *testing.T) {
 	if snapshot := index.Snapshot(); snapshot.Status != StatusPending || snapshot.Ready() {
 		t.Fatalf("snapshot before the first build = %+v", snapshot)
 	}
-	if _, err := index.Ensure(t.Context()); err != nil {
+	if _, err := ensureSettled(t, index); err != nil {
 		t.Fatal(err)
 	}
 	if snapshot := index.Snapshot(); !snapshot.Ready() {
@@ -358,6 +358,15 @@ func TestRelatedTestsFollowsNamingConventions(t *testing.T) {
 	}
 }
 
+// ensureSettled refreshes and waits out the background graph builder, so a
+// test's graph and rank assertions see the committed result.
+func ensureSettled(t *testing.T, index *Index) (Snapshot, error) {
+	t.Helper()
+	snapshot, err := index.Ensure(t.Context())
+	index.waitGraphSettled()
+	return snapshot, err
+}
+
 func newIndex(t *testing.T, root string, options Options) (*Index, *Store) {
 	t.Helper()
 	store, err := NewStore(openDatabase(t), root)
@@ -404,7 +413,7 @@ func TestEnsureRecordsLayeredDetailForEveryLanguage(t *testing.T) {
 	writeFile(t, root, "tool.kt", "class Tool {\n    fun apply(x: Int) {}\n}\n")
 	index, _ := newIndex(t, root, Options{})
 
-	if _, err := index.Ensure(t.Context()); err != nil {
+	if _, err := ensureSettled(t, index); err != nil {
 		t.Fatal(err)
 	}
 	found, snapshot, err := index.Symbols(t.Context(), Query{Name: "", Paths: []string{"api.go"}})
@@ -450,7 +459,7 @@ func TestStoreRoundTripsReferences(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, root, "api.go", "package api\n\nfunc Serve() error {\n\treturn Helper(1)\n}\n")
 	index, store := newIndex(t, root, Options{})
-	if _, err := index.Ensure(t.Context()); err != nil {
+	if _, err := ensureSettled(t, index); err != nil {
 		t.Fatal(err)
 	}
 	rows, err := store.db.Query(
@@ -483,7 +492,7 @@ func TestSyntaxIndexPersistsDeclarationsAndImports(t *testing.T) {
 	writeFile(t, root, "web/app.tsx", "import {\n render\n} from './view';\nexport const App = () => <div/>;\nconst text = `\nfunction Fake(){}\n`;\n")
 	writeFile(t, root, "web/view.ts", "export function render() {}\n")
 	index, store := newIndex(t, root, Options{})
-	if _, err := index.Ensure(t.Context()); err != nil {
+	if _, err := ensureSettled(t, index); err != nil {
 		t.Fatal(err)
 	}
 	found, _, err := index.Symbols(t.Context(), Query{Name: "App", Exact: true})

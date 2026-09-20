@@ -66,9 +66,10 @@ func (o RankOptions) withDefaults() RankOptions {
 
 // rebuildGraph resolves the recorded import specifiers into edges, adds the
 // reference edges the identifier counts imply, computes file ranks, and
-// replaces the stored edge and rank rows for the root. It runs at the end of a
-// refresh, when the file set is complete; a failure degrades the ranks (the
-// map falls back to declaration counts) without failing the refresh.
+// replaces the stored edge and rank rows for the root. It runs in the
+// background off the refresh path: the stored graph describes the last
+// completed build, and a failure degrades the ranks (the map falls back to
+// declaration counts) without failing any refresh.
 func (i *Index) rebuildGraph(ctx context.Context, files map[string]File) error {
 	edges, err := i.importEdges(ctx, files)
 	if err != nil {
@@ -106,6 +107,17 @@ func (i *Index) importEdges(ctx context.Context, files map[string]File) ([]graph
 	if err != nil {
 		return nil, err
 	}
+	return i.importEdgesFrom(specs, files), nil
+}
+
+// importEdgesFrom resolves the given sources' specifiers. Import resolution
+// depends on a source's own specifiers and the file path set only, so
+// restricting the resolution to a source set is exact as long as the path set
+// did not move.
+func (i *Index) importEdgesFrom(
+	specs map[string][]string,
+	files map[string]File,
+) []graphEdge {
 	// Package directories once, so a Go import's fan-out costs a map lookup
 	// rather than a scan per specifier.
 	packageDirs := make(map[string][]string)
@@ -157,7 +169,7 @@ func (i *Index) importEdges(ctx context.Context, files map[string]File) ([]graph
 		pair[key] = struct{}{}
 		deduplicated = append(deduplicated, edge)
 	}
-	return deduplicated, nil
+	return deduplicated
 }
 
 func sortedFileKeys(files map[string]File) []string {
@@ -185,6 +197,19 @@ func sortedPaths(specs map[string][]string) []string {
 // without a starting point.
 func personalPageRank(files map[string]File, edges []graphEdge, options RankOptions) map[string]float64 {
 	options = options.withDefaults()
+	// Canonical edge order keeps the float accumulation reproducible no
+	// matter which path assembled the edge multiset: a full build
+	// concatenates feeds in pipeline order, an incremental build reads the
+	// sorted edge table.
+	sort.Slice(edges, func(x, y int) bool {
+		if edges[x].Src != edges[y].Src {
+			return edges[x].Src < edges[y].Src
+		}
+		if edges[x].Dst != edges[y].Dst {
+			return edges[x].Dst < edges[y].Dst
+		}
+		return edges[x].Kind < edges[y].Kind
+	})
 	paths := make([]string, 0, len(files))
 	for path := range files {
 		paths = append(paths, path)

@@ -3,6 +3,10 @@ package wire
 import (
 	"context"
 	"fmt"
+	"os"
+	"strings"
+
+	"github.com/fwtllh-png/QCode/internal/platform/envprobe"
 
 	sessionhistory "github.com/fwtllh-png/QCode/internal/persist/history"
 	persiststate "github.com/fwtllh-png/QCode/internal/persist/state"
@@ -37,11 +41,22 @@ func (agentModule) Build(ctx context.Context, state *buildState) error {
 		execution.TurnBudgetTokens,
 		execution.BudgetTokens,
 	)
+	baseSystem := strings.TrimSpace(execution.BaseSystem)
+	if baseSystem == "" {
+		baseSystem = promptcontext.DefaultBaseSystem(
+			execution.Workspace, envprobe.Fingerprint(),
+		)
+	}
+	home := ""
+	if resolved, err := os.UserHomeDir(); err == nil {
+		home = resolved
+	}
 	prompt, err := promptcontext.Assemble(promptcontext.Options{
-		BaseSystem: "You are a software engineering agent.",
+		BaseSystem: baseSystem,
 
 		ToolPrefix: toolPrefix,
 		Budgets:    budgets,
+		Home:       home,
 
 		MemoryEnabled: false,
 		Constitution:  session.constitutionPrompt, WorkingSet: promptWorkingSet(state.options.WorkingSet), Workspace: execution.Workspace,
@@ -61,6 +76,7 @@ func (agentModule) Build(ctx context.Context, state *buildState) error {
 		state.platform.repositoryIndex,
 		snapshot.Config.Context,
 		budgets,
+		execution.Workspace,
 	)
 	workspaceTurnGate, approvalPosture := engineSecurityPolicy(state)
 	reasoningEffort := effectiveReasoningEffort(route, execution.ReasoningEffort)

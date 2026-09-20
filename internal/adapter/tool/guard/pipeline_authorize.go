@@ -272,6 +272,10 @@ func revalidateApprovedEdit(
 			Reason: "approval does not identify the displayed edit plan",
 		}
 	}
+	// Re-planning on purpose: the approval paused while the workspace could
+	// have moved, and a fresh plan whose ID differs from the approved one is
+	// the drift signal. Caching the preview here would silence exactly the
+	// check this function exists to make.
 	current, err := executor.(tool.EditPlanner).PlanEdit(ctx, invocation.Arguments)
 	if err != nil {
 		return fmt.Errorf("revalidate workspace edit: %w", err)

@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 
 	"github.com/fwtllh-png/QCode/internal/adapter/model"
 	"github.com/fwtllh-png/QCode/internal/adapter/provider"
@@ -76,6 +77,42 @@ func BuildPrefixManifest(
 			return PrefixManifest{}, estimateErr
 		}
 		manifest.Items = append(manifest.Items, PrefixItem{item.ID, item.Kind, tokens})
+	}
+	if definitions := snapshot.Definitions(); len(definitions) != 0 {
+		encoded, encodeErr := json.Marshal(definitions)
+		if encodeErr != nil {
+			return PrefixManifest{}, encodeErr
+		}
+		manifest.ToolDefinitionDigest = prefixDigest(encoded)
+	}
+	return manifest, nil
+}
+
+// BuildPrefixManifestFromMeasurement builds the manifest from a measurement
+// the same snapshot already produced, reusing its context digest and per-item
+// token estimates instead of re-estimating the whole context.
+func BuildPrefixManifestFromMeasurement(
+	snapshot agentcontext.MessageSnapshot,
+	measurement agentcontext.Measurement,
+	routeDigest string,
+	propertyDigest string,
+) (PrefixManifest, error) {
+	refs := snapshot.ItemRefs()
+	if len(refs) != len(measurement.ItemTokens) {
+		return PrefixManifest{}, fmt.Errorf(
+			"prefix measurement covers %d of %d snapshot items",
+			len(measurement.ItemTokens), len(refs),
+		)
+	}
+	manifest := PrefixManifest{
+		RouteDigest: routeDigest, PropertyDigest: propertyDigest,
+		ContextDigest: measurement.Data.ContextDigest,
+		Items:         make([]PrefixItem, 0, len(refs)),
+	}
+	for index, ref := range refs {
+		manifest.Items = append(manifest.Items, PrefixItem{
+			ref.ID, ref.Kind, measurement.ItemTokens[index],
+		})
 	}
 	if definitions := snapshot.Definitions(); len(definitions) != 0 {
 		encoded, encodeErr := json.Marshal(definitions)

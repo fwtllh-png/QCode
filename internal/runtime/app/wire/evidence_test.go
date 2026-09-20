@@ -12,12 +12,12 @@ func TestRepoContextCarriesEvidenceAndItsBudget(t *testing.T) {
 	settings.RepoMap.Enabled, settings.WorkingSet.Enabled = false, false
 	// Evidence alone is enough to need the tail: it describes the thread, not the
 	// repository, so it works in a session with no index.
-	if newRepoContext(nil, settings, nil) == nil {
+	if newRepoContext(nil, settings, nil, "") == nil {
 		t.Fatal("evidence alone did not produce a tail provider")
 	}
 
 	settings.Evidence.Enabled = false
-	if newRepoContext(nil, settings, nil) != nil {
+	if newRepoContext(nil, settings, nil, "") != nil {
 		t.Fatal("all three sections off still produced a tail provider")
 	}
 

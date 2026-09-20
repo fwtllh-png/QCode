@@ -45,6 +45,10 @@ type changeRequest struct {
 	Old     string `json:"old"`
 	New     string `json:"new"`
 	To      string `json:"to"`
+	// Occurrences declares how many times Old must appear for the edit to
+	// apply. Zero or one means exactly once; a larger count renames every
+	// occurrence in one compare-and-swap step.
+	Occurrences int `json:"occurrences"`
 }
 
 func (r changeRequest) validate() error {
@@ -443,7 +447,7 @@ func (x *transaction) compose(request changeRequest) error {
 		if !planned.exists {
 			return errors.New("file does not exist")
 		}
-		next, err := replaceOnce(planned.after, request.Old, request.New)
+		next, err := replaceExact(planned.after, request.Old, request.New, request.Occurrences)
 		if err != nil {
 			return err
 		}
@@ -531,40 +535,63 @@ func changePrecondition(index int, request changeRequest, err error) error {
 			StartLine:      match.startLine,
 			EndLine:        match.endLine,
 			CurrentExcerpt: match.excerpt,
+			MatchLines:     match.matchLines,
 		})
 	}
 	return tool.Precondition(wrapped)
 }
 
 type editMatchError struct {
-	count     int
-	startLine int
-	endLine   int
-	excerpt   string
+	count      int
+	declared   int
+	startLine  int
+	endLine    int
+	excerpt    string
+	matchLines []int
 }
 
 func (e *editMatchError) Error() string {
-	return fmt.Sprintf("old text matched %d times, want exactly once", e.count)
+	want := "once"
+	if e.declared > 1 {
+		want = fmt.Sprintf("%d", e.declared)
+	}
+	if len(e.matchLines) != 0 {
+		return fmt.Sprintf(
+			"old text matched %d times at lines %v, want exactly %s",
+			e.count, e.matchLines, want,
+		)
+	}
+	return fmt.Sprintf("old text matched %d times, want exactly %s", e.count, want)
 }
 
-// replaceOnce replaces the single occurrence of old. Anything else is a failed
-// precondition: zero matches means the model is editing text it never read, and
-// several means it cannot know which one it hit.
-func replaceOnce(data []byte, old, new string) ([]byte, error) {
+// replaceExact replaces exactly occurrences copies of old. Anything else is a
+// failed precondition: zero matches means the model is editing text it never
+// read, and a different count means the file drifted from what was declared.
+func replaceExact(data []byte, old, new string, occurrences int) ([]byte, error) {
 	if isBinary(data) {
 		return nil, errors.New("binary file cannot be edited")
 	}
+	if occurrences <= 1 {
+		occurrences = 1
+	}
 	content := string(data)
-	if count := strings.Count(content, old); count != 1 {
-		excerpt, startLine, endLine := closestEditExcerpt(content, old)
+	if count := strings.Count(content, old); count != occurrences {
+		excerpt, startLine, endLine, matchLines := closestEditExcerpt(content, old)
 		return nil, &editMatchError{
-			count: count, startLine: startLine, endLine: endLine, excerpt: excerpt,
+			count: count, declared: occurrences,
+			startLine: startLine, endLine: endLine,
+			excerpt: excerpt, matchLines: matchLines,
 		}
 	}
-	return []byte(strings.Replace(content, old, new, 1)), nil
+	return []byte(strings.Replace(content, old, new, occurrences)), nil
 }
 
-func closestEditExcerpt(content, old string) (string, int, int) {
+// closestEditExcerpt locates the failing edit for the recovery hint: a
+// unique compacted prefix anchors an excerpt around one match, and when no
+// anchor is unique — exactly the repeated-code case that made the count
+// exceed one — every matching line number is reported instead, so the model
+// can disambiguate instead of re-reading the file.
+func closestEditExcerpt(content, old string) (string, int, int, []int) {
 	lines := strings.Split(content, "\n")
 	compactLines := make([]string, len(lines))
 	starts := make([]int, len(lines))
@@ -606,10 +633,35 @@ func closestEditExcerpt(content, old string) (string, int, int) {
 			if len(excerpt) > 2000 {
 				excerpt = excerpt[:2000]
 			}
-			return excerpt, first + 1, last
+			return excerpt, first + 1, last, nil
 		}
 	}
-	return "", 0, 0
+	return "", 0, 0, editMatchLines(content, old)
+}
+
+// editMatchLines lists the one-based line numbers of every exact occurrence
+// of old. The count is capped at the excerpt scale (twenty line numbers weigh
+// less than the 2 KiB excerpt the unique-anchor path may already return), so
+// a pathological file cannot turn the error into a second copy of the
+// content.
+func editMatchLines(content, old string) []int {
+	const maxMatchLines = 20
+	var lines []int
+	line := 1
+	for offset := 0; offset+len(old) <= len(content); {
+		index := strings.Index(content[offset:], old)
+		if index < 0 {
+			break
+		}
+		line += strings.Count(content[offset:offset+index], "\n")
+		if len(lines) < maxMatchLines {
+			lines = append(lines, line)
+		} else {
+			return lines
+		}
+		offset += index + len(old)
+	}
+	return lines
 }
 
 // formatApplied renders the model-visible summary of a committed transaction.

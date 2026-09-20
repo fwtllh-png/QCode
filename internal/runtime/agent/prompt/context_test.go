@@ -237,3 +237,110 @@ func TestHeuristicTokenCounterCountsDenseScriptPerRune(t *testing.T) {
 		t.Fatalf("empty count = %d", got)
 	}
 }
+
+// The global user layer and the CLAUDE.md compatibility fallback extend the
+// instruction stack without double-injecting repositories that maintain both
+// file families.
+func TestAssembleInstructionLayers(t *testing.T) {
+	t.Run("global layer appends after workspace rules", func(t *testing.T) {
+		workspace := t.TempDir()
+		home := t.TempDir()
+		if err := os.WriteFile(filepath.Join(workspace, "AGENTS.md"), []byte("repo rules"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(filepath.Join(home, ".qcode"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(home, ".qcode", "AGENTS.md"), []byte("user rules"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		context, err := Assemble(Options{
+			BaseSystem: "base", Workspace: workspace, Home: home,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := []string{"base", "repo rules", "user rules"}
+		if len(context.Messages) != len(want) {
+			t.Fatalf("messages = %+v", context.Messages)
+		}
+		for index, text := range want {
+			if context.Messages[index].Text() != text {
+				t.Fatalf("message %d = %q, want %q", index, context.Messages[index].Text(), text)
+			}
+		}
+	})
+
+	t.Run("CLAUDE.md is a fallback, not a duplicate", func(t *testing.T) {
+		workspace := t.TempDir()
+		if err := os.WriteFile(filepath.Join(workspace, "CLAUDE.md"), []byte("claude rules"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		context, err := Assemble(Options{BaseSystem: "base", Workspace: workspace})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(context.Messages) != 2 || context.Messages[1].Text() != "claude rules" {
+			t.Fatalf("messages = %+v", context.Messages)
+		}
+
+		both := t.TempDir()
+		if err := os.WriteFile(filepath.Join(both, "AGENTS.md"), []byte("agents rules"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(both, "CLAUDE.md"), []byte("claude rules"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		context, err = Assemble(Options{BaseSystem: "base", Workspace: both})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(context.Messages) != 2 || context.Messages[1].Text() != "agents rules" {
+			t.Fatalf("both present injected twice: %+v", context.Messages)
+		}
+	})
+
+	t.Run("global CLAUDE.md is the last resort", func(t *testing.T) {
+		workspace := t.TempDir()
+		home := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(home, ".claude"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(home, ".claude", "CLAUDE.md"), []byte("user claude rules"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		context, err := Assemble(Options{
+			BaseSystem: "base", Workspace: workspace, Home: home,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(context.Messages) != 2 || context.Messages[1].Text() != "user claude rules" {
+			t.Fatalf("messages = %+v", context.Messages)
+		}
+	})
+}
+
+func TestDefaultBaseSystemCarriesPersonaWorkspaceAndEnvironment(t *testing.T) {
+	value := DefaultBaseSystem("/work/repo", []string{
+		"os: darwin (arm64)", "git 2.39.5", "", "go 1.26.3",
+	})
+	for _, want := range []string{
+		"software engineering agent",
+		"approval and sandbox policy",
+		"workspace: /work/repo",
+		"os: darwin (arm64)",
+		"git 2.39.5",
+		"go 1.26.3",
+	} {
+		if !strings.Contains(value, want) {
+			t.Errorf("base system missing %q:\n%s", want, value)
+		}
+	}
+	if !strings.HasSuffix(value, "go 1.26.3") {
+		t.Errorf("blank environment lines leaked or trailing newline: %q", value)
+	}
+	if DefaultBaseSystem("", nil) == "" {
+		t.Fatal("empty inputs produced an empty persona")
+	}
+}

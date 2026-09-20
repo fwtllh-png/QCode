@@ -64,3 +64,56 @@ func TestSymbolPathPrefixIsLiteralAndCaseSensitive(t *testing.T) {
 		}
 	}
 }
+
+// Relevance outranks brevity: an exact name match, an exported declaration,
+// and the file the repository graph centers on all come before a shorter but
+// incidental name.
+func TestSymbolOrderPrefersExactExportedAndRank(t *testing.T) {
+	store := openStore(t)
+	apply(t, store,
+		Record{File: File{Path: "peripheral/gen.go"}, Symbols: []Symbol{
+			{Name: "get", Kind: "function", Line: 1},
+		}},
+		Record{File: File{Path: "core/server.go"}, Symbols: []Symbol{
+			{Name: "get", Kind: "function", Line: 1, Exported: true},
+			{Name: "getter", Kind: "function", Line: 2, Exported: true},
+		}},
+	)
+	if err := store.ReplaceRanks(t.Context(), map[string]float64{
+		"core/server.go": 0.9, "peripheral/gen.go": 0.1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Exact "get" beats the shorter-to-type nothing and the longer "getter";
+	// among the two exact matches, exported plus rank puts core/server.go first.
+	found, err := store.Symbols(t.Context(), Query{Name: "get", Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(found) != 3 ||
+		found[0].Path != "core/server.go" || found[0].Name != "get" ||
+		found[1].Path != "peripheral/gen.go" || found[1].Name != "get" ||
+		found[2].Name != "getter" {
+		t.Fatalf("order = %+v", found)
+	}
+
+	// A substring query still ranks the exact name above the containing one.
+	found, err = store.Symbols(t.Context(), Query{Name: "get", Exact: false, Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if found[0].Name != "get" || found[len(found)-1].Name != "getter" {
+		t.Fatalf("substring order = %+v", found)
+	}
+
+	// Without a name filter the order is exported, then rank.
+	found, err = store.Symbols(t.Context(), Query{Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(found) != 3 || found[0].Path != "core/server.go" ||
+		found[len(found)-1].Path != "peripheral/gen.go" {
+		t.Fatalf("unnamed order = %+v", found)
+	}
+}

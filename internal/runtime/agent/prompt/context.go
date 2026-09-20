@@ -15,9 +15,24 @@ import (
 	"github.com/fwtllh-png/QCode/internal/platform/tokenestimate"
 )
 
+// repositoryInstructionNames are the workspace-root instruction files, in the
+// order they are appended. All found files are injected.
 var repositoryInstructionNames = []string{
 	"AGENTS.md",
 	filepath.Join(".qcode", "instructions.md"),
+}
+
+// claudeCompatInstructionName is read at a layer only when no file from
+// repositoryInstructionNames was found there, so repositories that maintain
+// both an AGENTS.md family file and a CLAUDE.md are not double-injected.
+const claudeCompatInstructionName = "CLAUDE.md"
+
+// globalInstructionNames live under the user's home directory and apply to
+// every workspace. The first found file wins; they are appended after the
+// workspace files so the more specific layer survives a shared-budget cut.
+var globalInstructionNames = []string{
+	filepath.Join(".qcode", "AGENTS.md"),
+	filepath.Join(".claude", "CLAUDE.md"),
 }
 
 type Options struct {
@@ -28,6 +43,9 @@ type Options struct {
 	Memory                                          *memory.Store
 	Loader                                          FileLoader
 	Tokens                                          TokenCounter
+	// Home is the user's home directory for the global instruction layer.
+	// Empty resolves through os.UserHomeDir.
+	Home string
 }
 
 const (
@@ -44,6 +62,30 @@ const (
 	PartitionConstitution = "constitution"
 	PartitionTotal        = "total"
 )
+
+// DefaultBaseSystem is the persona used when the operator has not configured
+// one: identity, a grounding rule that the coding-policy partition does not
+// already state, and the environment fingerprint the workspace actually has.
+// Tool guidance, the coding method, and mode rules live in their own
+// partitions and are deliberately not repeated here.
+func DefaultBaseSystem(workspace string, environment []string) string {
+	var b strings.Builder
+	b.WriteString(
+		"You are QCode, a software engineering agent working directly in the " +
+			"user's local workspace under their configured approval and sandbox " +
+			"policy. Ground every statement in what tools actually returned; " +
+			"when something is unknown, say so instead of filling it in.\n")
+	if workspace != "" {
+		fmt.Fprintf(&b, "workspace: %s\n", workspace)
+	}
+	for _, line := range environment {
+		if strings.TrimSpace(line) != "" {
+			b.WriteString(strings.TrimSpace(line))
+			b.WriteByte('\n')
+		}
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
 
 type Budget struct {
 	MaxBytes  int    `json:"max_bytes"`
@@ -185,22 +227,56 @@ func Assemble(options Options) (Context, error) {
 		}
 	}
 	appendSection(PartitionBase, options.BaseSystem, "builtin://base-system")
-	for _, name := range repositoryInstructionNames {
+	// Instruction layers, specific first: the workspace root before the
+	// user-global file, so a shared-budget cut starves the generic layer
+	// rather than the repository's own rules.
+	loadWorkspaceInstruction := func(name string) (bool, error) {
 		path, resolveErr := canonicalPath(workspace, name, true)
 		if errors.Is(resolveErr, os.ErrNotExist) {
-			continue
+			return false, nil
 		}
 		if resolveErr != nil {
-			return Context{}, fmt.Errorf("resolve repository instruction %q: %w", name, resolveErr)
+			return false, fmt.Errorf("resolve repository instruction %q: %w", name, resolveErr)
 		}
 		data, readErr := loader.Load(path)
 		if errors.Is(readErr, os.ErrNotExist) {
-			continue
+			return false, nil
 		}
 		if readErr != nil {
-			return Context{}, fmt.Errorf("read repository instruction %q: %w", path, readErr)
+			return false, fmt.Errorf("read repository instruction %q: %w", path, readErr)
 		}
 		appendSection(PartitionRepository, string(data), path)
+		return true, nil
+	}
+	foundRepositoryInstruction := false
+	for _, name := range repositoryInstructionNames {
+		found, err := loadWorkspaceInstruction(name)
+		if err != nil {
+			return Context{}, err
+		}
+		foundRepositoryInstruction = foundRepositoryInstruction || found
+	}
+	if !foundRepositoryInstruction {
+		if _, err := loadWorkspaceInstruction(claudeCompatInstructionName); err != nil {
+			return Context{}, err
+		}
+	}
+	// The global layer is opt-in through Home rather than resolving
+	// os.UserHomeDir here: callers that embed Assemble (and its tests) must
+	// stay hermetic, and only the runtime wiring knows the user identity.
+	if home := options.Home; home != "" {
+		for _, name := range globalInstructionNames {
+			path := filepath.Join(home, name)
+			data, readErr := loader.Load(path)
+			if errors.Is(readErr, os.ErrNotExist) {
+				continue
+			}
+			if readErr != nil {
+				return Context{}, fmt.Errorf("read global instruction %q: %w", path, readErr)
+			}
+			appendSection(PartitionRepository, string(data), path)
+			break
+		}
 	}
 	files := make([]resolvedFile, 0, len(options.WorkingSet))
 	for _, input := range options.WorkingSet {

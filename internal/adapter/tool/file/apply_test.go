@@ -242,6 +242,11 @@ func TestFileApplyValidationFailureWritesNothing(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "want exactly once") {
 		t.Fatalf("error = %v, want the ambiguous edit to be refused", err)
 	}
+	// Repeated code has no unique excerpt anchor, so the refusal must name
+	// every matching line instead of leaving the model to re-read the file.
+	if !strings.Contains(err.Error(), "lines [1 2]") {
+		t.Fatalf("error lacks match lines: %v", err)
+	}
 	if got := read(t, root, "first.txt"); got != "first\n" {
 		t.Fatalf("first.txt = %q, want it untouched", got)
 	}
@@ -295,9 +300,9 @@ func TestFileApplyRejectsReconstructedNonContiguousOldText(t *testing.T) {
 	old := "或异步请求 Host。Replacement Argument 必须重新 Prepare/Evaluate。\n\n" +
 		"Policy 合并 Repository Rule"
 
-	_, err := replaceOnce([]byte(content), old, "replacement")
+	_, err := replaceExact([]byte(content), old, "replacement", 1)
 	if err == nil || !strings.Contains(err.Error(), "matched 0 times") {
-		t.Fatalf("replaceOnce error = %v", err)
+		t.Fatalf("replaceExact error = %v", err)
 	}
 }
 
@@ -931,5 +936,39 @@ func TestSingleFileToolsKeepTheirContract(t *testing.T) {
 	}
 	if got := read(t, root, "fresh.txt"); got != "fresh\n" {
 		t.Fatalf("fresh.txt = %q", got)
+	}
+}
+
+// occurrences is a compare-and-swap rename: declaring the observed count
+// replaces every match in one call, and a drifted count refuses without
+// touching the file.
+func TestFileEditOccurrencesReplaceEveryMatch(t *testing.T) {
+	root, registry := applyTools(t, map[string]string{
+		"repeat.txt": "value\nvalue\nvalue\n",
+	})
+	_, err := applyChanges(t, root, registry, []map[string]any{
+		{"op": "edit", "path": "repeat.txt", "old": "value", "new": "renamed", "occurrences": 3},
+	}, false)
+	if err != nil {
+		t.Fatalf("occurrences edit = %v", err)
+	}
+	if got := read(t, root, "repeat.txt"); got != "renamed\nrenamed\nrenamed\n" {
+		t.Fatalf("repeat.txt = %q", got)
+	}
+}
+
+func TestFileEditOccurrencesDriftRefusesAndReportsLines(t *testing.T) {
+	root, registry := applyTools(t, map[string]string{
+		"drift.txt": "token\ntoken\n",
+	})
+	_, err := applyChanges(t, root, registry, []map[string]any{
+		{"op": "edit", "path": "drift.txt", "old": "token", "new": "x", "occurrences": 5},
+	}, false)
+	if err == nil || !strings.Contains(err.Error(), "want exactly 5") ||
+		!strings.Contains(err.Error(), "lines [1 2]") {
+		t.Fatalf("drifted occurrences error = %v", err)
+	}
+	if got := read(t, root, "drift.txt"); got != "token\ntoken\n" {
+		t.Fatalf("drift.txt = %q, want untouched", got)
 	}
 }

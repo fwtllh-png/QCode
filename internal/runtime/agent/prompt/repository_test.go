@@ -2,6 +2,8 @@ package prompt
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -29,6 +31,14 @@ func (c *countingRepositoryIndex) Symbols(
 	repoindex.Query,
 ) ([]repoindex.Symbol, repoindex.Snapshot, error) {
 	return nil, repoindex.Snapshot{Status: repoindex.StatusReady}, nil
+}
+
+func (c *countingRepositoryIndex) SymbolsFrom(
+	_ context.Context,
+	snapshot repoindex.Snapshot,
+	_ repoindex.Query,
+) ([]repoindex.Symbol, repoindex.Snapshot, error) {
+	return nil, snapshot, nil
 }
 
 func repositoryEntries(paths ...string) []agentcontext.WorkingSetEntry {
@@ -154,5 +164,67 @@ func TestNilRepositoryProviderBuildsNothing(t *testing.T) {
 		repositoryState(1),
 	); len(assembled.Messages) != 0 {
 		t.Fatalf("assembled = %+v", assembled.Messages)
+	}
+}
+
+// Directory rules follow the working set: the nearest ancestor instruction
+// file below the root wins, the root's own file is not repeated, and two
+// paths sharing a directory inject it once.
+func TestDirectoryInstructionsSelectNearestPerWorkingSetPath(t *testing.T) {
+	root := t.TempDir()
+	write := func(relative, content string) {
+		t.Helper()
+		absolute := filepath.Join(root, filepath.FromSlash(relative))
+		if err := os.MkdirAll(filepath.Dir(absolute), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(absolute, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("AGENTS.md", "root rules")
+	write("a/AGENTS.md", "package a rules")
+	write("a/b/CLAUDE.md", "subpackage b rules")
+
+	provider := NewRepositoryProvider(nil, RepositoryOptions{
+		WorkingSet: true, Root: root,
+	})
+	context := provider.Build(context.Background(), TurnState{
+		Turn: 3,
+		WorkingSet: []agentcontext.WorkingSetEntry{
+			{Path: "a/b/c.go"}, {Path: "a/x.go"}, {Path: "a/b/d.go"},
+		},
+	})
+	var text string
+	for _, message := range context.Messages {
+		text += message.Text() + "\n---\n"
+	}
+	if !strings.Contains(text, "[directory_rules]") ||
+		!strings.Contains(text, "a/b — from a/b/CLAUDE.md:\nsubpackage b rules") ||
+		!strings.Contains(text, "a — from a/AGENTS.md:\npackage a rules") {
+		t.Fatalf("directory rules = %q", text)
+	}
+	if strings.Contains(text, "from AGENTS.md:\nroot rules") {
+		t.Fatalf("root instruction leaked into directory layer: %q", text)
+	}
+	if strings.Count(text, "subpackage b rules") != 1 {
+		t.Fatalf("shared directory injected twice: %q", text)
+	}
+	rulesSection := strings.SplitN(text, "\n---\n", 2)[0]
+	if strings.Contains(rulesSection, "turn=3") {
+		t.Fatalf("directory rules embed a turn number and bust the digest: %q", rulesSection)
+	}
+}
+
+func TestDirectoryInstructionsRequireRoot(t *testing.T) {
+	provider := NewRepositoryProvider(nil, RepositoryOptions{WorkingSet: true})
+	context := provider.Build(context.Background(), TurnState{
+		WorkingSet: []agentcontext.WorkingSetEntry{{Path: "a/b/c.go"}},
+	})
+	if strings.Contains(repositoryText(context), "[directory_rules]") {
+		t.Fatalf("directory rules rendered without a root: %+v", context.Messages)
+	}
+	if instructions := directoryInstructions("", nil); instructions != nil {
+		t.Fatalf("instructions = %+v", instructions)
 	}
 }

@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/fwtllh-png/QCode/internal/platform/symbols"
+	"sort"
 	"strings"
 	"time"
 )
@@ -317,43 +318,59 @@ func (s *Store) symbols(ctx context.Context, query Query, withTotal bool) ([]Sym
 	}
 	statement := strings.Builder{}
 	statement.WriteString(`
-		SELECT path, name, kind, container, line, exported,
-			signature, docstring, resolution`)
+		SELECT s.path, s.name, s.kind, s.container, s.line, s.exported,
+			s.signature, s.docstring, s.resolution`)
 	if withTotal {
 		statement.WriteString(", COUNT(*) OVER ()")
 	}
-	statement.WriteString(" FROM repo_index_symbols WHERE root_path = ?")
+	statement.WriteString(`
+		FROM repo_index_symbols s
+		LEFT JOIN repo_index_file_rank r
+			ON r.root_path = s.root_path AND r.path = s.path
+		WHERE s.root_path = ?`)
 	arguments := []any{s.root}
+	// exactName feeds the relevance ordering below; NULL when no name filter
+	// is present, which makes the term constant for every row.
+	exactName := any(nil)
 	if name := strings.TrimSpace(query.Name); name != "" {
+		exactName = name
 		if query.Exact {
-			statement.WriteString(" AND name = ? COLLATE NOCASE")
+			statement.WriteString(" AND s.name = ? COLLATE NOCASE")
 			arguments = append(arguments, name)
 		} else {
-			statement.WriteString(" AND name LIKE ? ESCAPE '\\'")
+			statement.WriteString(" AND s.name LIKE ? ESCAPE '\\'")
 			arguments = append(arguments, "%"+escapeLike(name)+"%")
 		}
 	}
 	if len(query.Kinds) != 0 {
-		statement.WriteString(" AND kind IN (" + placeholders(len(query.Kinds)) + ")")
+		statement.WriteString(" AND s.kind IN (" + placeholders(len(query.Kinds)) + ")")
 		for _, kind := range query.Kinds {
 			arguments = append(arguments, kind)
 		}
 	}
 	if len(query.Paths) != 0 {
-		statement.WriteString(" AND path IN (" + placeholders(len(query.Paths)) + ")")
+		statement.WriteString(" AND s.path IN (" + placeholders(len(query.Paths)) + ")")
 		for _, path := range query.Paths {
 			arguments = append(arguments, path)
 		}
 	}
 	if query.PathPrefix != "" {
-		statement.WriteString(" AND substr(path, 1, length(?)) = ? COLLATE BINARY")
+		statement.WriteString(" AND substr(s.path, 1, length(?)) = ? COLLATE BINARY")
 		arguments = append(arguments, query.PathPrefix, query.PathPrefix)
 	}
 	if query.ExportedOnly {
-		statement.WriteString(" AND exported = 1")
+		statement.WriteString(" AND s.exported = 1")
 	}
-	statement.WriteString(" ORDER BY length(name), name, path, line LIMIT ?")
-	arguments = append(arguments, limit)
+	// Relevance before brevity: an exact name match outranks a longer
+	// containing name, exported declarations outrank internal ones, and the
+	// file's graph rank says which of several equally named symbols the
+	// repository actually centers on. Name length and identity stay as
+	// tiebreakers so the order is deterministic.
+	statement.WriteString(`
+		ORDER BY (s.name = ? COLLATE NOCASE) DESC, s.exported DESC,
+			COALESCE(r.rank, 0) DESC, length(s.name), s.name, s.path, s.line
+		LIMIT ?`)
+	arguments = append(arguments, exactName, limit)
 
 	rows, err := s.db.QueryContext(ctx, statement.String(), arguments...)
 	if err != nil {
@@ -640,20 +657,202 @@ func (s *Store) Edges(ctx context.Context) ([]graphEdge, error) {
 	return edges, nil
 }
 
+// chunked runs fn over batches of values small enough for an IN (...) list.
+func chunked[T any](values []T, batch int, fn func([]T) error) error {
+	for start := 0; start < len(values); start += batch {
+		end := min(start+batch, len(values))
+		if err := fn(values[start:end]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// SymbolNames returns the top-level declaration names owned by the paths.
+func (s *Store) SymbolNames(
+	ctx context.Context,
+	paths []string,
+) ([]string, error) {
+	names := make(map[string]struct{})
+	err := chunked(paths, 500, func(batch []string) error {
+		rows, err := s.db.QueryContext(ctx, `
+			SELECT DISTINCT name FROM repo_index_symbols
+			WHERE root_path = ? AND container = ''
+			  AND path IN (`+placeholders(len(batch))+`)`,
+			append([]any{s.root}, stringsToAny(batch)...)...)
+		if err != nil {
+			return fmt.Errorf("read repository index symbol names: %w", err)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var name string
+			if err := rows.Scan(&name); err != nil {
+				return fmt.Errorf("read repository index symbol names: %w", err)
+			}
+			names[name] = struct{}{}
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return nil, err
+	}
+	result := make([]string, 0, len(names))
+	for name := range names {
+		result = append(result, name)
+	}
+	sort.Strings(result)
+	return result, nil
+}
+
+// ReferrerPaths returns every file whose identifier rows — plain references
+// or scoped reference sites — mention any of the names. It is the conservative
+// affected set for an incremental graph update.
+func (s *Store) ReferrerPaths(
+	ctx context.Context,
+	names []string,
+) ([]string, error) {
+	referrers := make(map[string]struct{})
+	err := chunked(names, 500, func(batch []string) error {
+		args := append([]any{s.root}, stringsToAny(batch)...)
+		in := placeholders(len(batch))
+		rows, err := s.db.QueryContext(ctx, `
+			SELECT DISTINCT path FROM repo_index_references
+			WHERE root_path = ? AND name IN (`+in+`)
+			UNION
+			SELECT DISTINCT path FROM repo_index_reference_sites
+			WHERE root_path = ? AND name IN (`+in+`)`,
+			append(args, args...)...)
+		if err != nil {
+			return fmt.Errorf("read repository index referrers: %w", err)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var path string
+			if err := rows.Scan(&path); err != nil {
+				return fmt.Errorf("read repository index referrers: %w", err)
+			}
+			referrers[path] = struct{}{}
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return nil, err
+	}
+	result := make([]string, 0, len(referrers))
+	for path := range referrers {
+		result = append(result, path)
+	}
+	sort.Strings(result)
+	return result, nil
+}
+
+// ImportsFor reads the import specifiers of the given sources only.
+func (s *Store) ImportsFor(
+	ctx context.Context,
+	paths []string,
+) (map[string][]string, error) {
+	specs := make(map[string][]string)
+	err := chunked(paths, 500, func(batch []string) error {
+		rows, err := s.db.QueryContext(ctx, `
+			SELECT path, spec FROM repo_index_imports
+			WHERE root_path = ? AND path IN (`+placeholders(len(batch))+`)
+			ORDER BY path, position`,
+			append([]any{s.root}, stringsToAny(batch)...)...)
+		if err != nil {
+			return fmt.Errorf("read repository index imports: %w", err)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var path, spec string
+			if err := rows.Scan(&path, &spec); err != nil {
+				return fmt.Errorf("read repository index imports: %w", err)
+			}
+			specs[path] = append(specs[path], spec)
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return nil, err
+	}
+	return specs, nil
+}
+
+// DeleteEdgesFrom removes every edge the given sources contribute, leaving the
+// other sources' rows for an incremental update to keep.
+func (s *Store) DeleteEdgesFrom(ctx context.Context, paths []string) error {
+	return chunked(paths, 500, func(batch []string) error {
+		return s.withTx(ctx, func(tx *sql.Tx) error {
+			if _, err := tx.ExecContext(ctx, `
+				DELETE FROM repo_index_edges
+				WHERE root_path = ? AND src_path IN (`+placeholders(len(batch))+`)`,
+				append([]any{s.root}, stringsToAny(batch)...)...); err != nil {
+				return fmt.Errorf("delete repository index edges: %w", err)
+			}
+			return nil
+		})
+	})
+}
+
+// AppendEdges inserts edges without clearing existing rows.
+func (s *Store) AppendEdges(ctx context.Context, edges []graphEdge) error {
+	return s.withTx(ctx, func(tx *sql.Tx) error {
+		for _, edge := range edges {
+			if _, err := tx.ExecContext(ctx, `
+				INSERT INTO repo_index_edges(
+					root_path, src_path, dst_path, kind, weight
+				) VALUES (?, ?, ?, ?, ?)`,
+				s.root, edge.Src, edge.Dst, edge.Kind, edge.Weight,
+			); err != nil {
+				return fmt.Errorf("write repository index edge: %w", err)
+			}
+		}
+		return nil
+	})
+}
+
+func stringsToAny(values []string) []any {
+	result := make([]any, len(values))
+	for index, value := range values {
+		result[index] = value
+	}
+	return result
+}
+
 // referenceEdges joins the identifier counts against the symbol table: a file
 // that uses a name declared elsewhere in the repository references the
 // declaring file, with the use count as the edge weight. The join runs where
 // both tables and their name indexes live.
 func (s *Store) referenceEdges(ctx context.Context) ([]graphEdge, error) {
-	rows, err := s.db.QueryContext(ctx, `
+	return s.referenceEdgesFrom(ctx, nil)
+}
+
+// referenceEdgesFrom restricts the join to the given sources; a nil set means
+// every file, which is the full rebuild's shape.
+func (s *Store) referenceEdgesFrom(
+	ctx context.Context,
+	only map[string]struct{},
+) ([]graphEdge, error) {
+	query := `
 		SELECT r.path AS src, s.path AS dst, SUM(r.use_count) AS weight
 		FROM repo_index_references r
 		JOIN repo_index_symbols s
 			ON s.root_path = r.root_path AND s.name = r.name
 		WHERE r.root_path = ? AND r.path <> s.path
- AND NOT EXISTS (SELECT 1 FROM repo_index_files f WHERE f.root_path=r.root_path AND f.path=r.path AND f.scope_aware=1)
+ AND NOT EXISTS (SELECT 1 FROM repo_index_files f WHERE f.root_path=r.root_path AND f.path=r.path AND f.scope_aware=1)`
+	args := []any{s.root}
+	if len(only) != 0 {
+		paths := make([]string, 0, len(only))
+		for path := range only {
+			paths = append(paths, path)
+		}
+		sort.Strings(paths)
+		query += ` AND r.path IN (` + placeholders(len(paths)) + `)`
+		args = append(args, stringsToAny(paths)...)
+	}
+	query += `
 		GROUP BY r.path, s.path
-		ORDER BY r.path, s.path`, s.root)
+		ORDER BY r.path, s.path`
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}

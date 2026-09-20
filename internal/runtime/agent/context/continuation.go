@@ -146,7 +146,9 @@ func StoreTurnContinuation(
 	if err := record.Validate(); err != nil {
 		return ContentRef{}, err
 	}
-	record.Messages = CloneMessages(record.Messages)
+	// No defensive clone: turns execute serially, so nothing mutates the
+	// messages while the encoder below reads them, and the record is not
+	// retained after staging.
 	return stageValue(ctx, store, "turn-continuation", record)
 }
 
