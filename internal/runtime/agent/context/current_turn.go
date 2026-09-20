@@ -1,23 +1,15 @@
 package agentcontext
 
 import (
-	"encoding/json"
 	"strings"
 
 	"github.com/fwtllh-png/QCode/internal/adapter/provider"
+	"github.com/fwtllh-png/QCode/internal/adapter/tool"
 )
 
 // PriorDecisionProjectionPrefix marks a pressure-path rewrite of closed-round
 // assistant commentary. The line is a sourced projection, not authority.
 const PriorDecisionProjectionPrefix = "(non-authoritative prior decision) "
-
-// toolCallIdentityKeys are the public identity fields of file, search, and
-// handle tools. Compaction keeps these and drops large bodies such as
-// content, patch, and command text.
-var toolCallIdentityKeys = []string{
-	"path", "paths", "target", "file", "handle", "name", "query",
-	"start_line", "max_lines",
-}
 
 // CurrentTurnUserIndex is the first non-world user message of the active
 // turn. The sampling path pins this request when collapsing closed groups.
@@ -296,8 +288,14 @@ func historyToolResultIDs(history []provider.Message) map[string]struct{} {
 }
 
 // BoundToolCallArguments replaces tool-call bodies with identity-only JSON.
-// Latest-batch calls stay intact unless includeLatest is true.
-func BoundToolCallArguments(history []provider.Message, includeLatest bool) int {
+// Latest-batch calls stay intact unless includeLatest is true. keysByName is
+// the catalog-resolved identity map; a missing name uses the default
+// whitelist.
+func BoundToolCallArguments(
+	history []provider.Message,
+	includeLatest bool,
+	keysByName map[string][]string,
+) int {
 	latest := latestHistoryToolCallIDs(history)
 	changed := 0
 	for index := range history {
@@ -311,7 +309,10 @@ func BoundToolCallArguments(history []provider.Message, includeLatest bool) int 
 					continue
 				}
 			}
-			compacted := ToolCallIdentityArguments(block.ToolCall.Arguments)
+			compacted := ToolCallIdentityArguments(
+				block.ToolCall.Arguments,
+				keysByName[block.ToolCall.Name],
+			)
 			if compacted == block.ToolCall.Arguments ||
 				len(compacted) >= len(block.ToolCall.Arguments) {
 				continue
@@ -323,28 +324,11 @@ func BoundToolCallArguments(history []provider.Message, includeLatest bool) int 
 	return changed
 }
 
-// ToolCallIdentityArguments keeps only identity fields from a JSON object.
-func ToolCallIdentityArguments(arguments string) string {
-	if arguments == "" {
-		return "{}"
-	}
-	var object map[string]json.RawMessage
-	if json.Unmarshal([]byte(arguments), &object) != nil {
-		return "{}"
-	}
-	kept := make(map[string]json.RawMessage, len(toolCallIdentityKeys))
-	for _, key := range toolCallIdentityKeys {
-		value, ok := object[key]
-		if !ok {
-			continue
-		}
-		kept[key] = value
-	}
-	encoded, err := json.Marshal(kept)
-	if err != nil {
-		return "{}"
-	}
-	return string(encoded)
+// ToolCallIdentityArguments keeps only the supplied identity fields. An empty
+// key list uses the default public whitelist so undeclared tools still drop
+// large bodies.
+func ToolCallIdentityArguments(arguments string, keys []string) string {
+	return tool.CompactIdentityArguments(arguments, keys, summaryIdentityBytes)
 }
 
 func latestHistoryToolCallIDs(history []provider.Message) map[string]struct{} {

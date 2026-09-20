@@ -2,6 +2,7 @@ package engine
 
 import (
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/fwtllh-png/QCode/internal/adapter/model"
@@ -44,6 +45,7 @@ func (e *Engine) providerRetry(
 	retries uint32,
 	contextChanged bool,
 	budget rateLimitBudget,
+	sampleID string,
 ) (ProviderRetry, bool) {
 	policy := providerwire.RetryPolicy{
 		MaxRetries:          e.options.MaxRetries,
@@ -53,12 +55,26 @@ func (e *Engine) providerRetry(
 		RateLimitRetries:    budget.retries,
 		RateLimitWaited:     budget.waited,
 		RouteCooldown:       budget.cooldown,
+		JitterSeed:          e.retryJitterSeed(sampleID),
 		Now:                 e.options.Observability.Now,
 	}
 	if shared := e.options.SharedRateLimit; shared != nil {
 		policy.SharedRateLimitRetries, policy.SharedRateLimitWaited = shared.Load()
 	}
 	return policy.Decide(err, meaningful, retries, contextChanged)
+}
+
+func (e *Engine) retryJitterSeed(sampleID string) string {
+	route := e.activeRoute()
+	credential := route.Credential()
+	return strings.Join([]string{
+		e.options.SessionID,
+		route.ConnectionID(),
+		credential.Kind,
+		credential.Name,
+		route.Model().ID,
+		strings.TrimSpace(sampleID),
+	}, "\x00")
 }
 
 func exhaustedProviderRetry(err error) error {

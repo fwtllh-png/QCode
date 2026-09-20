@@ -2,6 +2,7 @@ package engine
 
 import (
 	"github.com/fwtllh-png/QCode/internal/adapter/provider"
+	"github.com/fwtllh-png/QCode/internal/adapter/tool"
 	agentcontext "github.com/fwtllh-png/QCode/internal/runtime/agent/context"
 	promptcontext "github.com/fwtllh-png/QCode/internal/runtime/agent/prompt"
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
@@ -353,7 +354,9 @@ func (e *Engine) boundCurrentTurnArguments(
 	projectHistory agentcontext.HistoryProjector,
 	includeLatest bool,
 ) (bool, tokenWindow) {
-	if agentcontext.BoundToolCallArguments(*history, includeLatest) == 0 {
+	if agentcontext.BoundToolCallArguments(
+		*history, includeLatest, e.toolIdentityKeys(),
+	) == 0 {
 		window, _ := e.measureProjectedWindow(
 			*history, baseInput, outputReserve, economicInput, projectHistory,
 		)
@@ -385,4 +388,24 @@ func (e *Engine) stripCurrentTurnReasoning(
 		*history, baseInput, outputReserve, economicInput, projectHistory,
 	)
 	return true, window
+}
+
+func (e *Engine) toolIdentityKeys() map[string][]string {
+	var catalog tool.CatalogSnapshot
+	if scope := e.runningScope(); scope != nil {
+		catalog = e.scopeCatalog(scope)
+	} else if e.options.Tools != nil {
+		catalog, _ = e.options.Tools.Snapshot()
+	}
+	keys := make(map[string][]string)
+	for _, entry := range catalog.Entries() {
+		resolved := tool.ResolvedIdentityKeys(entry.Descriptor)
+		keys[entry.Name] = resolved
+		for _, alias := range entry.Descriptor.Aliases {
+			if alias.Name != "" {
+				keys[alias.Name] = resolved
+			}
+		}
+	}
+	return keys
 }

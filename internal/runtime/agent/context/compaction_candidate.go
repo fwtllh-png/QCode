@@ -74,19 +74,24 @@ func (a Authority) BuildSummary(request SummaryRequest) SummaryResult {
 	if lineBytes <= 0 {
 		lineBytes = 512
 	}
+	callNames := toolCallNames(request.Removed)
+	var digest []string
+	omitted := 0
 	for index := len(request.Removed) - 1; index >= 0; index-- {
 		message := request.Removed[index]
-		if _, ok := Carry(message.Text()); ok {
+		if carried, carriedOmitted, ok := CarriedDigest(message.Text()); ok {
+			digest = append(digest, carried...)
+			omitted += carriedOmitted
 			continue
 		}
-		if len(summary.Digest) == limit {
-			continue
-		}
-		summary.Digest = append(
-			summary.Digest,
-			SummaryLine(message, lineBytes),
-		)
+		digest = append(digest, SummaryLine(message, lineBytes, callNames))
 	}
+	if overflow := len(digest) - limit; overflow > 0 {
+		omitted += overflow
+		digest = digest[:limit]
+	}
+	summary.Digest = digest
+	summary.OmittedDigest = omitted
 	return SummaryResult{
 		Summary: summary, WorkingSet: paths, CriticalPaths: critical,
 	}

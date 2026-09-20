@@ -37,8 +37,10 @@ func (l *WorkingSetLedger) Delta() WorkingSetDelta {
 }
 
 // RetainedDelta returns the bounded live projection used for context recovery.
-// Older observations remain available in the audit stream but no longer make
-// every terminal snapshot grow.
+// Select(limit) still bounds the prompt working set. SourceRead observations
+// stay even when their path falls outside that top-N so resume and snapshot
+// keep the full already-read set. Older non-read observations remain available
+// in the audit stream but no longer make every terminal snapshot grow.
 func (l *WorkingSetLedger) RetainedDelta(turn uint64, limit, maxTotal int) WorkingSetDelta {
 	if l == nil {
 		return WorkingSetDelta{}
@@ -55,6 +57,10 @@ func (l *WorkingSetLedger) RetainedDelta(turn uint64, limit, maxTotal int) Worki
 	result := WorkingSetDelta{}
 	for _, observation := range full.Observations {
 		if _, ok := kept[observation.Path]; ok {
+			result.Observations = append(result.Observations, observation)
+			continue
+		}
+		if observation.Source == SourceRead {
 			result.Observations = append(result.Observations, observation)
 		}
 	}

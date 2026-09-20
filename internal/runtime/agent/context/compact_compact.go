@@ -112,13 +112,15 @@ type Summary struct {
 	OmittedFacts int
 	// Digest is the per-message running record of what was removed, newest first.
 	Digest []string
+	// OmittedDigest is how many digest lines the entry limit left out.
+	OmittedDigest int
 }
 
 // Empty reports whether the summary has nothing to say.
 func (s Summary) Empty() bool {
 	return strings.TrimSpace(s.Goal) == "" && len(s.Todos) == 0 && len(s.Failures) == 0 &&
 		len(s.Changes) == 0 && len(s.CriticalPaths) == 0 && len(s.Facts) == 0 &&
-		len(s.Digest) == 0
+		len(s.Digest) == 0 && s.OmittedDigest == 0
 }
 
 // Render writes the summary, dropping whole sections from the end until it fits
@@ -234,7 +236,7 @@ func (s Summary) blocks() []*block {
 			blocks = append(blocks, candidate)
 		}
 	}
-	if len(s.Digest) > 0 {
+	if len(s.Digest) > 0 || s.OmittedDigest > 0 {
 		blocks = append(blocks, &block{name: SectionDigest, body: s.renderDigest})
 	}
 	return blocks
@@ -347,6 +349,8 @@ func (s Summary) renderFacts() string {
 	return b.String()
 }
 
+const digestSectionHeader = "Removed history, newest first:"
+
 // renderDigest writes removed ordinary messages newest first.
 //
 // Newest first is the whole point: the turns nearest the cut are the ones the
@@ -354,24 +358,34 @@ func (s Summary) renderFacts() string {
 // that goes. Writing them oldest-first would keep the beginning of a long
 // session and drop the part that just happened.
 func (s Summary) renderDigest(room int) (string, bool) {
-	var b strings.Builder
-	partial := false
-	if len(s.Digest) > 0 {
-		header := "Removed history, newest first:\n"
-		if room != unbounded && len(header) >= room {
-			return "", true
-		}
-		b.WriteString(header)
-		for _, line := range s.Digest {
-			entry := "  " + collapse(line) + "\n"
-			if room != unbounded && b.Len()+len(entry) > room {
-				partial = true
-				break
-			}
-			b.WriteString(entry)
-		}
+	omitted := listedOmission(s.OmittedDigest)
+	if len(s.Digest) == 0 && omitted == "" {
+		return "", false
 	}
+	header := digestSectionHeader + "\n"
+	if room != unbounded && len(header)+len(omitted) > room {
+		return "", true
+	}
+	var b strings.Builder
+	b.WriteString(header)
+	partial := false
+	for _, line := range s.Digest {
+		entry := "  " + collapse(line) + "\n"
+		if room != unbounded && b.Len()+len(entry)+len(omitted) > room {
+			partial = true
+			break
+		}
+		b.WriteString(entry)
+	}
+	b.WriteString(omitted)
 	return b.String(), partial
+}
+
+func listedOmission(count int) string {
+	if count <= 0 {
+		return ""
+	}
+	return fmt.Sprintf("  (%d more not listed)\n", count)
 }
 
 // Carry extracts the summary body from a message that holds one, so the next
@@ -392,6 +406,44 @@ func Carry(text string) (string, bool) {
 		return "", false
 	}
 	return body, true
+}
+
+// CarriedDigest extracts the structured digest from a compacted summary so the
+// next compaction can merge it. Carry() only means the message is a summary
+// and must not be flattened as one ordinary line. A summary with no digest
+// section still reports ok with an empty list.
+func CarriedDigest(text string) (lines []string, omitted int, ok bool) {
+	body, ok := Carry(text)
+	if !ok {
+		return nil, 0, false
+	}
+	start := strings.Index(body, digestSectionHeader)
+	if start < 0 {
+		return nil, 0, true
+	}
+	rest := body[start+len(digestSectionHeader):]
+	for _, line := range strings.Split(rest, "\n") {
+		line = strings.TrimRight(line, "\r")
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		if count, parsed := parseListedOmission(line); parsed {
+			return lines, count, true
+		}
+		if !strings.HasPrefix(line, "  ") {
+			break
+		}
+		lines = append(lines, strings.TrimSpace(line))
+	}
+	return lines, 0, true
+}
+
+func parseListedOmission(line string) (int, bool) {
+	var count int
+	if _, err := fmt.Sscanf(strings.TrimSpace(line), "(%d more not listed)", &count); err != nil {
+		return 0, false
+	}
+	return count, true
 }
 
 // collapse folds whitespace so one wrapped message cannot occupy ten lines of a

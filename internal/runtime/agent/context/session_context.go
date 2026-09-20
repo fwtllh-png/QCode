@@ -669,8 +669,13 @@ func rewriteStructuredHistoryTruth(
 		if !found {
 			continue
 		}
+		digest, omitted, _ := CarriedDigest(history[index].Text())
 		rendered, err := RenderStructured(
-			Summary{Window: removedMessages},
+			Summary{
+				Window:        removedMessages,
+				Digest:        digest,
+				OmittedDigest: omitted,
+			},
 			truth,
 			Narrative{},
 			0,

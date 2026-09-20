@@ -628,6 +628,41 @@ func TestAcceptedCompletionOutranksProviderContinuation(t *testing.T) {
 	}
 }
 
+func TestInputInjectedInvalidatesAcceptedCompletion(t *testing.T) {
+	state := startSampling(t, protocol.TurnIntentAnswer)
+	state.Policy.CompletionRequired = true
+	state.Policy.StructuredTerminalRequired = true
+	state.ProvisionalOutput = []string{"stale answer"}
+	state = apply(t, state, CompletionEvaluated{
+		Candidate: CompletionCandidate{
+			DeclarationValid: true,
+			Status:           "complete",
+			Summary:          "stale",
+			CompletionCall:   "complete-1",
+			BatchSize:        1,
+		},
+	}).State
+	if state.Completion == nil || !state.Completion.Accepted {
+		t.Fatalf("setup completion = %+v", state.Completion)
+	}
+	before := apply(t, state, EvaluateTurnStep{ProgressKey: "accepted"})
+	if before.State.NextAction != StepActionComplete {
+		t.Fatalf("accepted next action = %q, want %q",
+			before.State.NextAction, StepActionComplete)
+	}
+	state = apply(t, state, CompletionInvalidated{
+		Reason: "input_injected",
+	}).State
+	if state.Completion != nil {
+		t.Fatalf("injected input left completion %+v", state.Completion)
+	}
+	transition := apply(t, state, EvaluateTurnStep{ProgressKey: "injected"})
+	if transition.State.NextAction != StepActionRepairDeclaration {
+		t.Fatalf("injected next action = %q, want %q",
+			transition.State.NextAction, StepActionRepairDeclaration)
+	}
+}
+
 func TestObserveProgressUsesConservativeDurableThresholds(t *testing.T) {
 	state := startSampling(t, protocol.TurnIntentWorkspaceChange)
 	state.Policy.ExecutionStepLimit = 64

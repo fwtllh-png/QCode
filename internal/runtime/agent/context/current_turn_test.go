@@ -1,6 +1,7 @@
 package agentcontext
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -111,7 +112,7 @@ func TestBoundToolCallArgumentsKeepsPathIdentity(t *testing.T) {
 			},
 		}},
 	}}
-	if BoundToolCallArguments(history, false) != 1 {
+	if BoundToolCallArguments(history, false, nil) != 1 {
 		t.Fatalf("closed arguments were not bounded: %+v", history)
 	}
 	if history[0].Blocks[0].ToolCall.Arguments != `{"path":"main.go"}` {
@@ -120,11 +121,62 @@ func TestBoundToolCallArgumentsKeepsPathIdentity(t *testing.T) {
 	if history[1].Blocks[0].ToolCall.Arguments != `{"path":"keep.go","content":"body"}` {
 		t.Fatalf("latest args = %s", history[1].Blocks[0].ToolCall.Arguments)
 	}
-	if BoundToolCallArguments(history, true) != 1 {
+	if BoundToolCallArguments(history, true, nil) != 1 {
 		t.Fatalf("latest arguments were not bounded: %+v", history[1])
 	}
 	if history[1].Blocks[0].ToolCall.Arguments != `{"path":"keep.go"}` {
 		t.Fatalf("latest args after include = %s", history[1].Blocks[0].ToolCall.Arguments)
+	}
+}
+
+func TestBoundToolCallArgumentsKeepsDeclaredCommandShape(t *testing.T) {
+	command := strings.Repeat("go test ./parser ", 20)
+	history := []provider.Message{{
+		Role: provider.RoleAssistant, Turn: 1,
+		Blocks: []provider.ContentBlock{{
+			Type: provider.ContentToolCall,
+			ToolCall: &provider.ToolCall{
+				ID:   "exec-1",
+				Name: "exec_command",
+				Arguments: `{"command":"` + command + `","cwd":".","timeout_ms":10000}`,
+			},
+		}},
+	}}
+	keys := map[string][]string{"exec_command": {"command", "cwd"}}
+	if BoundToolCallArguments(history, true, keys) != 1 {
+		t.Fatalf("command arguments were not bounded: %+v", history)
+	}
+	got := history[0].Blocks[0].ToolCall.Arguments
+	var object map[string]string
+	if err := json.Unmarshal([]byte(got), &object); err != nil {
+		t.Fatal(err)
+	}
+	if object["cwd"] != "." ||
+		strings.Contains(got, "timeout_ms") ||
+		!strings.HasSuffix(object["command"], "...") ||
+		len(strings.TrimSuffix(object["command"], "...")) != summaryIdentityBytes {
+		t.Fatalf("command identity = %s", got)
+	}
+}
+
+func TestBoundToolCallArgumentsDropsUndeclaredLargeCommand(t *testing.T) {
+	history := []provider.Message{{
+		Role: provider.RoleAssistant, Turn: 1,
+		Blocks: []provider.ContentBlock{{
+			Type: provider.ContentToolCall,
+			ToolCall: &provider.ToolCall{
+				ID:        "mcp-1",
+				Name:      "remote_run",
+				Arguments: `{"command":"rm -rf /","ticket":"abc"}`,
+			},
+		}},
+	}}
+	keys := map[string][]string{"remote_run": {"ticket"}}
+	if BoundToolCallArguments(history, true, keys) != 1 {
+		t.Fatalf("undeclared command was kept: %+v", history)
+	}
+	if history[0].Blocks[0].ToolCall.Arguments != `{"ticket":"abc"}` {
+		t.Fatalf("args = %s", history[0].Blocks[0].ToolCall.Arguments)
 	}
 }
 

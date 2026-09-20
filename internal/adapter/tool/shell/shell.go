@@ -121,6 +121,7 @@ func (t *Tool) Descriptor() tool.Descriptor {
 	return tool.Descriptor{
 		Name: "shell_read", Description: description, Visibility: tool.VisibleModel,
 		DiscoveryTerms: []string{"read command", "inspect command", "只读命令", "查看命令"},
+		IdentityKeys:   []string{"command", "cwd"},
 		Capability:     tool.CapabilityRead, AccessMode: tool.AccessRead,
 		ResourceResolver: tool.ResourceResolver{Templates: []tool.ResourceTemplate{
 			{Kind: "repo", ID: ".", Access: tool.AccessRead, Tree: true},

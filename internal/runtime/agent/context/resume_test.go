@@ -88,6 +88,35 @@ func TestFormatResumeHintIncludesLocatedSites(t *testing.T) {
 	}
 }
 
+func TestFormatResumeHintBudgetOmitsOverflowingPaths(t *testing.T) {
+	plan := Plan{Steps: []PlanStep{
+		{Title: "audit", Status: StepDone},
+		{Title: "fix overflow in accept()", Status: StepPending},
+	}}
+	paths := make([]string, 0, 20)
+	for index := 0; index < 20; index++ {
+		paths = append(paths, "internal/pkg/already_read_"+string(rune('a'+index))+".go")
+	}
+	full := FormatResumeHint(plan, paths)
+	budget := len(full) - 1
+	if budget < 200 {
+		t.Fatalf("full hint too small to exercise budget: %d", len(full))
+	}
+	hint := FormatResumeHintBudgeted(plan, paths, budget, nil)
+	if hint == "" || len(hint) > budget {
+		t.Fatalf("budgeted hint = %q len=%d budget=%d", hint, len(hint), budget)
+	}
+	if !strings.Contains(hint, "more already-read paths omitted") ||
+		!strings.Contains(hint, "Already-read paths:") ||
+		!strings.Contains(hint, "Do not file_read those paths again") {
+		t.Fatalf("budgeted hint = %q", hint)
+	}
+	entity, ok := ResumeRetrievalEntityBudgeted(plan, paths, budget, nil)
+	if !ok || entity.Value != hint || entity.Retention != RetentionMandatory {
+		t.Fatalf("entity = %+v ok=%v", entity, ok)
+	}
+}
+
 func TestReadPathsFromWorkingSetKeepsReadSourcesOnly(t *testing.T) {
 	paths := ReadPathsFromWorkingSet([]WorkingSetEntry{
 		{Path: "edited.go", Sources: []WorkingSetSource{SourceEdited}},

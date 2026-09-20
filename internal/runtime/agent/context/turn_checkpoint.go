@@ -264,8 +264,13 @@ func encodeCheckpoint(body CheckpointBody, budget int, handle string) (string, e
 			Title: TruncateUTF8(body.Open[0].Title, max(32, budget/4)),
 		}}
 	}
-	if len(body.ReadPaths) != 0 {
+	if n := len(body.ReadPaths); n != 0 {
 		summary.ReadPaths = []string{body.ReadPaths[0]}
+		if n > 1 {
+			summary.ReadPaths = append(summary.ReadPaths, fmt.Sprintf(
+				"(%d more already-read paths omitted)", n-1,
+			))
+		}
 	}
 	encoded, err = json.Marshal(summary)
 	if err != nil {

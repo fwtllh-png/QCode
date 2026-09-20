@@ -226,6 +226,29 @@ func TestStructuredRenderMakesTruthMandatoryAndNarrativeOptional(t *testing.T) {
 	}
 }
 
+func TestStructuredRenderKeepsDigestForCarry(t *testing.T) {
+	capsule := truthFixture("sha256:compat", "fixture-model", 4096)
+	capsule.Seal()
+	summary := Summary{
+		Window:        4,
+		Goal:          "keep going",
+		Digest:        []string{"user: newest kept", "assistant: older kept"},
+		OmittedDigest: 2,
+	}
+	rendered, err := RenderStructured(summary, capsule, Narrative{}, 4096)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(rendered.Text, "user: newest kept") ||
+		!strings.Contains(rendered.Text, "(2 more not listed)") {
+		t.Fatalf("structured render dropped digest:\n%s", rendered.Text)
+	}
+	lines, omitted, ok := CarriedDigest(rendered.Text)
+	if !ok || omitted != 2 || len(lines) != 2 || lines[0] != "user: newest kept" {
+		t.Fatalf("carried=%v omitted=%d ok=%v", lines, omitted, ok)
+	}
+}
+
 func truthFixture(
 	compatibility string,
 	modelID string,

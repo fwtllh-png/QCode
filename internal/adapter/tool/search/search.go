@@ -130,6 +130,7 @@ func (t *Tool) Descriptor() tool.Descriptor {
 	return tool.Descriptor{
 		Name: t.kind, Description: searchDescription(t.kind), Visibility: tool.VisibleModel,
 		DiscoveryTerms: searchDiscoveryTerms(t.kind),
+		IdentityKeys:   []string{"query", "pattern"},
 		Capability:     tool.CapabilityRead, AccessMode: tool.AccessTree,
 		ResourceResolver: tool.ResourceResolver{Templates: []tool.ResourceTemplate{{
 			Kind: "repo", ID: ".", Access: tool.AccessRead, Tree: true,

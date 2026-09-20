@@ -105,6 +105,35 @@ func TestCarryIgnoresOrdinaryText(t *testing.T) {
 	}
 }
 
+func TestRenderReportsOmittedDigest(t *testing.T) {
+	text, truncated, sections := Summary{
+		Digest:        []string{"user: newest kept"},
+		OmittedDigest: 4,
+	}.Render(0)
+	if truncated || len(sections) != 1 || sections[0] != SectionDigest {
+		t.Fatalf("truncated=%v sections=%v", truncated, sections)
+	}
+	if !strings.Contains(text, "user: newest kept") ||
+		!strings.Contains(text, "(4 more not listed)") {
+		t.Fatalf("omitted digest was not visible:\n%s", text)
+	}
+}
+
+func TestCarriedDigestReadsStructuredSection(t *testing.T) {
+	text, _, _ := Summary{
+		Digest:        []string{"assistant: newest", "user: older"},
+		OmittedDigest: 3,
+	}.Render(0)
+	lines, omitted, ok := CarriedDigest(text)
+	if !ok || omitted != 3 || len(lines) != 2 ||
+		lines[0] != "assistant: newest" || lines[1] != "user: older" {
+		t.Fatalf("carried=%v omitted=%d ok=%v", lines, omitted, ok)
+	}
+	if _, _, ok := CarriedDigest("user: nothing to see here"); ok {
+		t.Fatal("ordinary text reported a carried digest")
+	}
+}
+
 func TestDigestDropsOldestEntriesUnderPressure(t *testing.T) {
 	summary := Summary{Digest: []string{"newest line", "middle line", "oldest line"}}
 	full, _, _ := summary.Render(0)

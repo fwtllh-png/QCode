@@ -20,14 +20,33 @@ func ReadPathsFromWorkingSet(entries []WorkingSetEntry) []string {
 }
 
 func FormatResumeHint(plan Plan, readPaths []string, locatedSites ...[]string) string {
-	var sites []string
-	if len(locatedSites) == 0 {
-		sites = nil
-	} else {
-		sites = locatedSites[0]
+	return FormatResumeHintBudgeted(plan, readPaths, 0, resumeSites(locatedSites))
+}
+
+// FormatResumeHintBudgeted lists every already-read path that fits the existing
+// session-state or checkpoint byte budget. Paths beyond that budget stay in the
+// working-set ledger; the hint records how many were omitted. budget <= 0 keeps
+// the full list.
+func FormatResumeHintBudgeted(
+	plan Plan, readPaths []string, budget int, locatedSites []string,
+) string {
+	kept := append([]string(nil), readPaths...)
+	omitted := 0
+	for {
+		hint := formatResumeHint(plan, kept, omitted, locatedSites)
+		if budget <= 0 || len(hint) <= budget || len(kept) == 0 {
+			return hint
+		}
+		kept = kept[:len(kept)-1]
+		omitted++
 	}
+}
+
+func formatResumeHint(
+	plan Plan, readPaths []string, omitted int, sites []string,
+) string {
 	open, done := plan.OutstandingSteps()
-	if done == 0 && len(readPaths) == 0 && len(sites) == 0 {
+	if done == 0 && len(readPaths) == 0 && omitted == 0 && len(sites) == 0 {
 		return ""
 	}
 	var parts []string
@@ -40,8 +59,15 @@ func FormatResumeHint(plan Plan, readPaths []string, locatedSites ...[]string) s
 			parts = append(parts, "Next open work: "+title+".")
 		}
 	}
-	if len(readPaths) > 0 {
-		parts = append(parts, "Already-read paths: "+strings.Join(readPaths, ", ")+".")
+	if len(readPaths) > 0 || omitted > 0 {
+		if len(readPaths) > 0 {
+			parts = append(parts, "Already-read paths: "+strings.Join(readPaths, ", ")+".")
+		}
+		if omitted > 0 {
+			parts = append(parts, fmt.Sprintf(
+				"(%d more already-read paths omitted).", omitted,
+			))
+		}
 		parts = append(parts,
 			"Do not file_read those paths again unless you are about to edit a specific window. A dirty git status or git_diff is not a reason to file_read. Canceled or failed turns without edits are already recorded; do not re-verify that with git_diff. Absence from the visible tail is not a reason to file_read. Use "+TurnHistoryToolName+" or result_get for prior read text; if that output is truncated, call result_get before file_read. After search_text returns line hits, file_read only that window and edit; do not page the rest of the file.",
 		)
@@ -60,17 +86,26 @@ func FormatResumeHint(plan Plan, readPaths []string, locatedSites ...[]string) s
 }
 
 func ResumeRetrievalEntity(plan Plan, readPaths []string, locatedSites ...[]string) (TruthEntity, bool) {
-	var sites []string
-	if len(locatedSites) > 0 {
-		sites = locatedSites[0]
-	}
-	hint := FormatResumeHint(plan, readPaths, sites)
+	return ResumeRetrievalEntityBudgeted(plan, readPaths, 0, resumeSites(locatedSites))
+}
+
+func ResumeRetrievalEntityBudgeted(
+	plan Plan, readPaths []string, budget int, locatedSites []string,
+) (TruthEntity, bool) {
+	hint := FormatResumeHintBudgeted(plan, readPaths, budget, locatedSites)
 	if hint == "" {
 		return TruthEntity{}, false
 	}
 	entity := NewTruthEntity(EntityFact, "resume", hint, ResumeSource)
 	entity.normalizeLifecycle()
 	return entity, true
+}
+
+func resumeSites(locatedSites [][]string) []string {
+	if len(locatedSites) == 0 {
+		return nil
+	}
+	return locatedSites[0]
 }
 
 func SessionStateResumeHint(capsule TruthCapsule) string {

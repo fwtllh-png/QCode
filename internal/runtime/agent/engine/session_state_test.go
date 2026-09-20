@@ -156,6 +156,49 @@ func TestResumeHintSurfacesCompletedPlanAndReadPaths(t *testing.T) {
 	}
 }
 
+func TestResumeHintKeepsReadsOutsideWorkingSetLimit(t *testing.T) {
+	runtime := &scriptedProvider{streams: []provider.Stream{textStream("ok")}}
+	engine := newEngine(t, runtime, tool.NewRegistry(nil, nil))
+	engine.options.Workspace = t.TempDir()
+	engine.options.WorkingSetLimit = 2
+	engine.turn = 1
+	if err := engine.ApplyPlan(interact.Plan{
+		Objective: "keep already-read paths",
+		Steps: []interact.PlanStep{
+			{Title: "audit a.go", Status: interact.StepDone},
+			{Title: "fix overflow", Status: interact.StepPending},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{"late.go", "a.go", "b.go"} {
+		engine.observePath(agentcontext.SourceRead, path)
+	}
+	if got := engine.resumeReadPaths(); len(got) != 3 ||
+		got[0] != "a.go" || got[1] != "b.go" || got[2] != "late.go" {
+		t.Fatalf("resume paths = %v, want all SourceRead", got)
+	}
+	entries := engine.WorkingSetEntries(1, engine.options.WorkingSetLimit)
+	if len(entries) != 2 {
+		t.Fatalf("prompt working set = %+v, want top-2", entries)
+	}
+	for _, entry := range entries {
+		if entry.Path == "late.go" {
+			t.Fatalf("prompt working set kept late.go: %+v", entries)
+		}
+	}
+	if _, err := engine.Run(t.Context(), "continue", nil); err != nil {
+		t.Fatal(err)
+	}
+	first := joinMessageText(runtime.requests[0].Messages)
+	if !strings.Contains(first, "Already-read paths:") ||
+		!strings.Contains(first, "late.go") ||
+		!strings.Contains(first, "a.go") ||
+		!strings.Contains(first, "b.go") {
+		t.Fatalf("resume hint dropped a SourceRead path: %s", first)
+	}
+}
+
 func TestSessionStatePartitionStaysAbsentWithoutLedgerFacts(t *testing.T) {
 	runtime := &scriptedProvider{streams: []provider.Stream{textStream("done")}}
 	engine := newEngine(t, runtime, tool.NewRegistry(nil, nil))

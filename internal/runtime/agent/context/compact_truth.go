@@ -238,7 +238,9 @@ func RenderStructured(
 			budget,
 		)
 	}
-	summary.Digest = nil
+	// Digest stays optional and last so a tight budget drops the oldest
+	// transcript lines first. The next compaction merges the structured
+	// digest through CarriedDigest instead of flattening the whole summary.
 	blocks := summary.blocks()
 	room := unbounded
 	if budget > 0 {

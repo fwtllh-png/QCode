@@ -146,7 +146,7 @@ func (a *Authority) ObserveToolFailure(
 		}
 		reason = prefix + tail + "\n" + result.Content
 	}
-	a.Failures().NoteTool(turn, call.Name, reason)
+	a.Failures().NoteToolCall(turn, call.Name, call.ID, reason)
 }
 
 func (a *Authority) ObserveChange(

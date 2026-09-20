@@ -108,6 +108,52 @@ func TestMidTurnBoundsLatestPatchArguments(t *testing.T) {
 	}
 }
 
+func TestMidTurnBoundsExecCommandKeepsTruncatedCommand(t *testing.T) {
+	registry := tool.NewRegistry(nil, nil)
+	descriptor := echoDescriptor()
+	descriptor.Name = "exec_command"
+	descriptor.Description = "run a command"
+	descriptor.IdentityKeys = []string{"command", "cwd"}
+	if err := registry.Register(&countingCatalogExecutor{descriptor: descriptor}); err != nil {
+		t.Fatal(err)
+	}
+	engine := newEngine(t, &scriptedProvider{}, registry)
+	route := mustTestRouteWithContext(t, 1024)
+	engine.options.Route = route
+	engine.options.Routes, _ = model.NewRouteSet(route, nil, false)
+	engine.options.MaxOutputTokens = 128
+	command := strings.Repeat("go test ./parser ", 400)
+	arguments, err := json.Marshal(map[string]any{
+		"command": command, "cwd": ".", "timeout_ms": 10000,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	history := []provider.Message{
+		messageWithText(provider.RoleUser, "run the parser tests", 1),
+		toolCallMessage(1, "exec-1", "exec_command", string(arguments)),
+		toolResultMessage(1, "exec-1", `{"ok":false}`),
+	}
+	snapshot := agentcontext.NewMessageLedger(agentcontext.LedgerInput{}).Snapshot()
+	window, err := engine.runCompactGate(
+		t.Context(), &history, snapshot, 128, CompactionPhaseMidTurn, true,
+		func(State, Event) error { return nil }, 0, engine.contextViewProject(nil),
+	)
+	if err != nil {
+		t.Fatalf("command-pressure turn failed: %v", err)
+	}
+	if window.hardLimit != 0 && window.total > window.hardLimit {
+		t.Fatalf("bounded command still overflows: %+v", window)
+	}
+	got := history[1].Blocks[0].ToolCall.Arguments
+	if !strings.Contains(got, `"cwd":"."`) ||
+		!strings.Contains(got, "go test ./parser") ||
+		strings.Contains(got, "timeout_ms") ||
+		!strings.Contains(got, "...") {
+		t.Fatalf("arguments = %s", got)
+	}
+}
+
 func TestMidTurnStillFailsWhenUserRequestIsIrreducible(t *testing.T) {
 	engine := newEngine(t, &scriptedProvider{}, tool.NewRegistry(nil, nil))
 	engine.options.Context.Window.AutoTokens = 300

@@ -293,6 +293,21 @@ func TestCloneIsIndependent(t *testing.T) {
 	}
 }
 
+func TestRetainedDeltaKeepsReadsOutsideFactAndChangeSet(t *testing.T) {
+	set := NewEvidenceSet()
+	set.BeginTurn(1)
+	set.Observe(EvidenceFact{Kind: KindDefinition, Path: "a.go", Line: 2, Turn: 1})
+	set.NoteRead("orphan.go", "digest")
+	delta := set.RetainedDelta(1, 32, 32)
+	if len(delta.Facts) != 1 || delta.Facts[0].Path != "a.go" {
+		t.Fatalf("facts = %+v", delta.Facts)
+	}
+	if len(delta.Reads) != 1 || delta.Reads[0].Path != "orphan.go" ||
+		delta.Reads[0].Digest != "digest" {
+		t.Fatalf("reads = %+v, want the orphan SourceRead", delta.Reads)
+	}
+}
+
 func TestPassingVerificationClearsRestoredStaleChange(t *testing.T) {
 	set := ApplyEvidenceDelta(EvidenceDelta{Changes: []EvidenceChange{{
 		Path: "a.go", Turn: 1, Read: true, Stale: true,

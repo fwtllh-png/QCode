@@ -12,11 +12,14 @@ import (
 
 func TestFailureDeltaRoundTrip(t *testing.T) {
 	failures := NewFailures()
-	failures.NoteTool(1, "read", "missing")
+	failures.NoteToolCall(1, "read", "read-1", "missing")
 	failures.NoteVerify(2, "tests", "failed", "exit 1")
 	restored := ApplyFailureDelta(failures.Delta())
 	if !reflect.DeepEqual(restored.List(), failures.List()) {
 		t.Fatalf("restored = %+v, want %+v", restored.List(), failures.List())
+	}
+	if restored.List()[1].CallID != "read-1" {
+		t.Fatalf("call id was dropped: %+v", restored.List())
 	}
 }
 
@@ -39,11 +42,29 @@ func TestProcessFailureSummaryRetainsTheDiagnosticTail(t *testing.T) {
 			Failure:        &tool.FailureFact{Category: "command_failure"},
 		}},
 	}
-	authority.ObserveToolFailure(provider.ToolCall{Name: "exec_command"}, result, 1)
+	authority.ObserveToolFailure(
+		provider.ToolCall{ID: "exec-1", Name: "exec_command"},
+		result,
+		1,
+	)
 	failures := authority.Failures().List()
 	if len(failures) != 1 || !strings.Contains(failures[0].Reason, detail) ||
-		!strings.Contains(failures[0].Reason, "exit=2") || len(failures[0].Reason) > failureReasonBytes {
+		!strings.Contains(failures[0].Reason, "exit=2") ||
+		len(failures[0].Reason) > failureReasonBytes ||
+		failures[0].CallID != "exec-1" ||
+		!strings.Contains(failures[0].line(), "exec-1") {
 		t.Fatalf("diagnostic tail was squeezed out: %+v", failures)
+	}
+}
+
+func TestFailureRepeatKeepsLatestCallID(t *testing.T) {
+	ledger := NewFailures()
+	ledger.NoteToolCall(1, "exec_command", "exec-1", "exit 1")
+	ledger.NoteToolCall(2, "exec_command", "exec-2", "exit 1")
+	list := ledger.List()
+	if len(list) != 1 || list[0].Count != 2 || list[0].CallID != "exec-2" ||
+		list[0].Turn != 2 {
+		t.Fatalf("repeat did not keep the latest call: %+v", list)
 	}
 }
 

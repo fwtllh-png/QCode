@@ -90,7 +90,9 @@
   `session_state` 给出检索指针；缺失 Checkpoint 只回封 turn id，不把旧审计
   猜进 Plan。Plan 已有完成步骤或 Working Set 已有已读路径时，`session_state`
   必须带 Resume Fact：不要重复已完成步骤，下一项未完成工作取第一项
-  outstanding Plan 标题，已读路径上限继承 `context.working_set.max_entries`。
+  outstanding Plan 标题，并列出全部已读路径。Prompt 工作集仍按
+  `context.working_set.max_entries` 取 top-N。已读列表超过 `session_state`
+  分区预算时截断并写 `(N more already-read paths omitted)`。
   有行号命中时 Resume Fact 还列出 `Located sites`。`working_set` 只列路径；
   不要再次 `file_read`，除非即将编辑具体窗口。`search_text` /
   `search_definition` 命中后优先读该窗口。
@@ -100,7 +102,7 @@
   已记在 Checkpoint 里，不要用 `git_diff` 再确认。
   脏的 `git_status` / `git_diff` 不是重读理由。覆盖范围内的已知读回放原结果；
   无法回放或先前正文已不在当前 Sample 时放行必要重读。取消 Checkpoint 保留下一项
-  Plan 与已读路径指针。Paused Continue 恢复 Work Item（当前用户句为 Goal，源
+  Plan 与全部已读路径指针，超 Checkpoint 预算时写 omitted。Paused Continue 恢复 Work Item（当前用户句为 Goal，源
   Turn KnownReads 开局写入）；覆盖读回放，git 巡视放行。相邻 Sample 重复同一
   工作状态（内容版本 + 结果语义 digest）且同一工具身份达到
   `execution.implement_no_progress_samples`（默认 6）进入 Finish-only，但此时

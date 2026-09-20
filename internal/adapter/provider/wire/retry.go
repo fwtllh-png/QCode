@@ -2,8 +2,11 @@ package wire
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
 	"errors"
 	"io"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -11,7 +14,7 @@ import (
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
 )
 
-const RetryPolicyRevision = "provider-retry/v3"
+const RetryPolicyRevision = "provider-retry/v5"
 
 type RetryPolicy struct {
 	MaxRetries          int
@@ -26,7 +29,11 @@ type RetryPolicy struct {
 	SharedRateLimitRetries uint32
 	SharedRateLimitWaited  time.Duration
 	RouteCooldown          time.Duration
-	Now                    func() time.Time
+	// JitterSeed decorrelates locally derived backoff across sessions. The
+	// same seed and retry count stay reproducible; Provider Retry-After is
+	// never jittered.
+	JitterSeed string
+	Now        func() time.Time
 }
 
 type RetryDecision struct {
@@ -47,37 +54,29 @@ func (p RetryPolicy) Decide(
 	contextChanged bool,
 ) (RetryDecision, bool) {
 	failure := ClassifyFailure(err, meaningful)
-	limit := p.MaxRetries
-	if limit < 1 && protocol.IsRetryable(err) {
-		limit = 1
-	}
-	if limit < 1 {
-		limit = 1
-	}
+	limit := max(p.MaxRetries, 0)
 	eligible := false
 	attempt := int(retries)
 	switch failure.Code {
 	case provider.FailureRateLimit:
 		eligible = true
 		attempt = int(p.rateLimitBudgetRetries())
-		if p.RateLimitMaxRetries > 0 {
-			limit = p.RateLimitMaxRetries
-		} else {
-			limit = 0
+		limit = p.rateLimitAttemptLimit(err, failure)
+		if limit == 0 && !rateLimitHasWaitSignal(err, failure, p.RouteCooldown) {
+			eligible = false
 		}
 	case provider.FailureServer,
 		provider.FailureTransport,
 		provider.FailureStreamClosed,
 		provider.FailureTimeout:
-		eligible = true
+		eligible = limit > 0
 	case provider.FailureContextWindowExceeded:
-		eligible = contextChanged
-		limit = max(1, limit)
+		eligible = contextChanged && limit > 0
 	case provider.FailureEmptyResponse:
 		eligible = true
 		limit = 1
 	case provider.FailureUnknown:
-		eligible = protocol.IsRetryable(err)
+		eligible = protocol.IsRetryable(err) && limit > 0
 	}
 	if !eligible {
 		return RetryDecision{}, false
@@ -102,7 +101,7 @@ func (p RetryPolicy) Decide(
 	}
 	delayMS := failure.RetryAfterMS
 	if delayMS == 0 {
-		delayMS = uint64(retryBackoff(backoffRetries) / time.Millisecond)
+		delayMS = uint64(retryBackoff(backoffRetries, p.JitterSeed) / time.Millisecond)
 	}
 	needed := time.Duration(delayMS) * time.Millisecond
 	if p.RouteCooldown > needed {
@@ -131,6 +130,31 @@ func (p RetryPolicy) Decide(
 		Failure: failure, EffectiveDelay: needed, RetryAt: now.Add(needed),
 		PolicyRevision: RetryPolicyRevision,
 	}, true
+}
+
+func (p RetryPolicy) rateLimitAttemptLimit(
+	err error, failure provider.Failure,
+) int {
+	if p.RateLimitMaxRetries > 0 {
+		return p.RateLimitMaxRetries
+	}
+	if rateLimitHasWaitSignal(err, failure, p.RouteCooldown) {
+		return 0
+	}
+	return max(p.MaxRetries, 0)
+}
+
+func rateLimitHasWaitSignal(
+	err error, failure provider.Failure, cooldown time.Duration,
+) bool {
+	if failure.RetryAfterMS > 0 || cooldown > 0 {
+		return true
+	}
+	if problem := protocol.ProblemOf(err); problem != nil &&
+		problem.RateLimit != nil && problem.RateLimit.RetryAfterMS > 0 {
+		return true
+	}
+	return false
 }
 
 func (p RetryPolicy) rateLimitBudgetRetries() uint32 {
@@ -231,7 +255,12 @@ func RecoveryFault(err error, failure provider.Failure) error {
 	)
 }
 
-func retryBackoff(retries uint32) time.Duration {
+func retryBackoff(retries uint32, seed string) time.Duration {
+	delay := retryBackoffBase(retries)
+	return delay + retryJitter(delay, seed, retries)
+}
+
+func retryBackoffBase(retries uint32) time.Duration {
 	delay := 10 * time.Millisecond
 	for index := uint32(0); index < retries && delay < 30*time.Second; index++ {
 		delay *= 2
@@ -239,8 +268,16 @@ func retryBackoff(retries uint32) time.Duration {
 	if delay > 30*time.Second {
 		delay = 30 * time.Second
 	}
-	jitterSteps := (retries % 4) + 1
-	return delay + (delay/20)*time.Duration(jitterSteps)
+	return delay
+}
+
+func retryJitter(delay time.Duration, seed string, retries uint32) time.Duration {
+	span := delay / 5
+	if span <= 0 {
+		return 0
+	}
+	sum := sha256.Sum256([]byte(seed + "\x00" + strconv.FormatUint(uint64(retries), 10)))
+	return time.Duration(binary.BigEndian.Uint64(sum[:8]) % uint64(span+1))
 }
 
 func errorText(err error) string {

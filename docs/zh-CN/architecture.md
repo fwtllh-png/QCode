@@ -102,6 +102,9 @@ Registry 分别冻结模型可见的 `ExternalDescriptor` 与执行权威
 `TrustedBinding`。External Requested Effects 只用于呈现和审计；Guard、Policy、
 Authority、Journal、Sandbox 和验证证据接纳只消费 Trusted Binding。外部 Source 必须
 由可信 Host Policy 显式绑定权限，Deferred Loader 不能改变冻结的 Binding。
+工具 `Descriptor` 可声明 `identity_keys`；窗口压力把调用参数收成这些身份字段。
+未声明则用公开白名单并入 InputSchema 的 required 标量，`command` / `content` /
+`patch` 只有显式声明才保留。
 
 Trusted Binding 以十维 Required Controls 描述操作需求，Sandbox Probe、Policy 与具体
 Command 共同产出 Effective Controls。Authority 在 Lease 签发时执行逐维集合比较，
@@ -707,6 +710,8 @@ ResultStore / Journal，可通过 `result_get` 回读），并推进 Token Windo
 工具定义、当前用户请求原文和 output reserve。只有该前缀仍超硬输入，或部分
 Provider 续写无法放入窗口时，才以 `resource_exhausted` 失败。
 跨 Turn 的完整 History Replacement 仍留给显式 `thread.compact` 与 Turn 终态维护。
+压缩 digest 二次折叠时并入上一份 Removed History；超出 `max_digest_entries`
+的条数写入 omitted 计数，不静默丢掉。
 `context.view.narrative_mode=post_turn` 写独立 Digest 分区，不阻塞下一轮 Sample。
 带出处的未完成工作提升为 Plan Todo 后进入 `session_state`；每个闭合 Turn 在
 Dynamic（History 之后）追加一块 write-once Checkpoint。旧 Turn 原文通过
@@ -716,7 +721,9 @@ Dynamic（History 之后）追加一块 write-once Checkpoint。旧 Turn 原文�
 被裁掉的旧 Turn
 在 `session_state` 给出检索指针；升级前缺失的 Checkpoint 只回封 turn id。
 Plan 已有完成步骤或已读路径时，`session_state` 另带 Resume Fact，避免
-Continue / Retry / 新 prompt 把已读文件再读一遍；有行号命中时列出
+Continue / Retry / 新 prompt 把已读文件再读一遍；Resume 使用全部已读路径，
+不继承 `context.working_set.max_entries`，超 `session_state` 分区预算时写
+omitted 计数。有行号命中时列出
 `Located sites`。搜索命中后对该路径的 `file_read` 必须带 `start_line`。
 相邻 Sample 在同一工作状态上重复同一工具身份达到
 `execution.implement_no_progress_samples`（默认 6）即进入 Finish-only；该阶段
@@ -725,7 +732,7 @@ Continue / Retry / 新 prompt 把已读文件再读一遍；有行号命中时�
 长租约。已知路径整文件 `file_read` 与
 Continue 巡视 git 在工具执行前被拒绝，不续租。脏的 `git_status` /
 `git_diff` 或可见 Tail 没有那次读取都不是重读理由，应走 `turn_history` /
-`result_get`。取消和失败 Checkpoint 均保留下一项 Plan 与已读路径指针，但不带未提交的半开
+`result_get`。取消和失败 Checkpoint 均保留下一项 Plan 与全部已读路径指针，超 Checkpoint 预算时写 omitted，但不带未提交的半开
 Tool 链。缺少终态证据的旧 Checkpoint 只回封检索指针，状态为 `unknown`，
 不推断为 completed。Continue 恢复短 Work Item 胶囊（源 Turn、terminal、Known/Open、工具
 结论），Goal 是当前用户句，并在开局写入源 Turn 的 KnownReads。
@@ -737,7 +744,11 @@ Provider 配额耗尽与瞬时限流分开处理。OpenAI-compatible 的明确
 对应 Provider 下解释，未知 429 不按文本推断为 TPM 或配额。配额终态使用
 `resource_exhausted`，保留 Provider 原因和重置时间文案，恢复动作为额度恢复后 Continue。
 `provider_retry_after_ms` 只保存 Provider Header 值；本地推导退避留在 Route Cooldown
-与实际等待字段。每次请求都有 started 和闭合事件，回执仅按 started 计数。
+与实际等待字段，并在 20% 幅度内用 Session / Route / Sample 的确定性 jitter 错开
+同序号重试。`execution.provider_retry_limit=0` 对 5xx / 网络 / Timeout 不重试；
+空响应仍允许 1 次，429 走独立等待预算。没有 `Retry-After` / Route Cooldown 的
+429 在 `rate_limit_retry_limit=0` 时继承 `provider_retry_limit`，避免本地短退避
+空转。每次请求都有 started 和闭合事件，回执仅按 started 计数。
 
 模型侧不再提供 quality 工具、专项环境探针或“修改文件后才允许重试”的额外门禁。
 命令统一经过 exec_command/write_stdin 的 Guard、审批和 Sandbox；退出码来自真实

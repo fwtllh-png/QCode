@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"reflect"
 	"slices"
-	"strings"
 	"time"
 
 	"github.com/fwtllh-png/QCode/internal/adapter/mcp"
@@ -94,7 +93,7 @@ func (e *Engine) modelStep(
 		if err == nil {
 			bindToolCalls(calls, catalog, advertised)
 			if continued != nil {
-				*continued = assembly.TransportCount() > 1
+				*continued = assembly.CurrentStopReason().Incomplete()
 			}
 			if capturedReplay != nil {
 				*capturedReplay = assembly.CurrentReplay()
@@ -506,7 +505,15 @@ func (e *Engine) modelStep(
 				return nil, nil, totalUsage, lastEstimate, sendErr
 			}
 			if errors.Is(err, context.Canceled) && ctx.Err() == nil && e.appendSteering(history) {
+				if pendingInputInjected != nil {
+					*pendingInputInjected = true
+				}
 				sampleLease.Release()
+				if finishTransport != nil {
+					if finishErr := finishTransport(); finishErr != nil {
+						return nil, nil, totalUsage, lastEstimate, finishErr
+					}
+				}
 				attempt = -1
 				continue
 			}
@@ -532,6 +539,7 @@ func (e *Engine) modelStep(
 					waited:   rateLimitWaited,
 					cooldown: e.routeCooldown(route),
 				},
+				sampleID,
 			)
 			if retryable && ctx.Err() == nil {
 				if abort := e.abortOversizedRateLimitRetry(
@@ -690,10 +698,10 @@ func (e *Engine) modelStep(
 				blocks,
 			)
 			if continued != nil {
-				text := strings.TrimSpace(
-					providerassembly.BlocksText(completeBlocks),
-				)
-				*continued = strings.HasSuffix(text, ":") || strings.HasSuffix(text, "：")
+				// Length and provider stop_reason are the continuation
+				// evidence. A finished end_turn that happens to end with
+				// ":" is a complete draft, not an unfinished sample.
+				*continued = assembly.CurrentStopReason().Incomplete()
 			}
 			if capturedReplay != nil {
 				*capturedReplay = replay
@@ -724,6 +732,7 @@ func (e *Engine) modelStep(
 				waited:   rateLimitWaited,
 				cooldown: e.routeCooldown(route),
 			},
+			sampleID,
 		)
 		if !retryable || ctx.Err() != nil {
 			if ctx.Err() != nil {

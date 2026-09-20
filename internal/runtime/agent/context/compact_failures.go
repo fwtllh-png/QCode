@@ -23,8 +23,10 @@ const (
 const maxFailures = 24
 
 // failureReasonBytes caps one reason. Tool errors carry provider or compiler
-// output that can run to kilobytes; the summary needs the shape of the failure,
-// not the whole log, which is still in the removed history's digest.
+// output that can run to kilobytes; the ledger keeps the shape. The full log
+// stays on the Result Handle and Journal. The removed-history digest keeps
+// the tool name, CallID, and the same truncated shape so a compacted model
+// can see what already failed.
 const failureReasonBytes = 200
 
 // Failure is one attempt that did not work.
@@ -33,6 +35,8 @@ type Failure struct {
 	Kind string
 	// Name is the tool, or the verification scope.
 	Name string
+	// CallID is the latest tool-call identity for this failure, when known.
+	CallID string `json:"call_id,omitempty"`
 	// Reason is the error or status as reported.
 	Reason string
 	// Digest identifies the full failure before display truncation.
@@ -51,6 +55,9 @@ func (f Failure) line() string {
 		fmt.Fprintf(&b, "verify %s", f.Name)
 	default:
 		fmt.Fprintf(&b, "%s", f.Name)
+	}
+	if f.CallID != "" {
+		fmt.Fprintf(&b, " %s", f.CallID)
 	}
 	if f.Reason != "" {
 		fmt.Fprintf(&b, ": %s", f.Reason)
@@ -85,7 +92,12 @@ func NewFailures() *Failures {
 
 // NoteTool records that a tool call failed.
 func (f *Failures) NoteTool(turn uint64, tool, reason string) {
-	f.note(KindTool, turn, tool, reason)
+	f.NoteToolCall(turn, tool, "", reason)
+}
+
+// NoteToolCall records a failed tool call together with its CallID.
+func (f *Failures) NoteToolCall(turn uint64, tool, callID, reason string) {
+	f.note(KindTool, turn, tool, callID, reason)
 }
 
 // NoteVerify records that a verification did not pass. scope is what ran,
@@ -99,10 +111,10 @@ func (f *Failures) NoteVerify(turn uint64, scope, status, message string) {
 			reason += ": " + detail
 		}
 	}
-	f.note(KindVerify, turn, scope, reason)
+	f.note(KindVerify, turn, scope, "", reason)
 }
 
-func (f *Failures) note(kind string, turn uint64, name, reason string) {
+func (f *Failures) note(kind string, turn uint64, name, callID, reason string) {
 	if f == nil {
 		return
 	}
@@ -110,6 +122,7 @@ func (f *Failures) note(kind string, turn uint64, name, reason string) {
 	if name == "" {
 		return
 	}
+	callID = strings.TrimSpace(callID)
 	sum := sha256.Sum256([]byte(reason))
 	digest := hex.EncodeToString(sum[:])
 	key := kind + "\x00" + name + "\x00" + digest
@@ -122,6 +135,9 @@ func (f *Failures) note(kind string, turn uint64, name, reason string) {
 	if existing, found := f.records[key]; found {
 		existing.Count++
 		existing.Turn = turn
+		if callID != "" {
+			existing.CallID = callID
+		}
 		return
 	}
 	if len(f.order) == maxFailures {
@@ -130,7 +146,10 @@ func (f *Failures) note(kind string, turn uint64, name, reason string) {
 		delete(f.records, f.order[0])
 		f.order = f.order[1:]
 	}
-	f.records[key] = &Failure{Kind: kind, Name: name, Reason: reason, Digest: digest, Turn: turn, Count: 1}
+	f.records[key] = &Failure{
+		Kind: kind, Name: name, CallID: callID, Reason: reason,
+		Digest: digest, Turn: turn, Count: 1,
+	}
 	f.order = append(f.order, key)
 }
 

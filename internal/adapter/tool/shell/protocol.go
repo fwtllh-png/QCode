@@ -252,8 +252,9 @@ func execCommandDescriptor() tool.Descriptor {
 		DiscoveryTerms: []string{
 			"run command", "terminal", "build", "执行命令", "终端", "编译", "运行测试",
 		},
-		Visibility: tool.VisibleModel,
-		Capability: tool.CapabilityProcess,
+		Visibility:   tool.VisibleModel,
+		IdentityKeys: []string{"command", "cwd"},
+		Capability:   tool.CapabilityProcess,
 		AccessMode: tool.AccessRead,
 		ResourceResolver: tool.ResourceResolver{
 			Templates: []tool.ResourceTemplate{

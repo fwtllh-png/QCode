@@ -605,12 +605,20 @@ provider_retry_limit = 5
 		fromEnv.Provenance[fieldProviderRetryLimit] != SourceEnv {
 		t.Fatalf("environment provider retry limit = %+v", fromEnv)
 	}
-	invalid := 0
+	zero := 0
+	fromZero, err := Load(LoadOptions{
+		Overrides: Overrides{ProviderRetryLimit: &zero},
+	})
+	if err != nil || fromZero.Config.Execution.ProviderRetryLimit != 0 ||
+		fromZero.Provenance[fieldProviderRetryLimit] != SourceStartup {
+		t.Fatalf("zero provider retry limit = %+v err=%v", fromZero, err)
+	}
+	invalid := -1
 	_, err = Load(LoadOptions{
 		Overrides: Overrides{ProviderRetryLimit: &invalid},
 	})
 	if err == nil || !strings.Contains(err.Error(), fieldProviderRetryLimit) {
-		t.Fatalf("zero provider retry limit error = %v", err)
+		t.Fatalf("negative provider retry limit error = %v", err)
 	}
 }
 

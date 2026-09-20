@@ -419,6 +419,30 @@ func TestEngineDoesNotRepairCompletedPostToolContinuation(t *testing.T) {
 	}
 }
 
+func TestEngineDoesNotRepairColonTerminatedPostToolAnswer(t *testing.T) {
+	runtime := &scriptedProvider{streams: []provider.Stream{
+		toolCallStream("call-1", "echo", `{"text":"evidence"}`),
+		textStream("最终结论："),
+	}}
+	registry := tool.NewRegistry(nil, nil)
+	if err := registry.Register(&echoTool{}); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := newEngine(t, runtime, registry).Run(t.Context(), "review", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Text != "最终结论：" || len(runtime.requests) != 2 {
+		t.Fatalf("result=%+v requests=%d", result, len(runtime.requests))
+	}
+	for index, request := range runtime.requests {
+		if requestContains(request, "[completion_required]") {
+			t.Fatalf("colon-terminated end_turn repaired at request %d", index)
+		}
+	}
+}
+
 func TestEngineContinuesRepeatedReasoningLimitsAtSameEffort(t *testing.T) {
 	runtime := &scriptedProvider{streams: []provider.Stream{
 		&providerfixture.SliceStream{Events: []provider.StreamEvent{
@@ -703,7 +727,7 @@ func TestEngineIncompleteContinuationCanResumeWithToolCall(t *testing.T) {
 	}
 }
 
-func TestEngineRepairsInterruptedPostToolNarrationBeforeCompletion(t *testing.T) {
+func TestEngineDoesNotRepairColonTerminatedPostToolContinuation(t *testing.T) {
 	runtime := &scriptedProvider{streams: []provider.Stream{
 		&providerfixture.SliceStream{Events: []provider.StreamEvent{
 			{Type: provider.EventToolCallDelta, ToolCall: &provider.ToolCallFragment{
@@ -716,7 +740,6 @@ func TestEngineRepairsInterruptedPostToolNarrationBeforeCompletion(t *testing.T)
 			{Type: provider.EventMessageStop, StopReason: provider.StopReasonMaxTokens},
 		}},
 		textStream("继续提交 file_apply 事务："),
-		textStream("最终结论：修改未执行，工作区保持不变。"),
 	}}
 	registry := tool.NewRegistry(nil, nil)
 	if err := registry.Register(&echoTool{}); err != nil {
@@ -732,8 +755,9 @@ func TestEngineRepairsInterruptedPostToolNarrationBeforeCompletion(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Text != "最终结论：修改未执行，工作区保持不变。" ||
-		completedText != result.Text || len(runtime.requests) != 4 {
+	want := "所有事实齐备，现在提交修改：继续提交 file_apply 事务："
+	if result.Text != want || completedText != result.Text ||
+		len(runtime.requests) != 3 {
 		t.Fatalf(
 			"result=%+v completed=%q requests=%d",
 			result,
@@ -741,16 +765,10 @@ func TestEngineRepairsInterruptedPostToolNarrationBeforeCompletion(t *testing.T)
 			len(runtime.requests),
 		)
 	}
-	var foundFeedback bool
-	for _, message := range runtime.requests[3].Messages {
-		if message.Role == provider.RoleUser &&
-			strings.Contains(message.Text(), "[completion_required]") {
-			foundFeedback = true
-			break
+	for index, request := range runtime.requests {
+		if requestContains(request, "[completion_required]") {
+			t.Fatalf("finished colon-terminated continuation repaired at request %d", index)
 		}
-	}
-	if !foundFeedback {
-		t.Fatalf("completion feedback missing from request: %+v", runtime.requests[3].Messages)
 	}
 }
 
@@ -1637,6 +1655,7 @@ func TestEngineGuaranteesOneRetryForStructuredTransportFailure(t *testing.T) {
 		textStream("ok"),
 	}}
 	engine := newEngine(t, runtime, tool.NewRegistry(nil, nil))
+	engine.options.MaxRetries = 1
 	var retries []*ProviderRetry
 
 	result, err := engine.Run(t.Context(), "retry transport", func(event Event) error {
@@ -1669,6 +1688,7 @@ func TestEnginePublishesProviderAttemptLifecycle(t *testing.T) {
 		textStream("ok"),
 	}}
 	engine := newEngine(t, runtime, tool.NewRegistry(nil, nil))
+	engine.options.MaxRetries = 1
 	var attempts []ModelExecution
 	if _, err := engine.Run(t.Context(), "retry transport", func(event Event) error {
 		if event.ModelExecution != nil && event.ModelExecution.Kind == "provider_attempt" {
@@ -2245,8 +2265,9 @@ func TestEngineCompactionPreservesTurnGroupsAndSummary(t *testing.T) {
 	if engine.history[0].Role != provider.RoleSystem ||
 		!strings.Contains(summary, agentcontext.MarkerStart) ||
 		!strings.Contains(summary, "Critical paths: a.go") ||
-		strings.Contains(summary, "old request") ||
-		strings.Contains(summary, "call_old") ||
+		!strings.Contains(summary, "Removed history, newest first:") ||
+		!strings.Contains(summary, "old request") ||
+		!strings.Contains(summary, "call_old") ||
 		engine.history[1].Turn != 2 {
 		t.Fatalf("compacted history = %+v", engine.history)
 	}
@@ -2269,6 +2290,7 @@ func TestEngineCompactionPreservesTurnGroupsAndSummary(t *testing.T) {
 	}
 	if !slices.Contains(receipt.Sections, agentcontext.SectionTruth) ||
 		!slices.Contains(receipt.Sections, agentcontext.SectionCritical) ||
+		!slices.Contains(receipt.Sections, agentcontext.SectionDigest) ||
 		slices.Contains(receipt.Sections, agentcontext.SectionNarrative) {
 		t.Fatalf("compaction sections = %v", receipt.Sections)
 	}
@@ -2293,8 +2315,7 @@ func TestEngineCompactionOmitsDeterministicTranscriptNarrative(t *testing.T) {
 		t.Fatalf("compaction receipt = %+v", receipt)
 	}
 	summary := engine.history[0].Text()
-	if strings.Contains(summary, "last thing before the cut") ||
-		strings.Contains(summary, "first ancient request") {
+	if strings.Contains(summary, "Narrative context") {
 		t.Fatalf("summary retained transcript as narrative:\n%s", summary)
 	}
 }
@@ -2950,6 +2971,32 @@ func TestEngineSteerContinuesCurrentTurnWithoutStaleInput(t *testing.T) {
 	}
 }
 
+func TestEngineSteerBeforeTransportOpenedContinuesSample(t *testing.T) {
+	runtime := &connectCancelProvider{started: make(chan struct{})}
+	engine := newEngine(t, runtime, tool.NewRegistry(nil, nil))
+	done := make(chan error, 1)
+	go func() {
+		_, err := engine.Run(t.Context(), "initial", nil)
+		done <- err
+	}()
+	<-runtime.started
+	if err := mustControl(t, engine).Steer("change direction"); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if len(runtime.requests) != 2 {
+		t.Fatalf("requests = %+v", runtime.requests)
+	}
+	second := agentcontext.StripWorldState(runtime.requests[1].Messages)
+	if len(second) != 2 ||
+		second[0].Text() != "initial" ||
+		second[1].Text() != "change direction" {
+		t.Fatalf("steered messages = %+v", second)
+	}
+}
+
 func TestEnginePendingInputFIFOSteerAndMailbox(t *testing.T) {
 	runtime := &steerProvider{started: make(chan struct{})}
 	engine := newEngine(t, runtime, tool.NewRegistry(nil, nil))
@@ -3544,6 +3591,25 @@ func (s *steerStream) Recv() (provider.StreamEvent, error) {
 }
 
 func (*steerStream) Close() error { return nil }
+
+type connectCancelProvider struct {
+	mu       sync.Mutex
+	started  chan struct{}
+	requests []provider.ModelRequest
+	calls    atomic.Int32
+}
+
+func (p *connectCancelProvider) Stream(ctx context.Context, request provider.ModelRequest) (provider.Stream, error) {
+	p.mu.Lock()
+	p.requests = append(p.requests, request)
+	p.mu.Unlock()
+	if p.calls.Add(1) == 1 {
+		close(p.started)
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	return textStream("final"), nil
+}
 
 type echoTool struct {
 	calls atomic.Int32

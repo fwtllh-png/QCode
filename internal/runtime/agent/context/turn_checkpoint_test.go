@@ -86,6 +86,30 @@ func TestRenderTurnCheckpointCanceledKeepsNextPlanAndReadPaths(t *testing.T) {
 	}
 }
 
+func TestRenderTurnCheckpointOverflowNotesOmittedReadPaths(t *testing.T) {
+	paths := make([]string, 0, 12)
+	for index := 0; index < 12; index++ {
+		paths = append(paths, strings.Repeat("already_read_path_", 4)+string(rune('a'+index))+".go")
+	}
+	checkpoint, err := RenderTurnCheckpoint(CheckpointRenderInput{
+		Turn:      6,
+		Status:    CheckpointCanceled,
+		Goal:      strings.Repeat("goal ", 40),
+		Plan:      Plan{Steps: []PlanStep{{Title: "fix overflow", Status: StepPending}}},
+		ReadPaths: paths,
+		Budget:    400,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(checkpoint.Text) > 400 {
+		t.Fatalf("checkpoint bytes = %d", len(checkpoint.Text))
+	}
+	if !strings.Contains(checkpoint.Text, "more already-read paths omitted") {
+		t.Fatalf("overflow lost omitted-read notice: %s", checkpoint.Text)
+	}
+}
+
 func TestRenderTurnCheckpointFailedKeepsPlanButOmitsUncommittedNarrative(t *testing.T) {
 	checkpoint, err := RenderTurnCheckpoint(CheckpointRenderInput{
 		Turn:    2,

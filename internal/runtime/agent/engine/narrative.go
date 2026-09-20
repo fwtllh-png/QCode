@@ -97,6 +97,7 @@ func (e *Engine) GenerateNarrative(
 			RateLimitRetries:    rateLimitRetries,
 			RateLimitWaited:     rateLimitWaited,
 			RouteCooldown:       e.summaryRouteCooldown(),
+			JitterSeed:          e.retryJitterSeed("narrative"),
 			Now:                 e.options.Observability.Now,
 		}.Decide(err, false, retries, false)
 		if !retryable {
@@ -115,13 +116,15 @@ func (e *Engine) GenerateNarrative(
 }
 
 func (e *Engine) narrativeTransientRetryLimit() int {
-	limit := e.options.MaxRetries
-	if narrative := e.options.Context.NarrativeRetryLimit; narrative > 0 {
-		if limit <= 0 || narrative < limit {
-			return narrative
-		}
+	limit := max(e.options.MaxRetries, 0)
+	narrative := e.options.Context.NarrativeRetryLimit
+	if narrative <= 0 {
+		return limit
 	}
-	return limit
+	if limit == 0 {
+		return 0
+	}
+	return min(limit, narrative)
 }
 
 func (e *Engine) narrativeRateLimitWait(timeout time.Duration) time.Duration {

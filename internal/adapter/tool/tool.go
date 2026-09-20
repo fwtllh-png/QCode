@@ -192,6 +192,7 @@ type Descriptor struct {
 	Description        string             `json:"description"`
 	DiscoveryTerms     []string           `json:"discovery_terms,omitempty"`
 	InputSchema        map[string]any     `json:"input_schema"`
+	IdentityKeys       []string           `json:"identity_keys,omitempty"`
 	Visibility         Visibility         `json:"visibility"`
 	Capability         Capability         `json:"capability"`
 	ResourceResolver   ResourceResolver   `json:"resource_resolver"`
@@ -868,6 +869,17 @@ func validateDescriptor(descriptor Descriptor) error {
 	}
 	if descriptor.Description == "" {
 		return fmt.Errorf("tool %q description is required", descriptor.Name)
+	}
+	seenIdentityKeys := make(map[string]struct{}, len(descriptor.IdentityKeys))
+	for _, key := range descriptor.IdentityKeys {
+		normalized := strings.TrimSpace(key)
+		if normalized == "" {
+			return fmt.Errorf("tool %q has an empty identity key", descriptor.Name)
+		}
+		if _, exists := seenIdentityKeys[normalized]; exists {
+			return fmt.Errorf("tool %q has duplicate identity key %q", descriptor.Name, key)
+		}
+		seenIdentityKeys[normalized] = struct{}{}
 	}
 	seenDiscoveryTerms := make(map[string]struct{}, len(descriptor.DiscoveryTerms))
 	for _, term := range descriptor.DiscoveryTerms {

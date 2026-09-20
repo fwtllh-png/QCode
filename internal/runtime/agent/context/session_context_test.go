@@ -82,6 +82,78 @@ func TestWorkspaceReconciliationRewritesStaleTruthInHistory(t *testing.T) {
 	}
 }
 
+func TestWorkspaceReconciliationPreservesCarriedDigest(t *testing.T) {
+	truth := TruthCapsule{
+		SchemaVersion: TruthSchemaVersion,
+		Generation:    1, CompatibilityHash: "sha256:compat",
+		ModelID: "model", ContextTokens: 4096,
+		DownshiftPolicy: DownshiftRuntimeTruthOnly,
+	}
+	entity := NewTruthEntity(
+		EntityChange,
+		"changed.go",
+		"changed.go verified",
+		"runtime.evidence",
+	)
+	entity.Verified = true
+	entity.VerificationSource = "runtime.evidence"
+	entity.WorkspacePath = "changed.go"
+	entity.WorkspaceDigest = "sha256:old"
+	entity.WorkspaceClaimStatus = WorkspaceClaimCurrent
+	truth.Entities = []TruthEntity{entity}
+	truth.Seal()
+	rendered, err := RenderStructured(
+		Summary{
+			Window:        2,
+			Digest:        []string{"user: keep this digest"},
+			OmittedDigest: 1,
+		},
+		truth,
+		Narrative{},
+		0,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot := manifestSnapshot(t, 3, []provider.Message{
+		turnMessage(provider.RoleSystem, rendered.Text, 2),
+	})
+	snapshot.Workspace.BoundPaths = []BoundPath{{
+		Path: "changed.go", ContentDigest: "sha256:old",
+	}}
+	snapshot.Workspace.Seal()
+	snapshot.Evidence.Changes = []EvidenceChange{{
+		Path: "changed.go", Turn: 2, Verified: true,
+	}}
+	snapshot.Compaction = Compaction{Count: 1, State: &CompactionState{
+		ID: "compact-1", ThreadID: protocol.ThreadID("thread-1"),
+		TurnID: protocol.TurnID("turn-2"), Phase: "fallback",
+		PlanDigest: "sha256:plan", Truth: truth,
+		SourceWindowID: "window-1", TargetWindowID: "window-2",
+		SourceContextDigest: "sha256:context",
+		FallbackReason:      "test fixture",
+	}}
+	if err := snapshot.Seal(); err != nil {
+		t.Fatal(err)
+	}
+	current := snapshot.Workspace
+	current.BoundPaths = append([]BoundPath(nil), current.BoundPaths...)
+	current.BoundPaths[0].ContentDigest = "sha256:new"
+	current.Seal()
+
+	reconciled, _, err := ReconcileWorkspace(snapshot, current)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines, omitted, ok := CarriedDigest(reconciled.History[0].Text())
+	if !ok || omitted != 1 || len(lines) != 1 || lines[0] != "user: keep this digest" {
+		t.Fatalf(
+			"reconcile dropped digest: lines=%v omitted=%d ok=%v text=%s",
+			lines, omitted, ok, reconciled.History[0].Text(),
+		)
+	}
+}
+
 func TestCaptureWorkspaceBindingRejectsSymlinkEscape(t *testing.T) {
 	workspace := t.TempDir()
 	outside := t.TempDir()

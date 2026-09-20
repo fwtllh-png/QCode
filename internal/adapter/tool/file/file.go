@@ -402,6 +402,7 @@ func (o *operation) Descriptor() tool.Descriptor {
 	return tool.Descriptor{
 		Name: o.kind, Description: description, Visibility: tool.VisibleModel,
 		DiscoveryTerms: fileDiscoveryTerms(o.kind),
+		IdentityKeys:   fileIdentityKeys(o.kind),
 		Capability:     capability, AccessMode: access,
 		ResourceResolver: resolver, Aliases: aliases,
 		ParallelPolicy: parallel, RepeatPolicy: repeat,
@@ -409,6 +410,17 @@ func (o *operation) Descriptor() tool.Descriptor {
 		InputSchema: map[string]any{
 			"type": "object", "properties": properties, "required": required, "additionalProperties": false,
 		},
+	}
+}
+
+func fileIdentityKeys(kind string) []string {
+	switch kind {
+	case "file_read":
+		return []string{"path", "start_line", "max_lines"}
+	case "file_list", "file_write", "file_edit":
+		return []string{"path"}
+	default:
+		return nil
 	}
 }
 

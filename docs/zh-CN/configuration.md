@@ -65,8 +65,8 @@ response_header_timeout = "0s"  # 0 表示继承 timeout
 idle_timeout = "1m"             # 每个流事件都会续期
 max_concurrent = 8
 rate_limit = 0                    # 0 = 仅根据 Provider 反馈动态限流
-provider_retry_limit = 3          # 每次 Model Sample 的瞬时故障重试预算
-rate_limit_retry_limit = 0        # 0 = 不限制 429 次数；仍受累计等待预算约束
+provider_retry_limit = 3          # 每次 Model Sample 的瞬时故障重试预算；0 = 不重试
+rate_limit_retry_limit = 0        # 0 = 有 Retry-After/Cooldown 时不限次数；无等待信号时继承 provider_retry_limit
 rate_limit_wait = "10m"           # 累计 429 等待上限；0 = 继承 timeout
 tokens_per_minute = 0             # 0 = TPM 未知，不按模型名称发明默认值；只做请求冷却
 budget_tokens = 0            # 0 表示不设置累计 Session Token 上限
@@ -202,8 +202,16 @@ append-only 前缀。再只把最近 `context.view.recent_tail_turns` 个 Turn �
 请求 + output reserve）仍超硬输入，才 `resource_exhausted`。
 `context.compact.prepare_tokens` / `auto_compact_tokens` / `emergency_tokens`
 为 `0` 时不设提前压缩档位，也不会出现在默认 Context Budget 快照里。History
-Replacement 留给显式 `thread.compact` 与 Turn 终态维护。显式非零值属于
-Operator 成本或 SLA Ceiling，仍须满足顺序和模型窗口范围校验。
+Replacement 留给显式 `thread.compact` 与 Turn 终态维护。
+`max_digest_entries` 限制压缩摘要里的逐条 Removed History；超出的条数写入
+omitted 计数，二次压缩会先并入上一份 digest 再套同一上限，而不是整段丢掉。
+窗口压力下工具调用参数会收成 identity-only JSON。`Descriptor.identity_keys`
+声明保留字段：`exec_command` / `shell_read` 保留截断后的 `command`（及 `cwd`），
+文件工具保留 `path`，搜索保留 `query` / `pattern`。未声明时沿用
+path / query / handle 等公开白名单，并并入 InputSchema 的 required 标量；
+`command` / `content` / `patch` 只有显式声明才保留。声明的 `command` 按与
+digest 相同的 160 字节 UTF-8 预算截断，不回灌整段脚本。
+显式非零值属于 Operator 成本或 SLA Ceiling，仍须满足顺序和模型窗口范围校验。
 
 Web 中的自定义 Endpoint 和内置目录之外的 Model 必须提交完整模型元数据，包括
 Canonical ID、Wire ID、Context、Max Output、Capabilities 和可用的 Reasoning
@@ -246,13 +254,16 @@ Stable、不插到 last-2 前面、不改写旧块。`checkpoint_max_bytes=0` �
 给出确定性 `turn_history` 指针；升级前缺失的 Checkpoint 只回封 turn id，不
 猜测会话清单。继续原 Session 即可，不必开新会话。当 Plan 已有完成步骤或
 Working Set 已有已读路径时，`session_state` 还给出 Resume Fact：不要重复已
-完成步骤，下一项未完成工作取第一项 outstanding Plan 标题，并列出已读路径
-（上限继承 `context.working_set.max_entries`）。有行号命中时 Resume Fact 还列出
+完成步骤，下一项未完成工作取第一项 outstanding Plan 标题，并列出全部已读路径。
+Prompt 工作集仍按 `context.working_set.max_entries` 取 top-N，两层不要混用。
+已读列表超过 `session_state` 分区预算（`context.compact.truth_max_bytes`）时截断
+并写 `(N more already-read paths omitted)`。有行号命中时 Resume Fact 还列出
 `Located sites`。`working_set` 只列路径；不要再次 `file_read`，除非即将编辑
 具体窗口或先前正文已不在当前 Sample。`search_text` / `search_definition` 命中
 某路径后优先读该窗口。脏的 `git_status` / `git_diff` 不是重读理由。覆盖范围内
 的已知读回放原结果；无法回放时放行必要重读。取消 Checkpoint 保留下一项 Plan
-与已读路径指针，失败仍不带半开 Tool 链。Paused Continue 恢复短 Work Item 胶囊；
+与全部已读路径指针，超 `checkpoint_max_bytes` 时写 omitted；失败仍不带半开 Tool
+链。Paused Continue 恢复短 Work Item 胶囊；
 源 Turn 已读路径在开局写入 KnownReads，覆盖读回放，git 巡视放行。
 
 [route]
@@ -429,12 +440,20 @@ Timeout 走 `semantic_narrative_retry_limit`（默认 1）和
 Session State 与 write-once Checkpoint，不改写业务 Turn。
 
 `execution.provider_retry_limit` 是单次 Model Sample 对 5xx、网络中断、Timeout
-等普通瞬时故障的重试预算。明确分类为 `rate_limit` 的 429 不消耗该次数预算，改由
-Rate Limit Recovery Budget 约束：
+等普通瞬时故障的重试预算。`0` 表示这次 Sample 不重试这些故障。空响应仍允许 1
+次恢复。明确分类为 `rate_limit` 的 429 不消耗该次数预算，改由
+Rate Limit Recovery Budget 约束。本地推导的退避在现有 20% 幅度内按 Session、
+Route 与 Sample 做确定性 jitter；有 `Retry-After` / Reset / Route Cooldown 时仍
+等满剩余窗口。
+
+Rate Limit Recovery Budget：
 
 - `execution.rate_limit_retry_limit` 是单次 Sample 允许的 429 恢复次数。默认 `0`
-  表示不按次数封顶。同一 Session 内 Parent 与 Child 的并发 Sample 共用这份次数
-  观察值来计算退避，但 Turn Kernel 的 Retry 序号仍按 Sample 单调递增。
+  在 Provider 给出等待信号（`Retry-After` 或 Route Cooldown）时不按次数封顶，
+  仍受累计等待预算约束。没有等待信号时继承 `execution.provider_retry_limit`，
+  避免本地 10ms 退避在等待预算里空转。同一 Session 内 Parent 与 Child 的并发
+  Sample 共用这份次数观察值来计算退避，但 Turn Kernel 的 Retry 序号仍按 Sample
+  单调递增。
 - `execution.rate_limit_wait` 是 Session 内并发 Sample 共用的累计 429 等待上限。
   默认 `10m`，与连接阶段的 `execution.timeout`（默认 `2m`）分开：后者约束建连、
   TLS 和响应头，前者覆盖 `Retry-After` 冷却和 Parent/Child 串行排队。`0` 仍继承

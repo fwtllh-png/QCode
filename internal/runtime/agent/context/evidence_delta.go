@@ -80,7 +80,8 @@ func (s *EvidenceSet) Delta() EvidenceDelta {
 
 // RetainedDelta returns the bounded live evidence projection. Mandatory change
 // risks are never removed here; admission is responsible for refusing growth
-// that would make that set unrepresentable.
+// that would make that set unrepresentable. Reads stay complete so resume can
+// avoid re-reading files that dropped out of the prompt working-set top-N.
 func (s *EvidenceSet) RetainedDelta(
 	factLimit int,
 	verifiedChangeRetentionTurns uint64,
@@ -92,10 +93,6 @@ func (s *EvidenceSet) RetainedDelta(
 	full := s.Delta()
 	snapshot := s.Snapshot(factLimit)
 	result := EvidenceDelta{Turn: full.Turn, Facts: snapshot.Facts}
-	paths := make(map[string]struct{})
-	for _, fact := range result.Facts {
-		paths[fact.Path] = struct{}{}
-	}
 	verified := 0
 	for _, change := range full.Changes {
 		mandatory := !change.Verified || change.Diagnostics || change.Stale
@@ -108,12 +105,9 @@ func (s *EvidenceSet) RetainedDelta(
 			verified++
 		}
 		result.Changes = append(result.Changes, change)
-		paths[change.Path] = struct{}{}
 	}
 	for _, read := range full.Reads {
-		if _, retained := paths[read.Path]; retained {
-			result.Reads = append(result.Reads, read)
-		}
+		result.Reads = append(result.Reads, read)
 	}
 	handles := append([]EvidenceHandleState(nil), full.Handles...)
 	sort.Slice(handles, func(i, j int) bool {

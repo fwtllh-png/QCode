@@ -490,7 +490,7 @@ Model Tool Call
 
 ### 9.1 Tool Contract
 
-- `internal/adapter/tool/tool.go`：Descriptor、Capability、Access Mode、Resource、
+- `internal/adapter/tool/tool.go`：Descriptor、IdentityKeys、Capability、Access Mode、Resource、
   Outcome 和 Result Store；
 - `catalog.go`：封闭 Registry、Catalog Snapshot 与 Binding；
 - `execution.go`：Prepared Invocation 与 Outcome Facts；

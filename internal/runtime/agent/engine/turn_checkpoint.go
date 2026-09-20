@@ -96,15 +96,14 @@ func (e *Engine) currentPlan() agentcontext.Plan {
 }
 
 func (e *Engine) resumeReadPaths() []string {
-	return agentcontext.ReadPathsFromWorkingSet(
-		e.workingLedger().Select(e.currentTurn(), e.options.WorkingSetLimit),
-	)
+	return e.workingLedger().PathsWithSource(agentcontext.SourceRead)
 }
 
 func (e *Engine) resumeTruthEntities() []agentcontext.TruthEntity {
-	entity, ok := agentcontext.ResumeRetrievalEntity(
+	entity, ok := agentcontext.ResumeRetrievalEntityBudgeted(
 		e.currentPlan(),
 		e.resumeReadPaths(),
+		e.sessionStateBudget(),
 		e.locatedSites(),
 	)
 	if !ok {
@@ -257,9 +256,7 @@ func (e *Engine) sealClosedTurnMemory(
 	}
 	var readPaths []string
 	if status == agentcontext.CheckpointCanceled || status == agentcontext.CheckpointFailed {
-		readPaths = agentcontext.ReadPathsFromWorkingSet(
-			e.workingLedger().Select(turn, e.options.WorkingSetLimit),
-		)
+		readPaths = e.resumeReadPaths()
 	}
 	checkpoint, err := agentcontext.RenderTurnCheckpoint(
 		agentcontext.CheckpointRenderInput{

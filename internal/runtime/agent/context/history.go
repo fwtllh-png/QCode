@@ -326,15 +326,33 @@ func TruncateUTF8Tail(value string, limit int) string {
 	return value[start:]
 }
 
+// summaryIdentityBytes is the existing digest excerpt for one tool-call
+// argument list or tool-result body. The full payload stays on the Handle.
+const summaryIdentityBytes = 160
+
 func SummaryOriginalBytes(messages []provider.Message, lineBytes int) int {
+	names := toolCallNames(messages)
 	total := 0
 	for _, message := range messages {
-		total += len(SummaryLine(message, lineBytes)) + 1
+		total += len(SummaryLine(message, lineBytes, names)) + 1
 	}
 	return total
 }
 
-func SummaryLine(message provider.Message, lineBytes int) string {
+func toolCallNames(messages []provider.Message) map[string]string {
+	names := make(map[string]string)
+	for _, message := range messages {
+		for _, call := range messageToolCalls(message) {
+			if call.ID == "" {
+				continue
+			}
+			names[call.ID] = call.Name
+		}
+	}
+	return names
+}
+
+func SummaryLine(message provider.Message, lineBytes int, callNames map[string]string) string {
 	line := string(message.Role) + ": "
 	switch {
 	case message.Text() != "":
@@ -342,22 +360,43 @@ func SummaryLine(message provider.Message, lineBytes int) string {
 	case len(messageToolCalls(message)) != 0:
 		calls := make([]string, 0, len(messageToolCalls(message)))
 		for _, call := range messageToolCalls(message) {
-			arguments := strings.Join(strings.Fields(call.Arguments), " ")
-			if len(arguments) > 160 {
-				arguments = TruncateUTF8(arguments, 160) + "..."
-			}
-			calls = append(calls, call.ID+" "+call.Name+" "+arguments)
+			arguments := compactSummaryShape(call.Arguments)
+			calls = append(calls, strings.TrimSpace(call.ID+" "+call.Name+" "+arguments))
 		}
 		line += "tool calls " + strings.Join(calls, ", ")
-	case messageToolResultID(message) != "":
-		line += "tool result " + messageToolResultID(message)
 	default:
+		if result := messageToolResult(message); result != nil {
+			line += toolResultSummaryLine(*result, callNames)
+			break
+		}
 		line += strings.Join(strings.Fields(blocksReasoning(message.Blocks)), " ")
 	}
-	if len(line) > lineBytes {
+	if lineBytes > 0 && len(line) > lineBytes {
 		line = TruncateUTF8(line, lineBytes) + "..."
 	}
 	return line
+}
+
+func toolResultSummaryLine(result provider.ToolResult, callNames map[string]string) string {
+	parts := []string{"tool result", result.CallID}
+	if name := strings.TrimSpace(callNames[result.CallID]); name != "" {
+		parts = append(parts, name)
+	}
+	if result.IsError {
+		parts = append(parts, "error")
+	}
+	if shape := compactSummaryShape(result.Content); shape != "" {
+		parts = append(parts, shape)
+	}
+	return strings.Join(parts, " ")
+}
+
+func compactSummaryShape(value string) string {
+	shape := strings.Join(strings.Fields(value), " ")
+	if len(shape) > summaryIdentityBytes {
+		return TruncateUTF8(shape, summaryIdentityBytes) + "..."
+	}
+	return shape
 }
 
 func messageSize(message provider.Message) int {
@@ -396,11 +435,18 @@ func messageToolCalls(message provider.Message) []provider.ToolCall {
 	return calls
 }
 
-func messageToolResultID(message provider.Message) string {
+func messageToolResult(message provider.Message) *provider.ToolResult {
 	for _, block := range message.Blocks {
 		if block.ToolResult != nil {
-			return block.ToolResult.CallID
+			return block.ToolResult
 		}
+	}
+	return nil
+}
+
+func messageToolResultID(message provider.Message) string {
+	if result := messageToolResult(message); result != nil {
+		return result.CallID
 	}
 	return ""
 }

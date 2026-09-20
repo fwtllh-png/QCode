@@ -155,6 +155,46 @@ func TestNilLedgerIsUsable(t *testing.T) {
 	}
 }
 
+func TestRetainedDeltaKeepsSourceReadOutsideSelectLimit(t *testing.T) {
+	ledger := NewWorkingSet()
+	for _, path := range []string{"late.go", "a.go", "b.go"} {
+		ledger.Observe(SourceRead, 1, path)
+	}
+	ledger.Observe(SourceEdited, 1, "edited-only.go")
+	ledger.Observe(SourceSearch, 1, "search-only.go")
+	selected := ledger.Select(1, 2)
+	if len(selected) != 2 {
+		t.Fatalf("select = %+v, want two prompt entries", selected)
+	}
+	kept := map[string]struct{}{}
+	for _, entry := range selected {
+		kept[entry.Path] = struct{}{}
+	}
+	if _, ok := kept["late.go"]; ok {
+		t.Fatalf("select kept late.go inside the top-2: %+v", selected)
+	}
+	if _, ok := kept["search-only.go"]; ok {
+		t.Fatalf("select kept search-only.go inside the top-2: %+v", selected)
+	}
+	delta := ledger.RetainedDelta(1, 2, 0)
+	var reads []string
+	var searchOnly bool
+	for _, observation := range delta.Observations {
+		if observation.Source == SourceRead {
+			reads = append(reads, observation.Path)
+		}
+		if observation.Path == "search-only.go" {
+			searchOnly = true
+		}
+	}
+	if len(reads) != 3 || reads[0] != "a.go" || reads[1] != "b.go" || reads[2] != "late.go" {
+		t.Fatalf("retained reads = %v, want all SourceRead paths", reads)
+	}
+	if searchOnly {
+		t.Fatal("retained a search hit that was outside the prompt working set")
+	}
+}
+
 func TestDeltaRoundTripPreservesObservations(t *testing.T) {
 	ledger := NewWorkingSet()
 	ledger.Observe(SourceRead, 2, "a.go")

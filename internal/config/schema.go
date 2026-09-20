@@ -212,9 +212,15 @@ type Execution struct {
 	MaxConcurrent int           `json:"max_concurrent" toml:"max_concurrent"`
 	RateLimit     float64       `json:"rate_limit" toml:"rate_limit"`
 	// ProviderRetryLimit bounds non-rate-limit transient Provider retries.
+	// Zero disables those recoveries. Empty-response recovery still gets one
+	// attempt. A 429 without Retry-After or Route Cooldown inherits this
+	// count when RateLimitRetryLimit is zero.
 	ProviderRetryLimit int `json:"provider_retry_limit" toml:"provider_retry_limit"`
 	// RateLimitRetryLimit bounds 429 recoveries per Model Sample.
-	// Zero leaves the attempt count unbounded; the wait budget still applies.
+	// Zero leaves the attempt count unbounded when the Provider specified a
+	// wait (Retry-After or Route Cooldown); the wait budget still applies.
+	// Without a wait signal, zero inherits ProviderRetryLimit so a locally
+	// derived 10ms backoff cannot spin for the full wait budget.
 	RateLimitRetryLimit int `json:"rate_limit_retry_limit" toml:"rate_limit_retry_limit"`
 	// RateLimitWait is the maximum cumulative 429 wait per Model Sample.
 	// Zero inherits Timeout when the engine is constructed. The default is a

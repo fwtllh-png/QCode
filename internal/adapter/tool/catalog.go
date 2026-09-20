@@ -1055,6 +1055,7 @@ func cloneDescriptor(descriptor Descriptor) Descriptor {
 	descriptor.InputSchema = cloneStringMap(descriptor.InputSchema)
 	descriptor.Aliases = append([]Alias(nil), descriptor.Aliases...)
 	descriptor.DiscoveryTerms = append([]string(nil), descriptor.DiscoveryTerms...)
+	descriptor.IdentityKeys = append([]string(nil), descriptor.IdentityKeys...)
 	descriptor.ResourceResolver.Templates = append(
 		[]ResourceTemplate(nil), descriptor.ResourceResolver.Templates...,
 	)
