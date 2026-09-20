@@ -23,7 +23,7 @@ func TestCommentaryPrecedesToolWithoutReleasingFinalOutput(t *testing.T) {
 				{Type: provider.EventMessageStop},
 			}}
 			var messages []protocol.CommentaryCompletedData
-			var sawTool, prematureFinal bool
+			var sawTool, streamedDelta, retracted bool
 			result, err := engine.Run(t.Context(), "Inspect the handler", func(event Event) error {
 				if event.Commentary != nil {
 					if sawTool {
@@ -37,8 +37,22 @@ func TestCommentaryPrecedesToolWithoutReleasingFinalOutput(t *testing.T) {
 				if event.ToolCall != nil {
 					sawTool = true
 				}
-				if event.State == Streaming && event.Block != nil && event.Block.Type == provider.ContentText {
-					prematureFinal = true
+				if event.State == Streaming && event.Block != nil &&
+					event.Block.Type == provider.ContentText {
+					streamedDelta = true
+				}
+				if event.State == Streaming && event.OutputDiscarded != nil {
+					if !streamedDelta {
+						t.Error("output was discarded before any delta streamed")
+					}
+					if sawTool {
+						t.Error("narration retraction arrived after the tool phase")
+					}
+					if event.OutputDiscarded.SampleID == "" ||
+						event.OutputDiscarded.Reason == "" {
+						t.Errorf("retraction lacks identity: %+v", event.OutputDiscarded)
+					}
+					retracted = true
 				}
 				return nil
 			})
@@ -48,8 +62,9 @@ func TestCommentaryPrecedesToolWithoutReleasingFinalOutput(t *testing.T) {
 			if len(messages) != 1 || messages[0].Text != "Checking the handler." ||
 				len(messages[0].CallIDs) != 1 || messages[0].CallIDs[0] != "call_1" ||
 				messages[0].MessageID == "" || messages[0].SampleID == "" ||
-				!sawTool || prematureFinal || result.Text != "done" {
-				t.Fatalf("messages=%+v tool=%v leaked=%v result=%+v", messages, sawTool, prematureFinal, result)
+				!sawTool || !streamedDelta || !retracted || result.Text != "done" {
+				t.Fatalf("messages=%+v tool=%v streamed=%v retracted=%v result=%+v",
+					messages, sawTool, streamedDelta, retracted, result)
 			}
 			if len(model.requests) != 2 {
 				t.Fatalf("commentary added model calls: %d", len(model.requests))

@@ -35,6 +35,8 @@ var eventData = []struct {
 }{
 	{EventTurnStarted, func() EventData { return &TurnStartedData{} }},
 	{EventOutputDelta, func() EventData { return &OutputDeltaData{} }},
+	{EventOutputDraft, func() EventData { return &OutputDraftData{} }},
+	{EventOutputDiscarded, func() EventData { return &OutputDiscardedData{} }},
 	{EventCommentaryCompleted, func() EventData { return &CommentaryCompletedData{} }},
 	{EventSessionTitleUpdated, func() EventData { return &SessionTitleUpdatedData{} }},
 	{EventReasoningDelta, func() EventData { return &ReasoningDeltaData{} }},

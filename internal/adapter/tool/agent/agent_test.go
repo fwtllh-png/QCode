@@ -31,7 +31,8 @@ func (g *recordingGate) Execute(
 }
 
 type dualRuntime struct {
-	turns []string
+	turns    []string
+	onCancel func(string, string) error
 }
 
 func (r *dualRuntime) StartTurn(_ context.Context, agentID, prompt string) (string, error) {
@@ -40,7 +41,12 @@ func (r *dualRuntime) StartTurn(_ context.Context, agentID, prompt string) (stri
 	return turn, nil
 }
 
-func (r *dualRuntime) CancelTurn(context.Context, string, string) error { return nil }
+func (r *dualRuntime) CancelTurn(_ context.Context, agentID, turnID string) error {
+	if r.onCancel != nil {
+		return r.onCancel(agentID, turnID)
+	}
+	return nil
+}
 
 type staticContextSource struct {
 	snapshot subagent.ParentContextSnapshot
@@ -925,6 +931,12 @@ func TestSpawnPostStartFailureReleasesChildRuntime(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+	runtime.onCancel = func(agentID, turnID string) error {
+		return manager.Settle(subagent.Result{
+			AgentID: agentID, ThreadID: subagent.ThreadIDFor(agentID),
+			TurnID: turnID, Status: subagent.StatusInterrupted,
+		})
 	}
 	control, err := subagent.NewAgentControl(
 		manager,

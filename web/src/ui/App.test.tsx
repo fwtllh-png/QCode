@@ -1174,7 +1174,7 @@ describe("projectTranscript", () => {
     {settings: true, custom: true, protocol: "openai_responses", fail: false},
     {settings: false, custom: false, protocol: "openai_chat", fail: false},
     {settings: true, custom: false, protocol: "openai_chat", fail: false},
-    {settings: false, custom: false, protocol: "anthropic", fail: true},
+    {settings: false, custom: false, protocol: "legacy", fail: true},
     {settings: true, custom: true, protocol: "openai_responses", fail: true}
   ])("configures an unknown model: $settings / $custom / $protocol / failure=$fail", async ({
     settings, custom, protocol, fail

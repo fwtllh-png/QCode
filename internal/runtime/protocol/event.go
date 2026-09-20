@@ -15,6 +15,8 @@ type EventKind string
 const (
 	EventTurnStarted         EventKind = "turn.started"
 	EventOutputDelta         EventKind = "output.delta"
+	EventOutputDraft         EventKind = "output.draft"
+	EventOutputDiscarded     EventKind = "output.discarded"
 	EventReasoningDelta      EventKind = "reasoning.delta"
 	EventCommentaryCompleted EventKind = "commentary.completed"
 	EventSessionTitleUpdated EventKind = "session.title.updated"
@@ -183,6 +185,39 @@ type OutputDeltaData TextDeltaData
 func (*OutputDeltaData) eventKind() EventKind { return EventOutputDelta }
 
 func (d *OutputDeltaData) validate() error { return (*TextDeltaData)(d).validate() }
+
+// OutputDraftData is the live, provisional body text of one model sample. It
+// streams while the turn is still running and is never persisted: the durable
+// output.delta projection publishes the committed answer after the terminal
+// envelope settles. A consumer renders drafts optimistically and retracts them
+// on OutputDiscardedData or the terminal event.
+type OutputDraftData struct {
+	Text     string `json:"text"`
+	SampleID string `json:"sample_id,omitempty"`
+}
+
+func (*OutputDraftData) eventKind() EventKind { return EventOutputDraft }
+
+func (d *OutputDraftData) validate() error {
+	return require(d.Text != "", "draft delta text is required")
+}
+
+// OutputDiscardedData retracts the provisional output.draft text already
+// streamed for one model sample. Drafts are optimistic: text that arrives
+// with tool calls is narration rather than the final answer, so the sample's
+// streamed draft is retracted before the tool phase. The narration itself is
+// republished through its durable owner (commentary), and the event is
+// transient and never enters the durable event log.
+type OutputDiscardedData struct {
+	SampleID string `json:"sample_id"`
+	Reason   string `json:"reason,omitempty"`
+}
+
+func (*OutputDiscardedData) eventKind() EventKind { return EventOutputDiscarded }
+
+func (d *OutputDiscardedData) validate() error {
+	return require(strings.TrimSpace(d.SampleID) != "", "discarded output sample id is required")
+}
 
 // CommentaryCompletedData is a confirmed, non-terminal assistant message.
 type CommentaryCompletedData struct {

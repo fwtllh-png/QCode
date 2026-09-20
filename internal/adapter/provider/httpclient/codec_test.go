@@ -8,7 +8,6 @@ import (
 
 	"github.com/fwtllh-png/QCode/internal/adapter/model"
 	"github.com/fwtllh-png/QCode/internal/adapter/provider"
-	"github.com/fwtllh-png/QCode/internal/adapter/provider/anthropic"
 	"github.com/fwtllh-png/QCode/internal/adapter/provider/openai"
 	providerwire "github.com/fwtllh-png/QCode/internal/adapter/provider/wire"
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
@@ -67,9 +66,6 @@ func mustEncodeRequest(
 }
 
 func testAdapter(id model.AdapterID) (providerwire.Adapter, error) {
-	if id == model.AdapterAnthropic {
-		return anthropic.NewAdapter(), nil
-	}
 	adapter, err := openai.NewAdapter(id)
 	if err != nil {
 		return nil, fmt.Errorf("test adapter: %w", err)

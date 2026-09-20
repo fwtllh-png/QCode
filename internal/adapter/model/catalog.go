@@ -19,7 +19,6 @@ type AdapterID string
 
 const (
 	AdapterOpenAI           AdapterID = "openai"
-	AdapterAnthropic        AdapterID = "anthropic"
 	AdapterOpenAICompatible AdapterID = "openai_compatible"
 )
 
@@ -28,7 +27,6 @@ type WireProtocol string
 const (
 	ProtocolOpenAIChat      WireProtocol = "openai_chat"
 	ProtocolOpenAIResponses WireProtocol = "openai_responses"
-	ProtocolAnthropic       WireProtocol = "anthropic"
 )
 
 type Provenance string
@@ -199,7 +197,7 @@ func validateProvider(provider Provider) error {
 		)
 	}
 	switch provider.Protocol {
-	case ProtocolOpenAIChat, ProtocolOpenAIResponses, ProtocolAnthropic:
+	case ProtocolOpenAIChat, ProtocolOpenAIResponses:
 	default:
 		return fmt.Errorf("provider %q has unsupported protocol %q", provider.ID, provider.Protocol)
 	}
@@ -303,8 +301,6 @@ func (a AdapterID) Supports(protocol WireProtocol) bool {
 	switch a {
 	case AdapterOpenAI, AdapterOpenAICompatible:
 		return protocol == ProtocolOpenAIChat || protocol == ProtocolOpenAIResponses
-	case AdapterAnthropic:
-		return protocol == ProtocolAnthropic
 	default:
 		return false
 	}

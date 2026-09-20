@@ -17,7 +17,7 @@ func TestRequireCapabilitiesNamesWhatIsMissing(t *testing.T) {
 }
 
 func TestAVisionSlotWithoutVisionIsRefusedAtConstruction(t *testing.T) {
-	act := testRoute(t, "anthropic", "claude-sonnet")
+	act := testRoute(t, "deepseek", "deepseek-chat")
 	// deepseek-chat is an ordinary chat model: no vision bit in the catalog.
 	blind := testRoute(t, "deepseek", "deepseek-chat")
 

@@ -364,7 +364,7 @@ Checkpoint Restore/Fork 或 Plan 执行。Composer 恢复普通发送，不会�
 ## 配置与凭证
 
 首次进入且尚未完成 Runtime Setup 时，Web 不提供默认 Provider 或 Model。用户必须
-选择 OpenAI、Anthropic、DeepSeek、GLM 或自定义 OpenAI-Compatible 服务，并输入准确的
+选择 OpenAI、DeepSeek、GLM 或自定义 OpenAI-Compatible 服务，并输入准确的
 Model ID。自定义 Endpoint 或未进入内置目录的 Model 还必须填写 Base URL（自定义
 Provider）、`openai_chat` / `openai_responses` 协议，以及 Canonical ID、Wire ID、
 Context、Max Output 和完整 Capability 声明。字段为空或不一致时 Runtime 拒绝构造

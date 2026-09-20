@@ -531,6 +531,10 @@ func (c *AgentControl) Close(agentID string) error {
 	return c.manager.Close(agentID)
 }
 
+func (c *AgentControl) CloseContext(ctx context.Context, agentID string) error {
+	return c.manager.CloseContext(ctx, agentID)
+}
+
 func (c *AgentControl) Takeover(ctx context.Context, agentID, prompt string) (string, error) {
 	return c.manager.Takeover(ctx, agentID, prompt)
 }

@@ -521,7 +521,7 @@ func (t *Tool) discardMerge(
 	if err := t.control.SaveIntegration(candidate); err != nil {
 		return tool.Result{}, err
 	}
-	if err := t.control.Close(agentID); err != nil {
+	if err := t.control.CloseContext(ctx, agentID); err != nil {
 		return tool.Result{}, err
 	}
 	if t.onRelease != nil {

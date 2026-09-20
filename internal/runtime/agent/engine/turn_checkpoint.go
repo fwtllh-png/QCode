@@ -62,17 +62,15 @@ func (e *Engine) lookupArchivedTurn(
 func (e *Engine) turnArchiveSource(
 	turn uint64,
 ) (TurnTranscriptArchive, string) {
+	if scope := e.runningScope(); scope != nil {
+		return scope.state.turnArchive.source(turn)
+	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if e.options.TurnTranscriptArchive == nil {
-		return nil, ""
-	}
-	for turnID, number := range e.turnIDs {
-		if number == turn && turnID != "" {
-			return e.options.TurnTranscriptArchive, turnID
-		}
-	}
-	return nil, ""
+	return (turnArchiveSnapshot{
+		archive: e.options.TurnTranscriptArchive,
+		turnIDs: e.turnIDs,
+	}).source(turn)
 }
 
 func (e *Engine) cloneHistoryForLookup() []provider.Message {

@@ -483,6 +483,53 @@ describe("ConversationProjection", () => {
     expect(projection.snapshot().nodes.get("tool-call")).toBe(settled);
   });
 
+  it("streams draft text live and settles it with the completed turn", () => {
+    const projection = new ConversationProjection();
+    projection.apply(event(1, "turn.started", {display_prompt: "Summarize"}));
+    projection.apply(event(2, "output.draft", {text: "The answer ", sample_id: "s1"}));
+    projection.apply(event(3, "output.draft", {text: "is done.", sample_id: "s1"}));
+
+    const streaming = projection.snapshot().nodes.get("output-turn");
+    expect(streaming).toMatchObject({kind: "assistant", text: "The answer is done."});
+
+    projection.apply(event(4, "turn.completed", {text: "The answer is done."}));
+    expect(projection.snapshot().nodes.get("output-turn")).toMatchObject({
+      kind: "assistant",
+      text: "The answer is done."
+    });
+  });
+
+  it("retracts a discarded sample's draft without touching other samples", () => {
+    const projection = new ConversationProjection();
+    projection.apply(event(1, "turn.started", {display_prompt: "Inspect"}));
+    projection.apply(event(2, "output.draft", {text: "I will check.", sample_id: "s1"}));
+    projection.apply(event(3, "output.discarded", {sample_id: "s1", reason: "narration"}));
+    projection.apply(event(4, "tool.start", {
+      call_id: "call",
+      tool: "file_read",
+      arguments: {path: "main.go"}
+    }));
+    projection.apply(event(5, "tool.result", {call_id: "call", output: "ok", is_error: false}));
+    projection.apply(event(6, "output.draft", {text: "It is fine.", sample_id: "s2"}));
+
+    expect(projection.snapshot().nodes.get("output-turn")).toMatchObject({
+      kind: "assistant",
+      text: "It is fine."
+    });
+  });
+
+  it("ignores retraction for an unknown sample or turn", () => {
+    const projection = new ConversationProjection();
+    projection.apply(event(1, "turn.started", {display_prompt: "Answer"}));
+    projection.apply(event(2, "output.draft", {text: "Kept.", sample_id: "s1"}));
+    projection.apply(event(3, "output.discarded", {sample_id: "missing", reason: "narration"}));
+
+    expect(projection.snapshot().nodes.get("output-turn")).toMatchObject({
+      kind: "assistant",
+      text: "Kept."
+    });
+  });
+
   it("summarizes result handles without exposing output by default", () => {
     const snapshot = projectConversation([
       event(1, "tool.start", {

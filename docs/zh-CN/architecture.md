@@ -242,6 +242,16 @@ Web 按 Message ID 保留独立节点，迟到补发的说明依据关联工具�
 正文随已闭合因果组进入 Truth Capsule，或被收成带 tool-call 来源的非权威摘要。
 不把阶段说明重复注入 System 分区或升级为权威事实。
 
+正文 Delta 以瞬态 `output.draft` 事件实时下发，载荷携带逻辑 Sample ID，不进入
+持久事件日志；`output.delta` 语义不变，仍只在 Terminal Envelope 提交后由终态
+Outbox 发布权威正文投影，提交失败零泄漏的基线契约保持不变。采样正文是否为最终
+答案只有在样本闭合时才可知：样本最终产出常规工具调用时，其正文按阶段说明处理，
+引擎在进入工具阶段前发布瞬态 `output.discarded`（携带 Sample ID 与原因）撤销该
+样本已流出的草稿，说明本身仍由 `commentary.completed` 持久补发。输出中断走既有
+续写语义，已流出草稿保持追加。Web 对同一输出节点按 Sample 分段累积草稿，撤销仅
+移除被命名样本的分段；终态事件到达后以完整权威正文覆盖，历史重放只看到
+`output.delta`，与实时路径一致。
+
 会话自动命名是独立的非权威元数据操作：`SessionService` 在未命名会话的 Turn 被接受后
 立即调度无工具 `summary` 采样，不等待 Turn 成功结束，也不把 Prompt 截取为临时标题。
 结果返回前保留 `New Chat`。标题来源与独立命名版本放在
@@ -451,7 +461,7 @@ Reset、Retry、Compaction、Resume 或任意不确定状态都会回退完整�
 Logical/Transport Digest 与序列化 Request Bytes，传输收益不会被报告为 Token 收益。
 
 每条 Route 都携带显式 `AdapterID`，不可变 Provider Router 是生产环境唯一采样路径。
-Composition Root 安装 OpenAI、Anthropic Adapter，以及一个参数化的 OpenAI-compatible
+Composition Root 安装 OpenAI Adapter，以及一个参数化的 OpenAI-compatible
 Adapter。DeepSeek 与 GLM 通过后者接入；它们不广告 Incremental Responses，因此
 Chat Route 始终使用完整 HTTP/SSE 请求，不发送 `previous_response_id`。
 
@@ -679,7 +689,10 @@ Provider 续写无法放入窗口时，才以 `resource_exhausted` 失败。
 `context.view.narrative_mode=post_turn` 写独立 Digest 分区，不阻塞下一轮 Sample。
 带出处的未完成工作提升为 Plan Todo 后进入 `session_state`；每个闭合 Turn 在
 Dynamic（History 之后）追加一块 write-once Checkpoint。旧 Turn 原文通过
-`turn_history` / `result_get` 有界回读，不恢复整段旧 History。被裁掉的旧 Turn
+`turn_history` / `result_get` 有界回读，不恢复整段旧 History。Turn 开始时冻结归档
+句柄与 Turn ID 映射，工具回读使用该快照，不获取覆盖整轮执行的 Engine 锁；
+归档读取继续传递取消信号并检查撤回状态，未知 Turn 或缺少归档时如实返回未命中。
+被裁掉的旧 Turn
 在 `session_state` 给出检索指针；升级前缺失的 Checkpoint 只回封 turn id。
 Plan 已有完成步骤或已读路径时，`session_state` 另带 Resume Fact，避免
 Continue / Retry / 新 prompt 把已读文件再读一遍；有行号命中时列出
@@ -885,6 +898,11 @@ Parent Turn
   取消结果到达前保留活动状态和 Manager 的预算预留；真实结果经 `Settle` 一次性提交
   终态、结果、用量与 completion 消息。父 Agent 通过 `wait_agent` 等待结算后再
   `followup_task`，重复取消已结算的 Agent 不再提交操作或改写终态。
+  `close_agent` 先阻止新任务、工具执行和继续委派，再等待正在提交的 Turn 明确身份，
+  请求取消并等待真实结算，最后写入 Closed、清理 Worktree 和 Runtime Thread。
+  取消提交失败或等待被取消时保留真实状态与资源，允许重试关闭；重复关闭不重复记账。
+  Runtime 在结算提交完成前保留 Turn 跟踪，重复终态不重复扣费，后续任务等待该次
+  结算收尾，避免关闭与结算交错留下永久重试或误释放下一轮资源。
 - **共享 Provider 限额**：Session 级 limiter 对 Parent 与 Children 的 Provider
   Sample 单飞排队，共用一份 Retry-After 冷却和 429 等待预算；冷却未解除时
   Supervisor 不再并行启动第二个 Child。用户发起的新 Parent Turn 会刷新等待预算，

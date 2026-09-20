@@ -446,6 +446,8 @@ func TestEventTaggedUnionRoundTrip(t *testing.T) {
 			}},
 		},
 		&OutputDeltaData{Text: "hello"},
+		&OutputDraftData{Text: "hello", SampleID: "turn-1-step-1"},
+		&OutputDiscardedData{SampleID: "turn-1-step-1", Reason: "narration"},
 		&ReasoningDeltaData{Text: "think"},
 		&UsageData{},
 		&TurnCompactionData{

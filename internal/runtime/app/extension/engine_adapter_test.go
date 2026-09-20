@@ -95,3 +95,44 @@ func TestProviderAttemptDataMapsRetryAndCompletionFacts(t *testing.T) {
 		t.Fatalf("completed attempt = %+v", completed)
 	}
 }
+
+type recordingSink struct {
+	events []protocol.EventData
+}
+
+func (s *recordingSink) Emit(data protocol.EventData) error {
+	s.events = append(s.events, data)
+	return nil
+}
+
+func TestStreamingBodyTextProjectsAsDraftWithSampleIdentity(t *testing.T) {
+	sink := &recordingSink{}
+	err := emitRichEngineEvent(sink, agentengine.Event{
+		Block:    &provider.ContentBlock{Type: provider.ContentText, Text: "answer"},
+		SampleID: "turn-1-step-1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = emitRichEngineEvent(sink, agentengine.Event{
+		OutputDiscarded: &agentengine.ModelOutputDiscarded{
+			SampleID: "turn-1-step-1",
+			Reason:   "narration",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sink.events) != 2 {
+		t.Fatalf("events = %+v", sink.events)
+	}
+	draft, ok := sink.events[0].(*protocol.OutputDraftData)
+	if !ok || draft.Text != "answer" || draft.SampleID != "turn-1-step-1" {
+		t.Fatalf("draft = %+v", sink.events[0])
+	}
+	discarded, ok := sink.events[1].(*protocol.OutputDiscardedData)
+	if !ok || discarded.SampleID != "turn-1-step-1" ||
+		discarded.Reason != "narration" {
+		t.Fatalf("discard = %+v", sink.events[1])
+	}
+}

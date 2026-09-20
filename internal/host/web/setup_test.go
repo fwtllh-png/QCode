@@ -14,11 +14,11 @@ import (
 
 func TestWebSetupCatalogRequiresExplicitProviderAndModel(t *testing.T) {
 	catalog := webSetupCatalog()
-	if catalog.Version != webhost.SetupCatalogVersion || len(catalog.Providers) != 5 {
+	if catalog.Version != webhost.SetupCatalogVersion || len(catalog.Providers) != 4 {
 		t.Fatalf("setup catalog = %+v", catalog)
 	}
 	for _, id := range []string{
-		"openai", "anthropic", "deepseek", "glm", customProviderID,
+		"openai", "deepseek", "glm", customProviderID,
 	} {
 		found := false
 		for _, provider := range catalog.Providers {

@@ -850,6 +850,8 @@
           "enum": [
             "turn.started",
             "output.delta",
+            "output.draft",
+            "output.discarded",
             "commentary.completed",
             "session.title.updated",
             "reasoning.delta",
@@ -4947,6 +4949,36 @@
       ],
       "additionalProperties": false
     },
+    "output.discarded": {
+      "type": "object",
+      "properties": {
+        "reason": {
+          "type": "string"
+        },
+        "sample_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "sample_id"
+      ],
+      "additionalProperties": false
+    },
+    "output.draft": {
+      "type": "object",
+      "properties": {
+        "sample_id": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "text"
+      ],
+      "additionalProperties": false
+    },
     "plan.delta": {
       "type": "object",
       "properties": {
@@ -8940,6 +8972,20 @@
       "item_owner": "turn",
       "durability": "terminal_projection",
       "correlation": "turn",
+      "terminal": false
+    },
+    "output.discarded": {
+      "class": "stream",
+      "item_owner": "turn",
+      "durability": "transient",
+      "correlation": "sample",
+      "terminal": false
+    },
+    "output.draft": {
+      "class": "stream",
+      "item_owner": "turn",
+      "durability": "transient",
+      "correlation": "sample",
       "terminal": false
     },
     "plan.delta": {

@@ -19,7 +19,7 @@ func testRoute(t *testing.T, providerID, modelID string) ReadyRoute {
 }
 
 func TestASetWithoutSlotsAnswersEveryPurposeWithAct(t *testing.T) {
-	act := testRoute(t, "anthropic", "claude-sonnet")
+	act := testRoute(t, "deepseek-v4-flash", "deepseek-v4-flash-vision-exp")
 
 	routes, err := NewRouteSet(act, nil, false)
 	if err != nil {
@@ -31,7 +31,7 @@ func TestASetWithoutSlotsAnswersEveryPurposeWithAct(t *testing.T) {
 		if err != nil {
 			t.Fatalf("For(%q) error = %v", purpose, err)
 		}
-		if route.Model().ID != "claude-sonnet" {
+		if route.Model().ID != "deepseek-v4-flash-vision-exp" {
 			t.Fatalf("For(%q) model = %q, want the act model", purpose, route.Model().ID)
 		}
 	}
@@ -41,7 +41,7 @@ func TestASetWithoutSlotsAnswersEveryPurposeWithAct(t *testing.T) {
 }
 
 func TestOneSlotChangesOnlyItsOwnPurpose(t *testing.T) {
-	act := testRoute(t, "anthropic", "claude-sonnet")
+	act := testRoute(t, "deepseek-v4-flash", "deepseek-v4-flash-vision-exp")
 	plan := testRoute(t, "openai", "gpt-4.1")
 
 	routes, err := NewRouteSet(act, map[Purpose]ReadyRoute{PurposePlan: plan}, false)
@@ -61,7 +61,7 @@ func TestOneSlotChangesOnlyItsOwnPurpose(t *testing.T) {
 		if err != nil {
 			t.Fatalf("For(%q) error = %v", purpose, err)
 		}
-		if route.Model().ID != "claude-sonnet" {
+		if route.Model().ID != "deepseek-v4-flash-vision-exp" {
 			t.Fatalf("For(%q) model = %q, want the act model", purpose, route.Model().ID)
 		}
 	}
@@ -71,7 +71,7 @@ func TestOneSlotChangesOnlyItsOwnPurpose(t *testing.T) {
 }
 
 func TestWithActPreservesPurposeSlotsAndLock(t *testing.T) {
-	act := testRoute(t, "deepseek", "deepseek-chat")
+	act := testRoute(t, "deepseek-v4-flash", "deepseek-v4-flash-vision-exp")
 	reasoner := testRoute(t, "deepseek", "deepseek-reasoner")
 	routes, err := NewRouteSet(
 		act,
@@ -100,7 +100,7 @@ func TestWithActPreservesPurposeSlotsAndLock(t *testing.T) {
 }
 
 func TestLockRefusesToFallBackInsteadOfSubstitutingAct(t *testing.T) {
-	act := testRoute(t, "anthropic", "claude-sonnet")
+	act := testRoute(t, "deepseek-v4-flash", "deepseek-v4-flash-vision-exp")
 	plan := testRoute(t, "openai", "gpt-4.1")
 
 	routes, err := NewRouteSet(act, map[Purpose]ReadyRoute{PurposePlan: plan}, true)
@@ -113,7 +113,7 @@ func TestLockRefusesToFallBackInsteadOfSubstitutingAct(t *testing.T) {
 	if planned, err := routes.For(PurposePlan); err != nil || planned.Model().ID != "gpt-4.1" {
 		t.Fatalf("For(plan) = %q, %v", planned.Model().ID, err)
 	}
-	if acted, err := routes.For(PurposeAct); err != nil || acted.Model().ID != "claude-sonnet" {
+	if acted, err := routes.For(PurposeAct); err != nil || acted.Model().ID != "deepseek-v4-flash-vision-exp" {
 		t.Fatalf("For(act) = %q, %v", acted.Model().ID, err)
 	}
 	_, err = routes.For(PurposeVision)
@@ -123,7 +123,7 @@ func TestLockRefusesToFallBackInsteadOfSubstitutingAct(t *testing.T) {
 }
 
 func TestSummaryPurposeIsWiredAndJudgeRemainsRefused(t *testing.T) {
-	act := testRoute(t, "anthropic", "claude-sonnet")
+	act := testRoute(t, "deepseek-v4-flash", "deepseek-v4-flash-vision-exp")
 	summary := testRoute(t, "openai", "gpt-4.1")
 
 	routes, err := NewRouteSet(act, map[Purpose]ReadyRoute{PurposeSummary: summary}, false)
@@ -147,7 +147,7 @@ func TestSummaryPurposeIsWiredAndJudgeRemainsRefused(t *testing.T) {
 }
 
 func TestActCannotBeConfiguredTwice(t *testing.T) {
-	act := testRoute(t, "anthropic", "claude-sonnet")
+	act := testRoute(t, "deepseek-v4-flash", "deepseek-v4-flash-vision-exp")
 	other := testRoute(t, "openai", "gpt-4.1")
 
 	_, err := NewRouteSet(act, map[Purpose]ReadyRoute{PurposeAct: other}, false)
@@ -169,7 +169,7 @@ func TestAnUnresolvedSetRefusesEveryPurpose(t *testing.T) {
 }
 
 func TestSlotsAndPurposesKeepAStableOrder(t *testing.T) {
-	act := testRoute(t, "anthropic", "claude-sonnet")
+	act := testRoute(t, "deepseek-v4-flash", "deepseek-v4-flash-vision-exp")
 	other := testRoute(t, "openai", "gpt-4.1")
 
 	routes, err := NewRouteSet(act, map[Purpose]ReadyRoute{

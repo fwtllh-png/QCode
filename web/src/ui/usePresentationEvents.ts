@@ -19,7 +19,9 @@ export function usePresentationEvents(
     const added: RuntimeEvent[] = [];
     for (let index = start; index < events.length; index += 1) {
       const event = events[index]!;
-      if (event.kind !== "output.delta" && event.kind !== "reasoning.delta" &&
+      if (event.kind !== "output.delta" && event.kind !== "output.draft" &&
+          event.kind !== "output.discarded" &&
+          event.kind !== "reasoning.delta" &&
           event.kind !== "tool.output") added.push(event);
     }
     const selected = append && added.length === 0

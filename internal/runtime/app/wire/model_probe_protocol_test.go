@@ -26,29 +26,16 @@ func TestProbeModelConnectionUsesSelectedProtocol(t *testing.T) {
 			`{"type":"response.function_call_arguments.delta","output_index":0,"delta":"{}"}`,
 			`{"type":"response.completed","response":{"status":"completed"}}`,
 		}},
-		{model.ProtocolAnthropic, "/messages", []string{
-			`{"type":"message_start","message":{"usage":{"input_tokens":1}}}`,
-			`{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"call","name":"capability_probe","input":{}}}`,
-			`{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{}"}}`,
-			`{"type":"message_stop"}`,
-		}},
 	} {
 		t.Run(string(test.protocol), func(t *testing.T) {
 			providerID := "openai-compatible"
-			if test.protocol == model.ProtocolAnthropic {
-				providerID = "anthropic"
-			}
 			for _, saved := range []bool{false, true} {
 				t.Run(fmt.Sprint("saved=", saved), func(t *testing.T) {
 					t.Setenv("QCODE_TEST_PROBE_KEY", "fixture-key")
 					calls := 0
 					server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 						calls++
-						if test.protocol == model.ProtocolAnthropic {
-							if r.Header.Get("x-api-key") != "fixture-key" || r.Header.Get("anthropic-version") == "" {
-								t.Error("missing Messages authentication")
-							}
-						} else if r.Header.Get("Authorization") != "Bearer fixture-key" {
+						if r.Header.Get("Authorization") != "Bearer fixture-key" {
 							t.Error("missing bearer authentication")
 						}
 						if r.URL.Path == "/models" {
@@ -69,9 +56,6 @@ func TestProbeModelConnectionUsesSelectedProtocol(t *testing.T) {
 						}
 						if test.protocol == model.ProtocolOpenAIResponses && (body["input"] == nil || body["messages"] != nil) {
 							t.Errorf("Responses body=%v", body)
-						}
-						if test.protocol == model.ProtocolAnthropic && body["max_tokens"] != float64(8192) {
-							t.Errorf("did not use advertised output limit: %v", body)
 						}
 						w.Header().Set("Content-Type", "text/event-stream")
 						for _, event := range test.events {

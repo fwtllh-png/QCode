@@ -811,7 +811,8 @@ func historyKeepsWhatReplayNeeds(t *testing.T, host Host, setup Setup) {
 // deliberate change to this list rather than something the test absorbs silently.
 func persisted(kind protocol.EventKind) bool {
 	switch kind {
-	case protocol.EventOutputDelta, protocol.EventReasoningDelta,
+	case protocol.EventOutputDelta, protocol.EventOutputDraft,
+		protocol.EventOutputDiscarded, protocol.EventReasoningDelta,
 		protocol.EventToolState, protocol.EventToolOutput, protocol.EventTurnCompaction:
 		return false
 	default:

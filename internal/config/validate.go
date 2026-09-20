@@ -280,7 +280,7 @@ func (s Snapshot) Validate() error {
 	}
 	execution := s.Config.Execution
 	switch execution.Protocol {
-	case "openai_chat", "openai_responses", "anthropic":
+	case "openai_chat", "openai_responses":
 	default:
 		return fieldError(fieldProtocol, s.Provenance, "unsupported provider protocol")
 	}

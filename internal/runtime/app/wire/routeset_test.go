@@ -14,7 +14,7 @@ import (
 )
 
 func bundledAct() execRouteOptions {
-	return execRouteOptions{ProviderID: "anthropic", ModelID: "claude-sonnet"}
+	return execRouteOptions{ProviderID: "openai", ModelID: "gpt-4.1"}
 }
 
 func TestExplicitCredentialReferenceOverridesCatalogRoute(t *testing.T) {
@@ -51,7 +51,7 @@ func TestASessionWithoutSlotsRoutesEveryPurposeToAct(t *testing.T) {
 		if err != nil {
 			t.Fatalf("For(%q) error = %v", purpose, err)
 		}
-		if route.Model().ID != "claude-sonnet" {
+		if route.Model().ID != "gpt-4.1" {
 			t.Fatalf("For(%q) model = %q", purpose, route.Model().ID)
 		}
 	}

@@ -12,6 +12,8 @@ func TestShouldPersistTable(t *testing.T) {
 		want bool
 	}{
 		{protocol.EventOutputDelta, false},
+		{protocol.EventOutputDraft, false},
+		{protocol.EventOutputDiscarded, false},
 		{protocol.EventReasoningDelta, false},
 		{protocol.EventToolState, false},
 		{protocol.EventTurnCompaction, true},

@@ -276,14 +276,11 @@ func tokenResetDelay(header http.Header, now time.Time) (time.Duration, bool) {
 var (
 	tokenLimitHeaders = []string{
 		"X-RateLimit-Limit-Tokens",
-		"Anthropic-Ratelimit-Tokens-Limit",
 	}
 	tokenRemainingHeaders = []string{
 		"X-RateLimit-Remaining-Tokens",
-		"Anthropic-Ratelimit-Tokens-Remaining",
 	}
 	tokenResetHeaders = []string{
 		"X-RateLimit-Reset-Tokens",
-		"Anthropic-Ratelimit-Tokens-Reset",
 	}
 )

@@ -59,6 +59,7 @@ type childTurn struct {
 	turnID            protocol.TurnID
 	startOperation    protocol.OperationID
 	started           bool
+	settling          bool
 	receipt           *protocol.ExecutionReceiptData
 	verify            *protocol.TurnVerificationData
 	text              string
@@ -218,6 +219,23 @@ func (c *childRuntime) close() {
 // pointless and would deadlock the parent turn that called the agent tool.
 func (c *childRuntime) StartTurn(ctx context.Context, agentID, prompt string) (string, error) {
 	c.mu.Lock()
+	// Manager publishes the terminal result before the runtime finishes its
+	// settlement bookkeeping. A follow-up must not replace that tracked turn.
+	if previous := c.turns[protocol.ThreadID(subagent.ThreadIDFor(agentID))]; previous != nil {
+		terminal, settling := previous.terminalSignal, previous.settling
+		c.mu.Unlock()
+		if !settling {
+			return "", errors.New("child turn is still active")
+		}
+		select {
+		case <-terminal:
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-c.stop:
+			return "", errors.New("child runtime is closed")
+		}
+		c.mu.Lock()
+	}
 	runtime, threads, manager, bound :=
 		c.runtime, c.threads, c.manager, c.bound
 	var settlementErrors []error
@@ -356,9 +374,34 @@ func childTurnIntent(role subagent.Role, readOnly bool) protocol.TurnIntent {
 func (c *childRuntime) CancelTurn(ctx context.Context, agentID, turnID string) error {
 	c.mu.Lock()
 	runtime, bound := c.runtime, c.bound
+	active := c.turns[protocol.ThreadID(subagent.ThreadIDFor(agentID))]
+	var started, terminal <-chan struct{}
+	if active != nil && active.turnID == protocol.TurnID(turnID) {
+		terminal = active.terminalSignal
+		if !active.started {
+			started = active.startedSignal
+		}
+		if active.settling {
+			c.mu.Unlock()
+			return nil
+		}
+	}
 	c.mu.Unlock()
 	if !bound {
 		return nil
+	}
+	// Accepted starts are asynchronous. Canceling before turn.started could be
+	// rejected as "not active", leaving Close waiting for an uncanceled turn.
+	if started != nil {
+		select {
+		case <-started:
+		case <-terminal:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-c.stop:
+			return errors.New("child runtime is closed")
+		}
 	}
 	itemID, err := protocol.NewItemID()
 	if err != nil {
@@ -388,14 +431,17 @@ func (c *childRuntime) release(agentID string) {
 		return
 	}
 	active.releasePending = true
-	started := active.started
+	started := active.started && !active.settling
+	settling := active.settling
 	turnID := active.turnID
 	terminal := active.terminalSignal
 	c.mu.Unlock()
-	if !started {
+	if !started && !settling {
 		return
 	}
-	c.cancelReleased(agentID, turnID)
+	if started {
+		c.cancelReleased(agentID, turnID)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	select {
@@ -742,7 +788,7 @@ func (c *childRuntime) observe(event protocol.Event) {
 	}
 	c.mu.Lock()
 	turn := c.turns[event.ThreadID]
-	if turn == nil || (event.TurnID != "" && event.TurnID != turn.turnID) {
+	if turn == nil || turn.settling || (event.TurnID != "" && event.TurnID != turn.turnID) {
 		c.mu.Unlock()
 		return
 	}
@@ -850,8 +896,7 @@ func (c *childRuntime) observe(event protocol.Event) {
 		}
 	}
 	manager := c.manager
-	releasePending := turn.releasePending
-	delete(c.turns, event.ThreadID)
+	turn.settling = true
 	if c.closing {
 		c.mu.Unlock()
 		return
@@ -860,7 +905,7 @@ func (c *childRuntime) observe(event protocol.Event) {
 	c.mu.Unlock()
 
 	go c.settleChild(
-		event.ThreadID, turn, result, manager, releasePending,
+		event.ThreadID, turn, result, manager,
 	)
 }
 
@@ -869,7 +914,6 @@ func (c *childRuntime) settleChild(
 	turn *childTurn,
 	result subagent.Result,
 	manager *subagent.AgentControl,
-	releasePending bool,
 ) {
 	defer c.settlers.Done()
 	if err := c.settleChildAttempt(turn, result, manager); err == nil {
@@ -877,14 +921,13 @@ func (c *childRuntime) settleChild(
 			threadID,
 			turn,
 			manager,
-			releasePending,
 		)
 		return
 	} else {
 		c.recordSettlementError(turn, err)
 	}
 	c.retryChildSettlement(
-		threadID, turn, result, manager, releasePending,
+		threadID, turn, result, manager,
 	)
 }
 
@@ -903,14 +946,15 @@ func (c *childRuntime) completeChildSettlement(
 	threadID protocol.ThreadID,
 	turn *childTurn,
 	manager *subagent.AgentControl,
-	releasePending bool,
 ) {
-	c.mu.Lock()
-	delete(c.settlementErrors, turn.turnID)
-	c.mu.Unlock()
 	if manager != nil {
 		manager.TouchResident(turn.agentID)
 	}
+	c.mu.Lock()
+	delete(c.settlementErrors, turn.turnID)
+	releasePending := turn.releasePending
+	delete(c.turns, threadID)
+	c.mu.Unlock()
 	if releasePending {
 		c.releaseThread(threadID)
 	}
@@ -938,7 +982,6 @@ func (c *childRuntime) retryChildSettlement(
 	turn *childTurn,
 	result subagent.Result,
 	manager *subagent.AgentControl,
-	releasePending bool,
 ) {
 	delay := 25 * time.Millisecond
 	for {
@@ -957,7 +1000,6 @@ func (c *childRuntime) retryChildSettlement(
 				threadID,
 				turn,
 				manager,
-				releasePending,
 			)
 			return
 		} else {

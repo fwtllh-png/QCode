@@ -133,8 +133,6 @@ func applyAuth(header http.Header, style providerwire.AuthStyle, credential stri
 	switch style {
 	case providerwire.AuthBearer:
 		header.Set("Authorization", "Bearer "+credential)
-	case providerwire.AuthAnthropicKey:
-		header.Set("x-api-key", credential)
 	}
 }
 func (c *Client) wrapStream(

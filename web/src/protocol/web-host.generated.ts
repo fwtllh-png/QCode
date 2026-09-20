@@ -74,6 +74,8 @@ export type WebRPCRoute = (typeof webRPCRoutes)[number];
 export const webEventKinds = [
   "turn.started",
   "output.delta",
+  "output.draft",
+  "output.discarded",
   "commentary.completed",
   "session.title.updated",
   "reasoning.delta",

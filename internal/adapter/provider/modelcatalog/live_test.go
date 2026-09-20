@@ -127,17 +127,17 @@ func TestProbeCapabilitiesObservesStreamToolAndReasoning(t *testing.T) {
 	}
 }
 
-func TestProtocolProbeRejectsUnknownProtocolAndMissingMessagesLimit(t *testing.T) {
+func TestProtocolProbeRejectsUnknownProtocol(t *testing.T) {
 	requests := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests++
 		t.Error("invalid probe must not issue a request")
 	}))
 	defer server.Close()
-	for _, protocol := range []model.WireProtocol{"unknown", model.ProtocolAnthropic} {
-		_, err := ProbeCapabilitiesForProtocol(t.Context(), server.URL, "", "unknown-model", protocol, 0)
+	for _, protocol := range []model.WireProtocol{"unknown", "anthropic"} {
+		_, err := ProbeCapabilitiesForProtocol(t.Context(), server.URL, "", "unknown-model", protocol)
 		if err == nil {
-			t.Fatalf("accepted protocol=%s with no advertised capacity", protocol)
+			t.Fatalf("accepted protocol=%s", protocol)
 		}
 	}
 	if requests != 0 {

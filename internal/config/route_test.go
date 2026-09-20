@@ -145,8 +145,8 @@ provider = "openai"
 model = "gpt-4.1"
 
 [route.vision]
-provider = "anthropic"
-model = "claude-sonnet"
+provider = "glm"
+model = "glm-5.3"
 `)
 
 	snapshot, err := Load(LoadOptions{Path: path})
@@ -155,7 +155,7 @@ model = "claude-sonnet"
 	}
 
 	slot := snapshot.Config.Route.Slots["vision"]
-	if slot.Provider != "anthropic" || slot.Model != "claude-sonnet" {
+	if slot.Provider != "glm" || slot.Model != "glm-5.3" {
 		t.Fatalf("vision slot = %+v, want the explicit slot", slot)
 	}
 }

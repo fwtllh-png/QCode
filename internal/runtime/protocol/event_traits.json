@@ -20,6 +20,8 @@
   "mcp.health.changed": {"class":"audit","item_owner":"turn","durability":"retained","correlation":"server","terminal":false},
   "operation.rejected": {"class":"terminal_operation","item_owner":"operation","durability":"retained","correlation":"operation","terminal":false},
   "output.delta": {"class":"stream","item_owner":"turn","durability":"terminal_projection","correlation":"turn","terminal":false},
+  "output.draft": {"class":"stream","item_owner":"turn","durability":"transient","correlation":"sample","terminal":false},
+  "output.discarded": {"class":"stream","item_owner":"turn","durability":"transient","correlation":"sample","terminal":false},
   "plan.delta": {"class":"artifact_stream","item_owner":"turn","durability":"retained","correlation":"plan","terminal":false},
   "provider.attempt": {"class":"audit","item_owner":"turn","durability":"retained","correlation":"sample","terminal":false},
   "reasoning.completed": {"class":"stream","item_owner":"turn","durability":"retained","correlation":"turn","terminal":false},

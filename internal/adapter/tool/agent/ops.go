@@ -665,7 +665,7 @@ func (t *Tool) closeAgent(
 	}
 	snap, _ := t.control.Agent(agentID)
 	worktree := snap.Worktree
-	if err := t.control.Close(agentID); err != nil {
+	if err := t.control.CloseContext(ctx, agentID); err != nil {
 		return tool.Result{}, err
 	}
 	if t.onRelease != nil {

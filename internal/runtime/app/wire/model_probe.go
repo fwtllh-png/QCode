@@ -42,21 +42,9 @@ func ProbeModelConnection(
 			credential,
 		)
 	}
-	discovered, _ := listed["model_metadata"].([]modelcatalog.DiscoveredModel)
-	var maxOutputTokens uint64
-	for _, value := range discovered {
-		if value.ID == modelID {
-			maxOutputTokens = value.MaxOutputTokens
-		}
-	}
-	if maxOutputTokens == 0 {
-		if catalogProvider, found := model.DefaultCatalog().Provider(providerID); found {
-			maxOutputTokens = catalogProvider.Models[modelID].Limits.MaxOutputTokens
-		}
-	}
 	if apiKey != "" {
 		capabilities, probeErr = modelcatalog.ProbeCapabilitiesForProtocol(
-			ctx, baseURL, apiKey, modelID, protocol, maxOutputTokens,
+			ctx, baseURL, apiKey, modelID, protocol,
 		)
 	} else {
 		capabilities, probeErr = modelcatalog.ProbeCapabilitiesWithCredentialForProtocol(
@@ -65,7 +53,6 @@ func ProbeModelConnection(
 			credential,
 			modelID,
 			protocol,
-			maxOutputTokens,
 		)
 	}
 	if probeErr != nil {

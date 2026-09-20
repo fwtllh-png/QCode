@@ -47,6 +47,10 @@ func EventKind(data protocol.EventData) protocol.EventKind {
 		return protocol.EventTurnStarted
 	case *protocol.OutputDeltaData:
 		return protocol.EventOutputDelta
+	case *protocol.OutputDraftData:
+		return protocol.EventOutputDraft
+	case *protocol.OutputDiscardedData:
+		return protocol.EventOutputDiscarded
 	case *protocol.CommentaryCompletedData:
 		return protocol.EventCommentaryCompleted
 	case *protocol.SessionTitleUpdatedData:

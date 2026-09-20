@@ -77,7 +77,7 @@ func Start(directory string) (*Server, error) {
 		return nil, errors.New("provider fixture cached_input_ratio must be between zero and one")
 	}
 	switch config.Protocol {
-	case model.ProtocolOpenAIChat, model.ProtocolOpenAIResponses, model.ProtocolAnthropic:
+	case model.ProtocolOpenAIChat, model.ProtocolOpenAIResponses:
 	default:
 		return nil, fmt.Errorf("unsupported provider fixture protocol %q", config.Protocol)
 	}

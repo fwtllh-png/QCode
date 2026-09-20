@@ -21,12 +21,10 @@ import (
 
 	"github.com/fwtllh-png/QCode/internal/adapter/model"
 	"github.com/fwtllh-png/QCode/internal/adapter/provider"
-	"github.com/fwtllh-png/QCode/internal/adapter/provider/anthropic"
 	providerfixture "github.com/fwtllh-png/QCode/internal/adapter/provider/fixture"
 	"github.com/fwtllh-png/QCode/internal/adapter/provider/httpclient"
 	"github.com/fwtllh-png/QCode/internal/adapter/provider/openai"
 	providerrouter "github.com/fwtllh-png/QCode/internal/adapter/provider/router"
-	providerwire "github.com/fwtllh-png/QCode/internal/adapter/provider/wire"
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
 	completiontool "github.com/fwtllh-png/QCode/internal/adapter/tool/completion"
 	filetool "github.com/fwtllh-png/QCode/internal/adapter/tool/file"
@@ -1490,12 +1488,6 @@ func TestEngineToolRoundTripAcrossProviderProtocols(t *testing.T) {
 			first:    "data: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"echo\"}}\n\ndata: {\"type\":\"response.function_call_arguments.delta\",\"output_index\":0,\"item_id\":\"call_1\",\"delta\":\"{\\\"text\\\":\\\"hello\\\"}\"}\n\ndata: {\"type\":\"response.completed\",\"response\":{}}\n\n",
 			second:   "data: {\"type\":\"response.output_text.delta\",\"delta\":\"done\"}\n\ndata: {\"type\":\"response.completed\",\"response\":{}}\n\n",
 			wantBody: []string{`"type":"function_call"`, `"type":"function_call_output"`, `"call_id":"call_1"`},
-		},
-		"anthropic": {
-			protocol: model.ProtocolAnthropic, path: "/messages",
-			first:    "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"call_1\",\"name\":\"echo\"}}\n\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"text\\\":\\\"hello\\\"}\"}}\n\ndata: {\"type\":\"message_stop\"}\n\n",
-			second:   "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"done\"}}\n\ndata: {\"type\":\"message_stop\"}\n\n",
-			wantBody: []string{`"type":"tool_use"`, `"type":"tool_result"`, `"tool_use_id":"call_1"`},
 		},
 	}
 	for name, test := range tests {
@@ -3379,12 +3371,8 @@ func mustTestRouteWithContext(t testing.TB, contextTokens uint64) model.ReadyRou
 
 func testRouteProtocol(t testing.TB, endpoint string, protocol model.WireProtocol) model.ReadyRoute {
 	t.Helper()
-	adapter := model.AdapterOpenAICompatible
-	if protocol == model.ProtocolAnthropic {
-		adapter = model.AdapterAnthropic
-	}
 	catalog, err := model.NewCatalog(model.Provider{
-		ID: "test", Adapter: adapter, Endpoint: endpoint,
+		ID: "test", Adapter: model.AdapterOpenAICompatible, Endpoint: endpoint,
 		Protocol: protocol, Provenance: model.ProvenanceFixture,
 		Models: map[string]model.Model{"model": {
 			ID: "model", CanonicalID: "model", WireID: "model",
@@ -3416,15 +3404,9 @@ func testHTTPProvider(
 	route model.ReadyRoute,
 ) provider.Provider {
 	t.Helper()
-	var adapter providerwire.Adapter
-	if route.Adapter() == model.AdapterAnthropic {
-		adapter = anthropic.NewAdapter()
-	} else {
-		var err error
-		adapter, err = openai.NewAdapter(route.Adapter())
-		if err != nil {
-			t.Fatal(err)
-		}
+	adapter, err := openai.NewAdapter(route.Adapter())
+	if err != nil {
+		t.Fatal(err)
 	}
 	registry, err := providerrouter.NewRegistry(adapter)
 	if err != nil {

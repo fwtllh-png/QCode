@@ -46,7 +46,7 @@ Web 和二进制构建后，会比较 Owner Lease 中的构建身份；若已有
 
 首次进入且尚未完成 Runtime Setup 时，页面会要求：
 
-1. 显式选择 OpenAI、Anthropic、DeepSeek、GLM 或自定义 OpenAI-Compatible Provider；
+1. 显式选择 OpenAI、DeepSeek、GLM 或自定义 OpenAI-Compatible Provider；
 2. 输入准确的 Model ID；自定义服务还需填写 Base URL、协议、Canonical/Wire ID、
    Context、Max Output 和完整 Capability 声明；
 3. 填写所需的 API Key 并完成连接设置。

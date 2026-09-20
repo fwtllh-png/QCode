@@ -151,6 +151,7 @@ type Manager struct {
 	nextExecution uint64
 	executions    map[string]map[uint64]context.CancelFunc
 	closing       map[string]*agentCloseState
+	starting      map[string]bool
 }
 
 type agentCloseState struct {
@@ -236,6 +237,7 @@ func Open(options Options) (*Manager, error) {
 		ledgers:      make(map[string]BudgetLedger),
 		executions:   make(map[string]map[uint64]context.CancelFunc),
 		closing:      make(map[string]*agentCloseState),
+		starting:     make(map[string]bool),
 	}
 	if manager.sessionID == "" {
 		manager.sessionID = "session-local"
@@ -293,7 +295,7 @@ func (m *Manager) spawn(intent DelegationIntent, spec RoleSpec) (*Agent, error) 
 	if !IsSessionParent(intent.ParentID) {
 		var ok bool
 		parent, ok = m.agents[intent.ParentID]
-		if !ok || parent.Closed {
+		if !ok || parent.Closed || m.closing[parent.ID] != nil {
 			return nil, errors.New("parent agent unavailable")
 		}
 		if parent.SessionID != sessionID {
@@ -587,7 +589,7 @@ func (m *Manager) releaseExecution(
 func (m *Manager) Takeover(ctx context.Context, agentID, prompt string) (string, error) {
 	m.mu.Lock()
 	agent, ok := m.agents[agentID]
-	if !ok || agent.Closed || agent.Status == StatusShutdown {
+	if !ok || agent.Closed || agent.Status == StatusShutdown || m.closing[agentID] != nil {
 		m.mu.Unlock()
 		return "", errors.New("agent not found")
 	}
@@ -676,11 +678,27 @@ func cloneAgent(agent *Agent) Agent {
 }
 
 func (m *Manager) Close(agentID string) error {
+	return m.CloseContext(context.Background(), agentID)
+}
+
+// CloseContext fences new work, waits for the real turn settlement, then closes
+// the agent. A failed or canceled request leaves the agent available for retry.
+func (m *Manager) CloseContext(ctx context.Context, agentID string) error {
+	wake := context.AfterFunc(ctx, func() {
+		m.mu.Lock()
+		m.wait.Broadcast()
+		m.mu.Unlock()
+	})
+	defer wake()
 	m.mu.Lock()
 	if state := m.closing[agentID]; state != nil {
 		m.mu.Unlock()
-		<-state.done
-		return state.err
+		select {
+		case <-state.done:
+			return state.err
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 	}
 	state := &agentCloseState{done: make(chan struct{})}
 	m.closing[agentID] = state
@@ -695,11 +713,38 @@ func (m *Manager) Close(agentID string) error {
 		m.mu.Unlock()
 		return nil
 	}
+	cancels := make([]context.CancelFunc, 0, len(m.executions[agentID]))
+	for _, cancel := range m.executions[agentID] {
+		cancels = append(cancels, cancel)
+	}
+	m.mu.Unlock()
+	for _, cancel := range cancels {
+		cancel()
+	}
+	m.mu.Lock()
+	// StartTurn submits outside the Manager lock. Let it publish the accepted
+	// turn identity before canceling, including when its terminal arrived early.
+	for m.starting[agentID] && ctx.Err() == nil {
+		m.wait.Wait()
+	}
+	if err := ctx.Err(); err != nil {
+		m.finishCloseLocked(agentID, state, err)
+		m.mu.Unlock()
+		return err
+	}
 	if occupiesSlot(agent.Status) {
-		if err := m.transitionLocked(
-			agent, StatusInterrupted, agent.TurnID, agent.LastMessage,
-			"parent", "agent closed while active", nil,
-		); err != nil {
+		m.mu.Unlock()
+		_, err := m.Interrupt(ctx, agentID)
+		m.mu.Lock()
+		if err != nil {
+			m.finishCloseLocked(agentID, state, err)
+			m.mu.Unlock()
+			return err
+		}
+		for occupiesSlot(agent.Status) && ctx.Err() == nil {
+			m.wait.Wait()
+		}
+		if err := ctx.Err(); err != nil {
 			m.finishCloseLocked(agentID, state, err)
 			m.mu.Unlock()
 			return err
@@ -714,6 +759,7 @@ func (m *Manager) Close(agentID string) error {
 		return err
 	}
 	agent.Closed = true
+	agent.Resident = false
 	m.releaseClaimsLocked(agentID)
 	wt := m.worktrees[agentID]
 	var worktree *Worktree
@@ -726,16 +772,6 @@ func (m *Manager) Close(agentID string) error {
 			worktree = &copy
 		}
 	}
-	cancels := make([]context.CancelFunc, 0, len(m.executions[agentID]))
-	for _, cancel := range m.executions[agentID] {
-		cancels = append(cancels, cancel)
-	}
-	m.mu.Unlock()
-
-	for _, cancel := range cancels {
-		cancel()
-	}
-	m.mu.Lock()
 	for len(m.executions[agentID]) > 0 {
 		m.wait.Wait()
 	}

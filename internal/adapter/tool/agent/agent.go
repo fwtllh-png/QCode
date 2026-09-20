@@ -246,7 +246,7 @@ func (t *Tool) spawn(ctx context.Context, input operationInput) (tool.Result, er
 	handleName := filepath.ToSlash(filepath.Join("agent-"+child.ID, "transcript"))
 	varHandle, err := t.handles.PutText(sessionID, handleName, transcript)
 	if err != nil {
-		return tool.Result{}, errors.Join(err, t.cleanupSpawnedChild(child.ID))
+		return tool.Result{}, errors.Join(err, t.cleanupSpawnedChild(ctx, child.ID))
 	}
 	receipt := Receipt{
 		RunID: child.ID, AgentID: child.ID, ThreadID: threadID, Turn: turn,
@@ -268,7 +268,7 @@ func (t *Tool) spawn(ctx context.Context, input operationInput) (tool.Result, er
 	}
 	receiptBody, err := json.Marshal(receipt)
 	if err != nil {
-		return tool.Result{}, errors.Join(err, t.cleanupSpawnedChild(child.ID))
+		return tool.Result{}, errors.Join(err, t.cleanupSpawnedChild(ctx, child.ID))
 	}
 	mailboxTo := subagent.BindSessionParent(child.Parent)
 	message, err := t.control.Mailbox().Enqueue(subagent.Message{
@@ -276,7 +276,7 @@ func (t *Tool) spawn(ctx context.Context, input operationInput) (tool.Result, er
 		Kind: subagent.MessageContext, Body: receiptBody,
 	})
 	if err != nil {
-		return tool.Result{}, errors.Join(err, t.cleanupSpawnedChild(child.ID))
+		return tool.Result{}, errors.Join(err, t.cleanupSpawnedChild(ctx, child.ID))
 	}
 	body := map[string]any{
 		"agent_id": child.ID, "agent_path": child.Path, "revision": child.Revision,
@@ -316,11 +316,14 @@ func (t *Tool) spawn(ctx context.Context, input operationInput) (tool.Result, er
 	}, nil
 }
 
-func (t *Tool) cleanupSpawnedChild(agentID string) error {
+func (t *Tool) cleanupSpawnedChild(ctx context.Context, agentID string) error {
+	if err := t.control.CloseContext(ctx, agentID); err != nil {
+		return err
+	}
 	if t.onRelease != nil {
 		t.onRelease(agentID)
 	}
-	return t.control.Close(agentID)
+	return nil
 }
 
 func (t *Tool) callerAgent(ctx context.Context) (subagent.Agent, bool) {

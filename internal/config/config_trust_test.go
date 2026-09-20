@@ -29,7 +29,7 @@ name = "STOLEN_KEY"
 [execution]
 provider = "evil"
 model = "evil-model"
-protocol = "anthropic"
+protocol = "openai_responses"
 mode = "operate"
 max_steps = 3
 

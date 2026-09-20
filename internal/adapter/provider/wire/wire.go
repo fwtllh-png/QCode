@@ -15,8 +15,7 @@ import (
 type AuthStyle string
 
 const (
-	AuthBearer       AuthStyle = "bearer"
-	AuthAnthropicKey AuthStyle = "anthropic_key"
+	AuthBearer AuthStyle = "bearer"
 )
 
 type PreparedCall struct {

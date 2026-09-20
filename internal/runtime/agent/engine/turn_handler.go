@@ -1119,6 +1119,11 @@ func (s *Scope) Run(ctx context.Context) (result Result, resultErr error) {
 		var modelOutputContinued bool
 		var pendingInputInjected bool
 		var modelReplay *provider.ReplayState
+		// Body text deltas are streamed optimistically: whether a sample's text
+		// is the final answer or narration that accompanies tool calls is only
+		// known when the sample closes, so retractions are signalled with
+		// OutputDiscarded instead of withholding the stream.
+		var streamedSampleText bool
 		modelSend := func(state State, event Event) error {
 			if event.ProviderRetry != nil {
 				if err := kernel.ScheduleProviderRetry(
@@ -1131,7 +1136,7 @@ func (s *Scope) Run(ctx context.Context) (result Result, resultErr error) {
 			if state == Streaming &&
 				event.Block != nil &&
 				event.Block.Type == provider.ContentText {
-				return nil
+				streamedSampleText = true
 			}
 			return send(state, event)
 		}
@@ -1256,6 +1261,19 @@ func (s *Scope) Run(ctx context.Context) (result Result, resultErr error) {
 				return result, nil
 			}
 			continue
+		}
+		// The sample's text accompanied its tool calls, so it is narration:
+		// the commentary projection republishes it durably. Retract the
+		// provisional deltas before the tool phase replaces the sample.
+		if streamedSampleText {
+			if err := send(Streaming, Event{
+				OutputDiscarded: &ModelOutputDiscarded{
+					SampleID: sampleID,
+					Reason:   "narration",
+				},
+			}); err != nil {
+				return result, err
+			}
 		}
 		if err := send(PreparingTools, Event{}); err != nil {
 			return result, err

@@ -183,23 +183,22 @@ func TestUsagePersistsPerCallModelMetadataProvenance(t *testing.T) {
 
 // TestUsageReplacesCumulativeReportsWithinACall is the regression for the bug this
 // projection was built to fix. A provider that reports input and output in
-// separate stream events sends two cumulative snapshots of the same call —
-// Anthropic does exactly this — and the old projection stored both and summed
-// them, reporting the input twice.
+// separate stream events sends two cumulative snapshots of the same call, and
+// the old projection stored both and summed them, reporting the input twice.
 func TestUsageReplacesCumulativeReportsWithinACall(t *testing.T) {
 	repository := testRepository(t)
-	start := testEvent(t, 1, &protocol.TurnStartedData{Provider: "anthropic", Model: "claude"})
+	start := testEvent(t, 1, &protocol.TurnStartedData{Provider: "fixture", Model: "model"})
 	if err := repository.Project(t.Context(), start); err != nil {
 		t.Fatal(err)
 	}
 	// message_start reports input only; message_delta then reports the call's
 	// running total including output.
 	inputOnly := testEvent(t, 2, &protocol.UsageData{
-		Sample: 1, Provider: "anthropic", Model: "claude",
+		Sample: 1, Provider: "fixture", Model: "model",
 		InputTokens: 100, CostMicrounits: 100, CostKnown: true,
 	})
 	withOutput := testEvent(t, 3, &protocol.UsageData{
-		Sample: 1, Provider: "anthropic", Model: "claude",
+		Sample: 1, Provider: "fixture", Model: "model",
 		InputTokens: 100, OutputTokens: 50, CostMicrounits: 150, CostKnown: true,
 	})
 	for _, event := range []protocol.Event{inputOnly, withOutput} {

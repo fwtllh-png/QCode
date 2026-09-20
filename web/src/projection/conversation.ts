@@ -209,6 +209,10 @@ export class ConversationProjection {
   private readonly nodes = new Map<string, ConversationNode>();
   private readonly outputByTurn = new Map<string, string>();
   private readonly reasoningByTurn = new Map<string, string>();
+  // One open segment per output node per source: draft deltas are sample
+  // scoped and retracted by "output.discarded", while replayed "output.delta"
+  // events carry no sample and always append.
+  private readonly outputSegments = new Map<string, {sampleID: string; text: string}[]>();
   private readonly ids = new Map<string, string>();
   private readonly activeTurns = new Set<string>();
   private readonly activities = new Map<string, string>();
@@ -284,7 +288,18 @@ export class ConversationProjection {
         break;
       case "output.delta":
         this.setActivity(event.turn_id, "Responding...");
-        this.appendAssistant(event, stringValue(data.text));
+        this.appendAssistant(event, stringValue(data.text), "");
+        break;
+      case "output.draft":
+        this.setActivity(event.turn_id, "Responding...");
+        this.appendAssistant(
+          event,
+          stringValue(data.text),
+          stringValue(data.sample_id)
+        );
+        break;
+      case "output.discarded":
+        this.retractDraft(event, stringValue(data.sample_id));
         break;
       case "commentary.completed":
         this.addCommentary(event);
@@ -489,18 +504,46 @@ export class ConversationProjection {
     }
   }
 
-  private appendAssistant(event: RuntimeEvent, delta: string): void {
+  private appendAssistant(
+    event: RuntimeEvent,
+    delta: string,
+    sampleID: string
+  ): void {
     const id = this.outputByTurn.get(event.turn_id) ?? `output-${event.turn_id}`;
     const previous = this.nodes.get(id);
-    const text = previous?.kind === "assistant" ? previous.text + delta : delta;
+    const segments = this.outputSegments.get(id) ?? [];
+    const last = segments.at(-1);
+    if (last && last.sampleID === sampleID) {
+      last.text += delta;
+    } else {
+      segments.push({sampleID, text: delta});
+    }
+    this.outputSegments.set(id, segments);
     this.outputByTurn.set(event.turn_id, id);
     this.put({
       id,
       kind: "assistant",
       turnID: event.turn_id,
       sequence: previous?.sequence ?? event.sequence,
-      text
+      text: segments.map((segment) => segment.text).join("")
     });
+  }
+
+  // A draft retraction drops the named sample's streamed text. The durable
+  // owners (commentary, the terminal outbox) republish whatever survives, so
+  // the remaining segments keep their order.
+  private retractDraft(event: RuntimeEvent, sampleID: string): void {
+    if (!sampleID) return;
+    const id = this.outputByTurn.get(event.turn_id);
+    if (!id) return;
+    const segments = this.outputSegments.get(id);
+    if (!segments?.some((segment) => segment.sampleID === sampleID)) return;
+    const kept = segments.filter((segment) => segment.sampleID !== sampleID);
+    this.outputSegments.set(id, kept);
+    const previous = this.nodes.get(id);
+    if (previous?.kind === "assistant") {
+      this.put({...previous, text: kept.map((segment) => segment.text).join("")});
+    }
   }
 
   private appendReasoning(event: RuntimeEvent, delta: string): void {
@@ -960,6 +1003,8 @@ export class ConversationProjection {
     this.activeTurns.delete(event.turn_id);
     this.activities.delete(event.turn_id);
     this.runningTools.delete(event.turn_id);
+    const settledOutput = this.outputByTurn.get(event.turn_id);
+    if (settledOutput) this.outputSegments.delete(settledOutput);
     for (const [key, pending] of this.approvals) {
       if (pending.turn_id === event.turn_id) this.approvals.delete(key);
     }

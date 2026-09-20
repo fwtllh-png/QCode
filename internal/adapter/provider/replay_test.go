@@ -50,7 +50,7 @@ func TestFilterReplayForRouteDropsCrossAdapterAndLegacyState(t *testing.T) {
 	}
 	crossMessage := message
 	crossProvenance := *message.Provenance
-	crossProvenance.Adapter = model.AdapterAnthropic
+	crossProvenance.Adapter = model.AdapterID("legacy")
 	crossMessage.Provenance = &crossProvenance
 	cross := FilterReplayForRoute([]Message{crossMessage}, route)
 	if cross[0].Provenance == nil || cross[0].Provenance.Replay != nil {

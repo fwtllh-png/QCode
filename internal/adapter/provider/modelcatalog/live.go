@@ -16,7 +16,6 @@ import (
 
 	"github.com/fwtllh-png/QCode/internal/adapter/model"
 	"github.com/fwtllh-png/QCode/internal/adapter/provider"
-	provideranthropic "github.com/fwtllh-png/QCode/internal/adapter/provider/anthropic"
 	"github.com/fwtllh-png/QCode/internal/adapter/provider/httpclient"
 	provideropenai "github.com/fwtllh-png/QCode/internal/adapter/provider/openai"
 	"github.com/fwtllh-png/QCode/internal/adapter/provider/router"
@@ -46,27 +45,21 @@ func ProbeCapabilities(
 	ctx context.Context,
 	baseURL, apiKey, modelID string,
 ) (model.Capabilities, error) {
-	return ProbeCapabilitiesForProtocol(ctx, baseURL, apiKey, modelID, model.ProtocolOpenAIChat, 0)
+	return ProbeCapabilitiesForProtocol(ctx, baseURL, apiKey, modelID, model.ProtocolOpenAIChat)
 }
 
 func ProbeCapabilitiesForProtocol(
 	ctx context.Context,
 	baseURL, apiKey, modelID string,
 	protocol model.WireProtocol,
-	maxOutputTokens uint64,
 ) (model.Capabilities, error) {
 	base := strings.TrimRight(strings.TrimSpace(baseURL), "/")
 	target := base + "/chat/completions"
-	if protocol != model.ProtocolOpenAIChat && protocol != model.ProtocolOpenAIResponses && protocol != model.ProtocolAnthropic {
+	if protocol != model.ProtocolOpenAIChat && protocol != model.ProtocolOpenAIResponses {
 		return model.Capabilities{}, fmt.Errorf("automatic capability probing is unavailable for %s; enter model metadata explicitly", protocol)
 	}
 	if protocol == model.ProtocolOpenAIResponses {
 		target = base + "/responses"
-	} else if protocol == model.ProtocolAnthropic {
-		target = base + "/messages"
-		if maxOutputTokens == 0 {
-			return model.Capabilities{}, errors.New("the provider did not advertise the output limit required for a Messages probe; enter model metadata explicitly")
-		}
 	}
 	gate := &egress.Gate{Enforce: true}
 	if !gate.AllowURL(target) && !gate.AllowURL(base) {
@@ -104,13 +97,6 @@ func ProbeCapabilitiesForProtocol(
 				"type": "object", "properties": map[string]any{}, "additionalProperties": false,
 			},
 		}}
-	} else if protocol == model.ProtocolAnthropic {
-		payload["max_tokens"] = maxOutputTokens
-		payload["tools"] = []map[string]any{{
-			"name": "capability_probe", "description": "Verify function calling support.",
-			"input_schema": map[string]any{"type": "object", "properties": map[string]any{}},
-		}}
-		payload["tool_choice"] = map[string]any{"type": "tool", "name": "capability_probe"}
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -128,14 +114,7 @@ func ProbeCapabilitiesForProtocol(
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Accept", "text/event-stream")
 	if strings.TrimSpace(apiKey) != "" {
-		if protocol == model.ProtocolAnthropic {
-			request.Header.Set("x-api-key", strings.TrimSpace(apiKey))
-		} else {
-			request.Header.Set("Authorization", "Bearer "+strings.TrimSpace(apiKey))
-		}
-	}
-	if protocol == model.ProtocolAnthropic {
-		request.Header.Set("anthropic-version", "2023-06-01")
+		request.Header.Set("Authorization", "Bearer "+strings.TrimSpace(apiKey))
 	}
 	response, err := egress.WrapClient(
 		&http.Client{Timeout: 20 * time.Second},
@@ -151,12 +130,7 @@ func ProbeCapabilitiesForProtocol(
 			response.StatusCode,
 		)
 	}
-	var stream provider.Stream
-	if protocol == model.ProtocolAnthropic {
-		stream, err = provideranthropic.NewStream(response.Body)
-	} else {
-		stream, err = provideropenai.NewStream(response.Body, protocol)
-	}
+	stream, err := provideropenai.NewStream(response.Body, protocol)
 	if err != nil {
 		return model.Capabilities{}, err
 	}
@@ -187,7 +161,7 @@ func ProbeCapabilitiesWithCredential(
 	credential model.CredentialRef,
 	modelID string,
 ) (model.Capabilities, error) {
-	return ProbeCapabilitiesWithCredentialForProtocol(ctx, baseURL, credential, modelID, model.ProtocolOpenAIChat, 0)
+	return ProbeCapabilitiesWithCredentialForProtocol(ctx, baseURL, credential, modelID, model.ProtocolOpenAIChat)
 }
 
 func ProbeCapabilitiesWithCredentialForProtocol(
@@ -196,7 +170,6 @@ func ProbeCapabilitiesWithCredentialForProtocol(
 	credential model.CredentialRef,
 	modelID string,
 	protocol model.WireProtocol,
-	maxOutputTokens uint64,
 ) (model.Capabilities, error) {
 	apiKey := ""
 	if credential.Kind != "" && credential.Name != "" {
@@ -210,7 +183,7 @@ func ProbeCapabilitiesWithCredentialForProtocol(
 			)
 		}
 	}
-	return ProbeCapabilitiesForProtocol(ctx, baseURL, apiKey, modelID, protocol, maxOutputTokens)
+	return ProbeCapabilitiesForProtocol(ctx, baseURL, apiKey, modelID, protocol)
 }
 
 func List(
@@ -290,12 +263,7 @@ func discover(
 		return nil, err
 	}
 	if apiKey != "" {
-		if catalogProvider.Protocol == model.ProtocolAnthropic {
-			request.Header.Set("x-api-key", apiKey)
-			request.Header.Set("anthropic-version", "2023-06-01")
-		} else {
-			request.Header.Set("Authorization", "Bearer "+apiKey)
-		}
+		request.Header.Set("Authorization", "Bearer "+apiKey)
 	}
 	response, err := egress.WrapClient(
 		&http.Client{Timeout: 8 * time.Second},

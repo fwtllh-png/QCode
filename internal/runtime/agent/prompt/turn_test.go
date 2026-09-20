@@ -57,7 +57,7 @@ func TestAssembleTurnRendersBothSectionsAsSystemMessages(t *testing.T) {
 	}
 	for _, message := range assembled.Messages {
 		if message.Role != provider.RoleSystem {
-			t.Fatalf("role = %q, want system so Anthropic hoists it instead of breaking role alternation", message.Role)
+			t.Fatalf("role = %q, want system so adapters can hoist it instead of breaking role alternation", message.Role)
 		}
 	}
 	mapText := assembled.Messages[0].Text()

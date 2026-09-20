@@ -238,7 +238,7 @@ func (m *Manager) FollowUp(ctx context.Context, agentID, prompt string) (string,
 	}
 	m.mu.Lock()
 	agent, ok := m.agents[agentID]
-	if !ok || agent.Closed || agent.Status == StatusClosed {
+	if !ok || agent.Closed || agent.Status == StatusClosed || m.closing[agentID] != nil {
 		m.mu.Unlock()
 		return "", errors.New("agent not found")
 	}
@@ -369,9 +369,13 @@ func (m *Manager) startTurn(
 ) (string, error) {
 	m.mu.Lock()
 	agent, ok := m.agents[agentID]
-	if !ok || agent.Closed || agent.Status == StatusClosed {
+	if !ok || agent.Closed || agent.Status == StatusClosed || m.closing[agentID] != nil {
 		m.mu.Unlock()
 		return "", errors.New("agent not found")
+	}
+	if m.starting[agentID] {
+		m.mu.Unlock()
+		return "", errors.New("agent is busy")
 	}
 	if err := m.transitionLocked(
 		agent, StatusStarting, "", "", "runtime", "turn requested", nil,
@@ -381,7 +385,14 @@ func (m *Manager) startTurn(
 	}
 	pending := m.mailbox.PendingSession(agent.SessionID, agentID)
 	traceParent, traceState := agent.TraceParent, agent.TraceState
+	m.starting[agentID] = true
 	m.mu.Unlock()
+	defer func() {
+		m.mu.Lock()
+		delete(m.starting, agentID)
+		m.wait.Broadcast()
+		m.mu.Unlock()
+	}()
 	prompt = promptWithMessages(prompt, pending)
 	if traceParent != "" {
 		carrier := map[string]string{

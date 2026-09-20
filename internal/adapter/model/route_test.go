@@ -64,7 +64,7 @@ func TestResolverDoesNotInferProviderFromModelName(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err = resolver.Resolve(RouteRequest{ModelID: "claude-sonnet"})
+	_, err = resolver.Resolve(RouteRequest{ModelID: "nonexistent-model"})
 
 	if err == nil || !strings.Contains(err.Error(), "provider id is required") {
 		t.Fatalf("Resolve() error = %v, want explicit provider error", err)
@@ -77,7 +77,7 @@ func TestResolverRejectsForeignModel(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err = resolver.Resolve(RouteRequest{ProviderID: "openai", ModelID: "claude-sonnet"})
+	_, err = resolver.Resolve(RouteRequest{ProviderID: "openai", ModelID: "nonexistent-model"})
 
 	if err == nil || !strings.Contains(err.Error(), "does not offer model") {
 		t.Fatalf("Resolve() error = %v, want foreign model error", err)
@@ -89,11 +89,11 @@ func TestResolverAutoRouteRequiresExplicitUniqueMatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	route, err := resolver.Resolve(RouteRequest{ModelID: "claude-sonnet", Auto: true})
+	route, err := resolver.Resolve(RouteRequest{ModelID: "glm-4-flash", Auto: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if route.ProviderID() != "anthropic" || route.Provenance() != ProvenanceBundled {
+	if route.ProviderID() != "zai" || route.Provenance() != ProvenanceBundled {
 		t.Fatalf("auto route = %+v", route)
 	}
 	if route.Model().MetadataProvenance.Limits != ProvenanceBundled {
@@ -194,7 +194,7 @@ func TestRouteIdentityExcludesVolatilePricing(t *testing.T) {
 
 func TestCatalogRejectsAdapterProtocolMismatch(t *testing.T) {
 	_, err := NewCatalog(Provider{
-		ID: "invalid", Adapter: AdapterAnthropic,
+		ID: "invalid", Adapter: AdapterID("legacy"),
 		Endpoint: "https://example.com", Protocol: ProtocolOpenAIChat,
 		Models: map[string]Model{"model": {
 			ID: "model", CanonicalID: "model", WireID: "model",

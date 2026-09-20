@@ -24,9 +24,6 @@ func resolveExecRoute(options execRouteOptions) (model.ReadyRoute, error) {
 			provenance = model.ProvenanceFixture
 		}
 		adapter := model.AdapterOpenAICompatible
-		if options.Protocol == model.ProtocolAnthropic {
-			adapter = model.AdapterAnthropic
-		}
 		if bundled, exists := model.DefaultCatalog().Provider(options.ProviderID); exists {
 			adapter = bundled.Adapter
 		}
@@ -95,7 +92,7 @@ func fixtureModel(id string) *model.Model {
 func parseProtocol(value string) (model.WireProtocol, error) {
 	wireProtocol := model.WireProtocol(value)
 	switch wireProtocol {
-	case model.ProtocolOpenAIChat, model.ProtocolOpenAIResponses, model.ProtocolAnthropic:
+	case model.ProtocolOpenAIChat, model.ProtocolOpenAIResponses:
 		return wireProtocol, nil
 	default:
 		return "", fmt.Errorf("unsupported protocol %q", value)

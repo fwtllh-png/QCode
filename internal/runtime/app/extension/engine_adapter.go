@@ -966,6 +966,12 @@ func emitRichEngineEvent(sink EngineSink, event agentengine.Event) error {
 			SampleID: event.ReasoningCompleted.SampleID,
 		})
 	}
+	if event.OutputDiscarded != nil {
+		return sink.Emit(&protocol.OutputDiscardedData{
+			SampleID: event.OutputDiscarded.SampleID,
+			Reason:   event.OutputDiscarded.Reason,
+		})
+	}
 	if event.Usage != nil {
 		return sink.Emit(&protocol.UsageData{
 			Sample: event.Sample, Provider: event.Provider, Model: event.Model,
@@ -994,7 +1000,10 @@ func emitRichEngineEvent(sink EngineSink, event agentengine.Event) error {
 	if event.Block != nil {
 		switch event.Block.Type {
 		case provider.ContentText:
-			return sink.Emit((*protocol.OutputDeltaData)(&protocol.TextDeltaData{Text: event.Block.Text}))
+			return sink.Emit(&protocol.OutputDraftData{
+				Text:     event.Block.Text,
+				SampleID: event.SampleID,
+			})
 		case provider.ContentReasoning:
 			if event.Block.Text != "" {
 				return sink.Emit(&protocol.ReasoningDeltaData{

@@ -1,7 +1,6 @@
 package config
 
 import (
-	"time"
 	"encoding/json"
 	"errors"
 	"os"
@@ -11,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestDefaultsUseExtendedTurnBudget(t *testing.T) {
@@ -86,7 +86,7 @@ name = "FILE_API_KEY"
 [execution]
 provider = "file-provider"
 model = "file-model"
-protocol = "anthropic"
+protocol = "openai_responses"
 mode = "plan"
 workspace = "/file"
 tools = true

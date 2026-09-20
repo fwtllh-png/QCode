@@ -390,7 +390,7 @@ Provider 并发槽。
 Token。它与模型 Context Window、`budget_tokens` / `turn_budget_tokens` 经济预算是三个
 独立容量平面。默认 `0` 表示未知：Runtime 不按模型名称发明 TPM，也不在发送前按 Token
 做 Admission；请求冷却仍然生效。非零值或 Provider 返回的 Token 专用 Header
-（`X-RateLimit-*-Tokens`、`Anthropic-Ratelimit-Tokens-*`）成为已知 Burst 后，准入按
+（`X-RateLimit-*-Tokens`）成为已知 Burst 后，准入按
 `投影输入 + 输出保留` 计算，缓存 Token 在合同未声明免费前计入全量。超过已知 Burst
 的合法工作集先对可见 Tail 做一次因果组折叠再重新准入；仍超过 Burst 才拒绝
 （`resource_exhausted` / `provider_throughput` / `exceeds_route_burst`），
@@ -498,9 +498,8 @@ Memory 使用带稳定 ID 和 Generation 的记录存储。`user`、`workspace` 
 
 - `openai_chat`
 - `openai_responses`
-- `anthropic`
 
-首次 Setup 的一级 Provider 包括 OpenAI、Anthropic、DeepSeek、GLM 和自定义
+首次 Setup 的一级 Provider 包括 OpenAI、DeepSeek、GLM 和自定义
 OpenAI-Compatible。GLM 内置 `glm-5.3`、`glm-5.3-flash`，固定使用
 `https://open.bigmodel.cn/api/coding/paas/v4` 与 `openai_chat`。
 

@@ -3,7 +3,6 @@ package wire
 import (
 	"github.com/fwtllh-png/QCode/internal/adapter/model"
 	"github.com/fwtllh-png/QCode/internal/adapter/provider"
-	"github.com/fwtllh-png/QCode/internal/adapter/provider/anthropic"
 	"github.com/fwtllh-png/QCode/internal/adapter/provider/httpclient"
 	providerrouter "github.com/fwtllh-png/QCode/internal/adapter/provider/modelcatalog"
 	"github.com/fwtllh-png/QCode/internal/adapter/provider/openai"
@@ -23,7 +22,7 @@ func newProviderRouter(
 		return nil, err
 	}
 	adapters := []providerwire.Adapter{
-		openAI, anthropic.NewAdapter(), compatible,
+		openAI, compatible,
 	}
 	registry, err := providerrouter.NewRegistry(adapters...)
 	if err != nil {

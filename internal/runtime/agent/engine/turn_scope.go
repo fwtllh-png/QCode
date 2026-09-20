@@ -37,6 +37,8 @@ type Scope struct {
 }
 
 type scopeState struct {
+	// Frozen at scope creation; safe for concurrent tool callbacks to read.
+	turnArchive          turnArchiveSnapshot
 	samples              uint32
 	toolSamples          map[uint32]toolSpend
 	approvalEmit         func(Event) error
@@ -82,11 +84,12 @@ type ScopeSnapshot struct {
 
 func newScopeState(engine *Engine) scopeState {
 	return scopeState{
-		scheduler: turnkernel.NewToolScheduler(engine.options.MaxToolConcurrent),
-		diff:      turnkernel.NewTurnDiffTracker(engine.options.Workspace),
-		mailbox:   turnkernel.NewMailbox[PendingInput](0),
-		requests:  turnkernel.NewRequestLedger(),
-		context:   engine.context.Clone(),
+		turnArchive: engine.snapshotTurnArchive(),
+		scheduler:   turnkernel.NewToolScheduler(engine.options.MaxToolConcurrent),
+		diff:        turnkernel.NewTurnDiffTracker(engine.options.Workspace),
+		mailbox:     turnkernel.NewMailbox[PendingInput](0),
+		requests:    turnkernel.NewRequestLedger(),
+		context:     engine.context.Clone(),
 	}
 }
 

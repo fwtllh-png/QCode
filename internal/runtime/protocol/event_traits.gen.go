@@ -23,6 +23,8 @@ var eventTraits = map[EventKind]EventTraits{
 	"mcp.health.changed":    {"audit", "turn", "retained", "server", false},
 	"operation.rejected":    {"terminal_operation", "operation", "retained", "operation", false},
 	"output.delta":          {"stream", "turn", "terminal_projection", "turn", false},
+	"output.discarded":      {"stream", "turn", "transient", "sample", false},
+	"output.draft":          {"stream", "turn", "transient", "sample", false},
 	"plan.delta":            {"artifact_stream", "turn", "retained", "plan", false},
 	"provider.attempt":      {"audit", "turn", "retained", "sample", false},
 	"reasoning.completed":   {"stream", "turn", "retained", "turn", false},

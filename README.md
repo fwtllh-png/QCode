@@ -59,7 +59,7 @@ qcode
 已有 Web Supervisor 运行时，显式目录会注册到已有进程，无需启动第二个 Web 服务。
 普通启动只恢复已添加的列表，删除最后一个 Workspace 后重启仍保持空列表。
 首次进入时不会预选 Provider 或 Model，用户必须在页面中选择
-OpenAI、Anthropic、DeepSeek、GLM 或自定义 OpenAI-Compatible 服务，并填写 Model ID。
+OpenAI、DeepSeek、GLM 或自定义 OpenAI-Compatible 服务，并填写 Model ID。
 自定义 Endpoint 或未进入内置目录的模型还必须显式填写 Context、Output 和 Capability
 元数据；Runtime 不猜测模型限制。API Key 由操作系统 Keyring 加密保存，非敏感选择与
 元数据由 Runtime 管理；无需创建或编辑配置文件。Session 只可在当前连接已验证的模型间

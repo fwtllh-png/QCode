@@ -73,7 +73,7 @@ func TestEngineNumbersUsageBySampleAcrossCalls(t *testing.T) {
 	}
 	runtime := &scriptedProvider{streams: []provider.Stream{
 		// First call asks for a tool, reporting input before output the way
-		// Anthropic does.
+		// message_start-style usage events do.
 		&providerfixture.SliceStream{Events: []provider.StreamEvent{
 			{Type: provider.EventUsage, Usage: &provider.Usage{InputTokens: 100}},
 			{Type: provider.EventToolCallDelta, Index: 0, ToolCall: &provider.ToolCallFragment{

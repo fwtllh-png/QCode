@@ -68,6 +68,7 @@ type Event struct {
 	ProviderRetry      *ProviderRetry                    `json:"provider_retry,omitempty"`
 	ModelExecution     *ModelExecution                   `json:"model_execution,omitempty"`
 	ReasoningCompleted *ModelReasoning                   `json:"reasoning_completed,omitempty"`
+	OutputDiscarded    *ModelOutputDiscarded             `json:"output_discarded,omitempty"`
 	Commentary         *protocol.CommentaryCompletedData `json:"commentary,omitempty"`
 	ToolOutput         *ToolOutput                       `json:"tool_output,omitempty"`
 	CatalogChanged     *CatalogChanged                   `json:"catalog_changed,omitempty"`
@@ -112,6 +113,15 @@ type ModelExecution struct {
 type ModelReasoning struct {
 	SampleID string `json:"sample_id"`
 	Text     string `json:"text"`
+}
+
+// ModelOutputDiscarded retracts the provisional text deltas a sample streamed
+// to the host. Deltas are optimistic: a transport retry restarts the sample,
+// and text that arrives with tool calls is narration that the durable
+// commentary projection republishes. Reason names the retraction cause.
+type ModelOutputDiscarded struct {
+	SampleID string `json:"sample_id"`
+	Reason   string `json:"reason"`
 }
 
 type ProviderRetry = providerwire.RetryDecision

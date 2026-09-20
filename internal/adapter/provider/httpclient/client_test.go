@@ -115,75 +115,6 @@ func TestClientPropagatesW3CTraceContext(t *testing.T) {
 	}
 }
 
-func TestClientAnthropicRequest(t *testing.T) {
-	var requestBody map[string]any
-	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.URL.Path != "/messages" {
-			t.Errorf("path = %q", request.URL.Path)
-		}
-		if got := request.Header.Get("x-api-key"); got != "anthropic-key" {
-			t.Errorf("x-api-key = %q", got)
-		}
-		if err := json.NewDecoder(request.Body).Decode(&requestBody); err != nil {
-			t.Error(err)
-		}
-		_, _ = io.WriteString(writer, "data: {\"type\":\"message_stop\"}\n\n")
-	}))
-	defer server.Close()
-
-	client := testClient()
-	client.Credentials = staticCredentials("anthropic-key")
-	request := testRequest(t, server.URL, model.ProtocolAnthropic)
-	request.Messages = append([]provider.Message{provider.TextMessage(provider.RoleSystem, "system")}, request.Messages...)
-	request.MaxOutputTokens = 2048
-	request.ReasoningEffort = "high"
-	request.NativeSearch = true
-	request.Tools = []provider.ToolDefinition{{
-		Name: "read", Description: "read", InputSchema: map[string]any{"type": "object"},
-	}}
-	stream, err := client.Stream(t.Context(), request)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := provider.Drain(stream); err != nil {
-		t.Fatal(err)
-	}
-	if requestBody["system"] != nil {
-		system, ok := requestBody["system"].([]any)
-		if !ok || len(system) != 1 {
-			t.Fatalf("system blocks = %#v", requestBody["system"])
-		}
-		block, _ := system[0].(map[string]any)
-		if block["type"] != "text" || block["text"] != "system" {
-			t.Fatalf("system block = %#v", block)
-		}
-		if _, ok := block["cache_control"]; ok {
-			t.Fatalf("fixture without prompt_cache must omit cache_control: %#v", block)
-		}
-	} else {
-		t.Fatalf("request body missing system: %+v", requestBody)
-	}
-	if _, exists := requestBody["thinking"]; !exists {
-		t.Fatalf("thinking config missing: %+v", requestBody)
-	}
-	if tools, ok := requestBody["tools"].([]any); !ok || len(tools) != 2 {
-		t.Fatalf("native search and regular tool do not coexist: %+v", requestBody)
-	}
-}
-
-func TestClientRejectsInvalidAnthropicThinkingBudget(t *testing.T) {
-	client := testClient()
-	request := testRequest(t, "http://127.0.0.1:1", model.ProtocolAnthropic)
-	request.MaxOutputTokens = 1024
-	request.ReasoningEffort = "high"
-
-	_, err := client.Stream(t.Context(), request)
-
-	if !protocol.IsCode(err, protocol.CodeInvalidArgument) {
-		t.Fatalf("Stream() error = %v, code=%q", err, protocol.CodeOf(err))
-	}
-}
-
 func TestClientOpenAIResponsesRequest(t *testing.T) {
 	var requestBody map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
@@ -304,49 +235,6 @@ func TestEncodeChatPromptCacheKeyWithCapability(t *testing.T) {
 	}
 }
 
-func TestEncodeAnthropicSystemCacheControl(t *testing.T) {
-	request := testRequestWithPromptCache(t, "https://provider.test", model.ProtocolAnthropic, true)
-	request.Messages = []provider.Message{
-		provider.TextMessage(provider.RoleSystem, "stable-a"),
-		provider.TextMessage(provider.RoleSystem, "stable-b"),
-		provider.TextMessage(provider.RoleUser, "hello"),
-		provider.TextMessage(provider.RoleSystem, "volatile-turn"),
-	}
-	var body struct {
-		System   []map[string]any `json:"system"`
-		Messages []map[string]any `json:"messages"`
-	}
-	if path := mustEncodeRequest(t, request, &body); path != "/messages" {
-		t.Fatalf("path = %q", path)
-	}
-	if len(body.System) != 3 {
-		t.Fatalf("system = %#v", body.System)
-	}
-	if body.System[0]["text"] != "stable-a" || body.System[0]["cache_control"] != nil {
-		t.Fatalf("first stable = %#v", body.System[0])
-	}
-	control, _ := body.System[1]["cache_control"].(map[string]any)
-	if body.System[1]["text"] != "stable-b" || control["type"] != "ephemeral" {
-		t.Fatalf("last stable = %#v", body.System[1])
-	}
-	if body.System[2]["text"] != "volatile-turn" || body.System[2]["cache_control"] != nil {
-		t.Fatalf("volatile = %#v", body.System[2])
-	}
-	if len(body.Messages) != 1 || body.Messages[0]["role"] != "user" {
-		t.Fatalf("messages = %#v", body.Messages)
-	}
-
-	noCache := testRequestWithPromptCache(t, "https://provider.test", model.ProtocolAnthropic, false)
-	noCache.Messages = []provider.Message{
-		provider.TextMessage(provider.RoleSystem, "stable"),
-		provider.TextMessage(provider.RoleUser, "hello"),
-	}
-	mustEncodeRequest(t, noCache, &body)
-	if len(body.System) != 1 || body.System[0]["cache_control"] != nil {
-		t.Fatalf("no-cache system = %#v", body.System)
-	}
-}
-
 func TestEncodeToolHistoryByProtocol(t *testing.T) {
 	messages := []provider.Message{
 		provider.TextMessage(provider.RoleUser, "read"),
@@ -375,27 +263,6 @@ func TestEncodeToolHistoryByProtocol(t *testing.T) {
 			body.Input[3]["type"] != "function_call_output" ||
 			body.Input[3]["call_id"] != "call_1" {
 			t.Fatalf("input = %#v", body.Input)
-		}
-	})
-	t.Run("anthropic", func(t *testing.T) {
-		request := testRequest(t, "https://provider.test", model.ProtocolAnthropic)
-		request.Messages = messages
-		var body struct {
-			Messages []map[string]any `json:"messages"`
-		}
-		mustEncodeRequest(t, request, &body)
-		assistantContent, _ := body.Messages[1]["content"].([]any)
-		toolUse, _ := assistantContent[1].(map[string]any)
-		resultContent, _ := body.Messages[2]["content"].([]any)
-		toolResult, _ := resultContent[0].(map[string]any)
-		if len(body.Messages) != 3 ||
-			body.Messages[1]["role"] != "assistant" ||
-			toolUse["type"] != "tool_use" ||
-			toolUse["id"] != "call_1" ||
-			body.Messages[2]["role"] != "user" ||
-			toolResult["type"] != "tool_result" ||
-			toolResult["tool_use_id"] != "call_1" {
-			t.Fatalf("messages = %#v", body.Messages)
 		}
 	})
 }
@@ -477,59 +344,9 @@ func TestEncodeImageByProtocol(t *testing.T) {
 		}
 	})
 
-	t.Run("anthropic", func(t *testing.T) {
-		request := testRequest(t, "https://provider.test", model.ProtocolAnthropic)
-		request.Messages = imaged
-		var body struct {
-			Messages []map[string]any `json:"messages"`
-		}
-		mustEncodeRequest(t, request, &body)
-		content, _ := body.Messages[0]["content"].([]any)
-		image, _ := content[1].(map[string]any)
-		source, _ := image["source"].(map[string]any)
-		if image["type"] != "image" ||
-			source["type"] != "base64" ||
-			source["media_type"] != "image/png" ||
-			source["data"] != "UE5H" {
-			t.Fatalf("image block = %#v", image)
-		}
-	})
 }
 
 func TestEncodeReasoningReplayByProtocol(t *testing.T) {
-	t.Run("anthropic thinking signature", func(t *testing.T) {
-		request := testRequest(t, "https://provider.test", model.ProtocolAnthropic)
-		request.Messages = []provider.Message{
-			provider.TextMessage(provider.RoleUser, "first"),
-			provider.ProducedAssistant(
-				request.Route,
-				[]provider.ContentBlock{
-					{Type: provider.ContentReasoning, Text: "private thought"},
-					{Type: provider.ContentText, Text: "answer"},
-				},
-				1,
-				&provider.ReplayState{
-					Version: provider.ReplayVersion,
-					Data: json.RawMessage(
-						`{"signatures":[{"block":0,"value":"signed-value"}]}`,
-					),
-				},
-			),
-			provider.TextMessage(provider.RoleUser, "second"),
-		}
-		var body struct {
-			Messages []struct {
-				Content []map[string]any `json:"content"`
-			} `json:"messages"`
-		}
-		mustEncodeRequest(t, request, &body)
-		thinking := body.Messages[1].Content[0]
-		if thinking["type"] != "thinking" ||
-			thinking["thinking"] != "private thought" ||
-			thinking["signature"] != "signed-value" {
-			t.Fatalf("second-round thinking replay = %#v", thinking)
-		}
-	})
 
 	t.Run("responses encrypted reasoning becomes neutral plaintext", func(t *testing.T) {
 		raw := json.RawMessage(`{"type":"reasoning","id":"rs_1","encrypted_content":"ciphertext","summary":[]}`)
@@ -1190,9 +1007,6 @@ func testRequestWithPromptCache(
 ) provider.ModelRequest {
 	t.Helper()
 	adapter := model.AdapterOpenAICompatible
-	if wireProtocol == model.ProtocolAnthropic {
-		adapter = model.AdapterAnthropic
-	}
 	catalog, err := model.NewCatalog(model.Provider{
 		ID:         "fixture",
 		Adapter:    adapter,

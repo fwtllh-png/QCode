@@ -8,7 +8,7 @@ import (
 )
 
 func TestSetupProbeConnectionMatchesApplyBoundary(t *testing.T) {
-	for _, providerID := range []string{"openai", "anthropic", "deepseek", "glm"} {
+	for _, providerID := range []string{"openai", "deepseek", "glm"} {
 		gotID, endpoint, protocol, err := resolveSetupProbeConnection(webhost.SetupProbeRequest{
 			Provider: providerID, Model: "unknown-model",
 			BaseURL: "https://ignored.invalid", Protocol: "ignored",
