@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/fwtllh-png/QCode/internal/platform/repowalk"
@@ -96,8 +97,10 @@ type Index struct {
 	walker  *repowalk.Walker
 	options Options
 
-	mu       sync.Mutex
-	snapshot Snapshot
+	mu sync.Mutex
+	// Published snapshots are immutable. Status readers must not wait for the
+	// refresh mutex, which covers workspace enumeration and index writes.
+	snapshot atomic.Pointer[Snapshot]
 	// graphFiles holds the digests of the file set the stored graph describes.
 	// It is set only after a complete graph build, and the build now runs in
 	// the background: comparing content digests also handles a refresh that
@@ -171,11 +174,12 @@ func (i *Index) Ensure(ctx context.Context) (Snapshot, error) {
 	entered := i.options.Now()
 	i.mu.Lock()
 	defer i.mu.Unlock()
-	if i.snapshot.Ready() && i.snapshot.Meta.RefreshedAt.After(entered) {
-		return i.snapshot, nil
+	previous := i.Snapshot()
+	if previous.Ready() && previous.Meta.RefreshedAt.After(entered) {
+		return previous, nil
 	}
 	if i.failures >= maxResetAttempts {
-		return i.snapshot, nil
+		return previous, nil
 	}
 	snapshot, err := i.refresh(ctx)
 	if err != nil {
@@ -185,15 +189,16 @@ func (i *Index) Ensure(ctx context.Context) (Snapshot, error) {
 			return i.cancelled(), err
 		}
 		i.failures++
-		i.snapshot = Snapshot{Status: StatusDegraded, Detail: err.Error()}
+		degraded := Snapshot{Status: StatusDegraded, Detail: err.Error()}
+		i.snapshot.Store(&degraded)
 		// A store that cannot be read is discarded rather than trusted. The error
 		// is not returned: a missing index degrades the session, it does not fail
 		// the turn.
 		_ = i.store.Reset(context.WithoutCancel(ctx))
-		return i.snapshot, nil
+		return degraded, nil
 	}
 	i.failures = 0
-	i.snapshot = snapshot
+	i.snapshot.Store(&snapshot)
 	return snapshot, nil
 }
 
@@ -279,17 +284,17 @@ func (i *Index) Root() string {
 	return i.store.Root()
 }
 
-// Snapshot reports the last known state without touching the workspace.
+// Snapshot reports the last published state without touching the workspace or
+// waiting for an in-flight refresh. Queries still use Ensure before reading rows.
 func (i *Index) Snapshot() Snapshot {
 	if i == nil {
 		return Snapshot{Status: StatusDisabled}
 	}
-	i.mu.Lock()
-	defer i.mu.Unlock()
-	if i.snapshot.Status == "" {
+	snapshot := i.snapshot.Load()
+	if snapshot == nil {
 		return Snapshot{Status: StatusPending, Detail: "the repository index builds on first use"}
 	}
-	return i.snapshot
+	return *snapshot
 }
 
 func (i *Index) refresh(ctx context.Context) (Snapshot, error) {
@@ -820,8 +825,8 @@ func WeakestResolution(found []Symbol) string {
 
 // cancelled reports the state to show when a build was interrupted.
 func (i *Index) cancelled() Snapshot {
-	if i.snapshot.Status != "" {
-		return i.snapshot
+	if snapshot := i.snapshot.Load(); snapshot != nil {
+		return *snapshot
 	}
 	return Snapshot{
 		Status: StatusDegraded,

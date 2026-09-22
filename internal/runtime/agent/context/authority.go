@@ -174,14 +174,23 @@ func (a Authority) Snapshot(request SnapshotRequest) (ContextSnapshot, error) {
 
 func evidencePaths(delta EvidenceDelta) []string {
 	paths := make(map[string]struct{})
+	// Workspace bindings are workspace-relative by contract. Durable
+	// evidence written before that rule (or by a tool reporting host
+	// locations) can carry absolute paths; one malformed entry must not
+	// reject every later snapshot, so unbindable paths are skipped.
+	collect := func(path string) {
+		if _, err := canonicalBoundPath(path); err == nil {
+			paths[path] = struct{}{}
+		}
+	}
 	for _, fact := range delta.Facts {
-		paths[fact.Path] = struct{}{}
+		collect(fact.Path)
 	}
 	for _, change := range delta.Changes {
-		paths[change.Path] = struct{}{}
+		collect(change.Path)
 	}
 	for _, read := range delta.Reads {
-		paths[read.Path] = struct{}{}
+		collect(read.Path)
 	}
 	result := make([]string, 0, len(paths))
 	for path := range paths {

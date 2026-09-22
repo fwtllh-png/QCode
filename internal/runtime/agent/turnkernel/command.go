@@ -214,6 +214,10 @@ func (ApprovalResultReceived) commandName() string {
 
 type InputRequired struct {
 	RequestID string
+	// CallID binds the wait to the request_user_input call so a tool result
+	// for that call can retire an unanswered input instead of failing the
+	// turn with an illegal transition.
+	CallID string
 }
 
 func (InputRequired) commandName() string { return "input_required" }

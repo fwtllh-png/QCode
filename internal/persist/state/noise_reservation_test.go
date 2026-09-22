@@ -8,7 +8,7 @@ import (
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
 )
 
-func TestNoiseReservationCommitsFinalStateOnceAndSurvivesRestart(t *testing.T) {
+func TestNoiseOnlyAdvancesWatermarkAndSurvivesRestart(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
 	store, err := Open(ctx, Options{DataDir: root})
@@ -16,12 +16,11 @@ func TestNoiseReservationCommitsFinalStateOnceAndSurvivesRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = store.CloseAll(ctx) }()
-	// Reject an intermediate state: the elided slots must become abandoned
-	// in their INSERT transaction, not via a later UPDATE.
+	// Noise must never create a reservation, even transiently.
 	if _, err := store.SQLite().DB().ExecContext(ctx, `
 		CREATE TRIGGER noise_must_be_final BEFORE INSERT ON event_reservations
-		WHEN NEW.sequence IN (1, 3) AND NEW.status <> 'abandoned'
-		BEGIN SELECT RAISE(ABORT, 'noise reservation is not final'); END`); err != nil {
+		WHEN NEW.sequence IN (1, 3)
+		BEGIN SELECT RAISE(ABORT, 'noise reservation is forbidden'); END`); err != nil {
 		t.Fatal(err)
 	}
 	changes := func() int {
@@ -42,18 +41,14 @@ func TestNoiseReservationCommitsFinalStateOnceAndSurvivesRestart(t *testing.T) {
 			t.Fatal(err)
 		}
 		if writes := changes() - before; writes != 1 {
-			t.Fatalf("noise %s changed %d rows, want one reservation INSERT", event.Kind, writes)
+			t.Fatalf("noise %s changed %d rows, want one watermark UPDATE", event.Kind, writes)
 		}
 		status, id, err := store.reservation(ctx, event.Sequence)
-		if err != nil || status != "abandoned" || id != string(event.ID) {
+		if err != nil || status != "" || id != "" {
 			t.Fatalf("reservation = %s, %s, %v", status, id, err)
 		}
-		before = changes()
-		if err := store.Append(ctx, event); err != nil {
-			t.Fatal(err)
-		}
-		if writes := changes() - before; writes != 0 {
-			t.Fatalf("idempotent noise retry changed %d rows", writes)
+		if err := store.Append(ctx, event); !errors.Is(err, ErrSequenceReserved) {
+			t.Fatalf("old noise sequence was accepted: %v", err)
 		}
 	}
 	if err := store.CloseAll(ctx); err != nil {
@@ -68,12 +63,8 @@ func TestNoiseReservationCommitsFinalStateOnceAndSurvivesRestart(t *testing.T) {
 		t.Fatalf("restarted watermark = %d, %v", last, err)
 	}
 	for _, event := range noise {
-		before := changes()
-		if err := store.Append(ctx, event); err != nil {
-			t.Fatal(err)
-		}
-		if changes() != before {
-			t.Fatal("restarted noise retry wrote to storage")
+		if err := store.Append(ctx, event); !errors.Is(err, ErrSequenceReserved) {
+			t.Fatalf("restarted noise sequence was accepted: %v", err)
 		}
 	}
 	for _, sequence := range []protocol.Cursor{1, 2, 3} {
@@ -89,5 +80,39 @@ func TestNoiseReservationCommitsFinalStateOnceAndSurvivesRestart(t *testing.T) {
 	events, err := store.Replay(ctx, 0)
 	if err != nil || len(events) != 1 || events[0].ID != audit.ID {
 		t.Fatalf("replay = %+v, %v; want only durable audit", events, err)
+	}
+}
+
+func TestMixedBatchKeepsAcceptedNoiseWhenDurableWriteFails(t *testing.T) {
+	for _, failure := range []string{"log", "projection"} {
+		t.Run(failure, func(t *testing.T) {
+			store := openGroupCommitStore(t)
+			if failure == "log" {
+				if err := store.events.Close(t.Context()); err != nil {
+					t.Fatal(err)
+				}
+			} else if _, err := store.SQLite().DB().ExecContext(t.Context(), `
+				CREATE TRIGGER fail_projection BEFORE INSERT ON event_index
+				BEGIN SELECT RAISE(ABORT, 'injected projection failure'); END`); err != nil {
+				t.Fatal(err)
+			}
+			batch := []batchEntry{
+				{event: groupCommitEvent(1, &protocol.OutputDeltaData{Text: "accepted"}), done: make(chan error, 1)},
+				{event: groupCommitEvent(2, &protocol.TurnCompletedData{Text: "done"}), done: make(chan error, 1)},
+			}
+			store.flushBatch(batch)
+			if err := <-batch[0].done; err != nil {
+				t.Fatalf("accepted noise became a retry: %v", err)
+			}
+			if err := <-batch[1].done; err == nil {
+				t.Fatal("durable write failure was lost")
+			}
+			if last, err := store.LastSequence(t.Context()); err != nil || last != 2 {
+				t.Fatalf("reserved watermark lost: %d %v", last, err)
+			}
+			if status, _, err := store.reservation(t.Context(), 1); err != nil || status != "" {
+				t.Fatalf("noise created reservation: %q %v", status, err)
+			}
+		})
 	}
 }

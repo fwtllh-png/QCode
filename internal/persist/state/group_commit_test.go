@@ -204,9 +204,11 @@ func TestAppendGroupsNoiseReservations(t *testing.T) {
 	if len(replayed) != 0 {
 		t.Fatalf("noise wrote %d log records, want 0", len(replayed))
 	}
-	// Every successful noise append owns exactly one abandoned reservation;
-	// sequence reassignment during retries may push the watermark higher.
-	assertReservationCounts(t, store, 0, producers*perProducer)
+	// Transient events advance the watermark without per-event metadata.
+	assertReservationCounts(t, store, 0, 0)
+	if last, err := store.LastSequence(t.Context()); err != nil || last < producers*perProducer {
+		t.Fatalf("noise watermark = %d, %v", last, err)
+	}
 }
 
 // Appends queued across a Close must fail closed instead of stranding their

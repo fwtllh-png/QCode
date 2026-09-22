@@ -6,6 +6,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	envcontract "github.com/fwtllh-png/QCode/internal/environment"
 )
 
 var secretNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_./:@-]*$`)
@@ -46,6 +48,9 @@ func (s Snapshot) Validate() error {
 	}
 	if err := checkRange(fieldStateRetention, s.Config.State.EventRetention, 100_000_000); err != nil {
 		return err
+	}
+	if s.Config.State.DeletedEventRetention < 0 {
+		return fieldError(fieldDeletedEventRetention, s.Provenance, "must be non-negative")
 	}
 	if strings.TrimSpace(s.Config.Memory.Path) == "" {
 		return fieldError(fieldMemoryPath, s.Provenance, "must not be empty")
@@ -310,6 +315,33 @@ func (s Snapshot) Validate() error {
 	}
 	if execution.ApprovalTimeout < 0 {
 		return fieldError(fieldApprovalTimeout, s.Provenance, "must be non-negative")
+	}
+	switch execution.Environment.Contract {
+	case EnvironmentContractV1:
+	default:
+		return fieldError(fieldEnvironmentContract, s.Provenance, "must be v1")
+	}
+	switch execution.Environment.Profile {
+	case EnvironmentProfileIsolated, EnvironmentProfileNative:
+	default:
+		return fieldError(fieldEnvironmentProfile, s.Provenance, "must be isolated or native")
+	}
+	if execution.Environment.SharedUserTemp &&
+		execution.Environment.Profile != EnvironmentProfileNative {
+		return fieldError(
+			fieldEnvironmentSharedUserTemp,
+			s.Provenance,
+			"requires profile native",
+		)
+	}
+	if strings.IndexByte(execution.Environment.Source, 0) >= 0 {
+		return fieldError(fieldEnvironmentSource, s.Provenance, "must not contain NUL")
+	}
+	if err := validateDeclaredEnvironmentResources(execution.Environment, s.Provenance); err != nil {
+		return err
+	}
+	if err := validateDeclaredAuthServices(execution.Environment, s.Provenance); err != nil {
+		return err
 	}
 	for _, value := range []struct {
 		field string
@@ -580,6 +612,122 @@ func (s Snapshot) validateWeb() error {
 	default:
 		return fieldError(fieldWebSearchBackend, s.Provenance, "must be duckduckgo, bing, tavily, searxng, bocha, custom, or empty")
 	}
+}
+
+func validateDeclaredEnvironmentResources(
+	environment ExecutionEnvironment,
+	provenance map[string]Source,
+) error {
+	if len(environment.Resources) > MaxDeclaredEnvironmentResources {
+		return fieldError(
+			fieldEnvironmentResources,
+			provenance,
+			fmt.Sprintf("accepts at most %d resources", MaxDeclaredEnvironmentResources),
+		)
+	}
+	seen := make(map[string]bool, len(environment.Resources))
+	for _, resource := range environment.Resources {
+		request := resource.Request()
+		if request.Namespace == envcontract.NamespaceWorkspace {
+			return fieldError(
+				fieldEnvironmentResources,
+				provenance,
+				"workspace resources stay command-scoped; use write_paths",
+			)
+		}
+		if request.Namespace == envcontract.NamespaceSharedUserTemp &&
+			!environment.SharedUserTemp {
+			return fieldError(
+				fieldEnvironmentResources,
+				provenance,
+				"shared_user_temp resources require shared_user_temp=true",
+			)
+		}
+		if err := envcontract.ValidateRequest(request); err != nil {
+			return fieldError(fieldEnvironmentResources, provenance, err.Error())
+		}
+		if seen[request.Name] {
+			return fieldError(
+				fieldEnvironmentResources,
+				provenance,
+				fmt.Sprintf("duplicate resource %q", request.Name),
+			)
+		}
+		seen[request.Name] = true
+	}
+	return nil
+}
+
+func validateDeclaredAuthServices(
+	environment ExecutionEnvironment,
+	provenance map[string]Source,
+) error {
+	if len(environment.AuthServices) > MaxDeclaredAuthServices {
+		return fieldError(
+			fieldEnvironmentAuthServices,
+			provenance,
+			fmt.Sprintf("accepts at most %d auth services", MaxDeclaredAuthServices),
+		)
+	}
+	for _, service := range environment.AuthServices {
+		if strings.TrimSpace(service.Protocol) != "goproxy" {
+			return fieldError(
+				fieldEnvironmentAuthServices,
+				provenance,
+				"protocol must be goproxy",
+			)
+		}
+		if len(service.Prefixes) == 0 {
+			return fieldError(
+				fieldEnvironmentAuthServices,
+				provenance,
+				"goproxy prefixes are required",
+			)
+		}
+		if len(service.Prefixes) > MaxAuthServicePrefixes {
+			return fieldError(
+				fieldEnvironmentAuthServices,
+				provenance,
+				fmt.Sprintf("accepts at most %d prefixes", MaxAuthServicePrefixes),
+			)
+		}
+		if err := validateGoproxyBinding(service); err != nil {
+			return fieldError(fieldEnvironmentAuthServices, provenance, err.Error())
+		}
+		if service.UpstreamTimeoutMS < 0 {
+			return fieldError(
+				fieldEnvironmentAuthServices,
+				provenance,
+				"upstream_timeout_ms must not be negative",
+			)
+		}
+	}
+	return nil
+}
+
+func validateGoproxyBinding(service EnvironmentAuthService) error {
+	if strings.TrimSpace(service.Upstream) == "" {
+		return fmt.Errorf("goproxy upstream is required")
+	}
+	if strings.Contains(service.Upstream, "@") {
+		return fmt.Errorf("goproxy upstream must not embed credentials")
+	}
+	if strings.TrimSpace(service.Credential.Kind) == "" ||
+		strings.TrimSpace(service.Credential.Name) == "" {
+		return fmt.Errorf("goproxy credential reference is required")
+	}
+	switch service.Credential.Kind {
+	case "env", "file", "keyring":
+	default:
+		return fmt.Errorf("goproxy credential kind %q is not available", service.Credential.Kind)
+	}
+	for _, prefix := range service.Prefixes {
+		prefix = strings.TrimSpace(prefix)
+		if prefix == "" || prefix == "/" || strings.Contains(prefix, "..") {
+			return fmt.Errorf("goproxy prefix %q is invalid", prefix)
+		}
+	}
+	return nil
 }
 
 func fieldError(field string, provenance map[string]Source, reason string) error {

@@ -58,7 +58,9 @@ func NewTerminalPublisher(runtime TerminalRuntime) *TerminalPublisher {
 	return &TerminalPublisher{runtime: runtime}
 }
 
-func (p *TerminalPublisher) Commit(ctx context.Context, request TerminalRequest) (CommittedTerminal, error) {
+func (p *TerminalPublisher) Commit(ctx context.Context, request TerminalRequest) (result CommittedTerminal, resultErr error) {
+	ctx, finishStage := agentcontext.BeginContentStage(ctx, p.runtime.TerminalContent())
+	defer func() { resultErr = errors.Join(resultErr, finishStage()) }()
 	material := request.Material
 	if !material.FrozenState.Phase.Terminal() ||
 		material.FrozenState.Terminal == nil ||
@@ -81,9 +83,7 @@ func (p *TerminalPublisher) Commit(ctx context.Context, request TerminalRequest)
 		return CommittedTerminal{}, err
 	}
 	releaseStaged := func() {
-		for _, ref := range staged {
-			_ = p.runtime.TerminalContent().Release(context.Background(), ref.Handle)
-		}
+		releaseStagedContent(p.runtime.TerminalContent(), staged)
 	}
 	receiptPayload, err := json.Marshal(material.Receipt)
 	if err != nil {
@@ -348,4 +348,21 @@ func TerminalOutboxEventID(turnID protocol.TurnID, entryID string) protocol.Even
 func CommentaryEventID(messageID string) protocol.EventID {
 	sum := sha256.Sum256([]byte("commentary\x00" + messageID))
 	return protocol.EventID(fmt.Sprintf("evt_%x", sum[:16]))
+}
+
+func releaseStagedContent(store TerminalContentStore, staged []agentcontext.ContentRef) {
+	if store == nil {
+		return
+	}
+	if managed, ok := store.(interface{ ManagedOwnership() bool }); ok && managed.ManagedOwnership() {
+		return // The enclosing stage releases all staged content, including partial failures.
+	}
+	for _, ref := range staged {
+		_ = store.Release(context.Background(), ref.Handle)
+		if collector, ok := store.(interface {
+			CollectIfUnreferenced(context.Context, string) error
+		}); ok {
+			_ = collector.CollectIfUnreferenced(context.Background(), ref.Handle)
+		}
+	}
 }

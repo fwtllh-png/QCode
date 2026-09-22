@@ -25,11 +25,27 @@ const (
 // TurnCheckpoint is one write-once Dynamic block for a closed turn.
 // Later samples never rewrite or merge an existing turn's text.
 type TurnCheckpoint struct {
-	Turn             uint64   `json:"turn"`
-	Status           string   `json:"status"`
-	Text             string   `json:"text"`
-	HistoryHandle    string   `json:"history_handle,omitempty"`
-	SourceMessageIDs []string `json:"source_message_ids,omitempty"`
+	Turn             uint64       `json:"turn"`
+	Status           string       `json:"status"`
+	Text             string       `json:"text"`
+	HistoryHandle    string       `json:"history_handle,omitempty"`
+	SourceMessageIDs []string     `json:"source_message_ids,omitempty"`
+	Findings         TurnFindings `json:"findings,omitzero"`
+}
+
+// TurnFindings is the sourced index for a closed turn. It is durable and
+// used by turn_history / continuity, but is not copied into the model-visible
+// checkpoint text so older conversation lists cannot leak into later samples.
+type TurnFindings struct {
+	Conclusion  string   `json:"conclusion,omitempty"`
+	Sites       []string `json:"sites,omitempty"`
+	SourceTurns []uint64 `json:"source_turns,omitempty"`
+}
+
+// IsZero keeps absent findings absent when restoring digest-bound checkpoints.
+// Empty and nil slices encode identically; source-only findings remain durable.
+func (f TurnFindings) IsZero() bool {
+	return f.Conclusion == "" && len(f.Sites) == 0 && len(f.SourceTurns) == 0
 }
 
 type CheckpointOpenItem struct {
@@ -65,6 +81,7 @@ type CheckpointRenderInput struct {
 	ReadPaths        []string
 	HistoryHandle    string
 	SourceMessageIDs []string
+	Findings         TurnFindings
 	Budget           int
 }
 
@@ -79,6 +96,7 @@ func CloneTurnCheckpoints(checkpoints []TurnCheckpoint) []TurnCheckpoint {
 			[]string(nil),
 			checkpoint.SourceMessageIDs...,
 		)
+		cloned[index].Findings = CloneTurnFindings(checkpoint.Findings)
 	}
 	return cloned
 }
@@ -234,7 +252,38 @@ func RenderTurnCheckpoint(input CheckpointRenderInput) (TurnCheckpoint, error) {
 		Text:             text,
 		HistoryHandle:    input.HistoryHandle,
 		SourceMessageIDs: uniqueNonEmpty(sources),
+		Findings:         CloneTurnFindings(input.Findings),
 	}, nil
+}
+
+func CloneTurnFindings(findings TurnFindings) TurnFindings {
+	return TurnFindings{
+		Conclusion:  findings.Conclusion,
+		Sites:       append([]string(nil), findings.Sites...),
+		SourceTurns: append([]uint64(nil), findings.SourceTurns...),
+	}
+}
+
+func (f TurnFindings) Empty() bool {
+	return strings.TrimSpace(f.Conclusion) == "" && len(f.Sites) == 0
+}
+
+func RenderTurnFindings(turn uint64, findings TurnFindings) string {
+	if findings.Empty() {
+		return ""
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "[turn %d findings]\n", turn)
+	if conclusion := strings.TrimSpace(findings.Conclusion); conclusion != "" {
+		fmt.Fprintf(&b, "conclusion: %s\n", conclusion)
+	}
+	if len(findings.Sites) > 0 {
+		fmt.Fprintf(&b, "sites: %s\n", strings.Join(findings.Sites, ", "))
+	}
+	if turns := UniqueTurns(findings.SourceTurns); len(turns) > 0 {
+		fmt.Fprintf(&b, "source_turns: %s\n", formatTurnList(turns))
+	}
+	return b.String()
 }
 
 func encodeCheckpoint(body CheckpointBody, budget int, handle string) (string, error) {
@@ -321,24 +370,53 @@ func OmittedTurnIDs(history []provider.Message, tailTurns int) []uint64 {
 }
 
 func FormatOmittedTurnHint(turns []uint64) string {
+	return FormatOmittedTurnHintPreferred(turns, PreferredOmittedTurn(turns, nil))
+}
+
+func FormatOmittedTurnHintPreferred(turns []uint64, preferred uint64) string {
 	if len(turns) == 0 {
 		return ""
+	}
+	if preferred == 0 {
+		preferred = turns[len(turns)-1]
 	}
 	first, last := turns[0], turns[len(turns)-1]
 	if first == last {
 		return fmt.Sprintf(
-			"Older turn %d is omitted from the visible raw tail. Call %s with turn=%d to read its conclusions and open work. The first page is that turn's tail. If truncated, page with result_get mode=tail or mode=query. Do not search the repository for conversation-only lists.",
+			"Older turn %d is omitted from the visible raw tail. Call %s with turn=%d to read its findings index and tail. The first page ends with conclusion and sites. If truncated, page with result_get mode=tail or mode=query (for example query=sites). Do not search the repository for conversation-only lists.",
 			first, TurnHistoryToolName, first,
 		)
 	}
 	return fmt.Sprintf(
-		"Older turns %d-%d are omitted from the visible raw tail. Call %s with a closed turn id in that range (for example turn=%d) to read that turn's conclusions and open work. The first page is that turn's tail. If truncated, page with result_get mode=tail or mode=query. Do not search the repository for conversation-only lists.",
-		first, last, TurnHistoryToolName, first,
+		"Older turns %d-%d are omitted from the visible raw tail. Call %s with a closed turn id in that range (preferred_turn=%d) to read that turn's findings index and tail. The first page ends with conclusion and sites. If truncated, page with result_get mode=tail or mode=query (for example query=sites). Do not search the repository for conversation-only lists.",
+		first, last, TurnHistoryToolName, preferred,
 	)
 }
 
+func PreferredOmittedTurn(turns []uint64, checkpoints []TurnCheckpoint) uint64 {
+	if len(turns) == 0 {
+		return 0
+	}
+	byTurn := make(map[uint64]TurnFindings, len(checkpoints))
+	for _, checkpoint := range checkpoints {
+		byTurn[checkpoint.Turn] = checkpoint.Findings
+	}
+	for index := len(turns) - 1; index >= 0; index-- {
+		if !byTurn[turns[index]].Empty() {
+			return turns[index]
+		}
+	}
+	return turns[len(turns)-1]
+}
+
 func OmittedTurnRetrievalEntity(turns []uint64) (TruthEntity, bool) {
-	hint := FormatOmittedTurnHint(turns)
+	return OmittedTurnRetrievalEntityPreferred(turns, PreferredOmittedTurn(turns, nil))
+}
+
+func OmittedTurnRetrievalEntityPreferred(
+	turns []uint64, preferred uint64,
+) (TruthEntity, bool) {
+	hint := FormatOmittedTurnHintPreferred(turns, preferred)
 	if hint == "" {
 		return TruthEntity{}, false
 	}

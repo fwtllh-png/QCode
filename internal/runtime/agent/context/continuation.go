@@ -16,7 +16,7 @@ import (
 )
 
 // ContinuationVersion is the schema version of TurnContinuation records.
-const ContinuationVersion = 1
+const ContinuationVersion = 2
 
 // ErrTurnContinuationUnavailable reports that a referenced continuation
 // record cannot be read back from the content store.
@@ -44,6 +44,11 @@ type TurnContinuation struct {
 	Provider          string             `json:"provider"`
 	Model             string             `json:"model"`
 	Messages          []provider.Message `json:"messages"`
+}
+
+type storedContinuation struct {
+	TurnContinuation
+	MessageRefs []ContentRef `json:"message_refs"`
 }
 
 // ContinuationEnvironment is the execution identity a restored Turn must
@@ -146,10 +151,29 @@ func StoreTurnContinuation(
 	if err := record.Validate(); err != nil {
 		return ContentRef{}, err
 	}
-	// No defensive clone: turns execute serially, so nothing mutates the
-	// messages while the encoder below reads them, and the record is not
-	// retained after staging.
-	return stageValue(ctx, store, "turn-continuation", record)
+	stored := storedContinuation{TurnContinuation: record}
+	stored.Messages = nil
+	var children []string
+	for _, message := range record.Messages {
+		ref, err := stageValue(ctx, store, "continuation-message", message)
+		if err != nil {
+			return ContentRef{}, err
+		}
+		stored.MessageRefs = append(stored.MessageRefs, ref)
+		children = append(children, ref.Handle)
+	}
+	ref, err := stageValue(ctx, store, "turn-continuation", stored)
+	if err != nil {
+		return ContentRef{}, err
+	}
+	if graph, ok := store.(interface {
+		LinkContent(context.Context, string, []string) error
+	}); ok {
+		if err := graph.LinkContent(ctx, ref.Handle, children); err != nil {
+			return ContentRef{}, err
+		}
+	}
+	return ref, nil
 }
 
 // LoadTurnContinuation reads a cursor-referenced record back and validates
@@ -194,8 +218,8 @@ func LoadTurnContinuation(
 	}
 	decoder := json.NewDecoder(bytes.NewReader(decoded))
 	decoder.DisallowUnknownFields()
-	var record TurnContinuation
-	if err := decoder.Decode(&record); err != nil {
+	var stored storedContinuation
+	if err := decoder.Decode(&stored); err != nil {
 		return TurnContinuation{}, fmt.Errorf(
 			"%w: %s",
 			ErrTurnContinuationUnavailable,
@@ -215,6 +239,17 @@ func LoadTurnContinuation(
 			ErrTurnContinuationUnavailable,
 			err,
 		)
+	}
+	record := stored.TurnContinuation
+	if len(record.Messages) != 0 || len(stored.MessageRefs) == 0 {
+		return TurnContinuation{}, errors.New("turn continuation message references are invalid")
+	}
+	for _, ref := range stored.MessageRefs {
+		var message provider.Message
+		if err := readValue(ctx, store, ref, &message); err != nil {
+			return TurnContinuation{}, fmt.Errorf("%w: %s", ErrTurnContinuationUnavailable, err)
+		}
+		record.Messages = append(record.Messages, message)
 	}
 	if err := record.Validate(); err != nil {
 		return TurnContinuation{}, err

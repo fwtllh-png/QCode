@@ -27,6 +27,8 @@ type ArtifactRuntime interface {
 	) (protocol.SessionProfileUpdateResult, error)
 
 	ReplayArtifactEvents(context.Context, protocol.Cursor) ([]protocol.Event, error)
+	ReplayArtifactTurn(context.Context, protocol.TurnID) ([]protocol.Event, error)
+	ReplayArtifactKind(context.Context, protocol.EventKind) ([]protocol.Event, error)
 	PublishArtifactEvent(
 		protocol.OperationID,
 		protocol.ThreadID,

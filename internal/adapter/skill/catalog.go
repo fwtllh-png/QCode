@@ -5,12 +5,16 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"os"
+	"path/filepath"
 	"sort"
 	"sync"
 )
 
 type Catalog struct {
 	mu             sync.RWMutex
+	refreshMu      sync.Mutex
+	discovery      DiscoveryOptions
 	entries        map[string]candidate
 	order          []string
 	issues         []Issue
@@ -25,6 +29,27 @@ type Catalog struct {
 }
 
 func Discover(options DiscoveryOptions) (*Catalog, error) {
+	// Freeze discovery identities now; refresh must not follow a later cwd or
+	// HOME change into a different workspace's private installation.
+	var err error
+	options.Workspace, err = filepath.Abs(options.Workspace)
+	if err != nil {
+		return nil, err
+	}
+	if options.UserHome == "" {
+		options.UserHome, err = os.UserHomeDir()
+		if err != nil {
+			return nil, err
+		}
+	}
+	for _, path := range []*string{&options.UserHome, &options.SandboxHome} {
+		if *path != "" {
+			*path, err = filepath.Abs(*path)
+			if err != nil {
+				return nil, err
+			}
+		}
+	}
 	options.Limits = options.Limits.normalized()
 	native, issues, err := discoverNative(options)
 	if err != nil {
@@ -47,12 +72,61 @@ func Discover(options DiscoveryOptions) (*Catalog, error) {
 		order = append(order, item.metadata.Name)
 	}
 	return &Catalog{
-		entries: entries, order: order, issues: append([]Issue(nil), issues...),
+		discovery: options,
+		entries:   entries, order: order, issues: append([]Issue(nil), issues...),
 		locale: normalizeLocale(options.Locale), limits: options.Limits,
 		state: options.State, runtimeVersion: normalizeRuntimeVersion(options.RuntimeVersion),
 		lock:           options.Lock,
 		selectionCache: make(map[string]Selection),
 	}, nil
+}
+
+// Refresh replaces only the discovered inventory. State, lock and private-home
+// authority remain bound to this catalog. Readers retain complete snapshots.
+func (c *Catalog) Refresh(ctx context.Context) error {
+	if c == nil {
+		return errors.New("skill catalog is required")
+	}
+	c.refreshMu.Lock()
+	defer c.refreshMu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	next, err := Discover(c.discovery)
+	if err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	c.mu.Lock()
+	changed := len(c.entries) != len(next.entries)
+	for name, item := range next.entries {
+		if current, exists := c.entries[name]; !exists ||
+			current.digest != item.digest || current.path != item.path ||
+			current.source != item.source {
+			changed = true
+			break
+		}
+	}
+	c.entries, c.order, c.issues = next.entries, next.order, next.issues
+	c.mu.Unlock()
+	if changed {
+		c.selectionMu.Lock()
+		clear(c.selectionCache)
+		c.selectionOrder = nil
+		c.selectionMu.Unlock()
+	}
+	return nil
+}
+
+func (c *Catalog) frozen() *Catalog {
+	entries, order, issues := c.snapshot()
+	return &Catalog{
+		entries: entries, order: order, issues: issues,
+		locale: c.locale, limits: c.limits, state: c.state,
+		runtimeVersion: c.runtimeVersion, lock: c.lock,
+	}
 }
 
 func (c *Catalog) Issues() []Issue {

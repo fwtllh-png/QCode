@@ -35,7 +35,19 @@ func TestModeInstructionPackDiffersByMode(t *testing.T) {
 			!strings.Contains(pack, "Resolve facts available through tools") ||
 			!strings.Contains(pack, "already loaded facts") ||
 			!strings.Contains(pack, "git_status or git_diff on Continue") ||
-			!strings.Contains(pack, "After search_text returns line hits") {
+			!strings.Contains(pack, "After search_text returns line hits") ||
+			!strings.Contains(pack, "confirmed continuity or Located sites") ||
+			!strings.Contains(pack, "error_category and required_action") ||
+			!strings.Contains(pack, "environment_resource_unavailable") ||
+			!strings.Contains(pack, "credential_unavailable") ||
+			!strings.Contains(pack, "filesystem_access_denied") ||
+			!strings.Contains(pack, "network_target_unapproved") ||
+			!strings.Contains(pack, "401 or permission") ||
+			!strings.Contains(pack, "host lacks credentials") ||
+			!strings.Contains(pack, "network is unreachable") ||
+			!strings.Contains(pack, "upstream") ||
+			!strings.Contains(pack, "bound auth service") ||
+			!strings.Contains(pack, "session-local origin") {
 			t.Fatalf("%s interaction contract incomplete: %q", mode, pack)
 		}
 	}

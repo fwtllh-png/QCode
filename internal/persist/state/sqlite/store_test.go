@@ -20,13 +20,12 @@ func TestOpenCreatesSchemaAndConfiguresPragmas(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = store.Close() })
 
-	assertPragma(t, store.DB(), "user_version", "4")
+	assertPragma(t, store.DB(), "user_version", "5")
 	assertPragma(t, store.DB(), "journal_mode", "wal")
 	assertPragma(t, store.DB(), "foreign_keys", "1")
 	assertPragma(t, store.DB(), "busy_timeout", "137")
-	// WAL + NORMAL: commits stop fsyncing the log per transaction; the JSONL
-	// event log keeps its per-append fsync and remains the log of record.
-	assertPragma(t, store.DB(), "synchronous", "1")
+	// CAS ownership and log-prune intents are authoritative transactional data.
+	assertPragma(t, store.DB(), "synchronous", "2")
 
 	wantTables := []string{
 		"workspaces", "sessions", "threads", "turns", "items", "operations",
@@ -40,6 +39,8 @@ func TestOpenCreatesSchemaAndConfiguresPragmas(t *testing.T) {
 		"spans",
 		"provider_capabilities",
 		"context_rebases", "context_current",
+		"content_objects", "content_roots", "content_edges", "content_staging",
+		"event_watermark", "deleted_event_threads",
 	}
 	for _, table := range wantTables {
 		var count int
@@ -73,57 +74,6 @@ func TestOpenCreatesSchemaAndConfiguresPragmas(t *testing.T) {
 	assertTableColumns(t, store.DB(), "agent_integrations",
 		"workspace_root", "agent_id", "preview_digest", "status",
 		"revision", "candidate_json", "source_sequence")
-}
-
-func TestOpenMigratesV3UsageModelMetadata(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "state.db")
-	raw, err := sql.Open("sqlite", path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	v3Schema := strings.ReplaceAll(
-		schemaCurrent,
-		"    model_metadata_json TEXT NOT NULL DEFAULT '{}',\n",
-		"",
-	)
-	v3Schema = strings.Replace(
-		v3Schema,
-		"    CHECK (json_valid(model_metadata_json)),\n",
-		"",
-		1,
-	)
-	v3Schema = strings.Replace(
-		v3Schema,
-		"    updated_at TEXT NOT NULL,\n    CHECK (json_valid(model_metadata_json))\n",
-		"    updated_at TEXT NOT NULL\n",
-		1,
-	)
-	if _, err := raw.ExecContext(t.Context(), v3Schema); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := raw.ExecContext(
-		t.Context(),
-		"PRAGMA user_version = 3",
-	); err != nil {
-		t.Fatal(err)
-	}
-	if err := raw.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	migrated, err := Open(t.Context(), path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = migrated.Close() })
-	assertPragma(t, migrated.DB(), "user_version", "4")
-	assertTableColumns(t, migrated.DB(), "usage", "model_metadata_json")
-	assertTableColumns(
-		t,
-		migrated.DB(),
-		"usage_turn_context",
-		"model_metadata_json",
-	)
 }
 
 func TestTransactionCommitRollbackAndForeignKeys(t *testing.T) {
@@ -211,7 +161,7 @@ func TestBusyTimeoutAcrossStores(t *testing.T) {
 }
 
 func TestOpenRejectsUnsupportedSchemaWithoutChangingIt(t *testing.T) {
-	for _, version := range []int{2, 99} {
+	for _, version := range []int{2, 3, 4, 99} {
 		t.Run(fmt.Sprint(version), func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "unsupported.db")
 			store, err := Open(t.Context(), path)
@@ -378,39 +328,6 @@ func TestIsUniqueConstraintViolationUsesSQLiteCodes(t *testing.T) {
 	}
 }
 
-func TestSchemaMigrationChainIsContiguous(t *testing.T) {
-	if len(schemaMigrations) == 0 {
-		t.Fatal("schema migration chain is empty")
-	}
-	seen := make(map[int]bool)
-	for index, step := range schemaMigrations {
-		if step.from >= step.to {
-			t.Fatalf("migration %d does not advance: %d -> %d", index, step.from, step.to)
-		}
-		if seen[step.from] {
-			t.Fatalf("duplicate migration source version %d", step.from)
-		}
-		seen[step.from] = true
-		if step.run == nil {
-			t.Fatalf("migration %d -> %d has no run function", step.from, step.to)
-		}
-		if index == 0 {
-			continue
-		}
-		if step.from != schemaMigrations[index-1].to {
-			t.Fatalf(
-				"migration chain is not contiguous: %d -> %d then %d -> %d",
-				schemaMigrations[index-1].from, schemaMigrations[index-1].to,
-				step.from, step.to,
-			)
-		}
-	}
-	last := schemaMigrations[len(schemaMigrations)-1]
-	if last.to != SchemaVersion {
-		t.Fatalf("migration chain ends at %d, want SchemaVersion %d", last.to, SchemaVersion)
-	}
-}
-
 func TestOpenRebuildsRepositoryIndexShapeOutsideTheMigrationChain(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.db")
 	raw, err := sql.Open("sqlite", path)
@@ -421,10 +338,10 @@ func TestOpenRebuildsRepositoryIndexShapeOutsideTheMigrationChain(t *testing.T) 
 	// detail columns and without the reference table. The user_version is
 	// current, which is exactly why the rebuild must not go through the
 	// migration chain.
-	if _, err := raw.ExecContext(t.Context(), schemaCurrent); err != nil {
+	if _, err := raw.ExecContext(t.Context(), schemaCurrent+contentSchema); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := raw.ExecContext(t.Context(), "PRAGMA user_version = 4"); err != nil {
+	if _, err := raw.ExecContext(t.Context(), "PRAGMA user_version = 5"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := raw.ExecContext(t.Context(), `
@@ -459,7 +376,7 @@ INSERT INTO repo_index_symbols(root_path, path, name, kind, line)
 	}
 	t.Cleanup(func() { _ = opened.Close() })
 	// The version is untouched: cache shape is not schema migration.
-	assertPragma(t, opened.DB(), "user_version", "4")
+	assertPragma(t, opened.DB(), "user_version", "5")
 	assertTableColumns(t, opened.DB(), "repo_index_symbols", "signature")
 	assertTableColumns(t, opened.DB(), "repo_index_symbols", "resolution")
 	assertTableColumns(t, opened.DB(), "repo_index_references", "use_count")

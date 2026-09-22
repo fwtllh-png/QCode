@@ -1,4 +1,4 @@
-import {expect, test} from "@playwright/test";
+import {expect, test, type Page} from "@playwright/test";
 import {createServer, type ViteDevServer} from "vite";
 import path from "node:path";
 import {fileURLToPath} from "node:url";
@@ -21,7 +21,132 @@ test.beforeAll(async () => {
 
 test.afterAll(async () => { await server?.close(); });
 
+async function nextFrames(page: Page) {
+  await page.evaluate(() => new Promise<void>((resolve) => {
+    requestAnimationFrame(() => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+  }));
+}
+
+async function emitEvents(page: Page, events: Array<{kind: string; data: Record<string, unknown>}>) {
+  await page.evaluate((detail) => document.dispatchEvent(new CustomEvent("fixture:events", {detail})), events);
+  await nextFrames(page);
+}
+
+async function openScrollingFixture(page: Page, width: number, mode: "tool" | "draft") {
+  await page.setViewportSize({width, height: 900});
+  await page.goto(`${url}?scrolling=${mode}`);
+  await expect(page.locator(".assistantMarkdown")).toHaveCount(mode === "draft" ? 11 : 10);
+  await expect.poll(() => page.locator("[data-conversation-scroll]").evaluate((node) =>
+    node.scrollHeight - node.scrollTop - node.clientHeight
+  )).toBeLessThanOrEqual(24);
+  await nextFrames(page);
+}
+
 for (const width of [1440, 390]) {
+  for (const streamFirst of [true, false]) {
+    test(`user scroll survives either stream callback order (${streamFirst}) at ${width}px`, async ({page}) => {
+      await openScrollingFixture(page, width, "draft");
+      const scrollport = page.locator("[data-conversation-scroll]");
+      await scrollport.hover();
+      await page.mouse.wheel(0, -500);
+      await expect(page.getByRole("button", {name: "Back to bottom", exact: true})).toBeVisible();
+      await nextFrames(page);
+      const before = await scrollport.evaluate((node) => node.scrollTop);
+      await page.evaluate((streamFirst) => {
+        const stream = () => document.dispatchEvent(new CustomEvent("fixture:events", {detail: [
+          {kind: "output.draft", data: {sample_id: "sample-live", text: "\n\nMore streamed content."}}
+        ]}));
+        if (streamFirst) stream();
+        const node = document.querySelector<HTMLElement>("[data-conversation-scroll]")!;
+        node.scrollTop -= 200;
+        node.dispatchEvent(new Event("scroll", {bubbles: true}));
+        if (!streamFirst) stream();
+      }, streamFirst);
+      await expect(page.locator('[data-entry-id="output-live"]')).toContainText("More streamed content.");
+      await nextFrames(page);
+      expect(await scrollport.evaluate((node) => node.scrollTop)).toBe(before - 200);
+    });
+  }
+
+  test(`native wheel is retained when stream publication is already queued at ${width}px`, async ({page}) => {
+    await openScrollingFixture(page, width, "draft");
+    const scrollport = page.locator("[data-conversation-scroll]");
+    await scrollport.hover();
+    await page.mouse.wheel(0, -500);
+    await expect(page.getByRole("button", {name: "Back to bottom", exact: true})).toBeVisible();
+    await nextFrames(page);
+    const before = await scrollport.evaluate((node) => node.scrollTop);
+    await scrollport.evaluate((node) => {
+      node.addEventListener("scroll", () => {
+        document.dispatchEvent(new CustomEvent("fixture:events", {detail: [
+          {kind: "output.draft", data: {sample_id: "sample-live", text: "\n\nMore streamed content."}}
+        ]}));
+      }, {capture: true, once: true});
+    });
+    await page.mouse.wheel(0, -200);
+    await expect(page.locator('[data-entry-id="output-live"]')).toContainText("More streamed content.");
+    await nextFrames(page);
+    expect(await scrollport.evaluate((node) => node.scrollTop)).toBe(before - 200);
+  });
+
+  test(`first commentary preserves the inspected tool and its reading position at ${width}px`, async ({page}) => {
+    await openScrollingFixture(page, width, "tool");
+    const tool = page.getByRole("button", {name: "Read main.ts"});
+    await tool.click();
+    await expect(tool).toHaveAttribute("aria-expanded", "true");
+    await expect(page.locator(".readBody")).toBeVisible();
+    const original = await tool.elementHandle();
+    const top = (await tool.boundingBox())!.y;
+    await emitEvents(page, [{kind: "commentary.completed", data: {
+      message_id: "commentary-next", sample_id: "sample-next",
+      text: "Next I will inspect another file.", call_ids: ["read-next"]
+    }}]);
+    await expect(page.getByRole("button", {name: /Stage details/})).toBeVisible();
+    expect(await original!.evaluate((node) => node.isConnected)).toBe(true);
+    await expect(tool).toHaveAttribute("aria-expanded", "true");
+    await expect(tool).toBeFocused();
+    expect(Math.abs((await tool.boundingBox())!.y - top)).toBeLessThan(2);
+    await expect(page.locator(".readBody")).toBeVisible();
+  });
+
+  for (const kind of ["turn.completed", "turn.failed", "turn.canceled"]) {
+    test(`${kind} preserves inspected execution until returning to bottom at ${width}px`, async ({page}) => {
+      await openScrollingFixture(page, width, "tool");
+      const tool = page.getByRole("button", {name: "Read main.ts"});
+      await tool.click();
+      await expect(page.locator(".readBody")).toBeVisible();
+      const original = await tool.elementHandle();
+      const top = (await tool.boundingBox())!.y;
+      await emitEvents(page, [{kind, data: {text: "Inspection finished.", message: "Inspection stopped.", reason: "user_interrupted"}}]);
+      expect(await original!.evaluate((node) => node.isConnected)).toBe(true);
+      await expect(tool).toHaveAttribute("aria-expanded", "true");
+      await expect(tool).toBeFocused();
+      await expect(page.locator(".readBody")).toBeVisible();
+      expect(Math.abs((await tool.boundingBox())!.y - top)).toBeLessThan(2);
+      await page.getByRole("button", {name: "Back to bottom", exact: true}).click();
+      await expect(tool).toHaveCount(0);
+      await expect(page.getByRole("button", {name: /Execution details/})).toHaveAttribute("aria-expanded", "false");
+      const scrollport = page.locator("[data-conversation-scroll]");
+      await expect.poll(() => scrollport.evaluate((node) =>
+        node.scrollHeight - node.scrollTop - node.clientHeight
+      )).toBeLessThanOrEqual(24);
+      await scrollport.hover();
+      await page.mouse.wheel(0, -120);
+      await expect(page.getByRole("button", {name: "Back to bottom", exact: true})).toBeVisible();
+      await expect(tool).toHaveCount(0);
+      await page.getByRole("button", {name: /Execution details/}).click();
+      await expect(tool).toBeVisible();
+    });
+  }
+
+  test(`following the bottom still collapses completed execution at ${width}px`, async ({page}) => {
+    await openScrollingFixture(page, width, "tool");
+    await emitEvents(page, [{kind: "turn.completed", data: {text: "Inspection finished."}}]);
+    await expect(page.getByRole("button", {name: /Execution details/})).toHaveAttribute("aria-expanded", "false");
+    await expect(page.getByRole("button", {name: "Read main.ts"})).toHaveCount(0);
+    await expect(page.getByText("Inspection finished.", {exact: true})).toBeInViewport();
+  });
+
   test(`explicit navigation releases a transcript interaction anchor at ${width}px`, async ({page}) => {
     await page.setViewportSize({width, height: 900});
     await page.goto(`${url}?reasoning`);

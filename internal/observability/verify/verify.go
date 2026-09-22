@@ -38,6 +38,10 @@ const (
 	StatusFailed       = "failed"
 	StatusUnavailable  = "unavailable"
 	StatusNotEvaluated = "not_evaluated"
+	// StatusInvalidated marks evidence that exited successfully but was
+	// disqualified after execution because the command changed the very
+	// inputs it claimed to cover. It never counts as coverage.
+	StatusInvalidated = "invalidated"
 )
 
 // Check is one verification command and, once run, its outcome.

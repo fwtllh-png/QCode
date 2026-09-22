@@ -259,6 +259,9 @@ type ApprovalState struct {
 
 type InputState struct {
 	RequestID string `json:"request_id"`
+	// CallID is the request_user_input call the wait belongs to. Empty on
+	// records written before the binding existed.
+	CallID string `json:"call_id,omitempty"`
 }
 
 type CompletionDecision struct {

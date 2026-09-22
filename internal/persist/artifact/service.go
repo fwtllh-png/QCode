@@ -136,7 +136,7 @@ func (r *Service) PrepareTurnRecovery(
 		}
 		recoveredProfile = &snapshot.Profile
 	}
-	events, err := r.ReplayArtifactEvents(ctx, 0)
+	events, err := r.ReplayArtifactTurn(ctx, request.SourceTurnID)
 	if err != nil {
 		return TurnRecoveryPreparation{}, err
 	}
@@ -284,8 +284,8 @@ func (r *Service) PrepareTurnRecovery(
 	prompt := sourcePrompt
 	displayPrompt := sourceDisplayPrompt
 	if request.Action == protocol.TurnRecoveryContinue {
-		sourcePrompt = recoveryEffectiveRequest(
-			events,
+		sourcePrompt = r.recoveryEffectiveRequest(
+			ctx,
 			sourceThreadID,
 			rawSourcePrompt,
 			started.DisplayPrompt,
@@ -333,8 +333,8 @@ func (r *Service) PrepareTurnRecovery(
 	}, nil
 }
 
-func recoveryEffectiveRequest(
-	events []protocol.Event,
+func (r *Service) recoveryEffectiveRequest(
+	ctx context.Context,
 	threadID protocol.ThreadID,
 	modelPrompt string,
 	displayPrompt string,
@@ -354,8 +354,12 @@ func recoveryEffectiveRequest(
 			break
 		}
 		visited[sourceTurnID] = struct{}{}
+		ancestors, err := r.ReplayArtifactTurn(ctx, sourceTurnID)
+		if err != nil {
+			break
+		}
 		var source *protocol.TurnStartedData
-		for _, event := range events {
+		for _, event := range ancestors {
 			if event.ThreadID != threadID || event.TurnID != sourceTurnID {
 				continue
 			}
@@ -1742,7 +1746,7 @@ func (r *Service) PersistTerminalArtifactForTurn(
 	if r.ArtifactStore() == nil {
 		return
 	}
-	events, err := r.ReplayArtifactEvents(ctx, 0)
+	events, err := r.ReplayArtifactTurn(ctx, turnID)
 	if err != nil {
 		r.LogArtifactError(
 			"replay terminal event for Checkpoint",
@@ -1885,7 +1889,11 @@ func (r *Service) checkpointEffects(
 	threadID protocol.ThreadID,
 	turnID protocol.TurnID,
 ) (int, bool, string, string, *protocol.ReceiptReference) {
-	events, err := r.ReplayArtifactEvents(ctx, 0)
+	events, err := r.ReplayArtifactTurn(ctx, turnID)
+	if err != nil {
+		return 0, true, "Side-effect receipt could not be read", "", nil
+	}
+	forks, err := r.ReplayArtifactKind(ctx, protocol.EventCheckpointForked)
 	if err != nil {
 		return 0, true, "Side-effect receipt could not be read", "", nil
 	}
@@ -1893,11 +1901,13 @@ func (r *Service) checkpointEffects(
 	external := false
 	parentCheckpointID := ""
 	var reference *protocol.ReceiptReference
-	for _, event := range events {
+	for _, event := range forks {
 		if fork, ok := event.Data.(*protocol.CheckpointForkedData); ok &&
 			fork.NewThreadID == threadID {
 			parentCheckpointID = fork.CheckpointID
 		}
+	}
+	for _, event := range events {
 		if event.TurnID != turnID {
 			continue
 		}

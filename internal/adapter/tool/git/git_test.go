@@ -61,6 +61,17 @@ func TestLocalGitReadOperations(t *testing.T) {
 	}
 }
 
+func TestGitConfigEnvFollowsEnvironmentProfile(t *testing.T) {
+	isolated := gitConfigEnv(profilePolicyBackend{profile: "isolated"})
+	if len(isolated) != 2 {
+		t.Fatalf("isolated git config env = %v", isolated)
+	}
+	native := gitConfigEnv(profilePolicyBackend{profile: "native"})
+	if native != nil {
+		t.Fatalf("native still nulled git config: %v", native)
+	}
+}
+
 func TestGitReadOperationsRequestReadOnlyOfflineSandbox(t *testing.T) {
 	root := t.TempDir()
 	runGit(t, root, "init", "-q")
@@ -278,6 +289,15 @@ func TestGitMutationBindingsDeclareConsequentialEffects(t *testing.T) {
 	}
 }
 
+type profilePolicyBackend struct {
+	gitTestBackend
+	profile string
+}
+
+func (b profilePolicyBackend) Policy() sandbox.Policy {
+	return sandbox.Policy{ID: "git-profile", EnvironmentProfile: b.profile}
+}
+
 type gitTestBackend struct{}
 
 func (gitTestBackend) Capability() sandbox.Capability {
@@ -328,5 +348,77 @@ func runGit(t *testing.T, root string, arguments ...string) {
 	command.Dir = root
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("git %v: %v\n%s", arguments, err, output)
+	}
+}
+
+func TestGitReadsLocateNestedRepositories(t *testing.T) {
+	t.Setenv("GIT_CONFIG_GLOBAL", "/dev/null")
+	t.Setenv("GIT_CONFIG_SYSTEM", "/dev/null")
+	root := t.TempDir()
+	repo := filepath.Join(root, "eds_metaserver")
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repo, "init")
+	runGit(t, repo, "config", "user.email", "fixture@example.test")
+	runGit(t, repo, "config", "user.name", "Fixture")
+	if err := os.MkdirAll(filepath.Join(repo, "meta"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(repo, "meta", "fence_test.go"),
+		[]byte("package meta\n"), 0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repo, "add", "meta/fence_test.go")
+	runGit(t, repo, "commit", "-m", "fixture")
+
+	registry := tool.NewRegistry(nil, nil)
+	if err := RegisterWithBackend(registry, root, gitTestBackend{}); err != nil {
+		t.Fatal(err)
+	}
+
+	// A path inside the nested repository runs the command there.
+	result, err := tooltest.Execute(t.Context(), registry, tool.Call{
+		Name: "git_log",
+		Arguments: json.RawMessage(
+			`{"path":"eds_metaserver/meta/fence_test.go","limit":5}`,
+		),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.IsError || !strings.Contains(result.Content, "fixture") {
+		t.Fatalf("nested git_log result = %+v", result)
+	}
+
+	// git_show rewrites the pathspec relative to the discovered root.
+	result, err = tooltest.Execute(t.Context(), registry, tool.Call{
+		Name: "git_show",
+		Arguments: json.RawMessage(
+			`{"revision":"HEAD","path":"eds_metaserver/meta/fence_test.go"}`,
+		),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.IsError || !strings.Contains(result.Content, "fence_test.go") {
+		t.Fatalf("nested git_show result = %+v", result)
+	}
+
+	// Without a path the workspace root is not a repository; the failure
+	// lists the nested repositories so the model can retry with a path.
+	result, err = tooltest.Execute(t.Context(), registry, tool.Call{
+		Name:      "git_status",
+		Arguments: json.RawMessage(`{}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.IsError ||
+		!strings.Contains(strings.ToLower(result.Content), "not a git repository") ||
+		!strings.Contains(result.Content, "eds_metaserver") {
+		t.Fatalf("root git_status result = %+v", result)
 	}
 }

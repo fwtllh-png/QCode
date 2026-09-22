@@ -93,6 +93,22 @@ export function projectTrajectory(
           put
         );
         break;
+      // output.draft is optimistic, transient sample text that the contract
+      // retracts via output.discarded; the durable output.delta projection
+      // above already builds the model lane. Rendering either would spam one
+      // UNKNOWN row per streamed chunk.
+      case "output.draft":
+      case "output.discarded":
+        break;
+      case "turn.queued":
+      case "turn.queue.updated":
+      case "turn.queue.removed":
+      case "turn.withdrawn":
+      case "session.title.updated":
+        put(record(event, "system", "SYSTEM", eventSummary(event), {
+          output: data
+        }));
+        break;
       case "commentary.completed": {
         const id = commentaryNodeID(event);
         if (!recordIndex.has(id)) {

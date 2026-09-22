@@ -530,6 +530,8 @@ func runWeb(
 
 	store, err := state.Open(ctx, state.Options{
 		DataDir: dataDir, BusyTimeout: loaded.Config.State.BusyTimeout,
+		DeletedEventRetention: loaded.Config.State.DeletedEventRetention,
+		ArchiveDeletedEvents:  loaded.Config.State.ArchiveDeletedEvents,
 	})
 	if err != nil {
 		server.FailBoot(err)

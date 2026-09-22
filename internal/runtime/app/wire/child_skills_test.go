@@ -94,8 +94,12 @@ func TestChildSkillsUseOwnCatalogAndRediscoverPrivateHome(t *testing.T) {
 				t.Fatal("child execution HOME is missing")
 			}
 			writeChildSkill(t, executionPolicy.PrivateTemp, "installed", "Installed in child HOME.")
-			if _, exists := listChildSkills(t, options.Tools)["installed"]; exists {
-				t.Fatal("construction snapshot changed without rebuild")
+			freshSelection, _, err := options.TurnSnapshots.SkillSelection("Use installed")
+			if err != nil || len(freshSelection) == 0 || freshSelection[0].Name != "installed" {
+				t.Fatalf("next turn did not refresh installed skills: %+v, %v", freshSelection, err)
+			}
+			if fresh := listChildSkills(t, options.Tools)["installed"]; fresh.Handle != freshSelection[0].Handle {
+				t.Fatal("current tool catalog did not refresh with turn selection")
 			}
 			builder.childTools.release(root)
 			child, err = builder.BuildChild(spec)

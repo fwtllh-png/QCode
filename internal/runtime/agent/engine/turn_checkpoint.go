@@ -20,7 +20,24 @@ func (e *Engine) registerTurnHistoryTool() error {
 		ctx context.Context, turn uint64,
 	) ([]provider.Message, error) {
 		return e.lookupTurnHistory(ctx, turn)
-	})
+	}, e.lookupTurnFindings)
+}
+
+func (e *Engine) lookupTurnFindings(
+	_ context.Context, turn uint64,
+) (agentcontext.TurnFindings, bool) {
+	if e == nil || turn == 0 {
+		return agentcontext.TurnFindings{}, false
+	}
+	e.checkpointMu.Lock()
+	defer e.checkpointMu.Unlock()
+	for _, checkpoint := range e.turnCheckpoints {
+		if checkpoint.Turn != turn || checkpoint.Findings.Empty() {
+			continue
+		}
+		return agentcontext.CloneTurnFindings(checkpoint.Findings), true
+	}
+	return agentcontext.TurnFindings{}, false
 }
 
 func (e *Engine) lookupTurnHistory(
@@ -112,6 +129,48 @@ func (e *Engine) resumeTruthEntities() []agentcontext.TruthEntity {
 	return []agentcontext.TruthEntity{entity}
 }
 
+func (e *Engine) continuityTruthEntities() []agentcontext.TruthEntity {
+	entity, ok := agentcontext.ContinuityRetrievalEntityBudgeted(
+		e.continuityInput(),
+		e.sessionStateBudget(),
+	)
+	if !ok {
+		return nil
+	}
+	return []agentcontext.TruthEntity{entity}
+}
+
+func (e *Engine) continuityInput() agentcontext.ContinuityInput {
+	e.checkpointMu.Lock()
+	checkpoints := agentcontext.CloneTurnCheckpoints(e.turnCheckpoints)
+	e.checkpointMu.Unlock()
+	input := agentcontext.ContinuityInput{
+		Next: agentcontext.FirstOutstandingPlanTitle(e.currentPlan()),
+	}
+	for index := len(checkpoints) - 1; index >= 0; index-- {
+		checkpoint := checkpoints[index]
+		if checkpoint.Status != agentcontext.CheckpointCompleted ||
+			checkpoint.Findings.Empty() {
+			continue
+		}
+		input.Conclusion = strings.TrimSpace(checkpoint.Findings.Conclusion)
+		input.SourceTurns = append(input.SourceTurns, checkpoint.Turn)
+		input.SourceTurns = append(input.SourceTurns, checkpoint.Findings.SourceTurns...)
+		break
+	}
+	facts := e.EvidenceSnapshot().Facts
+	input.Sites = agentcontext.ContinuitySites(facts)
+	for _, fact := range facts {
+		if fact.Line > 0 && fact.Turn > 0 {
+			input.SourceTurns = append(input.SourceTurns, fact.Turn)
+		}
+	}
+	input.SourceTurns = agentcontext.UniqueTurns(input.SourceTurns)
+	omitted := agentcontext.OmittedTurnIDs(e.cloneHistoryForLookup(), e.recentTailTurns())
+	input.PreferredTurn = agentcontext.PreferredOmittedTurn(omitted, checkpoints)
+	return input
+}
+
 func (e *Engine) omittedTurnTruthEntities(
 	history []provider.Message,
 ) []agentcontext.TruthEntity {
@@ -119,7 +178,13 @@ func (e *Engine) omittedTurnTruthEntities(
 		history = e.cloneHistoryForLookup()
 	}
 	turns := agentcontext.OmittedTurnIDs(history, e.recentTailTurns())
-	entity, ok := agentcontext.OmittedTurnRetrievalEntity(turns)
+	e.checkpointMu.Lock()
+	checkpoints := agentcontext.CloneTurnCheckpoints(e.turnCheckpoints)
+	e.checkpointMu.Unlock()
+	entity, ok := agentcontext.OmittedTurnRetrievalEntityPreferred(
+		turns,
+		agentcontext.PreferredOmittedTurn(turns, checkpoints),
+	)
 	if !ok {
 		return nil
 	}
@@ -167,6 +232,33 @@ func (e *Engine) ensureClosedTurnCheckpoints() {
 		}
 		e.checkpointMu.Unlock()
 	}
+}
+
+func (e *Engine) sealTurnFindings(turn uint64, status string) agentcontext.TurnFindings {
+	var facts []agentcontext.EvidenceFact
+	var sourceTurns []uint64
+	for _, fact := range e.EvidenceSnapshot().Facts {
+		if fact.Turn != turn || fact.Line <= 0 {
+			continue
+		}
+		facts = append(facts, fact)
+		sourceTurns = append(sourceTurns, fact.Turn)
+	}
+	findings := agentcontext.TurnFindings{
+		Sites:       agentcontext.ContinuitySites(facts),
+		SourceTurns: agentcontext.UniqueTurns(sourceTurns),
+	}
+	if status == agentcontext.CheckpointCompleted {
+		findings.Conclusion = agentcontext.LastAssistantConclusion(
+			agentcontext.MessagesForTurn(e.cloneHistoryForLookup(), turn),
+		)
+		if findings.Conclusion != "" {
+			findings.SourceTurns = agentcontext.UniqueTurns(
+				append(findings.SourceTurns, turn),
+			)
+		}
+	}
+	return findings
 }
 
 func (e *Engine) closedTurnSealStatus() (string, bool) {
@@ -266,6 +358,7 @@ func (e *Engine) sealClosedTurnMemory(
 			Items:     items,
 			Failure:   strings.TrimSpace(failure),
 			ReadPaths: readPaths,
+			Findings:  e.sealTurnFindings(turn, status),
 			Budget:    e.checkpointBudget(),
 		},
 	)

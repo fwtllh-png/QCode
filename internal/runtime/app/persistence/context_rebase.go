@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/fwtllh-png/QCode/internal/persist/state"
+	"github.com/fwtllh-png/QCode/internal/persist/state/cas"
 	turnstate "github.com/fwtllh-png/QCode/internal/persist/state/turnstate"
 	agentcontext "github.com/fwtllh-png/QCode/internal/runtime/agent/context"
 	"github.com/fwtllh-png/QCode/internal/runtime/agent/turnkernel"
@@ -55,13 +56,15 @@ func (r *ContextRebaseRepository) CommitContextRebaseWithFacts(
 func (r *ContextRebaseRepository) CommitCurrentContext(
 	ctx context.Context,
 	commit agentcontext.CurrentContextCommit,
-) error {
+) (resultErr error) {
 	if r == nil || r.store == nil {
 		return errors.New("current context store is unavailable")
 	}
 	if err := commit.Validate(); err != nil {
 		return err
 	}
+	ctx, finishStage := agentcontext.BeginContentStage(ctx, r.store.Content())
+	defer func() { resultErr = errors.Join(resultErr, finishStage()) }()
 	previous, found, err := r.latestManifest(ctx, commit.ThreadID)
 	if err != nil {
 		return err
@@ -201,6 +204,9 @@ func (r *ContextRebaseRepository) CommitCurrentContext(
 			return err
 		}
 		inserted = true
+		if err := cas.BindTx(ctx, tx, "context", commit.ID, manifest.ContentIDs()...); err != nil {
+			return err
+		}
 		_, err = tx.ExecContext(
 			ctx,
 			`INSERT INTO context_current(
@@ -284,9 +290,7 @@ func (r *ContextRebaseRepository) DeleteCurrentContext(
 	if err != nil {
 		return err
 	}
-	for _, ref := range manifestRefs(manifest) {
-		_ = r.store.Content().Release(context.Background(), ref.Handle)
-	}
+	r.releaseContentRefs(context.Background(), manifestRefs(manifest))
 	return nil
 }
 
@@ -294,7 +298,7 @@ func (r *ContextRebaseRepository) commitContextRebase(
 	ctx context.Context,
 	envelope agentcontext.ContextRebaseEnvelope,
 	batch *turnkernel.DomainFactBatch,
-) error {
+) (resultErr error) {
 	if r == nil || r.store == nil {
 		return errors.New("context rebase store is unavailable")
 	}
@@ -304,6 +308,8 @@ func (r *ContextRebaseRepository) commitContextRebase(
 	if err := envelope.Validate(); err != nil {
 		return err
 	}
+	ctx, finishStage := agentcontext.BeginContentStage(ctx, r.store.Content())
+	defer func() { resultErr = errors.Join(resultErr, finishStage()) }()
 	previous, found, err := r.latestManifest(ctx, envelope.ThreadID)
 	if err != nil {
 		return err
@@ -391,6 +397,9 @@ func (r *ContextRebaseRepository) commitContextRebase(
 			return insertErr
 		}
 		inserted = true
+		if err := cas.BindTx(ctx, tx, "context", envelope.CompactionID, manifest.ContentIDs()...); err != nil {
+			return err
+		}
 		_, updateErr := tx.ExecContext(
 			ctx,
 			`INSERT INTO context_current(
@@ -522,12 +531,32 @@ func (r *ContextRebaseRepository) releaseNewRefs(
 			existing[ref.Handle] = struct{}{}
 		}
 	}
+	released := make([]agentcontext.ContentRef, 0)
 	for _, ref := range manifestRefs(current) {
 		if _, reused := existing[ref.Handle]; reused {
 			continue
 		}
-		_ = r.store.Content().Release(ctx, ref.Handle)
+		released = append(released, ref)
 	}
+	r.releaseContentRefs(ctx, released)
+}
+
+func (r *ContextRebaseRepository) releaseContentRefs(
+	ctx context.Context,
+	refs []agentcontext.ContentRef,
+) {
+	if r == nil || r.store == nil || r.store.Content() == nil {
+		return
+	}
+	content := r.store.Content()
+	if content.ManagedOwnership() {
+		_, _ = content.CollectUnreferenced(ctx)
+		return
+	}
+	for _, ref := range refs {
+		_ = content.ReleaseUnreferenced(ctx, ref.Handle)
+	}
+	_, _ = content.CollectUnreferenced(ctx)
 }
 
 func manifestRefs(

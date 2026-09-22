@@ -51,6 +51,34 @@ func TestExecCommandEnvPassesAllowListedVariables(t *testing.T) {
 	}
 }
 
+func TestExecCommandAcceptsNonSecretBuildVariablesAndJournalsThem(t *testing.T) {
+	manager := process.NewSessionManager(4096)
+	t.Cleanup(manager.CloseAll)
+	registry := tool.NewRegistry(nil, nil)
+	if err := RegisterWithManagerAndBackend(
+		registry, t.TempDir(), manager, passthroughBackend{},
+	); err != nil {
+		t.Fatal(err)
+	}
+	result := executeProcessTool(
+		t,
+		registry,
+		processTestThread,
+		"exec_command",
+		map[string]any{
+			"command": `printf '%s' "$CGO_ENABLED"`,
+			"env":     map[string]any{"CGO_ENABLED": "0"},
+		},
+	)
+	if result.IsError || result.Content != "0" {
+		t.Fatalf("result = %+v", result)
+	}
+	declared, _ := result.Metadata["declared_env"].([]string)
+	if len(declared) != 1 || declared[0] != "CGO_ENABLED" {
+		t.Fatalf("declared_env = %#v", result.Metadata["declared_env"])
+	}
+}
+
 func TestExecCommandRunsCommandWithEnv(t *testing.T) {
 	manager := process.NewSessionManager(4096)
 	t.Cleanup(manager.CloseAll)

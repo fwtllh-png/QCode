@@ -322,14 +322,14 @@ func TestSkillWorldUsesSingleBudgetedAuthority(t *testing.T) {
 	}
 }
 
-func TestSkillWorldOmitsInternalPathsAndBoundsDescriptions(t *testing.T) {
+func TestSkillWorldPreservesSourcePathsAndBoundsDescriptions(t *testing.T) {
 	rendered := promptcontext.RenderSkillWorld([]SkillSummary{{
 		Name: "review", Description: strings.Repeat("界", 200),
 		Source: "workspace", Path: "/private/skills/review/SKILL.md",
 		Handle: "skh_handle", PackageHandle: "skp_package",
 		ResourceHandle: "skr_resource",
 	}})
-	if strings.Contains(rendered, "/private/") ||
+	if !strings.Contains(rendered, `source_path="/private/skills/review/SKILL.md"`) ||
 		!strings.Contains(rendered, "...") ||
 		!strings.Contains(rendered, "any exact advertised handle") ||
 		!strings.Contains(rendered, `handle="skh_handle"`) ||

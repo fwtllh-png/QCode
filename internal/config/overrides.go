@@ -206,5 +206,21 @@ func applyOverrides(overrides Overrides, config *Config, provenance map[string]S
 	applyString(overrides.VisionProvider, &config.Vision.Provider, fieldVisionProvider, SourceStartup, provenance)
 	applyString(overrides.VisionModel, &config.Vision.Model, fieldVisionModel, SourceStartup, provenance)
 	applyString(overrides.WebSearchBackend, &config.Web.SearchBackend, fieldWebSearchBackend, SourceStartup, provenance)
+	applyString(
+		overrides.EnvironmentContract, &execution.Environment.Contract,
+		fieldEnvironmentContract, SourceStartup, provenance,
+	)
+	applyString(
+		overrides.EnvironmentProfile, &execution.Environment.Profile,
+		fieldEnvironmentProfile, SourceStartup, provenance,
+	)
+	applyBool(
+		overrides.EnvironmentSharedUserTemp, &execution.Environment.SharedUserTemp,
+		fieldEnvironmentSharedUserTemp, SourceStartup, provenance,
+	)
+	applyString(
+		overrides.EnvironmentSource, &execution.Environment.Source,
+		fieldEnvironmentSource, SourceStartup, provenance,
+	)
 	applyBool(overrides.RouteLock, &config.Route.Lock, fieldRouteLock, SourceStartup, provenance)
 }

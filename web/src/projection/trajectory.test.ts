@@ -311,3 +311,35 @@ function event(
     data
   };
 }
+
+describe("trajectory projection skips transient draft streams", () => {
+  it("renders no unknown rows for output.draft and output.discarded", () => {
+    const {records} = projectTrajectory([
+      event(1, "turn.started", {prompt: "build"}),
+      event(2, "output.draft", {text: "partial answer"}),
+      event(3, "output.draft", {text: "partial answer continued"}),
+      event(4, "output.discarded", {sample_id: "s1"}),
+      event(5, "output.delta", {text: "final answer"}),
+      event(6, "turn.completed", {text: "final answer"})
+    ]);
+    expect(records.length).toBeGreaterThan(0);
+    expect(records.filter((entry) => entry.kind === "unknown")).toEqual([]);
+    expect(records.filter((entry) =>
+      entry.summary.includes("partial answer"))).toEqual([]);
+    expect(records.some((entry) => entry.kind === "assistant" &&
+      entry.summary.includes("final answer"))).toBe(true);
+  });
+
+  it("files queue and title lifecycle events as system rows", () => {
+    const {records} = projectTrajectory([
+      event(1, "turn.queued", {turn_id: "turn"}),
+      event(2, "turn.queue.updated", {position: 1}),
+      event(3, "turn.queue.removed", {}),
+      event(4, "turn.withdrawn", {reason: "user"}),
+      event(5, "session.title.updated", {title: "S6"})
+    ]);
+    const system = records.filter((entry) => entry.kind === "system");
+    expect(system).toHaveLength(5);
+    expect(records.filter((entry) => entry.kind === "unknown")).toEqual([]);
+  });
+});

@@ -25,6 +25,7 @@ import (
 	"github.com/fwtllh-png/QCode/internal/security/authority"
 	"github.com/fwtllh-png/QCode/internal/security/controlplane"
 	"github.com/fwtllh-png/QCode/internal/security/egress"
+	"github.com/fwtllh-png/QCode/internal/security/goproxy"
 	"github.com/fwtllh-png/QCode/internal/security/policy"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
 )
@@ -100,6 +101,12 @@ type Options struct {
 	WorkspaceID           string
 	WorkspaceGeneration   uint64
 	LeaseAuthority        *authority.LeaseAuthority
+	Isolator              tool.Isolator
+	ModuleProxy           *goproxy.Service
+	// AuthBindReport carries facts about why a host auth service did not
+	// bind. They surface on failed process results so the model can
+	// attribute credential 401s on the first attempt.
+	AuthBindReport *goproxy.BindReport
 }
 
 type pending struct {
@@ -150,6 +157,9 @@ type Guard struct {
 	workspaceID           string
 	workspaceGeneration   uint64
 	leaseAuthority        *authority.LeaseAuthority
+	isolator              tool.Isolator
+	moduleProxy           *goproxy.Service
+	authBindReport        *goproxy.BindReport
 
 	mu           sync.Mutex
 	pending      map[string]*pending
@@ -247,6 +257,9 @@ func New(options Options) (*Guard, error) {
 		workspaceID:           options.WorkspaceID,
 		workspaceGeneration:   options.WorkspaceGeneration,
 		leaseAuthority:        options.LeaseAuthority,
+		isolator:              options.Isolator,
+		moduleProxy:           options.ModuleProxy,
+		authBindReport:        options.AuthBindReport,
 		pending:               make(map[string]*pending), completed: make(map[string]time.Time),
 		recovered: make(map[string]ApprovalRequest),
 	}, nil
@@ -254,6 +267,27 @@ func New(options Options) (*Guard, error) {
 
 func (g *Guard) SetApprovalObserver(observer ApprovalObserver) {
 	g.observe = observer
+}
+
+func (g *Guard) SetIsolator(isolator tool.Isolator) {
+	if g == nil {
+		return
+	}
+	g.isolator = isolator
+}
+
+func (g *Guard) SetModuleProxy(service *goproxy.Service) {
+	if g == nil {
+		return
+	}
+	g.moduleProxy = service
+}
+
+func (g *Guard) SetAuthBindReport(report *goproxy.BindReport) {
+	if g == nil {
+		return
+	}
+	g.authBindReport = report
 }
 
 func (g *Guard) Execute(
@@ -292,6 +326,38 @@ func policyInput(callID string, invocation Invocation) policy.Invocation {
 		Effect:    invocation.Binding.Effect,
 		Journaled: invocation.Binding.Journaled(), Validated: true,
 	}
+}
+
+func (g *Guard) bindRuntimeApprover(invocation Invocation) egress.RuntimeApprover {
+	if g == nil {
+		return nil
+	}
+	return func(ctx context.Context, target egress.Target) error {
+		return g.approveEgressTarget(ctx, invocation, invocation.CallID, tool.NetworkTarget{
+			Host: target.Host, Protocol: target.Protocol,
+			Port: target.Port, Method: firstNetworkMethod(target.Methods),
+		})
+	}
+}
+
+func firstNetworkMethod(methods []string) string {
+	if len(methods) == 0 {
+		return ""
+	}
+	return methods[0]
+}
+
+func shouldReplayEgress(invocation Invocation, executeErr error) bool {
+	if invocation.Binding.Capability == tool.CapabilityProcess {
+		return false
+	}
+	if invocation.Binding.Journaled() {
+		return false
+	}
+	if denied, ok := egress.DeniedTarget(executeErr); ok && denied.ApprovalSettled {
+		return false
+	}
+	return true
 }
 
 func egressDeniedTarget(outcome tool.Outcome, executeErr error) (tool.NetworkTarget, bool) {
@@ -413,12 +479,52 @@ func (g *Guard) approveEgressTarget(
 func invocationWritePaths(invocation Invocation) []string {
 	var paths []string
 	for _, resource := range invocation.Resources {
-		if resource.Kind == "file" && resource.Access == tool.AccessWrite && resource.Path != "" {
+		if resource.Kind == "file" && !resource.Tree &&
+			resource.Access == tool.AccessWrite && resource.Path != "" {
 			paths = append(paths, resource.Path)
 		}
 	}
 	sort.Strings(paths)
 	return paths
+}
+
+func invocationWriteTrees(invocation Invocation) []string {
+	var trees []string
+	for _, resource := range invocation.Resources {
+		if resource.Access != tool.AccessWrite || resource.Path == "" {
+			continue
+		}
+		if resource.Kind == "directory" || resource.Tree {
+			trees = append(trees, resource.Path)
+		}
+	}
+	sort.Strings(trees)
+	return trees
+}
+
+func (g *Guard) settleWritePaths(invocation Invocation) ([]string, error) {
+	paths := invocationWritePaths(invocation)
+	seen := make(map[string]bool, len(paths))
+	for _, path := range paths {
+		seen[path] = true
+	}
+	remaining := sandbox.MaxExactWorkspaceWritePaths - len(paths)
+	for _, tree := range invocationWriteTrees(invocation) {
+		files, err := sandbox.CollectWriteTreeFiles(g.workspace, tree, remaining)
+		if err != nil {
+			return nil, err
+		}
+		for _, path := range files {
+			if seen[path] {
+				continue
+			}
+			seen[path] = true
+			paths = append(paths, path)
+			remaining--
+		}
+	}
+	sort.Strings(paths)
+	return paths, nil
 }
 
 func (g *Guard) prepareFileWrites(
@@ -695,6 +801,61 @@ func (g *Guard) finishBrokerFileWrites(
 	result.Metadata["observed_changes"] = len(
 		tool.EnsureOutcomeFacts(result).WorkspaceChanges,
 	)
+	return nil
+}
+
+func (g *Guard) observeWriteTreeCreations(
+	ctx context.Context,
+	invocation Invocation,
+	known []string,
+	result *tool.Result,
+	succeeded bool,
+) error {
+	if !succeeded {
+		return nil
+	}
+	trees := invocationWriteTrees(invocation)
+	if len(trees) == 0 {
+		return nil
+	}
+	seen := make(map[string]bool, len(known))
+	for _, path := range known {
+		seen[path] = true
+	}
+	remaining := sandbox.MaxExactWorkspaceWritePaths - len(known)
+	var changes []FileChange
+	for _, tree := range trees {
+		files, err := sandbox.CollectWriteTreeFiles(g.workspace, tree, remaining)
+		if err != nil {
+			return err
+		}
+		for _, path := range files {
+			if seen[path] {
+				continue
+			}
+			seen[path] = true
+			remaining--
+			change, changed, err := g.observeFileChange(
+				ctx, workspacejournal.Fingerprint{Path: path}, path,
+			)
+			if err != nil {
+				return fmt.Errorf("observe write tree %q: %w", path, err)
+			}
+			if changed {
+				changes = append(changes, change)
+			}
+		}
+	}
+	if len(changes) == 0 {
+		return nil
+	}
+	facts := tool.EnsureOutcomeFacts(result)
+	facts.WorkspaceChanges = append(facts.WorkspaceChanges, changes...)
+	if result.Metadata == nil {
+		result.Metadata = make(map[string]any)
+	}
+	observed, _ := result.Metadata["observed_changes"].(int)
+	result.Metadata["observed_changes"] = observed + len(changes)
 	return nil
 }
 
@@ -1497,9 +1658,15 @@ func (g *Guard) resolveResources(
 			if err != nil {
 				return nil, err
 			}
-			resources = append(resources, tool.Resource{
+			resource := tool.Resource{
 				Kind: "file", Path: canonical, Access: tool.AccessWrite,
-			})
+			}
+			if info, statErr := os.Lstat(canonical); statErr == nil &&
+				info.IsDir() && info.Mode()&os.ModeSymlink == 0 {
+				resource.Kind = "directory"
+				resource.Tree = true
+			}
+			resources = append(resources, resource)
 		}
 	}
 	if field := descriptor.ResourceResolver.ReadPathsField; field != "" {

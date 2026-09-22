@@ -37,10 +37,7 @@ func ProjectDefinitions(
 	var entries []tool.CatalogEntrySnapshot
 	for _, entry := range request.Catalog.Entries() {
 		presentation := entry.PresentationDescriptor()
-		enabled := request.Enabled == nil || request.Enabled(entry)
-		if presentation.Visibility == tool.VisibleModel &&
-			entry.Descriptor.Availability != tool.AvailabilityUnavailable &&
-			enabled {
+		if modelAvailable(entry, request.Enabled) {
 			entries = append(entries, entry)
 			descriptors = append(descriptors, presentation)
 		}
@@ -79,8 +76,22 @@ func ProjectDefinitions(
 				selected[entry.Name] = true
 			}
 		}
-	} else if len(selected) < len(entries)-1 {
-		selected[ToolName] = true
+	} else {
+		// Relevance selection can include every eager tool while provider
+		// limits still omit some of them. Reserve discovery before packing
+		// whenever the full selected set will not fit.
+		selectedBytes := 0
+		for _, entry := range entries {
+			if selected[entry.Name] {
+				data, _ := json.Marshal(entry.PresentationDescriptor().InputSchema)
+				selectedBytes += len(data)
+			}
+		}
+		if len(selected) < len(entries)-1 ||
+			len(selected) > request.MaxDefinitions ||
+			selectedBytes > request.MaxSchemaBytes {
+			selected[ToolName] = true
+		}
 	}
 	result := make([]provider.ToolDefinition, 0, len(descriptors))
 	advertised := make(map[string]bool)

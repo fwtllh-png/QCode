@@ -70,7 +70,7 @@ func (r *Service) validatePlanRecovery(
 			profile.Profile.Revision,
 		)
 	}
-	events, err := r.ReplayArtifactEvents(ctx, 0)
+	events, err := r.ReplayArtifactTurn(ctx, payload.Recovery.SourceTurnID)
 	if err != nil {
 		return err
 	}

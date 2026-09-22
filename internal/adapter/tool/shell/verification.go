@@ -35,9 +35,6 @@ func validateVerification(input execCommandInput) error {
 	if len(input.CoveredPaths) == 0 {
 		return errors.New("verification requires exact workspace-relative covered_paths")
 	}
-	if len(input.WritePaths) != 0 {
-		return errors.New("verification must not write workspace files; use $TMPDIR for build outputs")
-	}
 	for _, path := range input.CoveredPaths {
 		if _, ok := verify.CanonicalEvidencePath(path); !ok {
 			return fmt.Errorf("invalid verification covered path %q", path)
@@ -107,6 +104,29 @@ func attachVerification(result *tool.Result, evidence *verify.Evidence, wait pro
 		if wait.ExitCode == 0 && !wait.Terminated {
 			evidence.Status = verify.StatusPassed
 		}
+	}
+	result.Metadata[verify.EvidenceMetadataKey] = *evidence
+}
+
+// invalidateVerificationOnCoveredWrites downgrades otherwise-passing
+// evidence when the command changed the inputs it claims to cover.
+// Verification is judged after execution, not by an entry-time veto: a
+// build that drops artifacts may declare write_paths, but a command that
+// rewrites its own covered inputs cannot testify for its own output.
+func invalidateVerificationOnCoveredWrites(
+	result *tool.Result, evidence *verify.Evidence, workspaceRoot string,
+) {
+	if evidence == nil || evidence.Status != verify.StatusPassed {
+		return
+	}
+	after, err := verify.InputDigest(workspaceRoot, evidence.CoveredPaths)
+	if err == nil && after == evidence.InputDigest {
+		return
+	}
+	evidence.Status = verify.StatusInvalidated
+	evidence.InvalidationReason = "covered_paths changed during verification"
+	if result.Metadata == nil {
+		result.Metadata = make(map[string]any)
 	}
 	result.Metadata[verify.EvidenceMetadataKey] = *evidence
 }

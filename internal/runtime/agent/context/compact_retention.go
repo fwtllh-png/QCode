@@ -96,7 +96,9 @@ func classifyEntity(entity TruthEntity) RetentionClass {
 		}
 		return RetentionProtected
 	case EntityFact:
-		if entity.Source == TurnHistorySource || entity.Source == ResumeSource {
+		if entity.Source == TurnHistorySource ||
+			entity.Source == ResumeSource ||
+			entity.Source == ContinuitySource {
 			return RetentionMandatory
 		}
 		return RetentionRefreshable

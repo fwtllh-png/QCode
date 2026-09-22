@@ -50,6 +50,8 @@ func buildChildOrchestration(
 		state.config.workspaceStateRoot,
 		state.config.skillPaths,
 	)
+	output.childToolsets.environment = execution.Environment
+	output.childToolsets.bindParentSandbox(state.platform.backend)
 	session.childTools = output.childToolsets
 	chatRoot := filepath.Join(childRoot, "chats")
 	if err := os.MkdirAll(chatRoot, 0o700); err != nil {

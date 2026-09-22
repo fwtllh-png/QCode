@@ -181,10 +181,14 @@ func commandRuleMatches(command, prefix string, action Action) bool {
 	if err != nil {
 		return false
 	}
-	if action != ActionDeny && action != ActionHold &&
+	if action != ActionDeny && action != ActionHold && action != ActionAsk &&
 		(analysis.Complex || len(analysis.Segments) != 1) {
 		return false
 	}
+	// Ask, deny, and hold scan every segment: a piped or chained command
+	// that touches a gated prefix must still gate, and asking can only add
+	// friction. Allow keeps single-segment matching so a prefix rule never
+	// approves a composite it cannot see through.
 	for _, segment := range analysis.Segments {
 		if segment.Dynamic || (action == ActionAllow && segment.InterpreterPayload) {
 			continue
@@ -227,6 +231,23 @@ func commandGrantIdentity(command string) (string, bool) {
 	}
 	encoded, err := json.Marshal(analysis)
 	return string(encoded), err == nil
+}
+
+// commandGrantPrefix returns the static argv of a single-segment command.
+// A reusable approval for such a command also matches later commands that
+// extend the argv within the same grant scope, so re-running a build with
+// one extra flag does not restart approval. Composite, dynamic, or
+// interpreter-payload commands have no prefix: exact identity only.
+func commandGrantPrefix(command string) []string {
+	analysis, err := AnalyzeCommand(command)
+	if err != nil || analysis.Complex || len(analysis.Segments) != 1 {
+		return nil
+	}
+	segment := analysis.Segments[0]
+	if segment.Dynamic || segment.InterpreterPayload || len(segment.Argv) == 0 {
+		return nil
+	}
+	return segment.Argv
 }
 
 func unsafePersistentPrefix(prefix string) bool {

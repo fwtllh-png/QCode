@@ -160,8 +160,14 @@ func TestOmittedTurnHintIsMandatoryAndDoesNotInventLists(t *testing.T) {
 	}
 	rangeHint := FormatOmittedTurnHint([]uint64{1, 2, 3})
 	if !strings.Contains(rangeHint, "1-3") ||
-		!strings.Contains(rangeHint, "turn=1") {
+		!strings.Contains(rangeHint, "preferred_turn=3") ||
+		strings.Contains(rangeHint, "for example turn=1") {
 		t.Fatalf("range hint = %q", rangeHint)
+	}
+	if preferred := PreferredOmittedTurn([]uint64{1, 2, 3}, []TurnCheckpoint{{
+		Turn: 2, Findings: TurnFindings{Sites: []string{"parser.go:41 Lex"}},
+	}}); preferred != 2 {
+		t.Fatalf("preferred = %d", preferred)
 	}
 	entity, ok := OmittedTurnRetrievalEntity([]uint64{1})
 	if !ok || entity.Retention != RetentionMandatory ||
@@ -181,6 +187,37 @@ func TestOmittedTurnHintIsMandatoryAndDoesNotInventLists(t *testing.T) {
 	}
 	if !strings.Contains(rendered.Text, hint) {
 		t.Fatalf("session state missing retrieval hint: %s", rendered.Text)
+	}
+}
+
+func TestRenderTurnCheckpointKeepsFindingsOffTheVisibleText(t *testing.T) {
+	checkpoint, err := RenderTurnCheckpoint(CheckpointRenderInput{
+		Turn:   7,
+		Status: CheckpointCompleted,
+		Goal:   "fix the lock",
+		Findings: TurnFindings{
+			Conclusion:  "hasGlobalLock is the root cause",
+			Sites:       []string{"eds_metaserver.cc:88 hasGlobalLock"},
+			SourceTurns: []uint64{4, 6},
+		},
+		Budget: 1024,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if checkpoint.Findings.Conclusion != "hasGlobalLock is the root cause" ||
+		len(checkpoint.Findings.Sites) != 1 {
+		t.Fatalf("findings = %+v", checkpoint.Findings)
+	}
+	if strings.Contains(checkpoint.Text, "hasGlobalLock") {
+		t.Fatalf("visible checkpoint leaked findings: %s", checkpoint.Text)
+	}
+	index := RenderTurnFindings(7, checkpoint.Findings)
+	if !strings.Contains(index, "[turn 7 findings]") ||
+		!strings.Contains(index, "hasGlobalLock is the root cause") ||
+		!strings.Contains(index, "eds_metaserver.cc:88 hasGlobalLock") ||
+		!strings.Contains(index, "4, 6") {
+		t.Fatalf("index = %q", index)
 	}
 }
 

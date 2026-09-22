@@ -19,6 +19,7 @@ import (
 	interacttool "github.com/fwtllh-png/QCode/internal/adapter/tool/interact"
 	webtool "github.com/fwtllh-png/QCode/internal/adapter/tool/web"
 	"github.com/fwtllh-png/QCode/internal/config"
+	envcontract "github.com/fwtllh-png/QCode/internal/environment"
 	"github.com/fwtllh-png/QCode/internal/observability/diagnostics"
 	"github.com/fwtllh-png/QCode/internal/observability/verify"
 	"github.com/fwtllh-png/QCode/internal/orchestration/chatmerge"
@@ -28,6 +29,7 @@ import (
 	"github.com/fwtllh-png/QCode/internal/persist/workspacejournal"
 	"github.com/fwtllh-png/QCode/internal/platform/process"
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
+	"github.com/fwtllh-png/QCode/internal/security/egress"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
 )
 
@@ -346,7 +348,9 @@ type childToolsets struct {
 	diagnosticReadFiles []string
 	gitCommonDir        string
 	managedProxyPort    uint16
+	parentSandbox       sandbox.Backend
 	workspaceStateRoot  string
+	environment         config.ExecutionEnvironment
 	skillPaths          SkillPaths
 	agents              *subagent.AgentControl
 	agentSession        string
@@ -357,6 +361,15 @@ type childToolsets struct {
 
 	mu    sync.Mutex
 	built map[string]*childToolset
+}
+
+func (c *childToolsets) bindParentSandbox(backend sandbox.Backend) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	c.parentSandbox = backend
+	c.mu.Unlock()
 }
 
 func (c *childToolsets) bindAgents(
@@ -422,6 +435,7 @@ func (c *childToolsets) open(
 	}
 	agents, agentSession, agentRelease := c.agents, c.agentSession, c.agentRelease
 	vision, onPlan := c.interactionVision, c.interactionPlan
+	parentSandbox := c.parentSandbox
 	c.mu.Unlock()
 	hostReadRoots := append([]string(nil), c.diagnosticReadRoots...)
 	gitRoots, err := worktreeGitReadRoots(root, c.gitCommonDir)
@@ -436,14 +450,26 @@ func (c *childToolsets) open(
 	if err != nil {
 		return nil, fmt.Errorf("child state layout: %w", err)
 	}
-	backend, err := newPlatformBackend(sandbox.Options{
-		WorkspaceRoot: root, HelperPath: c.helperPath,
-		PrivateTemp:      stateLayout.SandboxHome,
-		ManagedProxyPort: c.managedProxyPort, HostReadRoots: hostReadRoots,
-		HostReadFiles: c.diagnosticReadFiles,
-	})
+	options, _, err := bindEnvironmentSandbox(sandbox.Options{
+		WorkspaceRoot:       root,
+		HelperPath:          c.helperPath,
+		PrivateTemp:         stateLayout.SandboxHome,
+		ManagedProxyPort:    c.managedProxyPort,
+		HostReadRoots:       hostReadRoots,
+		HostReadFiles:       c.diagnosticReadFiles,
+		EnvironmentContract: c.environment.Contract,
+		EnvironmentProfile:  envcontract.ChildProfile(c.environment.Profile),
+		SharedUserTemp:      false,
+	}, c.environment, "", stateLayout.SandboxHome)
+	if err != nil {
+		return nil, fmt.Errorf("child environment: %w", err)
+	}
+	backend, err := newPlatformBackend(options)
 	if err != nil {
 		return nil, fmt.Errorf("child sandbox: %w", err)
+	}
+	if opener, ok := egress.LookupProcessSessionOpener(parentSandbox); ok {
+		backend = egress.BindSessionOpener(backend, opener)
 	}
 	// Child process journals stay isolated from the parent and sibling roots.
 	processes := process.NewSessionManager(0)

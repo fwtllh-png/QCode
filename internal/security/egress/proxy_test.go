@@ -3,6 +3,7 @@ package egress_test
 import (
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"errors"
 	"io"
 	"net"
@@ -10,6 +11,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/fwtllh-png/QCode/internal/security/egress"
@@ -81,6 +83,64 @@ func TestManagedProxyForwardsOnlyGrantedHTTPMethod(t *testing.T) {
 		} else if response.StatusCode != http.StatusOK || string(body) != method+" ok" {
 			t.Fatalf("after POST grant: %s status=%d body=%q", method, response.StatusCode, body)
 		}
+	}
+}
+
+func TestManagedProxyDeniedResponseIsStructured(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(
+		http.ResponseWriter,
+		*http.Request,
+	) {
+		t.Fatal("unapproved request reached upstream")
+	}))
+	t.Cleanup(upstream.Close)
+	targetURL, _ := url.Parse(upstream.URL)
+
+	gate := &egress.Gate{Enforce: true}
+	proxy, err := egress.StartManagedNetworkProxy(gate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = proxy.Close(context.Background()) })
+	proxyURL, _ := url.Parse(proxy.URL())
+	client := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL)}}
+	t.Cleanup(client.CloseIdleConnections)
+
+	response, err := client.Get(upstream.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(response.Body)
+	response.Body.Close()
+	if response.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d body=%s", response.StatusCode, body)
+	}
+	if got := response.Header.Get("Content-Type"); got != "application/json" {
+		t.Fatalf("Content-Type = %q", got)
+	}
+	var payload struct {
+		Error          string `json:"error"`
+		ErrorCategory  string `json:"error_category"`
+		RequiredAction string `json:"required_action"`
+		Source         string `json:"source"`
+		Host           string `json:"host"`
+		Protocol       string `json:"protocol"`
+		Reason         string `json:"reason"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("decode %q: %v", body, err)
+	}
+	if payload.Error != "egress denied" ||
+		payload.ErrorCategory != "network_target_unapproved" ||
+		payload.RequiredAction != "approve_network_target" ||
+		payload.Source != "process_proxy" ||
+		payload.Host != targetURL.Hostname() ||
+		payload.Protocol != "http" ||
+		payload.Reason != "target is not granted" {
+		t.Fatalf("payload = %+v body=%s", payload, body)
+	}
+	if strings.Contains(string(body), "managed egress denied") {
+		t.Fatalf("generic proxy text leaked: %s", body)
 	}
 }
 

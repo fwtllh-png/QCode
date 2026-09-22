@@ -223,7 +223,7 @@ func TestEngineRecoveryResumesRunningInputToolWithEarlyReply(t *testing.T) {
 	if err := kernel.StartTool(call.ID); err != nil {
 		t.Fatal(err)
 	}
-	if err := kernel.RequireInput("input-recovery-request"); err != nil {
+	if err := kernel.RequireInput("input-recovery-request", "call-input-recovery"); err != nil {
 		t.Fatal(err)
 	}
 	if err := coordinators.Release(t.Context(), "input-recovery"); err != nil {
@@ -706,7 +706,7 @@ func TestTurnKernelCancellationClosesToolAwaitingInput(t *testing.T) {
 	if err := kernel.StartTool(call.ID); err != nil {
 		t.Fatal(err)
 	}
-	if err := kernel.RequireInput("input-1"); err != nil {
+	if err := kernel.RequireInput("input-1", "call-input-1"); err != nil {
 		t.Fatal(err)
 	}
 	if effect, started, err := kernel.RoutedEffect(
@@ -828,7 +828,7 @@ func TestTurnKernelAcceptsInputResultBeforeResolution(t *testing.T) {
 	if err := kernel.StartTool(call.ID); err != nil {
 		t.Fatal(err)
 	}
-	if err := kernel.RequireInput("input-1"); err != nil {
+	if err := kernel.RequireInput("input-1", "call-input-1"); err != nil {
 		t.Fatal(err)
 	}
 	if effect, started, err := kernel.RoutedEffect(

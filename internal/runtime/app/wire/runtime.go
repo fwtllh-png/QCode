@@ -47,6 +47,9 @@ type ExecOptions struct {
 	// WorkspaceIdentity binds editor-visible URI identity for editor hosts.
 	// Non-editor hosts leave it empty and retain local file URI behavior.
 	WorkspaceIdentity protocol.WorkspaceIdentity
+	// SkipHostGoproxyAuth keeps tests from binding the machine GOPROXY
+	// credential onto the process session protocol handler.
+	SkipHostGoproxyAuth bool
 }
 
 // ContextFile is a file a host named for the session (`exec --file`, an editor

@@ -6,8 +6,6 @@ import (
 	"os"
 	"strings"
 
-	"github.com/fwtllh-png/QCode/internal/platform/envprobe"
-
 	sessionhistory "github.com/fwtllh-png/QCode/internal/persist/history"
 	persiststate "github.com/fwtllh-png/QCode/internal/persist/state"
 
@@ -44,7 +42,7 @@ func (agentModule) Build(ctx context.Context, state *buildState) error {
 	baseSystem := strings.TrimSpace(execution.BaseSystem)
 	if baseSystem == "" {
 		baseSystem = promptcontext.DefaultBaseSystem(
-			execution.Workspace, envprobe.Fingerprint(),
+			execution.Workspace, environmentFingerprint(state.platform.moduleProxy),
 		)
 	}
 	home := ""
@@ -263,6 +261,12 @@ func (agentModule) Build(ctx context.Context, state *buildState) error {
 	}
 	workspaceIdentity := state.options.WorkspaceIdentity
 	childToolsets := state.orchestration.childToolsets
+	if isolator := buildExecIsolator(state, workspaceTurnGate); isolator != nil {
+		state.security.guardFactory.isolator = isolator
+		if state.security.guard != nil {
+			state.security.guard.SetIsolator(isolator)
+		}
+	}
 	coreBuilder := runtimeCoreBuilder{
 		seed: seedOptions, guardFactory: state.security.guardFactory,
 		approvalObserver:    session.metrics.Approval,

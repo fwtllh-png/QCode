@@ -12,6 +12,7 @@ import (
 	"github.com/fwtllh-png/QCode/internal/security/authority"
 	"github.com/fwtllh-png/QCode/internal/security/controlmatrix"
 	"github.com/fwtllh-png/QCode/internal/security/egress"
+	"github.com/fwtllh-png/QCode/internal/security/goproxy"
 	"github.com/fwtllh-png/QCode/internal/security/policy"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
 )
@@ -430,7 +431,16 @@ func (g *Guard) runAttempt(
 		releaseClaims()
 		releaseAdmission()
 	}
-	writePaths := invocationWritePaths(invocation)
+	writePaths, err := g.settleWritePaths(invocation)
+	if err != nil {
+		release()
+		run.err = err
+		run.receipt = attemptReceipt(
+			sequence, mode, started, g.now(), tool.OutcomeRejected, "prepare_writes",
+			run.profile,
+		)
+		return run
+	}
 	requireRead := invocation.Binding.Effect.RequireReadBeforeWrite
 	var expectedWrites map[string]workspacejournal.Fingerprint
 	if requireRead {
@@ -487,6 +497,20 @@ func (g *Guard) runAttempt(
 			run.profile,
 		)
 		return run
+	}
+	runContext = tool.WithIsolator(runContext, g.isolator)
+	runContext = goproxy.WithService(runContext, g.moduleProxy)
+	runContext = goproxy.WithBindReport(runContext, g.authBindReport)
+	// Network tools get the connect-time approver so redirect chains and
+	// runtime-discovered origins ask once mid-fetch instead of failing the
+	// whole request and replaying. Probe-style callers keep the
+	// non-discovering Authorize path inside the gate.
+	if invocation.Binding.Capability == tool.CapabilityProcess ||
+		invocation.Binding.Capability == tool.CapabilityNetwork {
+		runContext = egress.WithRuntimeApprover(
+			runContext,
+			g.bindRuntimeApprover(invocation),
+		)
 	}
 	runContext = WithSandboxAttempt(runContext, SandboxAttempt{Mode: mode})
 	var teardownMu sync.Mutex
@@ -560,17 +584,24 @@ func (g *Guard) runAttempt(
 			run.err = recordErr
 		}
 	}
-	if len(writePaths) != 0 && !fileBrokerAware {
-		if finishErr := g.finishFileWrites(
-			ctx,
-			writePaths,
-			expectedWrites,
-			&run.result,
-			run.err == nil,
-			invocation.Binding.Journaled(),
-			invocation.Binding.Journaled(),
-		); finishErr != nil && run.err == nil {
-			run.err = finishErr
+	if !fileBrokerAware && !isolatedThreeWaySettlement(run.result) {
+		if len(writePaths) != 0 {
+			if finishErr := g.finishFileWrites(
+				ctx,
+				writePaths,
+				expectedWrites,
+				&run.result,
+				run.err == nil,
+				invocation.Binding.Journaled(),
+				invocation.Binding.Journaled(),
+			); finishErr != nil && run.err == nil {
+				run.err = finishErr
+			}
+		}
+		if observeErr := g.observeWriteTreeCreations(
+			ctx, invocation, writePaths, &run.result, run.err == nil,
+		); observeErr != nil && run.err == nil {
+			run.err = observeErr
 		}
 	}
 	if len(writePaths) != 0 && fileBrokerAware {
@@ -610,7 +641,8 @@ func (g *Guard) runAttempt(
 			reason = "sandbox_denied_fail_closed"
 		}
 	} else if !egressRetried {
-		if target, ok := egressDeniedTarget(run.outcome, run.err); ok {
+		if target, ok := egressDeniedTarget(run.outcome, run.err); ok &&
+			shouldReplayEgress(invocation, run.err) {
 			run.retry, reason = retryEgress, string(retryEgress)
 			run.target = target
 		} else if run.err != nil {
@@ -1050,4 +1082,12 @@ func attachExecutionReceipt(result *tool.Result, receipt tool.ExecutionReceipt) 
 		return
 	}
 	result.Execution = tool.CloneExecutionReceipt(&receipt)
+}
+
+func isolatedThreeWaySettlement(result tool.Result) bool {
+	if result.Metadata == nil {
+		return false
+	}
+	kind, _ := result.Metadata["workspace_settlement"].(string)
+	return kind == "isolated_three_way"
 }

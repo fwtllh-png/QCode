@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -45,6 +46,7 @@ type listedSkill struct {
 	Name           string              `json:"name"`
 	Description    string              `json:"description"`
 	Source         skillruntime.Source `json:"source"`
+	Path           string              `json:"path"`
 }
 
 func RegisterDiscovery(
@@ -135,6 +137,11 @@ func (t *listTool) run(
 	ctx context.Context,
 	input listInput,
 ) (tool.Result, error) {
+	if input.Cursor == "" {
+		if err := t.catalog.Refresh(ctx); err != nil {
+			return tool.Result{}, err
+		}
+	}
 	summaries, err := t.catalog.ListHandles(ctx)
 	if err != nil {
 		return tool.Result{}, err
@@ -158,7 +165,7 @@ func (t *listTool) run(
 			Handle: summary.Handle, PackageHandle: summary.PackageHandle,
 			ResourceHandle: summary.ResourceHandle, Name: summary.Name,
 			Description: boundedDescription(summary.Description),
-			Source:      summary.Source,
+			Source:      summary.Source, Path: summary.Path,
 		})
 	}
 	next := ""
@@ -210,6 +217,7 @@ func (t *readTool) run(
 	for _, item := range plan {
 		resolved = append(resolved, skillruntime.ResolvedSkill{
 			Name: item.Name, Version: item.Version, Source: item.Source,
+			Path:   item.Path,
 			Digest: item.Digest, Dependencies: item.Dependencies,
 			Locked: item.Locked,
 		})
@@ -218,6 +226,7 @@ func (t *readTool) run(
 		Content: content[start:end],
 		Metadata: map[string]any{
 			"name": summary.Name, "handle": summary.Handle,
+			"path":            summary.Path,
 			"package_handle":  summary.PackageHandle,
 			"resource_handle": summary.ResourceHandle,
 			"content_digest":  digest, "next_cursor": next,
@@ -230,19 +239,23 @@ func renderLoadedPlan(plan []skillruntime.Loaded) string {
 	if len(plan) == 0 {
 		return ""
 	}
-	if len(plan) == 1 {
-		return plan[0].Content
-	}
 	sections := make([]string, 0, len(plan))
 	for index, item := range plan {
 		role := "dependency"
 		if index == len(plan)-1 {
 			role = "root"
 		}
-		sections = append(sections, fmt.Sprintf(
-			"# Skill %s: %s@%s\n\n%s",
-			role, item.Name, item.Version, item.Content,
-		))
+		header := fmt.Sprintf("# Skill %s: %s@%s\nsource_path=%q",
+			role, item.Name, item.Version, item.Path)
+		if item.Source == skillruntime.SourceBuiltin {
+			header += "\nEmbedded, self-contained skill; source_path is not a filesystem path."
+		} else {
+			header += fmt.Sprintf("\nresource_base=%q\n", filepath.Dir(item.Path)) +
+				"Resolve this skill's relative references, scripts, and assets against resource_base. " +
+				"Use file_read for resources inside the workspace or shell_read for permitted external paths; " +
+				"normal policy and sandbox checks still apply."
+		}
+		sections = append(sections, header+"\n\n"+item.Content)
 	}
 	return strings.Join(sections, "\n\n")
 }

@@ -41,7 +41,7 @@ func NewPersistentRepositories(
 		lifecycle = threadstate.NewWorkspaceLifecycle(store, workspaceRoot[0])
 	}
 	return PersistentRepositories{
-		Sessions:  sessionstate.NewSQLiteRepository(store.SQLite()),
+		Sessions:  sessionstate.NewSQLiteRepository(store.SQLite()).WithMaintenance(store.Maintain),
 		Threads:   threadstate.NewSQLiteRepository(store.SQLite()),
 		Lifecycle: lifecycle,
 		Snapshots: snapshotstate.NewSQLiteRepository(store.SQLite(), store.Content()),

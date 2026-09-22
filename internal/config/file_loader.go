@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/pelletier/go-toml/v2"
 )
@@ -60,6 +61,14 @@ type executionFileConfig struct {
 		Durable        *bool `toml:"durable"`
 		RecoverOnStart *bool `toml:"recover_on_start"`
 	} `toml:"journal"`
+	Environment struct {
+		Contract       *string                `toml:"contract"`
+		Profile        *string                `toml:"profile"`
+		SharedUserTemp *bool                  `toml:"shared_user_temp"`
+		Source         *string                `toml:"source"`
+		Resources      *[]EnvironmentResource    `toml:"resources"`
+		AuthServices   *[]EnvironmentAuthService `toml:"auth_services"`
+	} `toml:"environment"`
 }
 
 // routeFileConfig spells out one field per wired purpose instead of decoding a
@@ -89,9 +98,11 @@ type fileConfig struct {
 		SubscriberBuffer *int `toml:"subscriber_buffer"`
 	} `toml:"runtime"`
 	State struct {
-		DataDir        *string `toml:"data_dir"`
-		BusyTimeout    *string `toml:"busy_timeout"`
-		EventRetention *int    `toml:"event_retention"`
+		DataDir               *string `toml:"data_dir"`
+		BusyTimeout           *string `toml:"busy_timeout"`
+		EventRetention        *int    `toml:"event_retention"`
+		DeletedEventRetention *string `toml:"deleted_event_retention"`
+		ArchiveDeletedEvents  *bool   `toml:"archive_deleted_events"`
 	} `toml:"state"`
 	Memory struct {
 		Enabled        *bool   `toml:"enabled"`
@@ -102,17 +113,17 @@ type fileConfig struct {
 	} `toml:"memory"`
 	Context struct {
 		Index struct {
-			Enabled           *bool  `toml:"enabled"`
-			MaxFileBytes      *int64 `toml:"max_file_bytes"`
-			MaxFiles          *int   `toml:"max_files"`
-			SignatureMaxBytes     *int64   `toml:"signature_max_bytes"`
-			DocstringMaxBytes     *int64   `toml:"docstring_max_bytes"`
-			ReferenceMaxCount     *int     `toml:"reference_max_count"`
-			RankDamping           *float64 `toml:"rank_damping_factor"`
-			RankIterations        *int     `toml:"rank_iteration_limit"`
-			RankConvergence       *float64 `toml:"rank_convergence_threshold"`
-			ImpactMaxDepth        *int     `toml:"impact_max_depth"`
-			ImpactMaxResults      *int     `toml:"impact_max_results"`
+			Enabled           *bool    `toml:"enabled"`
+			MaxFileBytes      *int64   `toml:"max_file_bytes"`
+			MaxFiles          *int     `toml:"max_files"`
+			SignatureMaxBytes *int64   `toml:"signature_max_bytes"`
+			DocstringMaxBytes *int64   `toml:"docstring_max_bytes"`
+			ReferenceMaxCount *int     `toml:"reference_max_count"`
+			RankDamping       *float64 `toml:"rank_damping_factor"`
+			RankIterations    *int     `toml:"rank_iteration_limit"`
+			RankConvergence   *float64 `toml:"rank_convergence_threshold"`
+			ImpactMaxDepth    *int     `toml:"impact_max_depth"`
+			ImpactMaxResults  *int     `toml:"impact_max_results"`
 		} `toml:"index"`
 		LSP struct {
 			ResidentEnabled *bool   `toml:"resident_enabled"`
@@ -212,6 +223,14 @@ func applyFile(
 	applyString(input.State.DataDir, &config.State.DataDir, fieldStateDataDir, source, provenance)
 	applyDurationString(input.State.BusyTimeout, &config.State.BusyTimeout, fieldStateBusyTimeout, source, provenance)
 	applyInt(input.State.EventRetention, &config.State.EventRetention, fieldStateRetention, source, provenance)
+	if input.State.DeletedEventRetention != nil {
+		value, err := time.ParseDuration(*input.State.DeletedEventRetention)
+		if err != nil {
+			return &FieldError{Field: fieldDeletedEventRetention, Source: source, Reason: "must be a duration"}
+		}
+		applyDuration(&value, &config.State.DeletedEventRetention, fieldDeletedEventRetention, source, provenance)
+	}
+	applyBool(input.State.ArchiveDeletedEvents, &config.State.ArchiveDeletedEvents, fieldArchiveDeletedEvents, source, provenance)
 	applyBool(input.Memory.Enabled, &config.Memory.Enabled, fieldMemoryEnabled, source, provenance)
 	applyString(input.Memory.Path, &config.Memory.Path, fieldMemoryPath, source, provenance)
 	applyInt(input.Memory.MaxCandidates, &config.Memory.MaxCandidates, fieldMemoryMaxCandidates, source, provenance)
@@ -459,6 +478,22 @@ func applyExecutionFile(
 		input.Journal.RecoverOnStart, &journal.RecoverOnStart,
 		fieldJournalRecoverOnStart, source, provenance,
 	)
+	env := &execution.Environment
+	applyString(input.Environment.Contract, &env.Contract, fieldEnvironmentContract, source, provenance)
+	applyString(input.Environment.Profile, &env.Profile, fieldEnvironmentProfile, source, provenance)
+	applyBool(
+		input.Environment.SharedUserTemp, &env.SharedUserTemp,
+		fieldEnvironmentSharedUserTemp, source, provenance,
+	)
+	applyString(input.Environment.Source, &env.Source, fieldEnvironmentSource, source, provenance)
+	if trusted && input.Environment.Resources != nil {
+		env.Resources = cloneEnvironmentResources(*input.Environment.Resources)
+		provenance[fieldEnvironmentResources] = source
+	}
+	if trusted && input.Environment.AuthServices != nil {
+		env.AuthServices = cloneEnvironmentAuthServices(*input.Environment.AuthServices)
+		provenance[fieldEnvironmentAuthServices] = source
+	}
 }
 
 // applyRouteFile folds the [route] table in.

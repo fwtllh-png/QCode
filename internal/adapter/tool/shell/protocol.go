@@ -6,16 +6,20 @@ import (
 	"errors"
 	"fmt"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
 	"github.com/fwtllh-png/QCode/internal/adapter/tool/typed"
+	"github.com/fwtllh-png/QCode/internal/environment"
 	"github.com/fwtllh-png/QCode/internal/platform/process"
 	"github.com/fwtllh-png/QCode/internal/platform/tokenestimate"
 	"github.com/fwtllh-png/QCode/internal/security/controlmatrix"
 	"github.com/fwtllh-png/QCode/internal/security/egress"
+	"github.com/fwtllh-png/QCode/internal/security/goproxy"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
 )
 
@@ -48,6 +52,7 @@ type execCommandInput struct {
 	AllowLoopback  bool                         `json:"allow_loopback"`
 	Verification   string                       `json:"verification"`
 	CoveredPaths   []string                     `json:"covered_paths"`
+	Settle         string                       `json:"settle"`
 	Env            map[string]string            `json:"env"`
 }
 
@@ -66,6 +71,9 @@ type commandProtocol struct {
 	workspace *sandbox.Workspace
 	backend   sandbox.Backend
 	manager   *process.SessionManager
+	mu        sync.Mutex
+	networks  map[string]egress.ProcessSession
+	isolates  map[string]isolatedCommand
 }
 
 type protocolExecutor struct {
@@ -111,6 +119,9 @@ func registerProcessProtocol(
 				return err
 			}
 			if err := validateVerification(input); err != nil {
+				return err
+			}
+			if err := validateSettleMode(input); err != nil {
 				return err
 			}
 			return validateNetworkTargets(input.NetworkTargets)
@@ -229,33 +240,45 @@ func execCommandDescriptor() tool.Descriptor {
 			"process group; it does not keep the first sample blocked. " +
 			"If the command starts a server or daemon it never exits: verify " +
 			"its startup output and close the session instead of polling for exit. " +
-			"The workspace is read-only by default. write_paths permits only exact " +
-			"regular files whose parent directories already exist; it does not permit " +
-			"mkdir. To create files in missing directories, use file_write or " +
-			"file_apply directly because they safely create parent directories. " +
+			"The workspace is read-only by default. write_paths permits exact " +
+			"regular files whose parent directories already exist, or one existing " +
+			"workspace directory as a bounded write tree. It does not permit the " +
+			"workspace root, a missing directory, or mkdir of the declared path. " +
+			"Creating or deleting files inside an approved tree does not require " +
+			"listing each new file. To create files in missing directories that are " +
+			"not inside an approved tree, use file_write or file_apply because they " +
+			"safely create parent directories. " +
 			"Use $TMPDIR for compiler outputs and caches; absolute /tmp remains denied. " +
 			"Use cwd instead of prepending cd. Do not pipe verification commands " +
 			"through head or tail because POSIX pipelines report the last command's " +
 			"status; use output_tokens to bound output. To record validation evidence, " +
 			"declare verification (test, build, lint, or check) and exact workspace-relative " +
-			"covered_paths. Declared verification uses POSIX set -e; use && to chain checks. " +
+			"covered_paths; a verification command may declare write_paths for its " +
+			"artifacts, but any write to its own covered_paths invalidates the " +
+			"evidence after execution. Use settle=discard with write_paths for " +
+			"shadow verification: the command runs in a copy, writes are " +
+			"summarized and dropped, and the workspace stays untouched. " +
+			"Declared verification uses POSIX set -e; use && to chain checks. " +
 			"Only a natural exit on unchanged inputs can pass; running " +
 			"or terminated processes never count as passed verification. Git metadata " +
 			"is protected: use the dedicated git_add, git_commit, git_switch, " +
 			"git_fetch, git_pull, and git_push tools for Git mutations. " +
 			"Commands that access the network must declare every destination in " +
-			"network_targets; use method CONNECT for HTTPS targets. Undeclared " +
+			"network_targets. HTTPS control is at the CONNECT tunnel endpoint " +
+			"only; declared methods are enforced per method for plaintext HTTP. " +
+			"Undeclared " +
 			"egress is denied by the local managed proxy. Set allow_loopback only " +
 			"when the command binds or connects to a local development server; do " +
 			"not put localhost or port 0 in network_targets for an ephemeral local " +
-			"listener.",
+			"listener. Batch related probes into one chained command: a chain " +
+			"shares a single approval." + explorationInstructions,
 		DiscoveryTerms: []string{
 			"run command", "terminal", "build", "执行命令", "终端", "编译", "运行测试",
 		},
 		Visibility:   tool.VisibleModel,
 		IdentityKeys: []string{"command", "cwd"},
 		Capability:   tool.CapabilityProcess,
-		AccessMode: tool.AccessRead,
+		AccessMode:   tool.AccessRead,
 		ResourceResolver: tool.ResourceResolver{
 			Templates: []tool.ResourceTemplate{
 				{Kind: "repo", ID: ".", Access: tool.AccessRead, Tree: true},
@@ -305,6 +328,16 @@ func execCommandDescriptor() tool.Descriptor {
 					"type":  "array",
 					"items": map[string]any{"type": "string"},
 				},
+				"settle": map[string]any{
+					"type": "string",
+					"enum": []any{"apply", "discard"},
+					"description": "apply (default) settles isolated tree writes " +
+						"back into the workspace through the three-way merge. " +
+						"discard runs the command in a shadow copy: writes are " +
+						"summarized and dropped, so replace directives or stub " +
+						"dependencies never touch the workspace. Requires " +
+						"write_paths.",
+				},
 				"write_globs": map[string]any{
 					"type": "array",
 				},
@@ -322,6 +355,21 @@ func execCommandDescriptor() tool.Descriptor {
 
 func validateNetworkTargets(targets []tool.DeclaredNetworkTarget) error {
 	return tool.ValidateDeclaredNetworkTargets(targets)
+}
+
+func validateSettleMode(input execCommandInput) error {
+	switch input.Settle {
+	case "", "apply", "discard":
+	default:
+		return errors.New("settle must be apply or discard")
+	}
+	if input.Settle == "discard" && len(input.WritePaths) == 0 {
+		return errors.New(
+			"settle=discard requires write_paths: the discard mode isolates " +
+				"those trees and drops every write after summarizing it",
+		)
+	}
+	return nil
 }
 
 func writeStdinDescriptor() tool.Descriptor {
@@ -434,7 +482,6 @@ func (p *commandProtocol) execCommand(
 	ctx context.Context,
 	input execCommandInput,
 ) (tool.Result, error) {
-	started := time.Now()
 	if token := unsupportedPOSIXShellSyntax(input.Command); token != "" {
 		return unsupportedSyntaxResult(token), nil
 	}
@@ -462,19 +509,55 @@ func (p *commandProtocol) execCommand(
 		return tool.Result{}, fmt.Errorf("open cwd %q: %w", input.CWD, err)
 	}
 	defer directoryFile.Close()
-	writePaths, err := (&Tool{workspace: p.workspace}).resolveWritePaths(
+	workspace := p.workspace
+	sandboxBackend := p.backend
+	isolated, err := p.beginIsolatedCommand(
+		ctx, input.WritePaths, input.Settle == "discard",
+	)
+	if err != nil {
+		return tool.Result{}, tool.Precondition(tool.WithRecoveryHint(err, tool.RecoveryHint{
+			ErrorCategory:  "workspace_isolation_unavailable",
+			RequiredAction: "use_exact_write_paths",
+			RetryOriginal:  false,
+		}))
+	}
+	if isolated.session != nil {
+		workspace = isolated.workspace
+		sandboxBackend = isolated.backend
+		defer func() {
+			if isolated.session != nil {
+				_ = isolated.Close()
+			}
+		}()
+	}
+	directory, err = workspace.ResolveDirectory(input.CWD)
+	if err != nil {
+		return tool.Result{}, fmt.Errorf("resolve isolated cwd %q: %w", input.CWD, err)
+	}
+	_ = directoryFile.Close()
+	directoryFile, err = workspace.OpenDirectory(input.CWD)
+	if err != nil {
+		return tool.Result{}, fmt.Errorf("open isolated cwd %q: %w", input.CWD, err)
+	}
+	defer directoryFile.Close()
+	writePaths, err := (&Tool{workspace: workspace}).resolveWritePaths(
 		input.WritePaths,
 	)
 	if err != nil {
 		return tool.Result{}, fmt.Errorf("resolve command write paths: %w", err)
 	}
-	sandboxBackend, requireStrong := processSandbox(ctx, p.backend)
+	sandboxBackend, requireStrong := processSandbox(ctx, sandboxBackend)
 	command := input.Command
 	if input.Verification != "" {
 		command = "set -e\n" + command
 	}
 	if requireStrong {
 		command = wrapSandboxTempCommand(command)
+	}
+	if result, denied := p.preflightExecutables(
+		sandboxBackend, command, directory, input.CoveredPaths,
+	); denied {
+		return result, nil
 	}
 	identity := tool.InvocationIdentityFrom(ctx)
 	threadID := strings.TrimSpace(identity.ThreadID)
@@ -495,10 +578,74 @@ func (p *commandProtocol) execCommand(
 	if err != nil {
 		return tool.Result{}, err
 	}
+	authService := goproxy.ServiceFrom(ctx)
+	var priorAuth []environment.Fact
+	if authService != nil {
+		priorAuth = authService.Facts()
+	}
+	sessionTargets := resolveProcessNetworkTargets(sandboxBackend, input.NetworkTargets)
+	// PTY, background, and foreground exec share this path. v1 inherits
+	// user-declared environment network onto the Session Gate; empty model
+	// targets are not an implicit offline signal when a Grant exists, and a
+	// bound auth service itself keeps module fetches online (the contract:
+	// undeclared targets are offline only without grants, an auth service,
+	// and allow_loopback).
+	denyNetwork := len(sessionTargets) == 0 && !input.AllowLoopback &&
+		authService == nil
+	// Session channels gate the command's declared external targets. The
+	// GOPROXY rewrite does not need one when the stable workspace channel
+	// exists: its managed port is pre-authorized by the sandbox profile.
+	needSession := authService != nil &&
+		sandbox.BackendManagedProxyPort(sandboxBackend) == 0
+	network, err := openProcessNetwork(
+		sandboxBackend,
+		denyNetwork,
+		sessionTargets,
+		needSession,
+	)
+	if err != nil {
+		if result, ok := unsupportedSessionNetworkResult(err); ok {
+			return result, nil
+		}
+		return tool.Result{}, err
+	}
+	var sessionPort uint16
+	if network != nil {
+		sessionPort = network.Port()
+		if approver := egress.RuntimeApproverFrom(ctx); approver != nil {
+			network.Gate().SetRuntimeApprover(approver)
+		}
+	}
+	if authService != nil {
+		// Point GOPROXY at the stable workspace channel: the managed port is
+		// pre-authorized by the sandbox profile, the bound auth service
+		// enforces its own scope, and module fetches stop forcing
+		// allow_loopback (and its approval) onto otherwise offline-shaped
+		// commands. The per-command session port remains the fallback where
+		// no managed channel exists.
+		proxyListen := sessionPort
+		if managed := sandbox.BackendManagedProxyPort(sandboxBackend); managed != 0 {
+			proxyListen = managed
+		}
+		if proxyListen == 0 {
+			if result, ok := unsupportedSessionNetworkResult(fmt.Errorf(
+				"%w: %s",
+				egress.ErrProcessSessionUnsupported,
+				environment.CategoryBackendCapabilityUnsupported,
+			)); ok {
+				return result, nil
+			}
+		}
+		env = authService.RewriteProcessEnv(
+			env,
+			fmt.Sprintf("http://127.0.0.1:%d", proxyListen),
+		)
+	}
 	id, err := p.manager.Create(
 		context.WithoutCancel(ctx),
 		process.SessionOptions{
 			Command:             command,
+			DisplayCommand:      input.Command,
 			Dir:                 directory,
 			DirFile:             directoryFile,
 			Env:                 env,
@@ -513,13 +660,16 @@ func (p *commandProtocol) execCommand(
 			RequireSandbox:      requireStrong,
 			WorkspaceReadOnly:   true,
 			WorkspaceWritePaths: writePaths,
-			DenyNetwork:         len(input.NetworkTargets) == 0 && !input.AllowLoopback,
+			DenyNetwork:         denyNetwork,
+			SessionProxyPort:    sessionPort,
+			Network:             network,
 			DetachFromCaller:    true,
 		},
 	)
 	if err != nil {
 		return tool.Result{}, err
 	}
+	p.rememberNetwork(id, network)
 	wait, output, err := p.waitInitial(
 		ctx,
 		id,
@@ -530,6 +680,7 @@ func (p *commandProtocol) execCommand(
 	if err != nil {
 		teardownStarted := time.Now()
 		closeErr := p.manager.Close(id, threadID)
+		p.forgetNetwork(id)
 		tool.ReportTeardown(ctx, tool.TeardownReport{
 			Duration: time.Since(teardownStarted),
 		})
@@ -538,22 +689,12 @@ func (p *commandProtocol) execCommand(
 	wait.Data = output.String()
 	result := sessionResult(id, wait, outputTokens)
 	attachVerification(&result, evidence, wait)
-	status := "running"
-	if !wait.Running {
-		status = "completed"
-		if wait.ExitCode != 0 || wait.Terminated {
-			status = "failed"
-		}
-	} else {
+	if wait.Running {
 		result.Metadata["error_category"] = "process_still_running"
 		result.Metadata["required_action"] = "write_stdin"
 		result.Metadata["retry_original"] = false
 	}
-	result.Metadata["command_execution"] = map[string]any{
-		"command": input.Command, "status": status,
-		"exit_code": wait.ExitCode, "duration_ms": time.Since(started).Milliseconds(),
-		"output_tail": result.Content,
-	}
+	attachCommandExecution(&result, id, wait.SessionRead)
 	if omitted := output.Omitted(); omitted > 0 {
 		result.Metadata["omitted_bytes"] = omitted
 	}
@@ -566,12 +707,39 @@ func (p *commandProtocol) execCommand(
 			input.WritePaths...,
 		)
 	}
+	if len(input.Env) != 0 {
+		names := make([]string, 0, len(input.Env))
+		for name := range input.Env {
+			names = append(names, name)
+		}
+		slices.Sort(names)
+		result.Metadata["declared_env"] = names
+	}
 	if receipts := declaredEgressReceipts(input.NetworkTargets); len(receipts) != 0 {
 		result.Metadata["egress_receipts"] = receipts
 	}
+	attachMissingCapability(
+		&result,
+		p.sessionEnvironmentFacts(ctx, id, priorAuth),
+	)
+	if isolated.session != nil {
+		attachIsolatedCWD(&result, isolated.session)
+	}
 	if !wait.Running {
 		_ = p.manager.Close(id, threadID)
+		p.forgetNetwork(id)
 		delete(result.Metadata, "session_id")
+		settleErr := p.settleIsolated(ctx, isolated, &result)
+		isolated.session = nil
+		if settleErr != nil {
+			return result, settleErr
+		}
+		// Judge verification after settlement so isolated writes that land
+		// on covered paths are visible to the digest comparison.
+		invalidateVerificationOnCoveredWrites(&result, evidence, p.workspace.Root())
+	} else if isolated.session != nil {
+		p.storeIsolate(id, isolated)
+		isolated.session = nil
 	}
 	return result, nil
 }
@@ -764,22 +932,33 @@ func (p *commandProtocol) writeStdin(
 	identity := tool.InvocationIdentityFrom(ctx)
 	threadID := identity.ThreadID
 	if input.Close {
-		if err := sessionLookupHint(p.manager.Close(input.SessionID, threadID)); err != nil {
+		read, err := p.manager.CloseWithResult(input.SessionID, threadID)
+		p.forgetNetwork(input.SessionID)
+		if err := sessionLookupHint(err); err != nil {
 			return tool.Result{}, err
 		}
-		return tool.Result{
+		result := tool.Result{
 			Content: "closed",
 			Metadata: map[string]any{
 				"session_id":        input.SessionID,
 				"source_session_id": input.SessionID,
-				"terminated":        true,
+				"terminated":        read.Terminated,
 				"running":           false,
 				"closed":            true,
 			},
-		}, nil
+		}
+		attachCommandExecution(&result, input.SessionID, read)
+		if settleErr := p.settleStoredIsolate(ctx, input.SessionID, &result); settleErr != nil {
+			return result, settleErr
+		}
+		return result, nil
 	}
 	if (input.Rows == 0) != (input.Cols == 0) {
 		return tool.Result{}, errors.New("rows and cols must be supplied together")
+	}
+	var priorAuth []environment.Fact
+	if service := goproxy.ServiceFrom(ctx); service != nil {
+		priorAuth = service.Facts()
 	}
 	if input.Rows != 0 {
 		if err := sessionLookupHint(p.manager.Resize(
@@ -828,6 +1007,7 @@ func (p *commandProtocol) writeStdin(
 		return tool.Result{}, sessionLookupHint(err)
 	}
 	result := sessionResult(input.SessionID, wait, outputTokens)
+	attachCommandExecution(&result, input.SessionID, wait.SessionRead)
 	if collected != nil {
 		if omitted := collected.Omitted(); omitted > 0 {
 			result.Metadata["omitted_bytes"] = omitted
@@ -838,16 +1018,25 @@ func (p *commandProtocol) writeStdin(
 		result.Metadata["required_action"] = "write_stdin"
 		result.Metadata["retry_original"] = false
 	}
+	attachMissingCapability(
+		&result,
+		p.sessionEnvironmentFacts(ctx, input.SessionID, priorAuth),
+	)
 	if !wait.Running {
 		teardownStarted := time.Now()
 		closeErr := p.manager.Close(input.SessionID, threadID)
+		p.forgetNetwork(input.SessionID)
 		tool.ReportTeardown(ctx, tool.TeardownReport{
 			Duration: time.Since(teardownStarted),
 		})
 		if closeErr != nil {
+			_ = p.settleStoredIsolate(ctx, input.SessionID, &result)
 			return result, closeErr
 		}
 		delete(result.Metadata, "session_id")
+		if err := p.settleStoredIsolate(ctx, input.SessionID, &result); err != nil {
+			return result, err
+		}
 	}
 	return result, nil
 }
@@ -941,6 +1130,31 @@ func sessionResult(
 		IsError:  !wait.Running && (wait.ExitCode != 0 || wait.Terminated),
 		Metadata: metadata,
 	}
+}
+
+func attachCommandExecution(result *tool.Result, id string, read process.SessionRead) {
+	status := "started"
+	if !read.Running {
+		switch {
+		case read.ProcessTimedOut:
+			status = "timed_out"
+		case read.Terminated:
+			status = "canceled"
+		case read.ExitCode != 0:
+			status = "failed"
+		default:
+			status = "completed"
+		}
+	}
+	execution := map[string]any{
+		"command": read.Command, "call_id": read.CallID, "session_id": id,
+		"status": status, "output_tail": result.Content,
+		"duration_ms": time.Since(read.CreatedAt).Milliseconds(),
+	}
+	if !read.Running {
+		execution["exit_code"] = read.ExitCode
+	}
+	result.Metadata["command_execution"] = execution
 }
 
 func limitProcessOutput(value string, limit int) (string, int) {

@@ -79,7 +79,8 @@ Child 的实际执行仍是普通 Runtime Turn，不建立后台 WorkGraph 镜�
 | Agent | `internal/runtime/agent` | Turn Kernel、Engine、Context、Prompt |
 | Adapter | `internal/adapter` | Provider、Tool、MCP、Skill |
 | Security | `internal/security` | Policy、Permission、Constitution、Credential、Sandbox |
-| Orchestration | `internal/orchestration` | Subagent、Admission/Budget、Worktree、Chat Merge |
+| Environment | `internal/environment` | 执行环境契约、ResourceRequest 夹具、平台能力矩阵 |
+| Orchestration | `internal/orchestration` | Subagent、Admission/Budget、Worktree、Chat Merge、Exec Settle |
 | Persistence | `internal/persist` | SQLite、CAS、Event、Session、Snapshot、Journal |
 | Observability | `internal/observability` | Receipt、Usage、Trace、Diagnostics、Verification |
 | Platform | `internal/platform` | Process、PTY、Repository Walk、OS 差异 |
@@ -179,7 +180,8 @@ config
 - `modules_core.go`：Config、Persistence、Platform 和 Builtin Tool；
 - `modules_provider.go`：Model Catalog、Route 与 Provider；
 - `modules_security.go`：Policy、Permission、Journal、Guard Factory；
-- `modules_orchestration.go`：Subagent、Admission/Budget、Worktree 与 Chat Merge；
+- `modules_orchestration.go`：Subagent、Admission/Budget、Worktree、Chat Merge
+  与 Exec Settle；
 - `modules_observability.go`：Trace/Telemetry；
 - `modules_runtime.go`：Engine Seed、ThreadManager 和 Application Runtime；
 - `module_background.go`：MCP Refresh、Runtime Recovery 与 Prewarm；
@@ -374,6 +376,7 @@ Workspace Reconciliation 仍由 Context Package 定义。
 - `store_window.go`：Observed Prefill 与 Pending Delta；
 - `workingset_workingset.go`：来源合并、衰减和 Critical Path；
 - `evidence_evidence.go`：Read、Change、Verification、Diagnostic、Handle；
+- `continuity.go`：已确认终答与工具位点的 mandatory 胶囊；
 - `compact_failures.go`：有界失败账本；
 - `plan.go`：结构化 Plan。
 
@@ -516,11 +519,36 @@ Model Tool Call
 - `internal/security/constitution`：不可被普通配置覆盖的仓库规则；
 - `internal/security/permissions`：有 Scope 的持久 Grant；
 - `internal/security/sandbox`：平台 Backend 与 Fail-closed；
+- [Sandbox 执行环境重构方案](./sandbox-execution-environment-plan.md)：把现行过滤模型
+  换成环境契约的实现合同，含与 Authority / Control Matrix 的编译表和 EDS/Go 开工实例；
+  P1a 已把缺失能力回执接到 `error_category` / `required_action`；P1b 已把 Darwin
+  进程出网改成每 Session 端口和 Session Gate，Linux/Windows 保持禁网并报告
+  `unsupported`；P2a 已落地通用资源、声明接入、`v1` 准备链和显式
+  `native` / `shared_user_temp`；可信配置可声明精确资源，Go 适配器只是可选翻译器，
+  证书发现迁入准备器，`write_paths` 可对已存在子目录做有界树写，
+  带写树的 `exec_command` 在隔离工作区运行并经 Journal 三方结算，
+  P3 已把 GOPROXY 认证协议接到 Session loopback，长期凭证不进进程；第二种
+  协议未开放；P5 已让主/子 Agent、PTY 与后台共用 `v1` 契约，空
+  `network_targets` 只继承用户声明的环境网络，不再从宿主继承语言变量，
+  也不把 Workspace 进程 Gate 当累积面；P6 已把产品默认改为 `v1` + `native`，
+  `shared_user_temp` 与认证服务仍默认关，子 Agent 仍 isolated；
+- [Sandbox 审计修订与重构方案](./sandbox-refactor-plan.md)：基于 2026-09-21
+  实机 session 审计的实施修订合同；定位当前实现与环境契约的四处结构性
+  偏离（事前申报闸门、语言特化入通用层、快照式授权、拒绝不可见），
+  给出 WS1-WS8 工作流与三阶段验收标准；Phase 1 含隔离后端继承、
+  CONNECT 校验下沉、认证绑定失败回执、input 超时状态机修复；
+- `internal/security/goproxy`：GOPROXY 协议服务，凭证留在宿主；
 - `internal/security/egress`：网络目标与 Managed Backend；
+  未批准目标带 `network_target_unapproved` 结构化回执；
+  origin-form 可分发给绑定的协议处理，CONNECT 仍走 Session Gate；
+  连接前审批用 `AuthorizeBeforeConnect`，探测 `Authorize` 不补授权；
 - `internal/persist/workspacejournal`：Before/After、Commit、Suspend、Rollback。
 
-`exec_command` 写权限只覆盖显式 `write_paths`。待创建文件必须位于已存在父目录，Guard
-在执行前 Preflight，Strong Sandbox 只物化最小占位；目录、Symlink 和身份漂移均拒绝。
+`exec_command` 写权限只覆盖显式 `write_paths`。待创建文件必须位于已存在父目录，
+已存在子目录可做有界树写。Guard 在执行前 Preflight；Strong Sandbox 对精确文件
+物化最小占位，对已存在目录授予树写。带写树的命令优先在隔离执行工作区运行，
+退出后经 File Broker / Journal 三方结算。工作区根、缺失目录、Symlink、受保护
+元数据和身份漂移均拒绝。
 
 关键测试：
 
@@ -573,6 +601,8 @@ Terminal Envelope
 - `internal/runtime/app/extension/terminal_measurement.go`：冻结 Usage/Latency；
 - `internal/runtime/app/extension/tool_execution_receipt.go`：工具分类统计；
 - `internal/persist/state/turnstate/store.go`：SQLite 原子实现；
+- `internal/persist/state/cas`：`Release` 保持零引用对象；`CollectUnreferenced`
+  只按引用计数回收，状态存储 Open 与 Context Rebase / 撤回后调用；
 - `internal/runtime/app/persistence/repositories.go`：Durable Repository 装配。
 
 ### 10.2 Runtime Recovery
@@ -581,7 +611,9 @@ Terminal Envelope
 
 1. `runtime_start.go`：Prepared Runtime 与 `Runtime.Start`；
 2. `eventhub.TerminalPublisher.Recover`：Terminal Outbox；
-3. `turn_recovery.go`：Recovery Source 校验；
+3. `turn_recovery.go`：Recovery Source 校验；Turn 级事件经
+   `event_index_turn_sequence` 回放，不扫描整段 Event Log；
+
 4. `startup_terminal.go`：启动期失败的终态收敛；
 5. `wire/turn_coordinator.go`：Durable Coordinator、Turn Lease 和 Fact Restore；
 6. `turnkernel.RestoreTurnCoordinator`：校验 Sequence/Digest、Requeue Running Effect；
@@ -619,7 +651,8 @@ go test ./internal/persist/...
 
 Child Authority 是父级 Authority 与 Role Policy 的交集。默认 Token Budget 按父级剩余
 容量和并发槽位派生；嵌套 Child 只能继续收窄。写入型并发 Child 使用 Worktree，合并由
-`orchestration/chatmerge.Service` 处理。
+`orchestration/chatmerge.Service` 处理。带写树的 `exec_command` 使用
+`orchestration/execsettle` 做命令级隔离工作区，结算仍走同一套 Broker / Journal。
 
 ### 11.2 为什么没有后台编排平面
 
@@ -632,6 +665,7 @@ Child Authority 是父级 Authority 与 Role Policy 的交集。默认 Token Bud
 ```bash
 go test ./internal/orchestration/subagent ./internal/orchestration/admission
 go test ./internal/orchestration/budget ./internal/orchestration/chatmerge
+go test ./internal/orchestration/execsettle
 go test -run 'TestChildAgent' ./internal/runtime/app/wire
 ```
 

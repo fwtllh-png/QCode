@@ -201,11 +201,21 @@ func TestWebRedirectPortRepositoryDeny(t *testing.T) {
 			RequestID: request.RequestID, Scope: policy.ApprovalOnce, Approved: true,
 		})
 	})
-	_, err := fetchNetwork(g, "redirect-denied-port", "https://source.example/data")
+	result, err := fetchNetwork(g, "redirect-denied-port", "https://source.example/data")
 	var denied *policy.DecisionError
-	if !errors.As(err, &denied) || denied.Code != "repository_rule_denied" ||
-		targetHits != 0 || redirectApprovals != 0 {
-		t.Fatalf("err=%v target_hits=%d redirect_approvals=%d", err, targetHits, redirectApprovals)
+	switch {
+	case errors.As(err, &denied) && denied.Code == "repository_rule_denied":
+		// Guard-level denial before any fetch.
+	case err == nil && result.IsError &&
+		result.Metadata["error_category"] == "egress_denied" &&
+		result.Metadata["host"] == "cdn.example":
+		// Connect-time settled denial: the repository deny rule fires
+		// inside the gated transport before a human is ever asked.
+	default:
+		t.Fatalf("err=%v result=%+v", err, result)
+	}
+	if targetHits != 0 || redirectApprovals != 0 {
+		t.Fatalf("target_hits=%d redirect_approvals=%d", targetHits, redirectApprovals)
 	}
 }
 
@@ -336,8 +346,17 @@ func TestWebRedirectPermissionIsolation(t *testing.T) {
 			result, err := fetchNetwork(g, "redirect", "https://source.example/data")
 			if scenario.deny {
 				var denied *policy.DecisionError
-				if !errors.As(err, &denied) || denied.Code != "repository_rule_denied" || hits != before {
+				if errors.As(err, &denied) && denied.Code == "repository_rule_denied" && hits == before {
+					// Guard-level denial before any fetch.
+				} else if err != nil || !result.IsError || hits != before {
 					t.Fatalf("redirect deny: err=%v is_error=%t hits_delta=%d", err, result.IsError, hits-before)
+				} else if result.Metadata["error_category"] != "egress_denied" ||
+					result.Metadata["host"] != "denied.example" {
+					// Connect-time settled denial: the redirect target fails
+					// inside the gated transport with a structured egress
+					// denial naming the host; the denied host is never
+					// fetched.
+					t.Fatalf("redirect deny metadata = %v", result.Metadata)
 				}
 			} else if err != nil || result.IsError || hits-before != 1 {
 				t.Fatalf("approved redirect: err=%v is_error=%t hits_delta=%d", err, result.IsError, hits-before)

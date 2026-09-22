@@ -868,6 +868,11 @@ func (r *SessionService) deleteSession(
 			)
 		}
 	}
+	if maintenance, ok := r.sessionLifecycle.(interface{ Maintain(context.Context) error }); ok {
+		if err := maintenance.Maintain(ctx); err != nil {
+			r.logger.Error("maintain deleted Session storage", "session_id", current.SessionID, "error", err)
+		}
+	}
 	return result, nil
 }
 

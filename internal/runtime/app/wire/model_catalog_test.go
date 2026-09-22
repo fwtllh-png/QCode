@@ -55,6 +55,51 @@ func TestRuntimeModelCatalogMarksOnlySelectableProviderModelsHot(t *testing.T) {
 	}
 }
 
+func TestRuntimeGLMModelsShareSelectableConnection(t *testing.T) {
+	resolver, err := model.NewResolver(model.DefaultCatalog())
+	if err != nil {
+		t.Fatal(err)
+	}
+	modelIDs := []string{"glm-5.3", "glm-5.3-flash", "glm-5.3-flashx"}
+	for _, selectedID := range modelIDs {
+		t.Run(selectedID, func(t *testing.T) {
+			selected, err := resolver.Resolve(model.RouteRequest{
+				ProviderID: "glm", ModelID: selectedID,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			selectable, err := runtimeSelectableRoutes(selected, true, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			capabilities := selectedModelCapabilities(selected)
+			_, catalog := runtimeModelCatalog(selected, capabilities, selectable)
+			profiles, mutable := runtimeProfileModels(catalog, "glm", capabilities)
+			if !slices.Contains(mutable, "model") {
+				t.Fatalf("model selection is not mutable: %v", mutable)
+			}
+			for _, id := range modelIDs {
+				key := model.RouteKey("glm", id)
+				route, ok := selectable[key]
+				if !ok {
+					t.Fatalf("GLM model %q is not selectable from %q", id, selectedID)
+				}
+				if route.ConnectionID() != selected.ConnectionID() ||
+					route.Credential() != selected.Credential() ||
+					route.Model().WireID != id {
+					t.Fatalf("GLM model %q changed connection or wire ID: %+v", id, route)
+				}
+				profile, ok := profiles[key]
+				if !ok || profile.Availability != "available" ||
+					profile.SelectionMode != "hot" {
+					t.Fatalf("GLM model %q is missing from the selectable profile catalog: %+v", id, profile)
+				}
+			}
+		})
+	}
+}
+
 func TestRuntimeSelectableRoutesKeepsCustomRouteFixed(t *testing.T) {
 	descriptor := &model.Model{
 		ID: "future-model", CanonicalID: "vendor/future-model",

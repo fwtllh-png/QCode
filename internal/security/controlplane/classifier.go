@@ -77,8 +77,9 @@ func (c *Classifier) Classify(path string) (Classification, bool, error) {
 	return Classification{Relative: relative}, false, nil
 }
 
-// CheckWrite rejects writes to protected metadata. Tree writes are rejected
-// because they can create a protected child after authorization.
+// CheckWrite rejects writes to protected metadata. Tree writes of the
+// workspace root stay unbounded and are rejected; existing subdirectories
+// are allowed as bounded write trees.
 func (c *Classifier) CheckWrite(path string, tree bool) error {
 	classification, protected, err := c.Classify(path)
 	if err != nil {
@@ -92,7 +93,7 @@ func (c *Classifier) CheckWrite(path string, tree bool) error {
 			classification.Relative,
 		)
 	}
-	if tree {
+	if tree && (classification.Relative == "." || classification.Relative == "") {
 		return fmt.Errorf(
 			"%w: unbounded workspace tree write %s",
 			ErrProtected,

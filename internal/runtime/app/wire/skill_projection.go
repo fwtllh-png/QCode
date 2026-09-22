@@ -14,6 +14,9 @@ func selectTurnSkills(
 	if catalog == nil {
 		return nil, agentengine.SkillSelectionMetrics{}, nil
 	}
+	if err := catalog.Refresh(context.Background()); err != nil {
+		return nil, agentengine.SkillSelectionMetrics{}, err
+	}
 	selection, err := catalog.Select(
 		context.Background(),
 		skill.SelectionRequest{

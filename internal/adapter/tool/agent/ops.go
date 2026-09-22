@@ -159,7 +159,9 @@ func (o *operation) Descriptor() tool.Descriptor {
 			Name: "followup_task",
 			Description: "Send a follow-up turn to a resident child agent. " +
 				"Fails if the agent is running, closed, or missing. " +
-				"Interrupt or wait for completion before following up.",
+				"Use wait_agent until terminal before following up. " +
+				"To stop current work first, call interrupt_agent, then wait_agent, then followup_task; " +
+				"a cancellation request alone does not settle the turn.",
 			DiscoveryTerms: []string{"follow up agent", "继续子任务", "追加任务"},
 			Visibility:     o.visibility(), Capability: tool.CapabilityWrite,
 			AccessMode: tool.AccessWrite, ParallelPolicy: tool.ParallelSerial,
@@ -639,6 +641,7 @@ func (t *Tool) interrupt(ctx context.Context, input operationInput) (tool.Result
 	}
 	body := map[string]any{
 		"agent_id": agentID, "previous_status": string(prev), "status": string(status),
+		"next_action": "Use wait_agent to confirm terminal status before followup_task.",
 	}
 	content, err := json.Marshal(body)
 	if err != nil {

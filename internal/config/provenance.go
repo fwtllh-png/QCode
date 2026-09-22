@@ -9,32 +9,34 @@ const (
 )
 
 const (
-	fieldOperationBuffer      = "runtime.operation_buffer"
-	fieldEventHistory         = "runtime.event_history"
-	fieldSubscriberBuffer     = "runtime.subscriber_buffer"
-	fieldStateDataDir         = "state.data_dir"
-	fieldStateBusyTimeout     = "state.busy_timeout"
-	fieldStateRetention       = "state.event_retention"
-	fieldMemoryEnabled        = "memory.enabled"
-	fieldMemoryPath           = "memory.path"
-	fieldMemoryMaxCandidates  = "memory.max_candidates"
-	fieldMemoryMaxPromptBytes = "memory.max_prompt_bytes"
-	fieldMemorySemanticRerank = "memory.semantic_rerank"
-	fieldIndexEnabled         = "context.index.enabled"
-	fieldIndexMaxBytes        = "context.index.max_file_bytes"
-	fieldIndexMaxFiles        = "context.index.max_files"
-	fieldIndexSignatureMax    = "context.index.signature_max_bytes"
-	fieldIndexDocstringMax    = "context.index.docstring_max_bytes"
-	fieldIndexReferenceMax    = "context.index.reference_max_count"
-	fieldIndexRankDamping     = "context.index.rank_damping_factor"
-	fieldIndexRankIterations  = "context.index.rank_iteration_limit"
-	fieldIndexRankConvergence = "context.index.rank_convergence_threshold"
-	fieldIndexImpactDepth     = "context.index.impact_max_depth"
-	fieldIndexImpactResults   = "context.index.impact_max_results"
-	fieldLSPResidentEnabled   = "context.lsp.resident_enabled"
-	fieldLSPIdleTimeout       = "context.lsp.idle_timeout"
-	fieldLSPMaxServers        = "context.lsp.max_servers"
-	fieldLSPCacheCapacity     = "context.lsp.cache_capacity"
+	fieldOperationBuffer       = "runtime.operation_buffer"
+	fieldEventHistory          = "runtime.event_history"
+	fieldSubscriberBuffer      = "runtime.subscriber_buffer"
+	fieldStateDataDir          = "state.data_dir"
+	fieldStateBusyTimeout      = "state.busy_timeout"
+	fieldStateRetention        = "state.event_retention"
+	fieldDeletedEventRetention = "state.deleted_event_retention"
+	fieldArchiveDeletedEvents  = "state.archive_deleted_events"
+	fieldMemoryEnabled         = "memory.enabled"
+	fieldMemoryPath            = "memory.path"
+	fieldMemoryMaxCandidates   = "memory.max_candidates"
+	fieldMemoryMaxPromptBytes  = "memory.max_prompt_bytes"
+	fieldMemorySemanticRerank  = "memory.semantic_rerank"
+	fieldIndexEnabled          = "context.index.enabled"
+	fieldIndexMaxBytes         = "context.index.max_file_bytes"
+	fieldIndexMaxFiles         = "context.index.max_files"
+	fieldIndexSignatureMax     = "context.index.signature_max_bytes"
+	fieldIndexDocstringMax     = "context.index.docstring_max_bytes"
+	fieldIndexReferenceMax     = "context.index.reference_max_count"
+	fieldIndexRankDamping      = "context.index.rank_damping_factor"
+	fieldIndexRankIterations   = "context.index.rank_iteration_limit"
+	fieldIndexRankConvergence  = "context.index.rank_convergence_threshold"
+	fieldIndexImpactDepth      = "context.index.impact_max_depth"
+	fieldIndexImpactResults    = "context.index.impact_max_results"
+	fieldLSPResidentEnabled    = "context.lsp.resident_enabled"
+	fieldLSPIdleTimeout        = "context.lsp.idle_timeout"
+	fieldLSPMaxServers         = "context.lsp.max_servers"
+	fieldLSPCacheCapacity      = "context.lsp.cache_capacity"
 
 	fieldRepoMapEnabled        = "context.repo_map.enabled"
 	fieldRepoMapMaxBytes       = "context.repo_map.max_bytes"
@@ -128,6 +130,13 @@ const (
 	fieldJournalDurable        = "execution.journal.durable"
 	fieldJournalRecoverOnStart = "execution.journal.recover_on_start"
 
+	fieldEnvironmentContract       = "execution.environment.contract"
+	fieldEnvironmentProfile        = "execution.environment.profile"
+	fieldEnvironmentSharedUserTemp = "execution.environment.shared_user_temp"
+	fieldEnvironmentSource         = "execution.environment.source"
+	fieldEnvironmentResources      = "execution.environment.resources"
+	fieldEnvironmentAuthServices   = "execution.environment.auth_services"
+
 	fieldVisionEnabled    = "vision.enabled"
 	fieldVisionProvider   = "vision.provider"
 	fieldVisionModel      = "vision.model"
@@ -160,32 +169,34 @@ type Snapshot struct {
 
 func defaultProvenance() map[string]Source {
 	return map[string]Source{
-		fieldOperationBuffer:      SourceDefault,
-		fieldEventHistory:         SourceDefault,
-		fieldSubscriberBuffer:     SourceDefault,
-		fieldStateDataDir:         SourceDefault,
-		fieldStateBusyTimeout:     SourceDefault,
-		fieldStateRetention:       SourceDefault,
-		fieldMemoryEnabled:        SourceDefault,
-		fieldMemoryPath:           SourceDefault,
-		fieldMemoryMaxCandidates:  SourceDefault,
-		fieldMemoryMaxPromptBytes: SourceDefault,
-		fieldMemorySemanticRerank: SourceDefault,
-		fieldIndexEnabled:         SourceDefault,
-		fieldIndexMaxBytes:        SourceDefault,
-		fieldIndexMaxFiles:        SourceDefault,
-		fieldIndexSignatureMax:    SourceDefault,
-		fieldIndexDocstringMax:    SourceDefault,
-		fieldIndexReferenceMax:    SourceDefault,
-		fieldIndexRankDamping:     SourceDefault,
-		fieldIndexRankIterations:  SourceDefault,
-		fieldIndexRankConvergence: SourceDefault,
-		fieldIndexImpactDepth:     SourceDefault,
-		fieldIndexImpactResults:   SourceDefault,
-		fieldLSPResidentEnabled:   SourceDefault,
-		fieldLSPIdleTimeout:       SourceDefault,
-		fieldLSPMaxServers:        SourceDefault,
-		fieldLSPCacheCapacity:     SourceDefault,
+		fieldOperationBuffer:       SourceDefault,
+		fieldEventHistory:          SourceDefault,
+		fieldSubscriberBuffer:      SourceDefault,
+		fieldStateDataDir:          SourceDefault,
+		fieldStateBusyTimeout:      SourceDefault,
+		fieldStateRetention:        SourceDefault,
+		fieldDeletedEventRetention: SourceDefault,
+		fieldArchiveDeletedEvents:  SourceDefault,
+		fieldMemoryEnabled:         SourceDefault,
+		fieldMemoryPath:            SourceDefault,
+		fieldMemoryMaxCandidates:   SourceDefault,
+		fieldMemoryMaxPromptBytes:  SourceDefault,
+		fieldMemorySemanticRerank:  SourceDefault,
+		fieldIndexEnabled:          SourceDefault,
+		fieldIndexMaxBytes:         SourceDefault,
+		fieldIndexMaxFiles:         SourceDefault,
+		fieldIndexSignatureMax:     SourceDefault,
+		fieldIndexDocstringMax:     SourceDefault,
+		fieldIndexReferenceMax:     SourceDefault,
+		fieldIndexRankDamping:      SourceDefault,
+		fieldIndexRankIterations:   SourceDefault,
+		fieldIndexRankConvergence:  SourceDefault,
+		fieldIndexImpactDepth:      SourceDefault,
+		fieldIndexImpactResults:    SourceDefault,
+		fieldLSPResidentEnabled:    SourceDefault,
+		fieldLSPIdleTimeout:        SourceDefault,
+		fieldLSPMaxServers:         SourceDefault,
+		fieldLSPCacheCapacity:      SourceDefault,
 
 		fieldRepoMapEnabled:                          SourceDefault,
 		fieldRepoMapMaxBytes:                         SourceDefault,
@@ -276,6 +287,13 @@ func defaultProvenance() map[string]Source {
 
 		fieldJournalDurable:        SourceDefault,
 		fieldJournalRecoverOnStart: SourceDefault,
+
+		fieldEnvironmentContract:       SourceDefault,
+		fieldEnvironmentProfile:        SourceDefault,
+		fieldEnvironmentSharedUserTemp: SourceDefault,
+		fieldEnvironmentSource:         SourceDefault,
+		fieldEnvironmentResources:      SourceDefault,
+		fieldEnvironmentAuthServices:   SourceDefault,
 
 		fieldVisionEnabled:    SourceDefault,
 		fieldVisionProvider:   SourceDefault,

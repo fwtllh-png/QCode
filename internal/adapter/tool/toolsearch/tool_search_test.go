@@ -211,3 +211,40 @@ func TestConcurrentToolSearchSharesMaterializationTransition(t *testing.T) {
 type toolSearchError struct{ message string }
 
 func (e *toolSearchError) Error() string { return e.message }
+
+func TestToolSearchEnabledFilterIsInvocationScoped(t *testing.T) {
+	registry := tool.NewRegistry(nil, nil)
+	if err := toolsearch.Register(registry); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"alpha_inspect", "beta_inspect"} {
+		if err := registry.Register(stubExec{name: name, desc: "inspect"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, allowed := range []string{"alpha_inspect", "beta_inspect"} {
+		t.Run(allowed, func(t *testing.T) {
+			t.Parallel()
+			ctx := toolsearch.WithEnabled(t.Context(), func(entry tool.CatalogEntrySnapshot) bool {
+				return entry.Name == allowed
+			})
+			for range 4 {
+				result, err := tooltest.Execute(ctx, registry, tool.Call{
+					Name: toolsearch.ToolName, Arguments: json.RawMessage(`{"query":"inspect"}`),
+				})
+				if err != nil || result.IsError {
+					t.Fatalf("search=%+v err=%v", result, err)
+				}
+				var body struct {
+					Matches []struct{ Name string } `json:"matches"`
+				}
+				if err := json.Unmarshal([]byte(result.Content), &body); err != nil {
+					t.Fatal(err)
+				}
+				if len(body.Matches) != 1 || body.Matches[0].Name != allowed {
+					t.Fatalf("invocations shared enablement: %s", result.Content)
+				}
+			}
+		})
+	}
+}

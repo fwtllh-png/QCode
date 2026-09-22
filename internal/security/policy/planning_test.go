@@ -1,6 +1,7 @@
 package policy
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
@@ -59,6 +60,50 @@ func TestPlanningStateIsResetBetweenTurns(t *testing.T) {
 	}})
 	if decision := runtime.Evaluate(write); decision.Code != "plan_required" {
 		t.Fatalf("next turn decision = %+v", decision)
+	}
+}
+
+func TestDeclaredVerificationDowngradesPlanGateToApproval(t *testing.T) {
+	runtime := DefaultRuntime(ModeAct, PermissionBypass)
+	runtime.ConfigurePlanning(PlanningRequired)
+	verification := planningInvocation("exec_command", tool.CapabilityProcess, []tool.Resource{
+		{Kind: "process", ID: "workspace", Access: tool.AccessRead, Tree: true},
+		{Kind: "file", Path: "bin/app", Access: tool.AccessWrite},
+	})
+	verification.Arguments = json.RawMessage(
+		`{"command":"go build -o bin/app ./...","verification":"build",` +
+			`"covered_paths":["cmd/app.go"],"write_paths":["bin/app"]}`,
+	)
+	decision := runtime.Evaluate(verification)
+	if decision.Action != ActionAsk || decision.Code != "plan_verification" {
+		t.Fatalf("declared verification decision = %+v", decision)
+	}
+	// Undeclared process commands still hit the hard plan gate.
+	plain := planningInvocation("exec_command", tool.CapabilityProcess, []tool.Resource{
+		{Kind: "process", ID: "workspace", Access: tool.AccessRead, Tree: true},
+		{Kind: "file", Path: "bin/app", Access: tool.AccessWrite},
+	})
+	plain.Arguments = json.RawMessage(
+		`{"command":"go build -o bin/app ./...","write_paths":["bin/app"]}`,
+	)
+	if decision := runtime.Evaluate(plain); decision.Code != "plan_required" {
+		t.Fatalf("undeclared process decision = %+v", decision)
+	}
+	// Incomplete declarations (kind without covered paths) do not downgrade.
+	incomplete := planningInvocation("exec_command", tool.CapabilityProcess, []tool.Resource{
+		{Kind: "process", ID: "workspace", Access: tool.AccessRead, Tree: true},
+		{Kind: "file", Path: "bin/app", Access: tool.AccessWrite},
+	})
+	incomplete.Arguments = json.RawMessage(
+		`{"command":"go build -o bin/app ./...","verification":"build",` +
+			`"write_paths":["bin/app"]}`,
+	)
+	if decision := runtime.Evaluate(incomplete); decision.Code != "plan_required" {
+		t.Fatalf("incomplete declaration decision = %+v", decision)
+	}
+	runtime.SubmitPlan()
+	if decision := runtime.Evaluate(verification); decision.Action == ActionAsk {
+		t.Fatalf("submitted plan still asks: %+v", decision)
 	}
 }
 

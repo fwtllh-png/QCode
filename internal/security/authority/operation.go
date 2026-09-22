@@ -58,6 +58,10 @@ const (
 	NamespaceSandboxHome    ResourceNamespace = "sandbox_home"
 	NamespaceBrokerArtifact ResourceNamespace = "broker_artifact"
 	NamespaceHostToolchain  ResourceNamespace = "host_toolchain"
+	NamespaceHostConfig     ResourceNamespace = "host_config"
+	NamespaceCache          ResourceNamespace = "cache"
+	NamespaceSharedUserTemp ResourceNamespace = "shared_user_temp"
+	NamespaceCredential     ResourceNamespace = "credential"
 	NamespaceControlState   ResourceNamespace = "control_state"
 	NamespaceNetwork        ResourceNamespace = "network"
 	NamespaceProcess        ResourceNamespace = "process"
@@ -227,8 +231,13 @@ func BuildExecutionOperation(input OperationInput) (ExecutionOperation, error) {
 		case NamespaceNetwork:
 			networkTargets = append(networkTargets, resource.ID)
 		case NamespaceWorkspace, NamespaceSandboxHome, NamespaceBrokerArtifact,
-			NamespaceHostToolchain, NamespaceControlState:
+			NamespaceHostToolchain, NamespaceCache, NamespaceSharedUserTemp,
+			NamespaceControlState:
 			fileDigests = append(fileDigests, digest)
+		case NamespaceHostConfig:
+			if resource.Kind != "env" {
+				fileDigests = append(fileDigests, digest)
+			}
 		}
 	}
 	if len(networkTargets) != 0 {
@@ -387,21 +396,27 @@ func (r Resource) Validate() error {
 	}
 	switch r.Namespace {
 	case NamespaceWorkspace, NamespaceSandboxHome, NamespaceBrokerArtifact,
-		NamespaceHostToolchain, NamespaceControlState, NamespaceNetwork,
-		NamespaceProcess, NamespaceRuntime:
+		NamespaceHostToolchain, NamespaceHostConfig, NamespaceCache,
+		NamespaceSharedUserTemp, NamespaceCredential, NamespaceControlState,
+		NamespaceNetwork, NamespaceProcess, NamespaceRuntime:
 	default:
 		return errors.New("operation resource namespace is invalid")
 	}
 	switch r.Access {
-	case tool.AccessRead, tool.AccessWrite, tool.AccessTree:
+	case tool.AccessRead, tool.AccessWrite, tool.AccessTree, tool.AccessUse:
 	default:
 		return errors.New("operation resource access is invalid")
 	}
-	pathNamespace := r.Namespace == NamespaceWorkspace ||
-		r.Namespace == NamespaceSandboxHome ||
-		r.Namespace == NamespaceBrokerArtifact ||
-		r.Namespace == NamespaceHostToolchain ||
-		r.Namespace == NamespaceControlState
+	if r.Access == tool.AccessUse && r.Namespace != NamespaceCredential {
+		return errors.New("access use is only valid for credential resources")
+	}
+	if r.Namespace == NamespaceCredential && r.Access != tool.AccessUse {
+		return errors.New("credential resources must use access use")
+	}
+	if r.Namespace == NamespaceCredential && strings.TrimSpace(r.ID) == "" {
+		return errors.New("credential resource identity is required")
+	}
+	pathNamespace := r.bindsFilesystem()
 	if pathNamespace {
 		if r.RelativePath == "" {
 			return errors.New("operation resource relative path is required")
@@ -420,7 +435,24 @@ func (r Resource) Validate() error {
 	if r.Namespace == NamespaceNetwork && strings.TrimSpace(r.ID) == "" {
 		return errors.New("network resource target is required")
 	}
+	if r.Namespace == NamespaceHostConfig && r.Kind == "env" &&
+		strings.TrimSpace(r.ID) == "" {
+		return errors.New("host_config env resource identity is required")
+	}
 	return nil
+}
+
+func (r Resource) bindsFilesystem() bool {
+	switch r.Namespace {
+	case NamespaceWorkspace, NamespaceSandboxHome, NamespaceBrokerArtifact,
+		NamespaceHostToolchain, NamespaceCache, NamespaceSharedUserTemp,
+		NamespaceControlState:
+		return true
+	case NamespaceHostConfig:
+		return r.Kind != "env"
+	default:
+		return false
+	}
 }
 
 func subjectForInvocation(invocation tool.PreparedInvocation) (Subject, error) {
@@ -693,9 +725,13 @@ func digestValue(value any) (string, error) {
 	return hex.EncodeToString(sum[:]), nil
 }
 
-func digestString(value string) string {
+func DigestString(value string) string {
 	sum := sha256.Sum256([]byte(value))
 	return hex.EncodeToString(sum[:])
+}
+
+func digestString(value string) string {
+	return DigestString(value)
 }
 
 func FallbackSandboxPolicyID(

@@ -451,6 +451,42 @@ func TestBindWorkItemSeedsContinueKnownReads(t *testing.T) {
 	}
 }
 
+func TestMaxStepsLeaseCapsIdenticalCallImplementLease(t *testing.T) {
+	state := startSampling(t, protocol.TurnIntentAnswer)
+	state.Policy.Convergence = ConvergencePolicyForStepLimit(5)
+	state.Policy.CompletionRepairLimit = 2
+	state.Policy.WorkspaceRepairLimit = 1
+	state.Policy.DeclarationRepairLimit = 1
+	state.Policy.VerificationRepairLimit = 1
+	state.Policy.ImplementNoProgressSamples = 6
+	signature := FormatProgressSignature(state, 0, false)
+	state = apply(t, state, ObserveProgress{
+		Signature:        signature,
+		SampleIdentity:   "file_list\n.",
+		CompletedSamples: 0,
+	}).State
+	for _, test := range []struct {
+		samples uint32
+		want    ProgressStage
+	}{
+		{samples: 3, want: ProgressStageFinishOnly},
+		{samples: 4, want: ProgressStageFinishOnly},
+		{samples: 5, want: ProgressStageExhausted},
+	} {
+		state = apply(t, state, ObserveProgress{
+			Signature:        signature,
+			SampleIdentity:   "file_list\n.",
+			CompletedSamples: test.samples,
+		}).State
+		if state.Progress.Stage != test.want {
+			t.Fatalf(
+				"samples=%d stage=%s, want %s",
+				test.samples, state.Progress.Stage, test.want,
+			)
+		}
+	}
+}
+
 func TestImplementLeaseExhaustsAtLeasePlusRepairReserve(t *testing.T) {
 	state := startSampling(t, protocol.TurnIntentAnswer)
 	state.Policy.Convergence = ConvergencePolicyForStepLimit(64)

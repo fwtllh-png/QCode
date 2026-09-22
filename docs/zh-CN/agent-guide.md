@@ -83,17 +83,19 @@
   Mandatory 分区已超过硬输入。闭合 Turn 的 Checkpoint 同样 write-once，放在 Dynamic 而不是
   Stable 或 History 前缀；`context.view.checkpoint_max_bytes=0` 继承公开的
   summary / narrative item 预算。未完成工作只能从带 `source_message_ids` 的
-  Narrative 项提升为 Plan Todo，禁止从散文猜测清单。旧 Turn 回读走
-  `turn_history`（首次投影是 Turn 尾部结论），继续分页用 `result_get`
-  `mode=tail` 或 `mode=query`，不要用默认 `summary`。首次写入后保持
-  append-only。被投影裁掉的旧 Turn 必须在
-  `session_state` 给出检索指针；缺失 Checkpoint 只回封 turn id，不把旧审计
-  猜进 Plan。Plan 已有完成步骤或 Working Set 已有已读路径时，`session_state`
+  Narrative 项提升为 Plan Todo，禁止从散文猜测清单。  旧 Turn 回读走
+  `turn_history`（首次投影是 Turn 尾部，并以 Findings 索引结尾），继续分页用
+  `result_get` `mode=tail` 或 `mode=query`（例如 `query=sites`），不要用默认
+  `summary`。首次写入后保持 append-only。被投影裁掉的旧 Turn 必须在
+  `session_state` 给出检索指针和 `preferred_turn`；缺失 Checkpoint 只回封
+  turn id，不把旧审计猜进 Plan。最近完成轮的用户可见终答与工具定位位点必须
+  进入 mandatory Continuity 胶囊，不能只留在被裁掉的原文 Tail 里。Plan 已有完成步骤或 Working Set 已有已读路径时，`session_state`
   必须带 Resume Fact：不要重复已完成步骤，下一项未完成工作取第一项
   outstanding Plan 标题，并列出全部已读路径。Prompt 工作集仍按
   `context.working_set.max_entries` 取 top-N。已读列表超过 `session_state`
   分区预算时截断并写 `(N more already-read paths omitted)`。
-  有行号命中时 Resume Fact 还列出 `Located sites`。`working_set` 只列路径；
+  有行号命中时 Continuity / Resume 还列出 `Located sites`。已有 Continuity
+  时不要用 `turn_history` 或搜索做开场恢复。`working_set` 只列路径；
   不要再次 `file_read`，除非即将编辑具体窗口。`search_text` /
   `search_definition` 命中后优先读该窗口。
   已知缺陷用 `search_text` / `search_definition` 定位。单文件 `path` 仍按公开
@@ -189,6 +191,16 @@ Trust 时：
 3. 除成功路径外，测试拒绝与清理；
 4. 运行聚焦 Race/Security Test；
 5. 不弱化平台能力声明。
+6. 环境契约实现对照
+   [Sandbox 执行环境重构方案](./sandbox-execution-environment-plan.md)，
+   不要在核心增加语言变量白名单或语言名称分支，也不要建立第二套授权模型。
+   产品默认是 `v1` + `native`；不要静默打开 `shared_user_temp`、凭证目录或
+   任意出网。子 Agent 保持 isolated。
+   新工具走 `ResourceRequest` 声明；适配器只翻译公开接口，不是准入条件。
+   需要进程外认证时按协议加服务（当前只有 GOPROXY），不要为新语言写插件。
+   进程失败类别只接受权威组件事实，禁止从 stderr 扫描 `401` /
+   `permission denied` 改判。运行中新主机必须先批准再连接；同一缺失不要
+   再生成一遍审批，也不要重放已有副作用的安装/构建命令。
 
 ### Subagent
 

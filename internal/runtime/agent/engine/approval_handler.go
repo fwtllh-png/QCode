@@ -57,7 +57,7 @@ func (e *Engine) connectInputHost(
 	}
 	e.options.InputHost.SetEmitter(
 		func(_ context.Context, request interact.Request) error {
-			if err := kernel.EnsureInput(request.RequestID); err != nil {
+			if err := kernel.EnsureInput(request.RequestID, request.CallID); err != nil {
 				return err
 			}
 			scope := e.runningScope()
@@ -79,7 +79,7 @@ func (e *Engine) connectInputHost(
 		},
 	)
 	e.options.InputHost.SetRecoveryHandler(func(request interact.Request) error {
-		if err := kernel.EnsureInput(request.RequestID); err != nil {
+		if err := kernel.EnsureInput(request.RequestID, request.CallID); err != nil {
 			return err
 		}
 		scope := e.runningScope()
@@ -98,10 +98,34 @@ func (e *Engine) connectInputHost(
 		}
 		return scope.ResolveInput(reply)
 	})
+	// An input wait that ends without a user reply (TTL expiry or turn
+	// cancellation) must resolve the kernel input wait before Wait returns,
+	// mirroring the approval expiry path. Best effort: the reducer also
+	// accepts the bound tool result as a safety net.
+	e.options.InputHost.SetExpiryHandler(e.expireInputWait)
 	return func() {
 		e.options.InputHost.SetEmitter(nil)
 		e.options.InputHost.SetRecoveryHandler(nil)
+		e.options.InputHost.SetExpiryHandler(nil)
 	}
+}
+
+func (e *Engine) expireInputWait(request interact.Request) {
+	scope := e.runningScope()
+	if scope == nil {
+		return
+	}
+	if err := scope.state.requests.Resolve(
+		turnkernel.RequestInput,
+		request.RequestID,
+	); err != nil {
+		return
+	}
+	kernel, err := scope.kernel()
+	if err != nil {
+		return
+	}
+	_ = kernel.ResolveInput(request.RequestID)
 }
 
 func (e *Engine) queueRecoveredInput(reply interact.Reply) bool {

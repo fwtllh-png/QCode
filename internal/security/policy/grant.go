@@ -15,6 +15,16 @@ type Grant struct {
 	Kind    string `json:"kind"`
 	Key     string `json:"key"`
 	Summary string `json:"summary"`
+	// Prefix is the static argv of a single-segment shell command whose
+	// reusable approval also matches later commands that extend the argv
+	// within the same scope. It is nil for composite, dynamic, or
+	// interpreter-payload commands, which keep exact-identity grants.
+	Prefix []string `json:"prefix,omitempty"`
+
+	// scope fingerprints everything a shell grant binds besides the
+	// command (cwd and normalized resources) so prefix matching cannot
+	// cross scope boundaries. It never serializes.
+	scope string
 }
 
 func GrantForInvocation(call Invocation) (Grant, bool) {
@@ -22,6 +32,8 @@ func GrantForInvocation(call Invocation) (Grant, bool) {
 	kind, summary := "", ""
 	hash := sha256.New()
 	writeFingerprintField(hash, call.Tool)
+	var prefix []string
+	var cwd string
 	switch {
 	case call.Capability == tool.CapabilityProcess:
 		var input struct {
@@ -55,13 +67,15 @@ func GrantForInvocation(call Invocation) (Grant, bool) {
 			if !ok {
 				return Grant{}, false
 			}
+			prefix = commandGrantPrefix(input.Command)
 		}
 		kind, summary = "shell", "command: "+input.Command
 		if input.Command == "" {
 			kind, summary = "sandbox", "sandbox escalation: "+strings.Join(resources, ", ")
 		}
 		writeFingerprintField(hash, commandIdentity)
-		writeFingerprintField(hash, cleanGrantPath(input.CWD))
+		cwd = cleanGrantPath(input.CWD)
+		writeFingerprintField(hash, cwd)
 	case call.Journaled && len(resources) != 0:
 		kind, summary = "file", "workspace paths: "+strings.Join(resources, ", ")
 	case call.Capability == tool.CapabilityNetwork:
@@ -78,7 +92,22 @@ func GrantForInvocation(call Invocation) (Grant, bool) {
 	for _, resource := range resources {
 		writeFingerprintField(hash, resource)
 	}
-	return Grant{kind, hex.EncodeToString(hash.Sum(nil)), summary}, true
+	return Grant{
+		Kind: kind, Key: hex.EncodeToString(hash.Sum(nil)),
+		Summary: summary, Prefix: prefix,
+		scope: grantScopeFingerprint(cwd, resources),
+	}, true
+}
+
+// grantScopeFingerprint binds a shell grant prefix to its cwd and resource
+// set: an approved prefix may only match later commands in the same scope.
+func grantScopeFingerprint(cwd string, resources []string) string {
+	hash := sha256.New()
+	writeFingerprintField(hash, cwd)
+	for _, resource := range resources {
+		writeFingerprintField(hash, resource)
+	}
+	return hex.EncodeToString(hash.Sum(nil))
 }
 
 func normalizedGrantResources(

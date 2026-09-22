@@ -37,7 +37,7 @@ func TestMalformedArgumentsFailBeforePolicy(t *testing.T) {
 
 func TestExecCommandWritePathPreflightRunsBeforeApproval(t *testing.T) {
 	for name, path := range map[string]string{
-		"directory":      "directory",
+		"workspace_root": ".",
 		"missing_parent": filepath.Join("missing", "new.txt"),
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -979,6 +979,40 @@ func TestEgressDeniedApprovalDenyKeepsFailure(t *testing.T) {
 	}
 	if executor.calls.Load() != 1 {
 		t.Fatalf("calls = %d, want no retry after deny", executor.calls.Load())
+	}
+}
+
+func TestProcessEgressDeniedDoesNotReplayCommand(t *testing.T) {
+	descriptor := processNetworkDescriptor()
+	descriptor.SandboxRequirement = tool.SandboxNone
+	executor := &egressRetryExecutor{descriptor: descriptor}
+	registry := newTestRegistry(t, nil, executor)
+	runtime := policy.DefaultRuntime(policy.ModeAct, policy.PermissionBypass)
+	guard, err := New(Options{
+		Registry: registry, Policy: runtime, Workspace: t.TempDir(),
+		Approvals: func(context.Context, ApprovalRequest) error {
+			t.Fatal("process command must not ask by replaying the tool")
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, execErr := guard.Execute(
+		t.Context(), "call-process-egress", "process_network",
+		json.RawMessage(`{"network_targets":[{
+			"host":"cdn.example","protocol":"https","port":443,
+			"methods":["CONNECT"],"allow_private":false
+		}]}`),
+	)
+	if execErr != nil {
+		t.Fatal(execErr)
+	}
+	if !result.IsError {
+		t.Fatalf("result = %+v", result)
+	}
+	if executor.calls.Load() != 1 {
+		t.Fatalf("calls = %d, want no replay of a started process", executor.calls.Load())
 	}
 }
 

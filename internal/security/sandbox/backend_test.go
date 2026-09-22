@@ -101,19 +101,36 @@ func TestExactWorkspaceWritePathsAllowMissingLeafWithExistingParent(t *testing.T
 		resolved[0] != filepath.Join(workspace.Root(), path) {
 		t.Fatalf("resolved paths = %+v", resolved)
 	}
-	for name, invalid := range map[string]string{
-		"directory":      "generated",
-		"missing_parent": filepath.Join("missing", "new.txt"),
-	} {
-		t.Run(name, func(t *testing.T) {
-			if _, err := validateExactWorkspaceWritePaths(
-				workspace,
-				true,
-				[]string{invalid},
-			); err == nil {
-				t.Fatalf("validateExactWorkspaceWritePaths(%q) error = nil", invalid)
-			}
-		})
+	if _, err := validateExactWorkspaceWritePaths(
+		workspace,
+		true,
+		[]string{"generated"},
+	); err != nil {
+		t.Fatalf("existing write tree was rejected: %v", err)
+	}
+	if _, err := validateExactWorkspaceWritePaths(
+		workspace,
+		true,
+		[]string{filepath.Join("missing", "new.txt")},
+	); err == nil {
+		t.Fatal("missing parent was accepted")
+	}
+}
+
+func TestWorkspaceWriteTreesRejectRootAndProtectedPaths(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	workspace, err := NewWorkspace(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := validateExactWorkspaceWritePaths(workspace, true, []string{"."}); err == nil {
+		t.Fatal("workspace root write tree was accepted")
+	}
+	if _, err := validateExactWorkspaceWritePaths(workspace, true, []string{".git"}); err == nil {
+		t.Fatal("protected write tree was accepted")
 	}
 }
 
@@ -252,6 +269,218 @@ func TestSeatbeltAllowsNetworkWhenConfigured(t *testing.T) {
 	}
 	if !strings.Contains(profile, "(allow network-outbound)") {
 		t.Fatalf("network outbound missing:\n%s", profile)
+	}
+}
+
+func TestSeatbeltHostWriteRootUsesSubpath(t *testing.T) {
+	root := t.TempDir()
+	extra := t.TempDir()
+	policy, err := BuildPolicy(Options{
+		WorkspaceRoot: root, PrivateTemp: t.TempDir(),
+		HostWriteRoots: []string{extra}, SkipPATHReadRoots: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile := seatbeltProfileForCommand(
+		policy, "/bin/sh", true, nil, nil, nil, true, false,
+	)
+	found := false
+	for _, writeRoot := range policy.HostWriteRoots {
+		rule := "(allow file-write* (subpath " + seatbeltQuote(writeRoot) + "))"
+		if strings.Contains(profile, rule) {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("host write root subpath missing:\n%s\nroots=%v", profile, policy.HostWriteRoots)
+	}
+}
+
+func TestBuildPolicyAcceptsExactGitconfigUnderHome(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	path := filepath.Join(home, ".gitconfig")
+	if err := os.WriteFile(path, []byte("[user]\n\tname = Fixture\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	policy, err := BuildPolicy(Options{
+		WorkspaceRoot: t.TempDir(), PrivateTemp: t.TempDir(),
+		HostReadFiles: []string{path}, SkipPATHReadRoots: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(policy.HostReadFiles, path) {
+		t.Fatalf("host read files = %v, want %s", policy.HostReadFiles, path)
+	}
+}
+
+func TestBuildPolicyRejectsHomeCredentialFiles(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	sshDir := filepath.Join(home, ".ssh")
+	if err := os.Mkdir(sshDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{".git-credentials", filepath.Join(".ssh", "config")} {
+		path := filepath.Join(home, name)
+		if err := os.WriteFile(path, []byte("secret\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := BuildPolicy(Options{
+			WorkspaceRoot: t.TempDir(), PrivateTemp: t.TempDir(),
+			HostReadFiles: []string{path}, SkipPATHReadRoots: true,
+		}); err == nil {
+			t.Fatalf("accepted credential file %s", path)
+		}
+	}
+}
+
+func TestBuildPolicyRejectsHomeWriteRoot(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		t.Skip("no home directory")
+	}
+	if _, err := BuildPolicy(Options{
+		WorkspaceRoot: t.TempDir(), PrivateTemp: t.TempDir(),
+		HostWriteRoots: []string{home}, SkipPATHReadRoots: true,
+	}); err == nil {
+		t.Fatal("home write root was accepted")
+	}
+}
+
+func TestBuildPolicyRecordsDeclaredEnvironmentNetworkAndValues(t *testing.T) {
+	policy, err := BuildPolicy(Options{
+		WorkspaceRoot: t.TempDir(), PrivateTemp: t.TempDir(),
+		EnvironmentContract: "v1", SkipPATHReadRoots: true,
+		EnvironmentNetwork: []EnvironmentNetworkTarget{{
+			Host: "declared.example", Protocol: "https", Port: 443,
+			Methods: []string{"CONNECT"},
+		}},
+		EnvironmentValues: []string{"GOROOT=/opt/go", "HOME=/sandbox-home"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(policy.EnvironmentNetwork) != 1 ||
+		policy.EnvironmentNetwork[0].Host != "declared.example" {
+		t.Fatalf("environment network = %+v", policy.EnvironmentNetwork)
+	}
+	if !slices.Contains(policy.EnvironmentValues, "GOROOT=/opt/go") ||
+		!slices.Contains(policy.EnvironmentValues, "HOME=/sandbox-home") {
+		t.Fatalf("environment values = %v", policy.EnvironmentValues)
+	}
+}
+
+func TestBuildPolicyInheritsToolchainExposureWithoutPATHScan(t *testing.T) {
+	workspace := t.TempDir()
+	bin := filepath.Join(t.TempDir(), "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	exposure := ToolchainExposure{
+		BinDirs:     []string{bin},
+		ReadRoots:   []string{bin},
+		Environment: []string{"GOROOT=/opt/go"},
+	}
+	policy, err := BuildPolicy(Options{
+		WorkspaceRoot: workspace, PrivateTemp: t.TempDir(),
+		SkipPATHReadRoots: true, Toolchains: &exposure,
+		EnvironmentValues: []string{"GOMODCACHE=/cache/go-mod"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(policy.Toolchains.BinDirs) != 1 || policy.Toolchains.BinDirs[0] != bin {
+		t.Fatalf("toolchain bin dirs = %v, want [%s]", policy.Toolchains.BinDirs, bin)
+	}
+	if len(policy.Toolchains.Environment) != 1 ||
+		policy.Toolchains.Environment[0] != "GOROOT=/opt/go" {
+		t.Fatalf("toolchain environment = %v", policy.Toolchains.Environment)
+	}
+	if !slices.Contains(policy.HostReadRoots, bin) {
+		t.Fatalf("host read roots = %v, want %s", policy.HostReadRoots, bin)
+	}
+	if !slices.Contains(policy.EnvironmentValues, "GOMODCACHE=/cache/go-mod") {
+		t.Fatalf("environment values = %v", policy.EnvironmentValues)
+	}
+}
+
+func TestBuildPolicyDropsVanishedInheritedToolchainRoot(t *testing.T) {
+	vanished := filepath.Join(t.TempDir(), "gone")
+	exposure := ToolchainExposure{BinDirs: []string{vanished}}
+	policy, err := BuildPolicy(Options{
+		WorkspaceRoot: t.TempDir(), PrivateTemp: t.TempDir(),
+		SkipPATHReadRoots: true, Toolchains: &exposure,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(policy.HostReadRoots, vanished) {
+		t.Fatalf(
+			"host read roots = %v, must not contain vanished %s",
+			policy.HostReadRoots, vanished,
+		)
+	}
+	if len(policy.Toolchains.BinDirs) != 1 || policy.Toolchains.BinDirs[0] != vanished {
+		t.Fatalf("toolchain bin dirs = %v, exposure must stay intact", policy.Toolchains.BinDirs)
+	}
+}
+
+func TestRefuseUndeliveredManagedNetworkReportsUnsupported(t *testing.T) {
+	err := refuseUndeliveredManagedNetwork(
+		Policy{EnvironmentNetwork: []EnvironmentNetworkTarget{{
+			Host: "example.test", Port: 443,
+		}}},
+		Command{},
+	)
+	if err == nil || !strings.Contains(err.Error(), "backend_capability_unsupported") {
+		t.Fatalf("error = %v", err)
+	}
+	if err := refuseUndeliveredManagedNetwork(
+		Policy{EnvironmentNetwork: []EnvironmentNetworkTarget{{
+			Host: "example.test", Port: 443,
+		}}},
+		Command{DenyNetwork: true},
+	); err != nil {
+		t.Fatalf("deny-network should skip: %v", err)
+	}
+	if SupportsManagedNetworkProxy() {
+		if err := refuseUndeliveredManagedNetwork(
+			Policy{}, Command{SessionProxyPort: 9},
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestBuildPolicyRecordsV1ContractWithoutIndependentCertDiscovery(t *testing.T) {
+	for _, name := range []string{
+		"SSL_CERT_FILE", "NODE_EXTRA_CA_CERTS", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE",
+	} {
+		t.Setenv(name, "")
+	}
+	policy, err := BuildPolicy(Options{
+		WorkspaceRoot: t.TempDir(), PrivateTemp: t.TempDir(),
+		EnvironmentContract: "v1", SkipPATHReadRoots: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if policy.EnvironmentContract != "v1" || len(policy.Toolchains.ReadFiles) != 0 {
+		t.Fatalf("v1 policy = %+v", policy)
+	}
+}
+
+func TestDiscoverToolchainsV1SkipsNamedLanguageProbes(t *testing.T) {
+	exposure := discoverToolchains(t.TempDir(), nil, nil)
+	for _, entry := range exposure.Environment {
+		name, _, _ := strings.Cut(entry, "=")
+		switch name {
+		case "GOROOT", "RUSTUP_HOME":
+			t.Fatalf("v1 discovered named language env: %v", exposure.Environment)
+		}
 	}
 }
 
@@ -910,5 +1139,67 @@ func TestSystemProfileAuditCachesByStat(t *testing.T) {
 	}
 	if err := audit.run(); err != nil {
 		t.Fatalf("audit did not recover after content was fixed: %v", err)
+	}
+}
+
+func TestPolicyExecutableReadableModelsReadRoots(t *testing.T) {
+	workspace := t.TempDir()
+	host := t.TempDir()
+	policy, err := BuildPolicy(Options{
+		WorkspaceRoot: workspace, PrivateTemp: t.TempDir(),
+		HostReadRoots: []string{host}, SkipPATHReadRoots: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	inside := filepath.Join(workspace, "bin", "tool")
+	if err := os.MkdirAll(filepath.Dir(inside), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(inside, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(t.TempDir(), "tool")
+	if err := os.WriteFile(outside, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	covered := filepath.Join(t.TempDir(), "covered-tool")
+	if err := os.WriteFile(covered, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if !policy.ExecutableReadable(inside, nil) {
+		t.Fatal("workspace executable reported unreadable")
+	}
+	if !policy.ExecutableReadable(filepath.Join(host, "git"), nil) {
+		t.Fatal("host read root executable reported unreadable")
+	}
+	if policy.ExecutableReadable(outside, nil) {
+		t.Fatal("outside executable reported readable")
+	}
+	if !policy.ExecutableReadable(covered, []string{filepath.Dir(covered)}) {
+		t.Fatal("additional read path executable reported unreadable")
+	}
+	if policy.ExecutableReadable(covered, nil) {
+		t.Fatal("additional read paths widened the model without declaration")
+	}
+}
+
+func TestRefuseUndeliveredManagedNetworkAcceptsWorkspaceChannel(t *testing.T) {
+	// The stable workspace channel delivers the declared environment
+	// network without a per-command session.
+	if err := refuseUndeliveredManagedNetwork(Policy{
+		ManagedProxyPort: 9,
+		EnvironmentNetwork: []EnvironmentNetworkTarget{{
+			Host: "goproxy.example", Port: 443,
+		}},
+	}, Command{}); err != nil {
+		t.Fatalf("workspace channel must satisfy delivery: %v", err)
+	}
+	if err := refuseUndeliveredManagedNetwork(Policy{
+		EnvironmentNetwork: []EnvironmentNetworkTarget{{
+			Host: "goproxy.example", Port: 443,
+		}},
+	}, Command{}); err == nil {
+		t.Fatal("delivery without a managed channel must fail closed")
 	}
 }

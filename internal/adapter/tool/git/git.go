@@ -75,7 +75,12 @@ func (t *Tool) Descriptor() tool.Descriptor {
 		"staged":   map[string]any{"type": "boolean"},
 		"limit":    map[string]any{"type": "integer"},
 		"revision": map[string]any{"type": "string"},
-		"path":     map[string]any{"type": "string"},
+		"path": map[string]any{
+			"type": "string",
+			"description": "Workspace-relative path. It locates the enclosing " +
+				"Git repository in multi-repo workspaces and limits git_show / " +
+				"git_blame output to it.",
+		},
 	}
 	required := []string{}
 	if t.kind == "git_blame" {
@@ -140,7 +145,77 @@ func gitReadDiscoveryTerms(kind string) []string {
 	}
 }
 
+// gitHintMaxRepositories bounds the repository hint appended when Git
+// reports that no repository was found: multi-repo workspaces list their
+// immediate repositories instead of leaving the model to probe.
+const gitHintMaxRepositories = 8
+
+// repositoryRoot returns the closest directory containing a .git entry for
+// the target path, walking up without leaving the workspace. Multi-repo
+// workspaces keep each subproject repository below the workspace root;
+// commands must run from that directory or Git fails with "not a git
+// repository" at the workspace root. A .git file (worktrees) counts.
+func (t *Tool) repositoryRoot(target string) string {
+	directory := filepath.Clean(target)
+	for {
+		if _, err := os.Stat(filepath.Join(directory, ".git")); err == nil {
+			return directory
+		}
+		if directory == t.root {
+			break
+		}
+		parent := filepath.Dir(directory)
+		if parent == directory {
+			break
+		}
+		directory = parent
+	}
+	return t.root
+}
+
+// workspaceRepositories lists immediate workspace subdirectories holding a
+// .git entry, for the not-a-repository hint.
+func workspaceRepositories(root string) []string {
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return nil
+	}
+	var names []string
+	for _, entry := range entries {
+		if !entry.IsDir() || len(names) >= gitHintMaxRepositories {
+			continue
+		}
+		if _, err := os.Stat(filepath.Join(root, entry.Name(), ".git")); err == nil {
+			names = append(names, entry.Name())
+		}
+	}
+	return names
+}
+
 func (t *Tool) run(ctx context.Context, input input) (tool.Result, error) {
+	// The repository is located from the path (or the workspace root): a
+	// path both selects the enclosing repository in multi-repo workspaces
+	// and, for show/blame, limits the output.
+	target := t.root
+	if input.Path != "" {
+		if err := safePath(input.Path); err != nil {
+			return tool.Result{}, err
+		}
+		target = filepath.Dir(
+			filepath.Clean(filepath.Join(t.root, filepath.FromSlash(input.Path))),
+		)
+	}
+	repo := t.repositoryRoot(target)
+	if repo != t.root && (t.kind == "git_show" || t.kind == "git_blame") &&
+		input.Path != "" {
+		absolute := filepath.Clean(
+			filepath.Join(t.root, filepath.FromSlash(input.Path)),
+		)
+		if relative, relErr := filepath.Rel(repo, absolute); relErr == nil &&
+			!strings.HasPrefix(relative, "..") {
+			input.Path = filepath.ToSlash(relative)
+		}
+	}
 	arguments := []string{"status", "--short"}
 	switch t.kind {
 	case "git_diff":
@@ -179,25 +254,46 @@ func (t *Tool) run(ctx context.Context, input input) (tool.Result, error) {
 		}
 		arguments = []string{"blame", "--line-porcelain", revision, "--", input.Path}
 	}
-	directory, err := process.OpenPinnedDirectory(t.backend, t.root)
+	directory, err := process.OpenPinnedDirectory(t.backend, repo)
 	if err != nil {
 		return tool.Result{}, err
 	}
 	defer directory.Close()
 	command, err := process.NewCommand(ctx, process.Options{
-		Path: gitExecutable(), Args: arguments, Dir: t.root,
+		Path: gitExecutable(), Args: arguments, Dir: repo,
 		DirFile: directory, Sandbox: t.backend, RequireSandbox: true,
 		WorkspaceReadOnly: true, DenyNetwork: true,
+		Env: gitConfigEnv(t.backend),
 	})
 	if err != nil {
 		return tool.Result{}, err
 	}
 	output, runErr := command.CombinedOutput()
 	exitCode := process.ExitCode(runErr)
+	content := string(output)
+	if exitCode != 0 &&
+		strings.Contains(strings.ToLower(content), "not a git repository") {
+		if repos := workspaceRepositories(t.root); len(repos) != 0 {
+			content += "\n[qcode] repositories in this workspace: " +
+				strings.Join(repos, ", ") +
+				" (pass a path inside one of them)"
+		}
+	}
 	return tool.Result{
-		Content: string(output), IsError: exitCode != 0,
-		Metadata: map[string]any{"exit_code": exitCode},
+		Content: content, IsError: exitCode != 0,
+		Metadata: map[string]any{"exit_code": exitCode, "repository": repo},
 	}, nil
+}
+
+func gitConfigEnv(backend sandbox.Backend) []string {
+	policy, ok := sandbox.BackendPolicy(backend)
+	if ok && policy.EnvironmentProfile == "native" {
+		return nil
+	}
+	return []string{
+		"GIT_CONFIG_GLOBAL=/dev/null",
+		"GIT_CONFIG_SYSTEM=/dev/null",
+	}
 }
 
 // gitExecutable prefers the real Command Line Tools / Xcode binary so Apple's

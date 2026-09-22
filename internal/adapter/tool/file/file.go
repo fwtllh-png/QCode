@@ -250,14 +250,16 @@ func (o *operation) Descriptor() tool.Descriptor {
 		description = "Read a bounded UTF-8 line range or extract selected PDF pages. " +
 			"path is workspace-relative (absolute paths inside workspace are rewritten). " +
 			"Use an exact path returned by file_list or another tool; never infer a " +
-			"filename from a title or topic. Do not re-read a path already read in " +
-			"this session unless you are about to edit a specific window. A dirty " +
+			"filename from a title or topic. Reuse prior read text when it covers " +
+			"the current question, requested window, and file version. Read uncovered " +
+			"windows, changed content, or unavailable prior text as needed for " +
+			"read-only analysis or edits. A dirty " +
 			"git status or git_diff is not a reason to file_read. Absence from the " +
 			"visible tail is not a reason to file_read; use turn_history or " +
 			"result_get for prior read text. If turn_history is truncated, call " +
 			"result_get before file_read. Locate a known defect with search_text " +
 			"or search_definition. After search_text returns line hits for a path, " +
-			"file_read only that window and edit; do not page the rest of the file. " +
+			"start with that window and expand only as needed to answer the task. " +
 			"Line reads report pagination in metadata: has_more says whether lines " +
 			"remain, next_start_line is the start_line of the next window, and " +
 			"returned_lines is this window's line count. Continue with " +
@@ -269,9 +271,8 @@ func (o *operation) Descriptor() tool.Descriptor {
 		}
 		properties["start_line"] = map[string]any{
 			"type": "integer",
-			"description": "First line of the window to read. Required once " +
-				"this path has search hits or prior reads: read only the " +
-				"located window; whole-file reads of touched paths are refused.",
+			"description": "First line of the window to read (defaults to 1). " +
+				"Use search hits or pagination metadata to choose a relevant window.",
 		}
 		properties["max_lines"] = map[string]any{
 			"type":        "integer",

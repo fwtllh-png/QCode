@@ -175,7 +175,8 @@ func searchDescription(kind string) string {
 			"A path that names one file is scanned up to the public walk byte ceiling " +
 			"even when the result-token budget would otherwise skip it as large. " +
 			"Empty matches include skipped counts; skipped.large does not mean the symbol is absent. " +
-			"When a scoped file has line hits, file_read only a window you will edit; do not page the rest of the file."
+			"When a scoped file has line hits, start file_read with that window; " +
+			"expand only as needed for read-only analysis or edits."
 	}
 }
 
@@ -271,12 +272,14 @@ func readLimitForEntry(entry repowalk.Entry, scope string, maxFileBytes int64) i
 
 func visibleSkipCounts(skips repowalk.Skips) map[string]int {
 	if skips.Large == 0 && skips.Binary == 0 &&
-		skips.Encoding == 0 && skips.Missing == 0 {
+		skips.Encoding == 0 && skips.Missing == 0 &&
+		skips.Linked == 0 {
 		return nil
 	}
 	return map[string]int{
 		"large": skips.Large, "binary": skips.Binary,
 		"encoding": skips.Encoding, "missing": skips.Missing,
+		"linked": skips.Linked,
 	}
 }
 
@@ -505,7 +508,8 @@ func (t *Tool) run(ctx context.Context, input searchInput) (tool.Result, error) 
 		)
 	} else if input.Scope != "" && t.kind != "search_files" && total > 0 {
 		payload["note"] = "These are line hits in the scoped file. " +
-			"file_read only a window you will edit; do not page the rest of this file."
+			"Start file_read with the relevant window; " +
+			"expand only as needed for read-only analysis or edits."
 	}
 	content, err := json.Marshal(payload)
 	if err != nil {

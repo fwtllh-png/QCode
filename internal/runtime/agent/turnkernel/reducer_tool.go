@@ -79,12 +79,17 @@ func applyToolResult(
 		}
 	}
 	cancelingApproval := callAwaitingApproval && current.Cancellation.Accepted
-	if err := requirePhase(
-		current,
-		command,
-		PhaseExecutingTools,
-		PhaseAwaitingApproval,
-	); err != nil {
+	// A request_user_input call whose wait never got a reply (TTL expiry,
+	// turn cancellation, or execution error) finishes through the normal
+	// tool-result path. Retire the bound input wait instead of rejecting
+	// the transition: failing here would abort the whole turn.
+	inputBound := current.PendingInput != nil &&
+		current.PendingInput.CallID == command.CallID
+	phases := []Phase{PhaseExecutingTools, PhaseAwaitingApproval}
+	if inputBound {
+		phases = append(phases, PhaseAwaitingInput)
+	}
+	if err := requirePhase(current, command, phases...); err != nil {
 		return err
 	}
 	if callAwaitingApproval && !cancelingApproval {
@@ -115,6 +120,22 @@ func applyToolResult(
 		"",
 	); err != nil {
 		return illegal(current, command, err.Error())
+	}
+	if inputBound {
+		requestID := current.PendingInput.RequestID
+		transition.State.PendingInput = nil
+		if transition.State.Convergence != nil {
+			transition.State.Convergence.FinalizationAttempted = false
+			transition.State.Convergence.Summary = ""
+			transition.State.Convergence.PendingActions = nil
+		}
+		closeEffectByIdentity(
+			transition,
+			EffectAwaitInput,
+			requestID,
+			true,
+			"",
+		)
 	}
 	delete(transition.State.OpenCalls, command.CallID)
 	transition.State.ClosedCalls[command.CallID] = ToolResultState{

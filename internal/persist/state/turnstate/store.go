@@ -181,6 +181,10 @@ func (s *Store) appendVerifiedDomainFactsTx(
 		if err != nil {
 			return err
 		}
+		encoded, err = persistFactContent(ctx, tx, fact, encoded)
+		if err != nil {
+			return err
+		}
 		if _, err := tx.ExecContext(
 			ctx,
 			`INSERT INTO turn_domain_facts(turn_id, sequence, fact_json)
@@ -329,6 +333,10 @@ func (s *Store) appendDomainFactsTx(
 		if err != nil {
 			return err
 		}
+		encoded, err = persistFactContent(ctx, tx, fact, encoded)
+		if err != nil {
+			return err
+		}
 		if _, err := tx.ExecContext(
 			ctx,
 			`INSERT INTO turn_domain_facts(turn_id, sequence, fact_json)
@@ -451,6 +459,10 @@ func (s *Store) commitTerminal(
 			if marshalErr != nil {
 				return marshalErr
 			}
+			encoded, marshalErr = persistFactContent(ctx, tx, fact, encoded)
+			if marshalErr != nil {
+				return marshalErr
+			}
 			if _, err := tx.ExecContext(
 				ctx,
 				`INSERT INTO turn_domain_facts(turn_id, sequence, fact_json)
@@ -473,6 +485,13 @@ func (s *Store) commitTerminal(
 		storedEnvelope.DomainFacts = nil
 		envelopeJSON, err := json.Marshal(storedEnvelope)
 		if err != nil {
+			return err
+		}
+		envelopeJSON, err = externalizeContent(ctx, tx, envelopeJSON, "terminal", envelope.TurnID)
+		if err != nil {
+			return err
+		}
+		if err := bindTerminalContext(ctx, tx, envelope); err != nil {
 			return err
 		}
 		markerJSON, err := json.Marshal(marker)
@@ -617,7 +636,11 @@ func (s *Store) LoadTerminal(
 	}
 	var envelope turnkernel.TerminalEnvelope
 	var marker turnkernel.TerminalCommitMarker
-	if err := json.Unmarshal([]byte(envelopeJSON), &envelope); err != nil {
+	hydrated, err := hydrateContent(ctx, s.database.DB(), []byte(envelopeJSON))
+	if err != nil {
+		return envelope, marker, err
+	}
+	if err := json.Unmarshal(hydrated, &envelope); err != nil {
 		return envelope, marker, err
 	}
 	if err := json.Unmarshal([]byte(markerJSON), &marker); err != nil {

@@ -44,7 +44,20 @@ type Session struct {
 }
 
 type Repository struct {
-	db *sql.DB
+	db          *sql.DB
+	maintenance func(context.Context) error
+}
+
+func (r *Repository) WithMaintenance(run func(context.Context) error) *Repository {
+	r.maintenance = run
+	return r
+}
+
+func (r *Repository) Maintain(ctx context.Context) error {
+	if r.maintenance != nil {
+		return r.maintenance(ctx)
+	}
+	return nil
 }
 
 func NewRepository(db *sql.DB) *Repository {

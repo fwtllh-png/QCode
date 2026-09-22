@@ -13,7 +13,14 @@ import (
 	"sync"
 	"time"
 
+	"github.com/fwtllh-png/QCode/internal/environment"
 	"github.com/fwtllh-png/QCode/internal/security/policy"
+)
+
+const (
+	reasonTargetNotGranted  = "target is not granted"
+	reasonPrivateNotGranted = "local or private address is not granted"
+	reasonDNSFailed         = "DNS resolution failed"
 )
 
 // ErrDenied is returned (via errors.Is) when RoundTrip targets a host the Gate
@@ -21,11 +28,14 @@ import (
 var ErrDenied = errors.New("egress denied")
 
 type DeniedError struct {
-	Host     string
-	Protocol string
-	Port     uint16
-	Method   string
-	Reason   string
+	Host            string
+	Protocol        string
+	Port            uint16
+	Method          string
+	Reason          string
+	Category        string
+	RequiredAction  string
+	ApprovalSettled bool
 }
 
 func (e *DeniedError) Error() string {
@@ -69,6 +79,8 @@ type Gate struct {
 	LookupIP     func(context.Context, string) ([]net.IP, error)
 	allowed      map[string]targetGrant
 	receipts     []Receipt
+	approver     RuntimeApprover
+	asks         askState
 }
 
 // Private access is attached to each method, never shared across methods.
@@ -87,15 +99,17 @@ type Target struct {
 }
 
 type Receipt struct {
-	At          time.Time `json:"at"`
-	Source      string    `json:"source"`
-	Host        string    `json:"host"`
-	Protocol    string    `json:"protocol"`
-	Port        uint16    `json:"port"`
-	Method      string    `json:"method,omitempty"`
-	Decision    string    `json:"decision"`
-	Reason      string    `json:"reason,omitempty"`
-	ResolvedIPs []string  `json:"resolved_ips,omitempty"`
+	At             time.Time `json:"at"`
+	Source         string    `json:"source"`
+	Host           string    `json:"host"`
+	Protocol       string    `json:"protocol"`
+	Port           uint16    `json:"port"`
+	Method         string    `json:"method,omitempty"`
+	Decision       string    `json:"decision"`
+	Reason         string    `json:"reason,omitempty"`
+	Category       string    `json:"error_category,omitempty"`
+	RequiredAction string    `json:"required_action,omitempty"`
+	ResolvedIPs    []string  `json:"resolved_ips,omitempty"`
 }
 
 const maxReceipts = 256
@@ -213,6 +227,26 @@ func (g *Gate) Authorize(
 	request Target,
 	source string,
 ) ([]net.IP, error) {
+	return g.authorize(ctx, request, source, false)
+}
+
+// AuthorizeBeforeConnect asks the current execution's Approval path for an
+// ungranted target and only then resolves or dials. Probe callers must keep
+// using Authorize so they cannot mint grants.
+func (g *Gate) AuthorizeBeforeConnect(
+	ctx context.Context,
+	request Target,
+	source string,
+) ([]net.IP, error) {
+	return g.authorize(ctx, request, source, true)
+}
+
+func (g *Gate) authorize(
+	ctx context.Context,
+	request Target,
+	source string,
+	discover bool,
+) ([]net.IP, error) {
 	request, err := normalizeTarget(request)
 	if err != nil {
 		g.record(Receipt{
@@ -234,32 +268,42 @@ func (g *Gate) Authorize(
 		allowed, allowPrivate = grant.permissions(request.Methods)
 		g.mu.RUnlock()
 	}
-	if !allowed {
-		err := &DeniedError{
-			Host: request.Host, Protocol: request.Protocol,
-			Port: request.Port, Method: firstMethod(request.Methods),
-			Reason: "target is not granted",
+	if !allowed && discover {
+		if err := g.discover(ctx, request); err == nil {
+			granted := request
+			granted.AllowPrivate = true
+			if g.UseCallScope {
+				AllowInScope(ctx, granted)
+				scoped, allowed, allowPrivate = scopedPermissions(ctx, request)
+			} else {
+				g.AllowTarget(granted)
+				g.mu.RLock()
+				grant := g.allowed[key(request)]
+				allowed, allowPrivate = grant.permissions(request.Methods)
+				g.mu.RUnlock()
+			}
+		} else if !errors.Is(err, errNoRuntimeApprover) {
+			denied := settledDenied(request, err)
+			g.recordDenied(source, request, denied)
+			return nil, denied
 		}
-		g.recordDenied(source, request, err.Reason)
+	}
+	if !allowed {
+		err := deniedTarget(request, reasonTargetNotGranted)
+		g.recordDenied(source, request, err)
 		return nil, err
 	}
 	ips, err := g.resolve(ctx, request.Host)
 	if err != nil {
-		g.recordDenied(source, request, "DNS resolution failed")
-		return nil, &DeniedError{
-			Host: request.Host, Protocol: request.Protocol,
-			Port: request.Port, Method: firstMethod(request.Methods),
-			Reason: "DNS resolution failed",
-		}
+		denied := deniedTarget(request, reasonDNSFailed)
+		g.recordDenied(source, request, denied)
+		return nil, denied
 	}
 	for _, ip := range ips {
 		if nonPublicIP(ip) && !allowPrivate {
-			g.recordDenied(source, request, "local or private address is not granted")
-			return nil, &DeniedError{
-				Host: request.Host, Protocol: request.Protocol,
-				Port: request.Port, Method: firstMethod(request.Methods),
-				Reason: "local or private address is not granted",
-			}
+			denied := deniedTarget(request, reasonPrivateNotGranted)
+			g.recordDenied(source, request, denied)
+			return nil, denied
 		}
 	}
 	g.record(Receipt{
@@ -320,7 +364,7 @@ func (t *transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if err != nil {
 		return nil, err
 	}
-	ips, err := t.gate.Authorize(req.Context(), Target{
+	ips, err := t.gate.AuthorizeBeforeConnect(req.Context(), Target{
 		Host: req.URL.Hostname(), Protocol: req.URL.Scheme, Port: port,
 		Methods: []string{req.Method},
 	}, "http")
@@ -457,11 +501,29 @@ func ipStrings(ips []net.IP) []string {
 	return out
 }
 
-func (g *Gate) recordDenied(source string, target Target, reason string) {
+func deniedTarget(target Target, reason string) *DeniedError {
+	denied := &DeniedError{
+		Host: target.Host, Protocol: target.Protocol,
+		Port: target.Port, Method: firstMethod(target.Methods),
+		Reason: reason,
+	}
+	switch reason {
+	case reasonTargetNotGranted, reasonPrivateNotGranted:
+		denied.Category = environment.CategoryNetworkTargetUnapproved
+		denied.RequiredAction = environment.ActionApproveNetworkTarget
+	}
+	return denied
+}
+
+func (g *Gate) recordDenied(source string, target Target, denied *DeniedError) {
+	if denied == nil {
+		return
+	}
 	g.record(Receipt{
 		At: time.Now().UTC(), Source: source,
 		Host: target.Host, Protocol: target.Protocol, Port: target.Port,
-		Method: firstMethod(target.Methods), Decision: "deny", Reason: reason,
+		Method: firstMethod(target.Methods), Decision: "deny", Reason: denied.Reason,
+		Category: denied.Category, RequiredAction: denied.RequiredAction,
 	})
 }
 

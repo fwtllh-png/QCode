@@ -116,12 +116,39 @@ func planningDecision(
 		return nil
 	}
 	if !r.PlanSubmitted {
+		if declaredVerification(invocation) {
+			// Verification is the checking step of a plan: downgrade the
+			// gate from a hard Hold to one approval instead of forcing a
+			// plan re-submission before every build or test run.
+			return &Decision{
+				Action: ActionAsk, Code: "plan_verification",
+				Reason: "approve this declared verification run, or submit_plan first",
+			}
+		}
 		return &Decision{
 			Action: ActionHold, Code: "plan_required",
 			Reason: "submit a structured Plan before consequential actions",
 		}
 	}
 	return nil
+}
+
+// declaredVerification reports an exec_command invocation that declared
+// verification semantics (kind plus exact covered paths). The declaration
+// is schema-validated before policy runs, so both fields are trustworthy.
+func declaredVerification(invocation Invocation) bool {
+	if invocation.Tool != "exec_command" {
+		return false
+	}
+	var payload struct {
+		Verification string   `json:"verification"`
+		CoveredPaths []string `json:"covered_paths"`
+	}
+	if json.Unmarshal(invocation.Arguments, &payload) != nil {
+		return false
+	}
+	return strings.TrimSpace(payload.Verification) != "" &&
+		len(payload.CoveredPaths) != 0
 }
 
 func planningExemptTool(name string) bool {

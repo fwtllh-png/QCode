@@ -36,7 +36,7 @@ func TestSearchTextScopedFileOverResultBudgetStillMatches(t *testing.T) {
 		t.Fatalf("scoped search = %s", result.Content)
 	}
 	if strings.Contains(result.Content, `"skipped"`) ||
-		!strings.Contains(result.Content, "do not page the rest of this file") {
+		!strings.Contains(result.Content, "read-only analysis or edits") {
 		t.Fatalf("scoped search = %s", result.Content)
 	}
 }
@@ -123,6 +123,7 @@ func TestSearchKeepsSkippingVendorDirectoriesGitWouldTrack(t *testing.T) {
 		"main.go":                 "target\n",
 		"vendor/dep/dep.go":       "target\n",
 		"node_modules/pkg/mod.js": "target\n",
+		"target/debug/deps.rs":    "target\n",
 	} {
 		write(t, filepath.Join(root, name), content)
 	}
@@ -137,10 +138,40 @@ func TestSearchKeepsSkippingVendorDirectoriesGitWouldTrack(t *testing.T) {
 	if len(matches) != 1 || matches[0]["file"] != "main.go" {
 		t.Fatalf("matches = %#v", matches)
 	}
-	// Checked-in dependency trees are skipped by name whatever git thinks of them,
-	// and that is what skipped_ignored now counts.
-	if value, ok := result.Metadata["skipped_ignored"].(int); !ok || value != 2 {
+	// Checked-in dependency trees and build artifacts are skipped by name
+	// whatever git thinks of them, and that is what skipped_ignored now counts.
+	if value, ok := result.Metadata["skipped_ignored"].(int); !ok || value != 3 {
 		t.Fatalf("skipped_ignored = %#v", result.Metadata["skipped_ignored"])
+	}
+}
+
+func TestSearchTextSkipsMultiplyLinkedFiles(t *testing.T) {
+	root := repositoryRoot(t)
+	run(t, root, "git", "init", "-q")
+	write(t, filepath.Join(root, "kept.txt"), "needle\n")
+	write(t, filepath.Join(root, "original.txt"), "needle\n")
+	if err := os.Link(
+		filepath.Join(root, "original.txt"),
+		filepath.Join(root, "linked.txt"),
+	); err != nil {
+		t.Fatal(err)
+	}
+	run(t, root, "git", "add", ".")
+	registry := tool.NewRegistry(nil, nil)
+	if err := RegisterWithBackend(registry, root, searchTestBackend{}); err != nil {
+		t.Fatal(err)
+	}
+	result := execute(t, registry, "search_text", map[string]any{"query": "needle"})
+	if result.IsError {
+		t.Fatalf("multiply linked search failed: %s", result.Content)
+	}
+	matches := decodeMatches(t, result.Content)
+	if len(matches) != 1 || matches[0]["file"] != "kept.txt" {
+		t.Fatalf("matches = %#v content=%s", matches, result.Content)
+	}
+	if !strings.Contains(result.Content, `"linked":2`) &&
+		!strings.Contains(result.Content, `"linked": 2`) {
+		t.Fatalf("linked skip missing: %s", result.Content)
 	}
 }
 

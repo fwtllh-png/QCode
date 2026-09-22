@@ -94,6 +94,84 @@ func TestStoreDeduplicatesRepeatedPut(t *testing.T) {
 	}
 }
 
+func TestCollectUnreferencedDeletesZeroReferenceContent(t *testing.T) {
+	root := t.TempDir()
+	store, err := Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close(context.Background()) })
+
+	kept := []byte("still referenced")
+	keptID := ID(kept)
+	dropped := []byte("unreferenced orphan")
+	droppedID := ID(dropped)
+	if err := store.Put(t.Context(), keptID, kept); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Put(t.Context(), droppedID, dropped); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Release(t.Context(), droppedID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Get(t.Context(), droppedID); err != nil {
+		t.Fatalf("Release deleted content: %v", err)
+	}
+
+	collected, err := store.CollectUnreferenced(t.Context())
+	if err != nil || collected != 1 {
+		t.Fatalf("CollectUnreferenced = %d, %v, want 1", collected, err)
+	}
+	if _, err := store.Get(t.Context(), droppedID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("collected content Get() = %v, want not found", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(objectPath(droppedID)))); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("collected object still on disk: %v", err)
+	}
+	if got, err := store.Get(t.Context(), keptID); err != nil || string(got) != string(kept) {
+		t.Fatalf("referenced content Get() = %q, %v", got, err)
+	}
+
+	if err := store.CollectIfUnreferenced(t.Context(), keptID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Get(t.Context(), keptID); err != nil {
+		t.Fatalf("CollectIfUnreferenced deleted a live reference: %v", err)
+	}
+	if collected, err := store.CollectUnreferenced(t.Context()); err != nil || collected != 0 {
+		t.Fatalf("second CollectUnreferenced = %d, %v, want 0", collected, err)
+	}
+}
+
+func TestReleaseUnreferencedDeletesWhenCountReachesZero(t *testing.T) {
+	store, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close(context.Background()) })
+	content := []byte("drop after last reference")
+	id := ID(content)
+	if err := store.Put(t.Context(), id, content); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Put(t.Context(), id, content); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ReleaseUnreferenced(t.Context(), id); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := store.Get(t.Context(), id); err != nil || string(got) != string(content) {
+		t.Fatalf("content after first ReleaseUnreferenced = %q, %v", got, err)
+	}
+	if err := store.ReleaseUnreferenced(t.Context(), id); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Get(t.Context(), id); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("Get() after last ReleaseUnreferenced = %v, want not found", err)
+	}
+}
+
 func TestGetFailsClosedWhenObjectIsTampered(t *testing.T) {
 	root := t.TempDir()
 	store, err := Open(root)

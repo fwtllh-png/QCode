@@ -14,6 +14,7 @@ type ResolvedSkill struct {
 	Name         string            `json:"name"`
 	Version      string            `json:"version"`
 	Source       Source            `json:"source"`
+	Path         string            `json:"path"`
 	Digest       string            `json:"digest"`
 	Dependencies map[string]string `json:"dependencies,omitempty"`
 	Locked       bool              `json:"locked"`
@@ -315,7 +316,7 @@ func resolvedSkills(items []candidate, locked bool) []ResolvedSkill {
 		}
 		result = append(result, ResolvedSkill{
 			Name: item.metadata.Name, Version: version, Source: item.source,
-			Digest: item.digest, Dependencies: dependencies,
+			Path: item.path, Digest: item.digest, Dependencies: dependencies,
 			Locked: item.source == SourceBuiltin || locked && item.manifest != nil,
 		})
 	}

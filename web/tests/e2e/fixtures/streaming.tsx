@@ -7,6 +7,7 @@ import "../../../src/ui/theme/components.css";
 
 const client = new RuntimeClient();
 const withdrawal = new URLSearchParams(location.search).has("withdrawal");
+const scrolling = new URLSearchParams(location.search).get("scrolling");
 // #region debug-point A:withdraw-click
 if (new URLSearchParams(location.search).has("debug-withdrawal")) document.addEventListener("click", (event) => { if ((event.target as Element)?.closest('button[aria-label="Withdraw turn"]')) void fetch("http://127.0.0.1:7777/event", {method: "POST", body: JSON.stringify({sessionId: "turn-withdraw-no-feedback", runId: new URLSearchParams(location.search).get("debug-withdrawal"), hypothesisId: "A", location: "streaming:click", msg: "[DEBUG] Withdrawal clicked", data: {embedded: window.top !== window}, ts: Date.now()})}).catch(() => {}); }, true);
 // #endregion
@@ -24,7 +25,7 @@ Object.assign(client, {
   state: {...client.getSnapshot(), phase: "ready", sessions: [session],
     selectedSessionID: session.session_id, workspaceRoot: "/fixture", socketConnected: true},
   start: async () => {},
-  loadDraft: async () => "",
+  loadDraft: () => "",
   saveDraft: () => {},
   scheduleSessionRefresh: () => {},
   refreshUsage: async () => {},
@@ -71,11 +72,27 @@ const paragraph = [
   "| Render | Ready |",
   ""
 ].join("\n");
-for (let index = 0; index < 60; index += 1) {
+for (let index = 0; index < (scrolling ? 10 : 60); index += 1) {
   emit("turn.started", {prompt: `Historical question ${index}`}, `history-${index}`);
   emit("turn.completed", {text: paragraph.repeat(3)}, `history-${index}`);
 }
 emit("turn.started", {prompt: "Stream a detailed answer"});
+if (scrolling) {
+  if (scrolling === "tool") {
+    emit("tool.start", {call_id: "read-live", tool: "file_read", arguments: {path: "main.ts"}});
+    emit("tool.result", {call_id: "read-live", tool: "file_read",
+      output: Array.from({length: 16}, (_, index) => `line ${index + 1}: inspected code`).join("\n")});
+  } else {
+    emit("output.draft", {sample_id: "sample-live",
+      text: Array.from({length: 24}, (_, index) => `Reading paragraph ${index}.\n\n`).join("")});
+  }
+  // Tests control event timing through the real client's projection/notifier.
+  document.addEventListener("fixture:events", (event) => {
+    for (const item of (event as CustomEvent<Array<{
+      kind: string; data: Record<string, unknown>;
+    }>>).detail) emit(item.kind, item.data);
+  });
+}
 if (new URLSearchParams(location.search).has("reasoning")) {
   emit("reasoning.completed", {
     sample_id: "sample-live",

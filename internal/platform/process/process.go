@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -43,6 +42,7 @@ type Options struct {
 	NetworkHost          string
 	NetworkProtocol      string
 	NetworkPort          uint16
+	SessionProxyPort     uint16
 	// OnOutput, when set, is called with each chunk as the process produces it,
 	// before the command finishes. A caller that only wants the final Result can
 	// leave it nil; a caller that has to show progress on a command that runs for
@@ -182,10 +182,28 @@ func NewCommand(ctx context.Context, options Options) (*exec.Cmd, error) {
 			tracecontext.Environment(ctx)...,
 		)
 	}
-	if policy, ok := sandbox.BackendPolicy(options.Sandbox); ok {
-		environment = ensureToolchains(environment, policy.Toolchains)
+	policy, hasPolicy := sandbox.BackendPolicy(options.Sandbox)
+	if hasPolicy {
+		environment = dropHostLanguageEnvironment(environment, options.Env)
+		environment = applyPreparedEnvironment(
+			environment, policy.EnvironmentValues, options.Env,
+		)
+		environment = applyPreparedEnvironment(
+			environment, policy.Toolchains.Environment, options.Env,
+		)
+		if policy.PrivateTemp != "" {
+			if policy.EnvironmentProfile == "isolated" {
+				environment = setEnvironmentValue(environment, "HOME", policy.PrivateTemp)
+			}
+			if !policy.SharedUserTemp {
+				environment = setEnvironmentValue(environment, "TMPDIR", policy.PrivateTemp)
+				environment = setEnvironmentValue(environment, "TMP", policy.PrivateTemp)
+				environment = setEnvironmentValue(environment, "TEMP", policy.PrivateTemp)
+			}
+		}
+		environment = prependPATH(environment, policy.Toolchains.BinDirs...)
 	} else {
-		environment = ensureGoToolchain(environment)
+		environment = ensurePlatformToolchainPATH(environment)
 	}
 	environment = ensureGitToolchain(environment)
 	if options.WorkspaceReadOnly {
@@ -211,7 +229,8 @@ func NewCommand(ctx context.Context, options Options) (*exec.Cmd, error) {
 		AllowLoopback: authorityBound &&
 			executionAuthority.AllowLoopback &&
 			!options.DenyNetwork,
-		LoopbackOnly: authorityBound && executionAuthority.LoopbackOnly(),
+		LoopbackOnly:     authorityBound && executionAuthority.LoopbackOnly(),
+		SessionProxyPort: options.SessionProxyPort,
 	}
 	if authorityBound {
 		commandSpec.AuthorityDigest = executionAuthority.Digest
@@ -227,16 +246,7 @@ func NewCommand(ctx context.Context, options Options) (*exec.Cmd, error) {
 		commandSpec.Args = append([]string{options.Path}, options.Args...)
 	} else {
 		commandSpec.Path = "sh"
-		// A macOS login shell runs path_helper and reorders PATH, which can put
-		// Apple's /usr/bin tool shims ahead of the concrete toolchains selected
-		// above. Restore the sanitized PATH after profile loading. Passing both
-		// values positionally keeps the caller's command out of this wrapper.
-		commandSpec.Args = []string{
-			"sh", "-lc",
-			`qcode_path=$1; qcode_command=$2; shift 2; ` +
-				`PATH=$qcode_path; export PATH; eval "$qcode_command"`,
-			"sh", environmentValue(environment, "PATH"), options.Command,
-		}
+		commandSpec.Args = []string{"sh", "-c", options.Command}
 	}
 	if options.RequireSandbox {
 		required := sandbox.DefaultProcessRequirements()
@@ -267,12 +277,11 @@ func NewCommand(ctx context.Context, options Options) (*exec.Cmd, error) {
 		}
 		commandSpec.Path = resolved
 		commandSpec.Args[0] = resolved
-		policy, ok := sandbox.BackendPolicy(options.Sandbox)
-		if options.RequireSandbox && !ok {
+		if options.RequireSandbox && !hasPolicy {
 			return nil, errors.New("strong sandbox backend has no prepared policy identity")
 		}
-		policy = sandbox.CommandNetworkPolicy(policy, commandSpec)
-		environment = sandboxEnvironment(environment, policy, options.DenyNetwork)
+		policy = sandbox.ApplySessionProxyPort(policy, commandSpec)
+		environment = applyManagedProxyEnvironment(environment, policy, options.DenyNetwork)
 		commandSpec.Env = environment
 		commandSpec, err = options.Sandbox.Prepare(ctx, commandSpec)
 		if err != nil {
@@ -337,6 +346,9 @@ func NewCommand(ctx context.Context, options Options) (*exec.Cmd, error) {
 		expectedProxyPort := policy.ManagedProxyPort
 		if options.DenyNetwork {
 			expectedProxyPort = 0
+		}
+		if commandSpec.SessionProxyPort != 0 {
+			expectedProxyPort = commandSpec.SessionProxyPort
 		}
 		if commandSpec.PreparedProxyPort != expectedProxyPort {
 			return nil, unenforcedRestriction(options.Sandbox, "managed_network_proxy")
@@ -479,41 +491,18 @@ func unenforcedRestriction(backend sandbox.Backend, resource string) error {
 	}, nil)
 }
 
-func sandboxEnvironment(
+func applyManagedProxyEnvironment(
 	environment []string,
 	policy sandbox.Policy,
 	denyNetwork bool,
 ) []string {
-	if policy.PrivateTemp == "" {
-		return environment
-	}
-	result := make([]string, 0, len(environment)+5)
+	result := make([]string, 0, len(environment)+6)
 	for _, entry := range environment {
-		if strings.HasPrefix(entry, "HOME=") || strings.HasPrefix(entry, "TMPDIR=") ||
-			strings.HasPrefix(entry, "TMP=") || strings.HasPrefix(entry, "TEMP=") ||
-			strings.HasPrefix(entry, "GOTMPDIR=") ||
-			strings.HasPrefix(entry, "GOCACHE=") || strings.HasPrefix(entry, "GOMODCACHE=") {
-			continue
-		}
 		if proxyEnvironmentEntry(entry) {
 			continue
 		}
 		result = append(result, entry)
 	}
-	result = append(
-		result,
-		"HOME="+policy.PrivateTemp,
-		"TMPDIR="+policy.PrivateTemp,
-		"TMP="+policy.PrivateTemp,
-		"TEMP="+policy.PrivateTemp,
-	)
-	// Keep Go toolchain caches inside the writable private temp. GOTMPDIR covers
-	// compile work dirs separately from GOCACHE.
-	result = append(result,
-		"GOTMPDIR="+policy.PrivateTemp,
-		"GOCACHE="+filepath.Join(policy.PrivateTemp, "go-build"),
-		"GOMODCACHE="+filepath.Join(policy.PrivateTemp, "pkg", "mod"),
-	)
 	if policy.ManagedProxyPort != 0 && !denyNetwork {
 		proxyURL := "http://127.0.0.1:" + strconv.Itoa(int(policy.ManagedProxyPort))
 		result = append(result,
@@ -535,59 +524,14 @@ func proxyEnvironmentEntry(entry string) bool {
 	}
 }
 
-func ensureGoToolchain(environment []string) []string {
-	root := environmentValue(environment, "GOROOT")
-	if root == "" {
-		root = strings.TrimSpace(runtime.GOROOT())
-		if root != "" {
-			environment = append(append([]string(nil), environment...), "GOROOT="+root)
-		}
-	}
-	var prepend []string
-	if root != "" {
-		bin := filepath.Join(root, "bin")
-		if info, err := os.Stat(bin); err == nil && info.IsDir() {
-			prepend = append(prepend, bin)
-		}
-	}
-	if goBin, err := exec.LookPath("go"); err == nil {
-		prepend = append(prepend, filepath.Dir(goBin))
-		if resolved, err := filepath.EvalSymlinks(goBin); err == nil {
-			prepend = append(prepend, filepath.Dir(resolved))
-		}
-	}
-	return prependPATH(environment, prepend...)
-}
-
-func ensureToolchains(
-	environment []string,
-	exposure sandbox.ToolchainExposure,
-) []string {
-	environment = prependPATH(environment, exposure.BinDirs...)
-	for _, entry := range exposure.Environment {
-		name, value, ok := strings.Cut(entry, "=")
-		if !ok || name == "" || value == "" {
-			continue
-		}
-		environment = setEnvironmentValue(environment, name, value)
-	}
-	return environment
-}
-
-func ensureGitToolchain(environment []string) []string {
-	if runtime.GOOS != "darwin" {
-		return environment
-	}
-	for _, candidate := range []string{
-		"/Library/Developer/CommandLineTools/usr/bin/git",
-		"/Applications/Xcode.app/Contents/Developer/usr/bin/git",
-	} {
-		info, err := os.Stat(candidate)
-		if err == nil && info.Mode().IsRegular() && info.Mode().Perm()&0o111 != 0 {
-			return prependPATH(environment, filepath.Dir(candidate))
-		}
-	}
-	return environment
+// ensurePlatformToolchainPATH makes the platform's canonical tool
+// directories resolvable for children that run without a sandbox policy
+// (for example MCP stdio servers). It is language-agnostic: the same
+// platform PATH sources the sandbox discovery uses, so go, git, cargo, or
+// python installations behave identically. Sandboxed commands get their
+// PATH from the policy's discovered toolchain exposure instead.
+func ensurePlatformToolchainPATH(environment []string) []string {
+	return prependPATH(environment, sandbox.PlatformPATHDirectories()...)
 }
 
 func prependPATH(environment []string, directories ...string) []string {

@@ -2462,7 +2462,7 @@ describe("projectTranscript", () => {
     expect(screen.getByText("18:")).toBeTruthy();
   });
 
-  it("shows the executed command instead of the exit code in a failed Bash summary", () => {
+  it("keeps the failed command header and separates its exit failure from normal output", () => {
     const value = snapshot([
       event(1, "tool.start", {
         call_id: "bash-failed",
@@ -2472,7 +2472,7 @@ describe("projectTranscript", () => {
       event(2, "tool.result", {
         call_id: "bash-failed",
         tool: "exec_command",
-        output: "package tests failed",
+        output: "package service",
         is_error: true
       }),
       event(3, "command.execution", {
@@ -2482,10 +2482,34 @@ describe("projectTranscript", () => {
         exit_code: 1
       })
     ]);
-    render(<App client={mockClient(value)} />);
+    const {container} = render(<App client={mockClient(value)} />);
 
-    expect(screen.getByRole("button", {name: "Bash go test ./..."})).toBeTruthy();
+    const header = screen.getByRole("button", {name: "Bash go test ./..."});
+    fireEvent.click(header);
     expect(screen.queryByRole("button", {name: "Bash exit 1"})).toBeNull();
+    expect(container.querySelector(".toolIOCard pre[data-error]")?.textContent)
+      .toBe('Command exited with code 1 · output: "package service"');
+    expect(container.querySelector(".terminalOutput")?.textContent).toBe("package service");
+    expect(screen.getByText("exit 1")).toBeTruthy();
+  });
+
+  it.each([
+    {status: "timed_out", summary: "Command timed out"},
+    {status: "canceled", summary: "Command canceled"}
+  ])("shows a failed terminal for $status even without an exit code", ({status, summary}) => {
+    const value = snapshot([
+      event(1, "tool.start", {
+        call_id: "terminal-status", tool: "exec_command", arguments: {command: "inspect"}
+      }),
+      event(2, "tool.result", {call_id: "terminal-status", output: "", is_error: true}),
+      event(3, "command.execution", {call_id: "terminal-status", command: "inspect", status})
+    ]);
+    const {container} = render(<App client={mockClient(value)} />);
+
+    fireEvent.click(screen.getByRole("button", {name: "Bash inspect"}));
+    expect(container.querySelector("[data-terminal]")?.getAttribute("data-failed")).toBe("true");
+    expect(container.querySelector(".toolIOCard pre[data-error]")?.textContent).toBe(summary);
+    expect(container.querySelector(".terminalExit")).toBeNull();
   });
 
   it("shows file_write content in the expanded Write card", () => {
@@ -2543,9 +2567,11 @@ describe("projectTranscript", () => {
     ]);
     const {container} = render(<App client={mockClient(value)} />);
 
-    fireEvent.click(screen.getByRole("button", {name: /Edit old text matched/}));
+    fireEvent.click(screen.getByRole("button", {name: "Edit src/main.cpp"}));
     expect(container.querySelector(".diffCard")).toBeTruthy();
-    expect(container.querySelector(".toolIOCard pre[data-error]")?.textContent).toBe(output);
+    expect(container.querySelector(".toolIOCard pre[data-error]")?.textContent)
+      .toBe("edit precondition miss · src/main.cpp · Required action: file_read");
+    expect(container.querySelector(".toolIOCard pre:not([data-error])")?.textContent).toBe(output);
   });
 
   it("disables Session-bound controls while the selected Session hydrates", () => {

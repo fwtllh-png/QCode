@@ -362,17 +362,18 @@ func TestExecCommandValidatesCompactNetworkTargetSchema(t *testing.T) {
 	}
 	tests := []struct {
 		name    string
+		valid   bool
 		targets []tool.DeclaredNetworkTarget
 	}{
-		{name: "valid", targets: []tool.DeclaredNetworkTarget{{
+		{name: "valid", valid: true, targets: []tool.DeclaredNetworkTarget{{
 			Host: "example.com", Protocol: "https", Port: 443,
 			Methods: []string{"CONNECT"},
 		}}},
-		{name: "https without connect", targets: []tool.DeclaredNetworkTarget{{
+		{name: "https without connect", valid: true, targets: []tool.DeclaredNetworkTarget{{
 			Host: "example.com", Protocol: "https", Port: 443,
 			Methods: []string{"GET"},
 		}}},
-		{name: "http with connect", targets: []tool.DeclaredNetworkTarget{{
+		{name: "http with connect", valid: true, targets: []tool.DeclaredNetworkTarget{{
 			Host: "example.com", Protocol: "http", Port: 80,
 			Methods: []string{"CONNECT"},
 		}}},
@@ -401,10 +402,10 @@ func TestExecCommandValidatesCompactNetworkTargetSchema(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			err := validateNetworkTargets(test.targets)
-			if test.name == "valid" && err != nil {
+			if test.valid && err != nil {
 				t.Fatalf("valid targets rejected: %v", err)
 			}
-			if test.name != "valid" && err == nil {
+			if !test.valid && err == nil {
 				t.Fatal("invalid targets accepted")
 			}
 		})
@@ -635,12 +636,24 @@ func executeProcessTool(
 	input map[string]any,
 ) tool.Result {
 	t.Helper()
+	return executeProcessToolContext(t, t.Context(), registry, threadID, name, input)
+}
+
+func executeProcessToolContext(
+	t *testing.T,
+	ctx context.Context,
+	registry *tool.Registry,
+	threadID string,
+	name string,
+	input map[string]any,
+) tool.Result {
+	t.Helper()
 	data, err := json.Marshal(input)
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx := tool.WithInvocationIdentity(
-		t.Context(),
+	ctx = tool.WithInvocationIdentity(
+		ctx,
 		tool.InvocationIdentity{
 			SessionID: "session-process-test",
 			ThreadID:  threadID,

@@ -1,0 +1,146 @@
+{
+  "id": "eds-go-module-info",
+  "version": "p0",
+  "contract": "v1",
+  "profile": "native",
+  "source": "host-bound",
+  "requests": [
+    {
+      "name": "go-toolchain",
+      "namespace": "host_toolchain",
+      "access": "read",
+      "source": "path-and-go-env-goroot",
+      "required": true,
+      "lifecycle": "source_version",
+      "purpose": "execute go"
+    },
+    {
+      "name": "go-env-goproxy",
+      "namespace": "host_config",
+      "access": "read",
+      "path": "env:GOPROXY",
+      "source": "go-env-json",
+      "required": true,
+      "lifecycle": "source_version",
+      "purpose": "module proxy configuration"
+    },
+    {
+      "name": "go-env-gonosumdb",
+      "namespace": "host_config",
+      "access": "read",
+      "path": "env:GONOSUMDB",
+      "source": "go-env-json",
+      "required": true,
+      "lifecycle": "source_version"
+    },
+    {
+      "name": "go-env-gosumdb",
+      "namespace": "host_config",
+      "access": "read",
+      "path": "env:GOSUMDB",
+      "source": "go-env-json",
+      "required": true,
+      "lifecycle": "source_version"
+    },
+    {
+      "name": "go-env-goprivate",
+      "namespace": "host_config",
+      "access": "read",
+      "path": "env:GOPRIVATE",
+      "source": "go-env-json",
+      "required": true,
+      "lifecycle": "source_version"
+    },
+    {
+      "name": "go-env-go111module",
+      "namespace": "host_config",
+      "access": "read",
+      "path": "env:GO111MODULE",
+      "source": "go-env-json",
+      "required": true,
+      "lifecycle": "source_version"
+    },
+    {
+      "name": "go-env-file",
+      "namespace": "host_config",
+      "access": "read",
+      "source": "go-env-GOENV",
+      "required": false,
+      "lifecycle": "live_host_file",
+      "purpose": "persistent go env -w file"
+    },
+    {
+      "name": "goproxy-byted",
+      "namespace": "network",
+      "access": "read",
+      "host": "goproxy.byted.org",
+      "port": 443,
+      "protocol": "https",
+      "methods": ["CONNECT"],
+      "source": "goproxy-first-item",
+      "required": true,
+      "lifecycle": "grant_version"
+    },
+    {
+      "name": "goproxy-direct-fallback",
+      "namespace": "network",
+      "access": "read",
+      "host": "code.byted.org",
+      "port": 443,
+      "protocol": "https",
+      "methods": ["CONNECT"],
+      "source": "goproxy-direct-not-auto-granted",
+      "required": false,
+      "lifecycle": "missing_until_approved",
+      "purpose": "GOPROXY |direct fallback must stay unapproved"
+    },
+    {
+      "name": "goproxy-credential",
+      "namespace": "credential",
+      "access": "use",
+      "host": "goproxy.byted.org",
+      "source": "adapter-declared-auth",
+      "required": true,
+      "lifecycle": "provider_rotation"
+    },
+    {
+      "name": "go-mod-cache",
+      "namespace": "cache",
+      "access": "write",
+      "path": "sandbox-home/cache/go-mod",
+      "env": "GOMODCACHE",
+      "tree": true,
+      "source": "workspace-state",
+      "required": true,
+      "lifecycle": "workspace"
+    },
+    {
+      "name": "go-build-cache",
+      "namespace": "cache",
+      "access": "write",
+      "path": "sandbox-home/cache/go-build",
+      "env": "GOCACHE",
+      "tree": true,
+      "source": "workspace-state",
+      "required": true,
+      "lifecycle": "workspace"
+    },
+    {
+      "name": "darwin-user-temp",
+      "namespace": "shared_user_temp",
+      "access": "write",
+      "source": "confstr",
+      "required": false,
+      "lifecycle": "shared",
+      "shared": true
+    },
+    {
+      "name": "workspace-sources",
+      "namespace": "workspace",
+      "access": "write",
+      "source": "command",
+      "required": false,
+      "lifecycle": "command"
+    }
+  ]
+}

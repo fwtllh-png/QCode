@@ -360,7 +360,7 @@ sandbox-attack-test:
 		./internal/security/sandbox/... ./internal/adapter/tool/file/... ./internal/adapter/tool/shell/...
 	QCODE_SANDBOX_STAGE=1 $(GO) test -tags=capability -race \
 		./internal/platform/process/... \
-		-run 'Test(RunUsesInjectedStrongSandboxBackend|RunFailsClosedWithoutStrongSandbox|RunPinsWorkingDirectoryToDescriptor|SessionCancellationKillsProcessGroup|RealSandboxAttackCorpus|RealManagedProxyBlocksDirectEgress)'
+		-run 'Test(RunUsesInjectedStrongSandboxBackend|RunFailsClosedWithoutStrongSandbox|RunPinsWorkingDirectoryToDescriptor|SessionCancellationKillsProcessGroup|RealSandboxAttackCorpus|RealManagedProxyBlocksDirectEgress|RealSessionProxyIsolatesSiblingPorts)'
 
 secret-leak-test: build
 	$(GO) test -race ./internal/config ./internal/observability/telemetry \

@@ -71,8 +71,9 @@ Settings 中可选择跟随系统或固定主题。按钮与输入使用 120ms �
 骨架屏使用轻微呼吸效果，已有正文刷新时不替换成整页骨架屏。
 系统启用减少动态效果或页面进入后台时，停止持续动画并立即完成待卸载过渡；
 不对逐 Token 输出重复播放入场效果，也不增加模型请求。
-已完成 Turn 仍默认折叠执行过程，展开和收起使用 220ms 高度过渡，
-关闭后卸载详情；搜索和 Trajectory 定位继续自动展开目标执行过程。
+已完成 Turn 仍默认折叠执行过程；若完成时正在上翻阅读，则保留当前展开状态，
+回到底部后再折叠。展开和收起使用 220ms 高度过渡，关闭后卸载详情；
+搜索和 Trajectory 定位继续自动展开目标执行过程。
 
 对话标题栏保留会话定位和 Git 工具入口，不再提供右侧 Latest turn 面板、会话下载按钮
 或 `/export` 命令。历史工具内容与结构化验证记录仍可在 Chat 和 Trajectory 中查看。
@@ -172,6 +173,16 @@ Tool Catalog 的 `discovery_terms` 保存不授予权限的多语言检索词。
 当前已物化工具，再按相关度排序其他工具，并在模型声明的 Tool Definition 与 Schema
 容量内填充，不再使用固定的“相关工具数量”。因此中文的 Git、Web、LSP、格式化、调试
 和依赖工作流不需要先失败一次再通过 `tool_search` 补载。
+容量裁剪后仍有可发现工具未暴露时，必须保留 `tool_search`；必需工具与搜索入口
+无法同时容纳时明确返回容量错误。搜索、下一轮投影与调用使用同一套 Session Profile
+和角色可用性规则，禁用项不参与搜索或物化；资源级审批仍在实际调用时执行。
+
+仓库探索优先用 `file_list` 列目录、`file_read` 读文件，并使用工具返回的路径。
+独立探测分别调用，保留各自输出、stderr 和真实退出状态；不要用 `2>/dev/null`
+隐藏诊断或用 `|| true` 把所有失败转为成功。确认可选路径不存在时明确报告缺失，
+继续其他探测；权限、沙箱拒绝和 I/O 故障仍按真实失败处理。
+已读路径不代表所有内容都已覆盖。已有文本能回答当前问题且窗口、版本一致时复用；
+否则可为只读分析或修改补读必要窗口。搜索命中只提供起点，不要求读后必须编辑。
 
 `lsp_diagnostics`、`lsp_hover`、`lsp_format_edits`、`lsp_code_actions` 和
 `lsp_rename_edits` 按文件类型选择已安装的 `gopls`、`clangd`、
@@ -201,12 +212,15 @@ Journal 保护的文件工具完成。
 安装 Chromium/Chrome 后，`web_run` 使用隔离临时 Profile 和 CDP 提供真实
 navigate、DOM snapshot、click 与 fill；`QCODE_BROWSER_BINARY` 可覆盖自动探测。
 本地开发地址必须显式传入 `allow_loopback`，不要把 `localhost` 或端口 `0` 写进
-`network_targets`。进程启动成功或存活不等于测试通过。`exec_command` 第一次只等到 `yield_time_ms`；
+`network_targets`。可信配置里声明的环境网络可被空 `network_targets` 继承；
+未声明时仍是禁网。进程启动成功或存活不等于测试通过。`exec_command` 第一次只等到 `yield_time_ms`；
 进程还在跑时会返回 `session_id`，用 `write_stdin` 继续收输出或关闭，并可用
 `timeout_ms` 杀掉进程组（声明值不得超过一个工作日，24 小时；更长的任务应组织为
 显式轮询的会话而不是单一无限期限）。`shell_read` 未显式传 `timeout_ms` 时按
 60 秒默认前台期限执行并在超时结果中提示改用 `exec_command` 会话，挂起命令不再
-占用整个 Turn。`http_request` 支持结构化
+占用整个 Turn。`write_paths` 可以指向已存在的工作区子目录，表示该树内的创建与
+修改；这类命令在隔离工作区执行，结果里的 `isolated_cwd` 是真实 cwd，结算时不会
+把用户当时改过的其它文件算成 Agent 修改。`http_request` 支持结构化
 GET/POST/PUT/PATCH/DELETE/HEAD、响应状态断言和有界 Body；它拒绝
 Authorization、Cookie、API Key 等会被持久化进 Tool Call 的敏感 Header。
 
@@ -265,13 +279,21 @@ Sample 完成后持久化完整推理，因此重载页面或切换 Session 后�
 文件名与搜索结果路径仅作为可选取文本显示，不再调用本机编辑器或 VSCode。
 页面内文件预览、内容复制和 Git Diff 保留；目录选择器仍用于添加 Workspace。
 
+失败工具卡片的标题保留命令或路径，展开后分别显示失败摘要和原始输出。
+摘要优先使用结构化恢复信息与最后一次执行的拒绝原因；只有退出码时明确显示
+退出码，超时和取消按实际状态显示，不从普通输出首行或命令字符串推断原因。
+原始输出保留供诊断，真实非零退出状态不会被改写为成功。
+
 复杂任务中，模型可以在常规工具调用前输出简短的阶段说明，报告已确认的发现与下一步。
 这些说明由主模型生成，在该次完整响应被接纳后显示，不从推理文本中截取，也不额外调用
 摘要模型。说明与工具按顺序穿插，`Stage details` 可折叠相邻执行细节，说明本身保持可见。
+第一条阶段说明到达时，已打开的工具详情、焦点与阅读位置保持不变。
 工具运行较久或模型尚未完成响应时，继续显示原有运行状态，不虚构阶段结论。
 
 Turn 完成后，Chat 默认只保留用户问题和最终结论；阶段说明、推理、Tool、验证和交付记录
 收进可展开的 `Execution details`。最终结论不会替换阶段说明。运行中的 Turn 默认展开。
+如果完成、失败或取消时已停止跟随底部，则保留当前执行过程，避免正在阅读的内容突然收起；
+回到底部后再恢复默认折叠，重新打开会话时仍按历史 Turn 默认折叠。
 通过会话搜索或 Trajectory 定位阶段说明、Tool 或文件时，所属执行过程及分组会自动展开。
 重载页面、取消或失败后，已确认的阶段说明仍可恢复；它们不代表任务已完成或验证通过。
 
@@ -287,7 +309,7 @@ Entry、Turn、Call 和 Path Identity 定位。Chat 与 Trajectory 往返、切�
 200 个业务节点的重叠滑动窗口，避免长会话无限扩张 DOM。向上滚动时自动显示或读取
 更早历史，向下滚动时自动显示后续消息，不再显示 `Earlier messages` / `Newer messages`
 分页按钮。加载期间保留当前可见消息及其视口位置；浏览旧消息时，新输出不会强制拉回底部，
-`Back to bottom` 会切回最新窗口并继续跟随输出。
+滚动与流式更新同时发生时以最新滚动位置为准。`Back to bottom` 会切回最新窗口并继续跟随输出。
 
 同一 Session 的并发历史读取会合并；切换 Session 或 Workspace 后取消请求并丢弃迟到结果。
 历史页未推进 Cursor 时停止加载，避免无限请求。读取失败只展示错误与重试图标，
@@ -391,8 +413,9 @@ Catalog Model。Composer 的 `New model...` 打开独立模型配置弹窗；探
 容量或能力证明。
 
 Composer 内的 Reasoning 菜单直接采用当前模型目录声明的档位。DeepSeek 显示
-Off、Low、High、Max，默认 High；GLM-5.3 和 GLM-5.3-Flash 显示 Low、High、Max，
-默认 Max；其他模型保留各自完整档位，不做跨档位折算。GLM 使用
+Off、Low、High、Max，默认 High；GLM-5.3、GLM-5.3-Flash 和 GLM-5.3-FlashX
+显示 Low、High、Max，默认 Max；其他模型保留各自完整档位，不做跨档位折算。
+三个 GLM 模型均在聊天框的模型菜单中默认列出，使用同一 GLM 连接：
 `https://open.bigmodel.cn/api/coding/paas/v4` 的 OpenAI Chat Completions 兼容接口。
 
 Credential 支持创建或轮换、在线校验和二次确认删除。Settings 还可查看 Tool 的

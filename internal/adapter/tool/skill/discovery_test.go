@@ -133,6 +133,52 @@ func TestSkillDiscoveryToolSchemaFitsCE7RegressionBudget(t *testing.T) {
 	t.Logf("skill discovery schema delta = %d bytes", total)
 }
 
+func TestSkillListRefreshesFirstPageWithoutMixingPagination(t *testing.T) {
+	workspace, private := t.TempDir(), t.TempDir()
+	root := filepath.Join(private, ".agents", "skills")
+	catalog, err := skillruntime.Discover(skillruntime.DiscoveryOptions{
+		Workspace: workspace, UserHome: t.TempDir(), SandboxHome: private,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry := tool.NewRegistry(nil, nil)
+	if err := RegisterDiscovery(registry, catalog); err != nil {
+		t.Fatal(err)
+	}
+	for index := range 25 {
+		name := fmt.Sprintf("skill-%02d", index)
+		writeToolSkill(t, root, name, name, "body")
+	}
+	list := func(cursor string) tool.Result {
+		t.Helper()
+		args, _ := json.Marshal(listInput{Cursor: cursor})
+		result, err := tooltest.Execute(t.Context(), registry, tool.Call{Name: "skills_list", Arguments: args})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return result
+	}
+	first := list("")
+	cursor := first.Metadata["next_cursor"].(string)
+	if first.Metadata["count"] != 20 || cursor == "" {
+		t.Fatalf("new installation was not discovered: %+v", first)
+	}
+	writeToolSkill(t, root, "added", "added", "new")
+	second := list(cursor)
+	if second.Metadata["count"] != 5 {
+		t.Fatalf("continuation silently rescanned: %+v", second)
+	}
+	list("")
+	if _, err := catalog.HandleForName(t.Context(), "added"); err != nil {
+		t.Fatal(err)
+	}
+	args, _ := json.Marshal(listInput{Cursor: cursor})
+	if _, err := tooltest.Execute(t.Context(), registry, tool.Call{Name: "skills_list", Arguments: args}); err == nil {
+		t.Fatal("stale cursor accepted after catalog changed")
+	}
+}
+
 func writeToolSkill(
 	t *testing.T,
 	root, name, description, body string,

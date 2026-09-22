@@ -6,6 +6,39 @@ import {
 } from "./conversation";
 
 describe("ConversationProjection", () => {
+  it.each(["completed", "failed", "canceled", "timed_out"])(
+    "replays a yielded command through its original call to %s",
+    (status) => {
+      const events = [
+        event(1, "tool.start", {
+          call_id: "start", tool: "exec_command", arguments: {command: "test command"}
+        }),
+        event(2, "tool.result", {call_id: "start", tool: "exec_command", output: "", is_error: false}),
+        event(3, "command.execution", {
+          call_id: "start", session_id: "term-1", command: "test command", status: "started"
+        })
+      ];
+      const initial = projectConversation(events);
+      expect(initial.nodes.get("tool-start")).toMatchObject({
+        state: "running", command: {status: "started"}
+      });
+      events.push(
+        event(4, "tool.start", {call_id: "poll", tool: "write_stdin", arguments: {session_id: "term-1"}}),
+        event(5, "tool.result", {call_id: "poll", tool: "write_stdin", output: "done", is_error: status !== "completed"}),
+        event(6, "command.execution", {
+          call_id: "start", session_id: "term-1", command: "test command",
+          status, exit_code: status === "completed" ? 0 : 1
+        })
+      );
+      const replay = projectConversation(events);
+      expect(replay.nodes.get("tool-start")).toMatchObject({
+        state: status === "completed" ? "completed" : "failed",
+        command: {status}
+      });
+      expect(replay.nodes.get("tool-poll")).not.toHaveProperty("command");
+    }
+  );
+
   it("coalesces repeated in-turn compaction updates", () => {
     const snapshot = projectConversation([
       event(1, "turn.compaction", {
@@ -815,11 +848,149 @@ describe("ConversationProjection", () => {
       kind: "tool",
       variant: "shell",
       state: "failed",
-      summary: "compile_exit=0",
-      errorSummary: "c++ source.cpp -o build/test && ./build/test",
+      summary: "c++ source.cpp -o build/test && ./build/test",
+      errorSummary: 'Command exited with code 1 · output: "test_exit=1"',
       output: "compile_exit=0\ntest_exit=1",
       changes: [{path: "build/test"}],
       command: {exitCode: 1}
+    });
+  });
+
+  it.each(["result-first", "command-first"])(
+    "keeps normal output separate from exit failure with %s delivery and replay",
+    (order) => {
+      const command = "sed -n '1,20p' service.go; ls proto 2>/dev/null";
+      const result = {
+        call_id: "probe",
+        output: "package service\n\nfunc Serve() {}",
+        is_error: true,
+        execution: {
+          terminal_status: "failed",
+          attempts: [{status: "failed", reason: "tool_error"}]
+        }
+      };
+      const execution = {call_id: "probe", command, status: "failed", exit_code: 1};
+      const events = [
+        event(1, "tool.start", {
+          call_id: "probe", tool: "exec_command", arguments: {command}
+        }),
+        ...(order === "result-first"
+          ? [event(2, "tool.result", result), event(3, "command.execution", execution)]
+          : [event(2, "command.execution", execution), event(3, "tool.result", result)])
+      ];
+      const projection = new ConversationProjection();
+      for (const item of events) {
+        projection.apply(item);
+        projection.snapshot();
+      }
+      const node = projection.snapshot().nodes.get("tool-probe");
+      expect(node).toMatchObject({
+        summary: command,
+        state: "failed",
+        output: result.output,
+        errorSummary: 'Command exited with code 1 · output: "func Serve() {}"',
+        command: {exitCode: 1}
+      });
+      expect(projectConversation(events).nodes.get("tool-probe")).toEqual(node);
+    }
+  );
+
+  it.each([
+    {
+      recovery: {error_category: "file_not_found", path: "proto", required_action: "file_list"},
+      execution: undefined,
+      expected: "file not found · proto · Required action: file_list"
+    },
+    {
+      recovery: undefined,
+      execution: {
+        terminal_status: "failed",
+        attempts: [
+          {status: "failed", denial: {reason_code: "network_denied", resource: "old.example"}},
+          {status: "failed", denial: {reason_code: "read_denied", resource: "private.txt"}}
+        ]
+      },
+      expected: "read denied · private.txt"
+    },
+    {
+      recovery: undefined,
+      execution: {
+        terminal_status: "rejected",
+        attempts: [{status: "rejected", reason: "authority_compile"}]
+      },
+      expected: "Tool rejected: authority compile"
+    }
+  ])("prefers current structured failure details: $expected", ({recovery, execution, expected}) => {
+    const snapshot = projectConversation([
+      event(1, "tool.start", {
+        call_id: "structured", tool: "shell_read", arguments: {command: "inspect"}
+      }),
+      event(2, "tool.result", {
+        call_id: "structured", output: "ordinary output", is_error: true, recovery, execution
+      }),
+      event(3, "command.execution", {
+        call_id: "structured", command: "inspect", status: "failed", exit_code: 1
+      })
+    ]);
+    expect(snapshot.nodes.get("tool-structured")).toMatchObject({
+      state: "failed", errorSummary: expected, output: "ordinary output"
+    });
+  });
+
+  it("does not reuse a resolved attempt denial or infer a reason from output", () => {
+    const snapshot = projectConversation([
+      event(1, "tool.start", {
+        call_id: "retry", tool: "exec_command", arguments: {command: "inspect"}
+      }),
+      event(2, "tool.result", {
+        call_id: "retry", output: "package service", is_error: false,
+        execution: {
+          terminal_status: "succeeded",
+          attempts: [
+            {status: "failed", denial: {reason_code: "network_denied", resource: "old.example"}},
+            {status: "succeeded"}
+          ]
+        }
+      }),
+      event(3, "command.execution", {call_id: "retry", command: "inspect", status: "failed"})
+    ]);
+    expect(snapshot.nodes.get("tool-retry")).toMatchObject({
+      state: "failed",
+      errorSummary: 'Tool failed · output: "package service"'
+    });
+  });
+
+  it.each([
+    {status: "timed_out", expected: "Command timed out"},
+    {status: "canceled", expected: "Command canceled"},
+    {status: "completed", expected: ""}
+  ])("shows the actual $status command status and clears stale summaries", ({status, expected}) => {
+    const snapshot = projectConversation([
+      event(1, "tool.start", {
+        call_id: "status", tool: "exec_command", arguments: {command: "inspect"}
+      }),
+      event(2, "tool.result", {
+        call_id: "status", output: "ordinary output", is_error: true
+      }),
+      event(3, "command.execution", {call_id: "status", command: "inspect", status, exit_code: 0})
+    ]);
+    expect(snapshot.nodes.get("tool-status")).toMatchObject({
+      state: status === "completed" ? "completed" : "failed",
+      errorSummary: expected,
+      command: {exitCode: 0}
+    });
+  });
+
+  it("keeps a command running when its initial tool result arrives after started", () => {
+    const snapshot = projectConversation([
+      event(1, "tool.start", {
+        call_id: "running", tool: "exec_command", arguments: {command: "inspect"}
+      }),
+      event(2, "command.execution", {call_id: "running", command: "inspect", status: "started"}),
+      event(3, "tool.result", {call_id: "running", output: "working", is_error: false})
+    ]);
+    expect(snapshot.nodes.get("tool-running")).toMatchObject({
+      state: "running", errorSummary: "", output: "working"
     });
   });
 
@@ -1039,6 +1210,33 @@ describe("ConversationProjection", () => {
       {title: "Result", state: "completed"}
     ]);
     expect(JSON.stringify(agent.activities)).not.toContain("task_capsule");
+  });
+
+  it("uses structured failure details for child tools without treating output as the cause", () => {
+    const snapshot = projectConversation([
+      event(1, "agent.spawned", {
+        agent_id: "child", detail: {thread_id: "child-thread"}
+      }),
+      {
+        ...event(2, "tool.start", {
+          call_id: "child-probe", tool: "file_read", arguments: {path: "proto"}
+        }),
+        thread_id: "child-thread"
+      },
+      {
+        ...event(3, "tool.result", {
+          call_id: "child-probe", output: "ordinary output", is_error: true,
+          recovery: {error_category: "file_not_found", path: "proto"}
+        }),
+        thread_id: "child-thread"
+      }
+    ]);
+    const node = snapshot.nodes.get("agent-child");
+    expect(node?.kind).toBe("agent");
+    if (node?.kind !== "agent") throw new Error("agent was not projected");
+    expect(node.activities.find((item) => item.callID === "child-probe")).toMatchObject({
+      state: "failed", summary: "file not found · proto"
+    });
   });
 
   it("projects failed agent reason codes and usage", () => {

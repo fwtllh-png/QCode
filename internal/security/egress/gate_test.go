@@ -266,6 +266,55 @@ func TestGateConcurrentGrantsPreserveExistingAccess(t *testing.T) {
 	}
 }
 
+func TestAuthorizeDeniedReceiptCarriesEnvironmentCategory(t *testing.T) {
+	gate := &egress.Gate{Enforce: true}
+	_, err := gate.Authorize(t.Context(), egress.Target{
+		Host: "code.byted.org", Protocol: "https", Port: 443,
+		Methods: []string{http.MethodConnect},
+	}, "process_proxy")
+	if err == nil || !errors.Is(err, egress.ErrDenied) {
+		t.Fatalf("Authorize() error = %v", err)
+	}
+	denied, ok := egress.DeniedTarget(err)
+	if !ok || denied.Category != "network_target_unapproved" ||
+		denied.RequiredAction != "approve_network_target" {
+		t.Fatalf("DeniedTarget() = %+v, %t", denied, ok)
+	}
+	receipts := gate.Receipts()
+	if len(receipts) != 1 || receipts[0].Decision != "deny" ||
+		receipts[0].Category != "network_target_unapproved" ||
+		receipts[0].RequiredAction != "approve_network_target" ||
+		receipts[0].Host != "code.byted.org" {
+		t.Fatalf("receipts = %+v", receipts)
+	}
+
+	gate = &egress.Gate{
+		Enforce: true,
+		LookupIP: func(context.Context, string) ([]net.IP, error) {
+			return nil, errors.New("nxdomain")
+		},
+	}
+	gate.AllowTarget(egress.Target{
+		Host: "goproxy.example", Protocol: "https", Port: 443,
+		Methods: []string{http.MethodGet},
+	})
+	_, err = gate.Authorize(t.Context(), egress.Target{
+		Host: "goproxy.example", Protocol: "https", Port: 443,
+		Methods: []string{http.MethodGet},
+	}, "process_proxy")
+	if err == nil || !errors.Is(err, egress.ErrDenied) {
+		t.Fatalf("DNS Authorize() error = %v", err)
+	}
+	denied, ok = egress.DeniedTarget(err)
+	if !ok || denied.Category != "" || denied.Reason != "DNS resolution failed" {
+		t.Fatalf("DNS DeniedTarget() = %+v, %t", denied, ok)
+	}
+	receipts = gate.Receipts()
+	if len(receipts) != 1 || receipts[0].Category != "" {
+		t.Fatalf("DNS receipts must not invent a missing-capability category: %+v", receipts)
+	}
+}
+
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }

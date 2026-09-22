@@ -92,9 +92,10 @@ func (t *Tool) typedExecutor() (tool.Executor, error) {
 	})
 }
 
-func (t *Tool) run(_ context.Context, input input) (tool.Result, error) {
+func (t *Tool) run(ctx context.Context, input input) (tool.Result, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	enabled, _ := ctx.Value(enabledKey{}).(func(tool.CatalogEntrySnapshot) bool)
 	query := strings.ToLower(strings.TrimSpace(input.Query))
 	if query == "" {
 		return tool.Result{}, errors.New("tool_search query is required")
@@ -114,14 +115,7 @@ func (t *Tool) run(_ context.Context, input input) (tool.Result, error) {
 	var matches []match
 	for _, entry := range snapshot.Entries() {
 		descriptor := entry.PresentationDescriptor()
-		if descriptor.Visibility != tool.VisibleModel {
-			continue
-		}
-		if descriptor.Name == ToolName {
-			continue
-		}
-		if entry.State == tool.CatalogEntryRevoked ||
-			descriptor.Availability == tool.AvailabilityUnavailable {
+		if descriptor.Name == ToolName || !modelAvailable(entry, enabled) {
 			continue
 		}
 		// Prefer deferred; also allow searching available tools for discoverability.

@@ -50,13 +50,22 @@ func (g Granular) postureFor(surface Surface) SurfacePosture {
 	}[surface]
 }
 
-func ApplySurfaceTightening(decision Decision, surface Surface, granular Granular) Decision {
+func ApplySurfaceTightening(
+	decision Decision, surface Surface, granular Granular, effect Effect,
+) Decision {
 	posture := granular.postureFor(surface)
 	if posture == SurfaceInherit || posture == SurfaceAllow ||
 		decision.Action == ActionDeny || decision.Action == ActionHold {
 		return decision
 	}
 	if posture == SurfaceAsk && decision.Action == ActionAllow {
+		// Surface ask tightens consequential work only. Read-only
+		// low-risk probes (echo, ls, env) keep their frictionless allow so
+		// a tightened session does not turn exploration commands into
+		// approval stops. Explicit deny postures are never softened.
+		if effect.Kind == EffectProcessReadOnly && effect.Risk == RiskLow {
+			return decision
+		}
 		return Decision{Action: ActionAsk, Code: "granular_ask", Reason: "surface " + string(surface) + " requires approval"}
 	}
 	if posture == SurfaceDeny {

@@ -43,6 +43,51 @@ func TestMemoryEventStoreReplayCursorAndClose(t *testing.T) {
 	}
 }
 
+func TestMemoryEventStoreReplayTurnFiltersRetainedEvents(t *testing.T) {
+	store := NewMemoryEventStore(8)
+	first := protocol.Event{
+		Version: protocol.Version, ID: "evt_a", Sequence: 1, OperationID: "op_a",
+		ThreadID: "thread", TurnID: "turn_a", ItemID: "item_a",
+		Kind: protocol.EventTurnCompleted, CreatedAt: time.Now().UTC(),
+		Data: &protocol.TurnCompletedData{Text: "a"},
+	}
+	second := protocol.Event{
+		Version: protocol.Version, ID: "evt_b", Sequence: 2, OperationID: "op_b",
+		ThreadID: "thread", TurnID: "turn_b", ItemID: "item_b",
+		Kind: protocol.EventOutputDelta, CreatedAt: time.Now().UTC(),
+		Data: &protocol.OutputDeltaData{Text: "chunk"},
+	}
+	third := protocol.Event{
+		Version: protocol.Version, ID: "evt_a2", Sequence: 3, OperationID: "op_a2",
+		ThreadID: "thread", TurnID: "turn_a", ItemID: "item_a2",
+		Kind: protocol.EventTurnCompleted, CreatedAt: time.Now().UTC(),
+		Data: &protocol.TurnCompletedData{Text: "a2"},
+	}
+	for _, event := range []protocol.Event{first, second, third} {
+		if err := store.Append(t.Context(), event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	events, err := store.ReplayTurn(t.Context(), "turn_a")
+	if err != nil || len(events) != 2 || events[0].ID != first.ID || events[1].ID != third.ID {
+		t.Fatalf("ReplayTurn = %+v err=%v", events, err)
+	}
+	kinds, err := store.ReplayKind(t.Context(), protocol.EventOutputDelta)
+	if err != nil || len(kinds) != 1 || kinds[0].ID != second.ID {
+		t.Fatalf("ReplayKind = %+v err=%v", kinds, err)
+	}
+	empty, err := store.ReplayTurn(t.Context(), "")
+	if err != nil || empty != nil {
+		t.Fatalf("empty ReplayTurn = %+v err=%v", empty, err)
+	}
+	if err := store.Close(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ReplayTurn(t.Context(), "turn_a"); !errors.Is(err, ErrClosed) {
+		t.Fatalf("ReplayTurn after close error = %v", err)
+	}
+}
+
 func TestMemoryEventStoreRejectsSequenceGap(t *testing.T) {
 	store := NewMemoryEventStore(2)
 	event := protocol.Event{

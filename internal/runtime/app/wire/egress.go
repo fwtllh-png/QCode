@@ -8,14 +8,12 @@ import (
 	"github.com/fwtllh-png/QCode/internal/security/egress"
 )
 
-// Tool approvals never mutate provider grants or cross the web/process boundary.
-func toolNetworkAllow(webGate, processGate *egress.Gate) toolguard.NetworkAllow {
+// Tool approvals never mutate provider grants or the workspace process Gate.
+// Process targets bind to a Session Gate when the process starts.
+func toolNetworkAllow(webGate *egress.Gate) toolguard.NetworkAllow {
 	return func(capability tool.Capability, target egress.Target) {
-		switch capability {
-		case tool.CapabilityNetwork:
+		if capability == tool.CapabilityNetwork {
 			webGate.AllowTarget(target)
-		case tool.CapabilityProcess:
-			processGate.AllowTarget(target)
 		}
 	}
 }

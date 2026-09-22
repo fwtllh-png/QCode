@@ -216,13 +216,16 @@ func applyInputRequired(
 	if strings.TrimSpace(command.RequestID) == "" {
 		return illegal(current, command, "input request id is empty")
 	}
-	transition.State.PendingInput = &InputState{RequestID: command.RequestID}
+	transition.State.PendingInput = &InputState{
+		RequestID: command.RequestID,
+		CallID:    command.CallID,
+	}
 	requestEffect(
 		transition,
 		EffectAwaitInput,
 		command,
 		"input:"+command.RequestID,
-		"",
+		command.CallID,
 	)
 	move(transition, PhaseAwaitingInput)
 	return nil

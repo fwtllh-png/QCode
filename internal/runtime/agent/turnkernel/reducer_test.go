@@ -974,6 +974,60 @@ func TestInputLifecycleMustResolveBeforeTerminal(t *testing.T) {
 	}
 }
 
+func TestToolResultForBoundInputWaitRetiresInput(t *testing.T) {
+	state := startSampling(t, protocol.TurnIntentAnswer)
+	state = apply(t, state, ToolCallsProposed{
+		Calls: []ToolCallState{{ID: "call-input", Name: "request_user_input"}},
+	}).State
+	state = apply(t, state, InputRequired{
+		RequestID: "input-1", CallID: "call-input",
+	}).State
+	if state.Phase != PhaseAwaitingInput {
+		t.Fatalf("awaiting phase = %s", state.Phase)
+	}
+	// The wait expired without a reply: the tool returns an error result
+	// while the phase is awaiting_input. The turn must survive this.
+	state = apply(t, state, ToolResultReceived{
+		CallID: "call-input", IsError: true,
+	}).State
+	if state.Phase != PhaseSampling {
+		t.Fatalf("phase after expired input = %s", state.Phase)
+	}
+	if state.PendingInput != nil {
+		t.Fatalf("pending input survived: %+v", state.PendingInput)
+	}
+	if len(state.OpenCalls) != 0 || len(state.ClosedCalls) != 1 {
+		t.Fatalf("calls = open %+v closed %+v", state.OpenCalls, state.ClosedCalls)
+	}
+	state = apply(t, state, TerminalRequested{CancelReason: "turn canceled"}).State
+	state = apply(t, state, FinishTerminal{}).State
+	if state.Phase != PhaseCanceled {
+		t.Fatalf("final phase = %s", state.Phase)
+	}
+}
+
+func TestToolResultForUnboundCallIsIllegalInAwaitingInput(t *testing.T) {
+	state := startSampling(t, protocol.TurnIntentAnswer)
+	state = apply(t, state, ToolCallsProposed{
+		Calls: []ToolCallState{
+			{ID: "call-input", Name: "request_user_input"},
+			{ID: "call-other", Name: "exec_command"},
+		},
+	}).State
+	state = apply(t, state, InputRequired{
+		RequestID: "input-1", CallID: "call-input",
+	}).State
+	_, err := (Reducer{}).Apply(state, ToolResultReceived{
+		CallID: "call-other",
+		EffectID: pendingEffectID(
+			state, EffectExecuteTool, "call-other",
+		),
+	})
+	if !errors.Is(err, ErrIllegalTransition) {
+		t.Fatalf("unbound call result error = %v", err)
+	}
+}
+
 func TestFailureRequiresToolClosureAndRollsBackMutation(t *testing.T) {
 	state := startSampling(t, protocol.TurnIntentAnswer)
 	state = apply(t, state, ToolCallsProposed{

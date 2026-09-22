@@ -20,5 +20,11 @@ func CloneSnapshot(snapshot Snapshot) Snapshot {
 		}
 		snapshot.Config.Diagnostics.Commands = commands
 	}
+	snapshot.Config.Execution.Environment.Resources = cloneEnvironmentResources(
+		snapshot.Config.Execution.Environment.Resources,
+	)
+	snapshot.Config.Execution.Environment.AuthServices = cloneEnvironmentAuthServices(
+		snapshot.Config.Execution.Environment.AuthServices,
+	)
 	return snapshot
 }

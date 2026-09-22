@@ -1,6 +1,10 @@
 package agentcontext
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
 
 func TestAuthorityCloneIsolatesMutableState(t *testing.T) {
 	source := NewAuthority()
@@ -22,5 +26,40 @@ func TestAuthorityCloneIsolatesMutableState(t *testing.T) {
 	}
 	if source.Window().Number != 1 {
 		t.Fatalf("source window changed through clone: %d", source.Window().Number)
+	}
+}
+
+func TestCaptureWorkspaceBindingSkipsUnbindableEvidencePaths(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(
+		filepath.Join(root, "keep.go"), []byte("package keep\n"), 0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
+	binding, err := CaptureWorkspaceBindingForEvidence(
+		root, "", 1, EvidenceDelta{
+			Facts: []EvidenceFact{{Path: "/Users/bytedance/eds/eds_metaserver/go.mod"}},
+			Changes: []EvidenceChange{{
+				Path: "eds_metaserver/lock.go",
+			}},
+			Reads: []EvidenceReadState{{Path: "keep.go"}},
+		},
+	)
+	if err != nil {
+		t.Fatalf("poisoned evidence failed the snapshot: %v", err)
+	}
+	for _, bound := range binding.BoundPaths {
+		if filepath.IsAbs(bound.Path) {
+			t.Fatalf("absolute path entered the binding: %+v", bound)
+		}
+	}
+	found := false
+	for _, bound := range binding.BoundPaths {
+		if bound.Path == "eds_metaserver/lock.go" || bound.Path == "keep.go" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("bindable evidence was dropped: %+v", binding.BoundPaths)
 	}
 }

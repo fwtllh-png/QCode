@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-func TestPolicyDiscoversHostToolchainsThroughGenericExposure(t *testing.T) {
+func TestPolicyInheritsPATHBinsWithoutNamedLanguageRoots(t *testing.T) {
 	root := t.TempDir()
 	workspace := filepath.Join(root, "workspace")
 	bin := filepath.Join(root, "host-tools", "bin")
@@ -45,34 +45,25 @@ func TestPolicyDiscoversHostToolchainsThroughGenericExposure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	canonicalRustup, err := filepath.EvalSymlinks(rustup)
-	if err != nil {
-		t.Fatal(err)
-	}
 	if !slices.Contains(policy.Toolchains.BinDirs, canonicalBin) {
 		t.Fatalf("toolchain bins = %v, want %s", policy.Toolchains.BinDirs, canonicalBin)
 	}
-	if !slices.Contains(policy.Toolchains.ReadRoots, canonicalRustup) ||
-		!slices.Contains(policy.HostReadRoots, canonicalRustup) {
+	if slices.Contains(policy.Toolchains.ReadRoots, rustup) ||
+		slices.Contains(policy.HostReadRoots, rustup) {
 		t.Fatalf(
-			"toolchain roots = %v host roots = %v, want %s",
+			"named language root leaked: roots=%v host=%v",
 			policy.Toolchains.ReadRoots,
 			policy.HostReadRoots,
-			canonicalRustup,
 		)
 	}
-	if !slices.Contains(
-		policy.Toolchains.Environment,
-		"RUSTUP_HOME="+canonicalRustup,
-	) {
-		t.Fatalf(
-			"toolchain environment = %v",
-			policy.Toolchains.Environment,
-		)
+	for _, entry := range policy.Toolchains.Environment {
+		if strings.HasPrefix(entry, "RUSTUP_HOME=") {
+			t.Fatalf("named language env leaked: %v", policy.Toolchains.Environment)
+		}
 	}
 }
 
-func TestPolicyDiscoversEveryInstalledToolchainEntry(t *testing.T) {
+func TestPolicyDoesNotExposePackageRootsFromPATHBins(t *testing.T) {
 	root := t.TempDir()
 	workspace := filepath.Join(root, "workspace")
 	nodeRoot := filepath.Join(root, "node")
@@ -119,17 +110,52 @@ func TestPolicyDiscoversEveryInstalledToolchainEntry(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !slices.Contains(policy.Toolchains.ReadRoots, want) {
-			t.Fatalf(
-				"toolchain roots = %v, want %s",
-				policy.Toolchains.ReadRoots,
-				want,
-			)
+		if slices.Contains(policy.Toolchains.ReadRoots, want) {
+			t.Fatalf("package root leaked: %s in %v", want, policy.Toolchains.ReadRoots)
 		}
 	}
 }
 
-func TestGoToolchainFollowsSelectedExecutableNotRuntimeBuildRoot(t *testing.T) {
+func TestPolicyFollowsOutOfDirPATHSymlinks(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspace := filepath.Join(root, "workspace")
+	private := filepath.Join(root, "private")
+	bin := filepath.Join(root, "bin")
+	cellar := filepath.Join(root, "Cellar", "tool", "1.0")
+	realBin := filepath.Join(cellar, "bin")
+	for _, directory := range []string{workspace, private, bin, realBin} {
+		if err := os.MkdirAll(directory, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	real := filepath.Join(realBin, "tool")
+	if err := os.WriteFile(real, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(real, filepath.Join(bin, "tool")); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
+
+	policy, err := BuildPolicy(Options{
+		WorkspaceRoot: workspace,
+		PrivateTemp:   private,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(policy.Toolchains.ReadRoots, realBin) {
+		t.Fatalf("resolved bin missing: %v", policy.Toolchains.ReadRoots)
+	}
+	if !slices.Contains(policy.Toolchains.ReadRoots, cellar) {
+		t.Fatalf("resolved package root missing: %v", policy.Toolchains.ReadRoots)
+	}
+}
+
+func TestDiscoverToolchainsDoesNotInjectGOROOT(t *testing.T) {
 	root, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -154,18 +180,21 @@ func TestGoToolchainFollowsSelectedExecutableNotRuntimeBuildRoot(t *testing.T) {
 	t.Setenv("PATH", bin)
 	t.Setenv("GOROOT", "")
 	exposure := discoverToolchains(filepath.Join(root, "workspace"), nil, nil)
-	canonical, err := filepath.EvalSymlinks(installation)
-	if err != nil {
-		t.Fatal(err)
+	for _, entry := range exposure.Environment {
+		if strings.HasPrefix(entry, "GOROOT=") {
+			t.Fatalf("GOROOT leaked: %v", exposure.Environment)
+		}
 	}
-	if !slices.Contains(exposure.ReadRoots, canonical) ||
-		!slices.Contains(exposure.Environment, "GOROOT="+canonical) {
-		t.Fatalf("incomplete selected toolchain: %+v", exposure)
-	}
-	t.Setenv("GOROOT", root)
-	// Invalid parent/home exposure is still rejected by the normal policy.
-	exposure = discoverToolchains(filepath.Join(root, "workspace"), nil, nil)
-	if slices.Contains(exposure.ReadRoots, root) {
-		t.Fatal("workspace parent was exposed as a toolchain")
+}
+
+func TestBuildPolicyRejectsLegacyContract(t *testing.T) {
+	_, err := BuildPolicy(Options{
+		WorkspaceRoot:       t.TempDir(),
+		PrivateTemp:         t.TempDir(),
+		EnvironmentContract: "legacy",
+		SkipPATHReadRoots:   true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "legacy") {
+		t.Fatalf("legacy contract error = %v", err)
 	}
 }

@@ -16,6 +16,7 @@ import (
 	"github.com/fwtllh-png/QCode/internal/platform/process"
 	"github.com/fwtllh-png/QCode/internal/platform/symbols"
 	"github.com/fwtllh-png/QCode/internal/security/egress"
+	"github.com/fwtllh-png/QCode/internal/security/goproxy"
 )
 
 type configModule struct{}
@@ -91,11 +92,28 @@ func (platformModule) Build(_ context.Context, state *buildState) error {
 	if err != nil {
 		return fmt.Errorf("resolve sandbox helper executable: %w", err)
 	}
-	backend, err := newWorkspaceSandbox(state, helperPath)
+	backend, prepareFacts, err := newWorkspaceSandbox(state, helperPath)
 	if err != nil {
 		return fmt.Errorf("create sandbox: %w", err)
 	}
 	session.sandbox = backend
+	state.platform.backend = backend
+	moduleProxy, authBindReport, err := bindAuthServices(state)
+	if err != nil {
+		return fmt.Errorf("bind auth services: %w", err)
+	}
+	state.platform.moduleProxy = moduleProxy
+	// Preparer facts (toolchain requirements, missing go, direct fallback)
+	// are binding-time facts: they surface on failed process results through
+	// the same report channel the auth service uses, instead of being
+	// dropped at binding time.
+	if authBindReport == nil {
+		authBindReport = &goproxy.BindReport{}
+	}
+	for _, fact := range prepareFacts {
+		authBindReport.Record(fact)
+	}
+	state.platform.authBindReport = authBindReport
 	session.workspaceQuery, err = builtin.NewWorkspaceQuery(execution.Workspace, backend, state.platform.leaseAuthority, execution.LeaseTimeout)
 	if err != nil {
 		return fmt.Errorf("create workspace query: %w", err)

@@ -24,6 +24,7 @@ import (
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
 	"github.com/fwtllh-png/QCode/internal/security/constitution"
 	"github.com/fwtllh-png/QCode/internal/security/egress"
+	"github.com/fwtllh-png/QCode/internal/security/goproxy"
 	"github.com/fwtllh-png/QCode/internal/security/permissions"
 	"github.com/fwtllh-png/QCode/internal/security/policy"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
@@ -42,14 +43,18 @@ type providerBuildState struct {
 }
 
 type platformBuildState struct {
-	helperPath      string
-	backend         sandbox.Backend
-	web             webtool.Options
-	webEgress       *egress.Gate
-	processEgress   *egress.Gate
-	processes       *process.SessionManager
-	leaseAuthority  *toolguard.LeaseAuthority
-	repositoryIndex *repoindex.Index
+	helperPath       string
+	backend          sandbox.Backend
+	web              webtool.Options
+	webEgress        *egress.Gate
+	processEgress    *egress.Gate
+	processes        *process.SessionManager
+	leaseAuthority   *toolguard.LeaseAuthority
+	repositoryIndex  *repoindex.Index
+	moduleProxy      *goproxy.Service
+	authBindReport   *goproxy.BindReport
+	hostGoproxyValue string
+	hostNetrcPath    string
 }
 
 type persistenceBuildState struct {

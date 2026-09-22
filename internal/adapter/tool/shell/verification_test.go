@@ -71,7 +71,6 @@ func TestExecCommandRejectsInvalidVerificationBeforeExecution(t *testing.T) {
 		{"verification": "made_up", "covered_paths": []string{"input.txt"}},
 		{"verification": "test", "covered_paths": []string{"../outside"}},
 		{"verification": "test", "covered_paths": []string{"/tmp/outside"}},
-		{"verification": "test", "covered_paths": []string{"input.txt"}, "write_paths": []string{"input.txt"}},
 	} {
 		fields["command"] = "touch should-not-run"
 		raw, err := json.Marshal(fields)
@@ -145,5 +144,43 @@ func TestVerificationKeepsStartInputsAndRejectsTerminatedZeroExit(t *testing.T) 
 	recorded := result.Metadata[verify.EvidenceMetadataKey].(verify.Evidence)
 	if recorded.InputDigest == current || recorded.InputDigest != evidence.InputDigest || recorded.CallID != "" {
 		t.Fatal("adapter replaced the start snapshot instead of leaving binding to the engine")
+	}
+}
+
+func TestVerificationWritingCoveredPathsIsInvalidatedAfterExecution(t *testing.T) {
+	registry, root := verificationRegistry(t)
+	// Build artifacts in an uncovered path stay valid evidence; rewriting a
+	// covered input downgrades the evidence after execution instead of
+	// rejecting the declaration up front.
+	result := executeProcessTool(t, registry, processTestThread, "exec_command", map[string]any{
+		"command":       "printf 'artifact' > artifact.txt",
+		"verification":  "build",
+		"covered_paths": []string{"input.txt"},
+		"write_paths":   []string{"artifact.txt"},
+	})
+	evidence := result.Outcome.Facts.Verification
+	if evidence == nil || evidence.Status != verify.StatusPassed {
+		t.Fatalf("uncovered artifact write invalidated evidence: %+v", evidence)
+	}
+	body, err := os.ReadFile(filepath.Join(root, "artifact.txt"))
+	if err != nil || string(body) != "artifact" {
+		t.Fatalf("artifact = %q err=%v", body, err)
+	}
+
+	result = executeProcessTool(t, registry, processTestThread, "exec_command", map[string]any{
+		"command":       "printf 'rewritten' > input.txt",
+		"verification":  "build",
+		"covered_paths": []string{"input.txt"},
+		"write_paths":   []string{"input.txt"},
+	})
+	evidence = result.Outcome.Facts.Verification
+	if evidence == nil || evidence.Status != verify.StatusInvalidated {
+		t.Fatalf("covered-path write was not invalidated: %+v", evidence)
+	}
+	if evidence.InvalidationReason == "" {
+		t.Fatalf("invalidation reason is empty: %+v", evidence)
+	}
+	if body, err := os.ReadFile(filepath.Join(root, "input.txt")); err != nil || string(body) != "rewritten" {
+		t.Fatalf("input.txt = %q err=%v", body, err)
 	}
 }

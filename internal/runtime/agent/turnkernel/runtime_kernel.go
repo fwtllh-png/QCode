@@ -647,11 +647,12 @@ func (s *RuntimeKernel) ResolveApproval(
 	return nil
 }
 
-func (s *RuntimeKernel) RequireInput(requestID string) error {
+func (s *RuntimeKernel) RequireInput(requestID, callID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := s.applyAuthoritativeLocked(InputRequired{
 		RequestID: requestID,
+		CallID:    callID,
 	}); err != nil {
 		return err
 	}
@@ -667,7 +668,7 @@ func (s *RuntimeKernel) RequireInput(requestID string) error {
 	return nil
 }
 
-func (s *RuntimeKernel) EnsureInput(requestID string) error {
+func (s *RuntimeKernel) EnsureInput(requestID, callID string) error {
 	s.mu.Lock()
 	pending := s.state.PendingInput
 	s.mu.Unlock()
@@ -680,7 +681,7 @@ func (s *RuntimeKernel) EnsureInput(requestID string) error {
 		}
 		return nil
 	}
-	return s.RequireInput(requestID)
+	return s.RequireInput(requestID, callID)
 }
 
 func (s *RuntimeKernel) ResolveInput(requestID string) error {

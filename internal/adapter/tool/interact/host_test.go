@@ -7,6 +7,54 @@ import (
 	"time"
 )
 
+func TestHostNotifiesExpiryHandlerOnTimeout(t *testing.T) {
+	host := NewHost(time.Millisecond)
+	host.SetEmitter(func(context.Context, Request) error {
+		return nil
+	})
+	expired := make(chan Request, 1)
+	host.SetExpiryHandler(func(request Request) {
+		expired <- request
+	})
+	_, err := host.Wait(t.Context(), "call-expired", "continue?", nil)
+	if err == nil || err.Error() != "input request expired" {
+		t.Fatalf("wait error = %v", err)
+	}
+	select {
+	case request := <-expired:
+		if request.CallID != "call-expired" {
+			t.Fatalf("expiry request = %+v", request)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("expiry handler was not notified")
+	}
+}
+
+func TestHostNotifiesExpiryHandlerOnCancel(t *testing.T) {
+	host := NewHost(time.Minute)
+	host.SetEmitter(func(context.Context, Request) error {
+		return nil
+	})
+	expired := make(chan Request, 1)
+	host.SetExpiryHandler(func(request Request) {
+		expired <- request
+	})
+	ctx, cancel := context.WithCancel(t.Context())
+	go cancel()
+	_, err := host.Wait(ctx, "call-canceled", "continue?", nil)
+	if err == nil {
+		t.Fatal("canceled wait returned no error")
+	}
+	select {
+	case request := <-expired:
+		if request.CallID != "call-canceled" {
+			t.Fatalf("expiry request = %+v", request)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("expiry handler was not notified on cancellation")
+	}
+}
+
 func TestC5HostRestoresInputWaitWithoutDuplicateEmission(t *testing.T) {
 	host := NewHost(time.Minute)
 	var emissions atomic.Int32

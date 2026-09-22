@@ -44,6 +44,13 @@ func TestCommandRuleCannotCrossSegmentsOrInterpreterPayload(t *testing.T) {
 		{`bash -lc 'git status; rm -rf .'`, `rm`, ActionDeny, true},
 		{`python3 -c 'import os'`, `python3`, ActionAllow, false},
 		{`env X=1 rm -rf .`, `rm`, ActionDeny, true},
+		// Ask gates composites: matching can only add friction, and a
+		// chained command touching a gated prefix must still gate.
+		{`git status && rm -rf .`, `git status`, ActionAsk, true},
+		{`git status | cat`, `git status`, ActionAsk, true},
+		{`echo done && curl https://example.internal`, `curl`, ActionAsk, true},
+		{`go build ./... && printf done`, `go build`, ActionAsk, true},
+		{`echo done`, `go build`, ActionAsk, false},
 	} {
 		if got := commandRuleMatches(test.command, test.prefix, test.action); got != test.want {
 			t.Fatalf(

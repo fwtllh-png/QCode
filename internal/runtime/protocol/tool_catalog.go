@@ -85,7 +85,7 @@ func (c SessionToolCatalog) Validate() error {
 			return fmt.Errorf("session tool catalog entry %q has invalid capability", entry.ID)
 		}
 		switch entry.AccessMode {
-		case "read", "write", "tree", "unknown":
+		case "read", "write", "tree", "use", "unknown":
 		default:
 			return fmt.Errorf("session tool catalog entry %q has invalid access mode", entry.ID)
 		}

@@ -26,6 +26,9 @@ func init() {
 	os.Exit(126)
 }
 
+// prepareLandlockInvocation encodes filesystem rules only. The helper never
+// delivers a Process Session network channel; v1 network grants must fail
+// closed in the caller when the managed proxy is unavailable.
 func prepareLandlockInvocation(
 	policy Policy,
 	helperPath string,
@@ -65,6 +68,7 @@ func prepareLandlockInvocation(
 		readWrite = append(readWrite, policy.WorkspaceRoot)
 	}
 	readWrite = append(readWrite, workspaceWritePaths...)
+	readWrite = append(readWrite, policy.HostWriteRoots...)
 	slices.Sort(readWrite)
 	request := landlockRequest{
 		SchemaVersion: landlockSchemaVersion,

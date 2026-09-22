@@ -165,11 +165,14 @@ func (c *Catalog) LoadHandle(
 	ctx context.Context,
 	handle string,
 ) ([]Loaded, error) {
-	item, err := c.candidateForHandle(ctx, handle)
+	// Resolve the handle and its dependency plan from the same inventory.
+	// A concurrent refresh must not swap a new package under an old handle.
+	view := c.frozen()
+	item, err := view.candidateForHandle(ctx, handle)
 	if err != nil {
 		return nil, err
 	}
-	return c.LoadPlan(ctx, item.metadata.Name)
+	return view.LoadPlan(ctx, item.metadata.Name)
 }
 
 func (c *Catalog) SummaryForHandle(

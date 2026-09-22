@@ -288,6 +288,8 @@ func RenderSkillWorld(values []SkillSummary) string {
 		builder.WriteString(strconv.Quote(description))
 		builder.WriteString(" source=")
 		builder.WriteString(strconv.Quote(value.Source))
+		builder.WriteString(" source_path=")
+		builder.WriteString(strconv.Quote(value.Path))
 		builder.WriteString(" handle=")
 		builder.WriteString(strconv.Quote(value.Handle))
 		builder.WriteString(" package=")

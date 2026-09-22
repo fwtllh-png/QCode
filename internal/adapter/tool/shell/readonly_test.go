@@ -3,6 +3,7 @@ package shell
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -296,6 +297,81 @@ func TestShellRunExactWriteScopeIsGuardedAndObserved(t *testing.T) {
 	}
 }
 
+func TestShellRunWriteTreeCreatesFilesWithoutListing(t *testing.T) {
+	root := t.TempDir()
+	generated := filepath.Join(root, "generated")
+	if err := os.Mkdir(generated, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	backend, err := sandbox.NewPlatformBackend(sandbox.Options{WorkspaceRoot: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sandbox.CloseBackend(backend) })
+	if err := sandbox.RequireControls(backend, sandbox.DefaultProcessRequirements()); err != nil {
+		t.Skipf("strong sandbox unavailable: %v", err)
+	}
+	manager := process.NewSessionManager(4096)
+	t.Cleanup(manager.CloseAll)
+	registry := tool.NewRegistry(nil, nil)
+	if err := RegisterWithManagerAndBackend(registry, root, manager, backend); err != nil {
+		t.Fatal(err)
+	}
+	journal, err := workspacejournal.New(
+		root, contentstore.NewMemory(contentstore.Options{}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.Begin("turn-shell-write-tree"); err != nil {
+		t.Fatal(err)
+	}
+	guarded, err := toolguard.New(toolguard.Options{
+		Registry: registry,
+		Policy: policy.DefaultRuntime(
+			policy.ModeAct, policy.PermissionBypass,
+		), Workspace: root, Journal: journal,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := guarded.Execute(
+		t.Context(), "call-tree", "exec_command",
+		json.RawMessage(
+			`{"command":"printf 'generated\n' > generated/out.txt","write_paths":["generated"]}`,
+		),
+	)
+	if err != nil || result.IsError {
+		t.Fatalf("write tree failed: result=%+v error=%v", result, err)
+	}
+	created := filepath.Join(generated, "out.txt")
+	data, err := os.ReadFile(created)
+	if err != nil || string(data) != "generated\n" {
+		t.Fatalf("tree content = %q, error = %v", data, err)
+	}
+	found := false
+	for _, change := range result.Outcome.Facts.WorkspaceChanges {
+		if change.Path == "generated/out.txt" && change.Kind == tool.WorkspaceCreated {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("created tree file was not observed: %+v", result.Outcome.Facts.WorkspaceChanges)
+	}
+	escaped, err := guarded.Execute(
+		t.Context(), "call-tree-escape", "exec_command",
+		json.RawMessage(
+			`{"command":"printf escaped > outside.txt","write_paths":["generated"]}`,
+		),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !escaped.IsError {
+		t.Fatalf("write outside the tree succeeded: %+v", escaped)
+	}
+}
+
 func TestShellRunWriteGlobsExpandToExistingExactFiles(t *testing.T) {
 	root := t.TempDir()
 	for _, path := range []string{
@@ -402,7 +478,7 @@ func TestShellRunAcceptsMissingExactWritePathWithExistingParent(t *testing.T) {
 	}
 }
 
-func TestShellRunRejectsDirectoryAndMissingParentWritePaths(t *testing.T) {
+func TestShellRunRejectsMissingParentWritePaths(t *testing.T) {
 	root := t.TempDir()
 	if err := os.Mkdir(filepath.Join(root, "directory"), 0o700); err != nil {
 		t.Fatal(err)
@@ -412,15 +488,22 @@ func TestShellRunRejectsDirectoryAndMissingParentWritePaths(t *testing.T) {
 		t.Fatal(err)
 	}
 	shell := &Tool{workspace: workspace}
-	for name, path := range map[string]string{
-		"directory":      "directory",
-		"missing_parent": filepath.Join("missing", "new.txt"),
-	} {
-		t.Run(name, func(t *testing.T) {
-			if _, err := shell.resolveWritePaths([]string{path}); err == nil {
-				t.Fatalf("resolveWritePaths(%q) error = nil", path)
-			}
-		})
+	resolved, err := shell.resolveWritePaths([]string{"directory"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resolved) != 1 {
+		t.Fatalf("directory write tree = %v", resolved)
+	}
+	relative, err := filepath.Rel(workspace.Root(), resolved[0])
+	if err != nil || relative != "directory" {
+		t.Fatalf("directory write tree = %v", resolved)
+	}
+	if _, err := shell.resolveWritePaths([]string{"."}); err == nil {
+		t.Fatal("workspace root write tree was accepted")
+	}
+	if _, err := shell.resolveWritePaths([]string{filepath.Join("missing", "new.txt")}); err == nil {
+		t.Fatal("missing parent was accepted")
 	}
 }
 
@@ -500,7 +583,8 @@ func TestOnlyExecCommandAdvertisesExactWritePaths(t *testing.T) {
 	if _, exists := properties["write_paths"]; !exists {
 		t.Fatal("exec_command does not advertise write_paths")
 	}
-	if !strings.Contains(run.Description, "does not permit mkdir") ||
+	if !strings.Contains(run.Description, "bounded write tree") ||
+		!strings.Contains(run.Description, "does not permit the workspace root") ||
 		!strings.Contains(run.Description, "file_write or file_apply") ||
 		!strings.Contains(run.Description, "parent directories") ||
 		!strings.Contains(run.Description, "$TMPDIR") ||
@@ -525,7 +609,7 @@ func TestOnlyExecCommandAdvertisesExactWritePaths(t *testing.T) {
 		targetProperties["allow_private"] == nil ||
 		len(required) != 5 ||
 		loopback["type"] != "boolean" ||
-		!strings.Contains(run.Description, "use method CONNECT for HTTPS") ||
+		!strings.Contains(run.Description, "HTTPS control is at the CONNECT tunnel endpoint") ||
 		!strings.Contains(run.Description, "Undeclared egress is denied") ||
 		!strings.Contains(run.Description, "do not put localhost or port 0") ||
 		!strings.Contains(network["description"].(string), "allow_loopback") {
@@ -534,7 +618,7 @@ func TestOnlyExecCommandAdvertisesExactWritePaths(t *testing.T) {
 	methods, _ := targetProperties["methods"].(map[string]any)
 	port, _ := targetProperties["port"].(map[string]any)
 	if methods["minItems"] != 1 ||
-		!strings.Contains(methods["description"].(string), "exactly CONNECT") ||
+		!strings.Contains(methods["description"].(string), "tunnel endpoint") ||
 		port["minimum"] != 1 ||
 		!strings.Contains(port["description"].(string), "Port 0") {
 		t.Fatalf("exec_command method schema = %#v", methods)
@@ -553,7 +637,7 @@ func TestOnlyExecCommandAdvertisesExactWritePaths(t *testing.T) {
 	}
 }
 
-func TestExecCommandRejectsInvalidHTTPSMethodBeforeApproval(t *testing.T) {
+func TestExecCommandAcceptsHTTPSMethodNamesAndValidatesShapeBeforeApproval(t *testing.T) {
 	root := t.TempDir()
 	manager := process.NewSessionManager(4096)
 	t.Cleanup(manager.CloseAll)
@@ -576,31 +660,46 @@ func TestExecCommandRejectsInvalidHTTPSMethodBeforeApproval(t *testing.T) {
 
 		Approvals: func(context.Context, toolguard.ApprovalRequest) error {
 			requested = true
-			return nil
+			return errors.New("stop before execution")
 		}, Workspace: root,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Method names no longer encode protocol details: HTTPS destinations
+	// accept ordinary method names because the managed proxy only controls
+	// the CONNECT tunnel endpoint.
+	if err := tool.ValidateDeclaredNetworkTargets([]tool.DeclaredNetworkTarget{{
+		Host: "api.example.com", Protocol: "https", Port: 443,
+		Methods: []string{"GET", "POST"}, AllowPrivate: false,
+	}}); err != nil {
+		t.Fatalf("https GET/POST declaration rejected: %v", err)
+	}
+	if err := tool.ValidateDeclaredNetworkTargets([]tool.DeclaredNetworkTarget{{
+		Host: "api.example.com", Protocol: "https", Port: 443,
+		Methods: []string{"CONNECT"}, AllowPrivate: false,
+	}}); err != nil {
+		t.Fatalf("https CONNECT declaration rejected: %v", err)
+	}
 	_, err = guarded.Execute(
 		t.Context(),
-		"invalid-https-method",
+		"invalid-port",
 		"exec_command",
 		json.RawMessage(`{
 			"command":"curl https://api.example.com/",
 			"network_targets":[{
 				"host":"api.example.com",
 				"protocol":"https",
-				"port":443,
+				"port":0,
 				"methods":["GET"],
 				"allow_private":false
 			}]
 		}`),
 	)
-	if err == nil || !strings.Contains(err.Error(), "requires method CONNECT") {
-		t.Fatalf("invalid HTTPS method error = %v", err)
+	if err == nil || !strings.Contains(err.Error(), `tool "exec_command" arguments`) {
+		t.Fatalf("invalid port error = %v", err)
 	}
 	if requested {
-		t.Fatal("invalid HTTPS target requested approval before validation")
+		t.Fatal("invalid network target requested approval before validation")
 	}
 }

@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/fwtllh-png/QCode/internal/persist/state/cas"
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
 )
 
@@ -110,6 +111,38 @@ func TestStoreRejectsCommittedProjectionWithoutDurableEvent(t *testing.T) {
 	}
 }
 
+func TestStoreOpenCollectsUnreferencedContent(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	store, err := Open(ctx, Options{DataDir: root, BusyTimeout: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := []byte("historical orphan")
+	id := cas.ID(content)
+	if err := store.Content().Put(ctx, id, content); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Content().Release(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Content().Get(ctx, id); err != nil {
+		t.Fatalf("Release collected content: %v", err)
+	}
+	if err := store.CloseAll(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := Open(ctx, Options{DataDir: root, BusyTimeout: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reopened.CloseAll(context.Background()) })
+	if _, err := reopened.Content().Get(ctx, id); !errors.Is(err, cas.ErrNotFound) {
+		t.Fatalf("Open left unreferenced CAS object: %v", err)
+	}
+}
+
 func TestStoreUsesOnlyQCodeV1Paths(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
@@ -121,7 +154,6 @@ func TestStoreUsesOnlyQCodeV1Paths(t *testing.T) {
 	for _, path := range []string{
 		filepath.Join(root, "state-v1.db"),
 		filepath.Join(root, "events-v1.jsonl"),
-		filepath.Join(root, "cas-v1"),
 	} {
 		if _, err := os.Stat(path); err != nil {
 			t.Fatalf("stat v1 path %q: %v", path, err)
@@ -236,10 +268,20 @@ func testEvent(t testing.TB, sequence protocol.Cursor) protocol.Event {
 
 func testEventWithData(t testing.TB, sequence protocol.Cursor, data protocol.EventData) protocol.Event {
 	t.Helper()
+	return testEventForTurn(t, sequence, "turn_test", data)
+}
+
+func testEventForTurn(
+	t testing.TB,
+	sequence protocol.Cursor,
+	turnID protocol.TurnID,
+	data protocol.EventData,
+) protocol.Event {
+	t.Helper()
 	itemID := protocol.ItemID("item_" + time.Now().Format("150405.000000000"))
 	operation, err := protocol.NewOperation(&protocol.StartTurnPayload{
 		ThreadID: "thread_test",
-		TurnID:   "turn_test",
+		TurnID:   turnID,
 		ItemID:   itemID,
 		Prompt:   "test",
 	})
@@ -248,7 +290,7 @@ func testEventWithData(t testing.TB, sequence protocol.Cursor, data protocol.Eve
 	}
 	event, err := protocol.NewEvent(protocol.EventMeta{
 		Sequence: sequence, OperationID: operation.ID,
-		ThreadID: "thread_test", TurnID: "turn_test",
+		ThreadID: "thread_test", TurnID: turnID,
 		ItemID: itemID,
 	}, data)
 	if err != nil {
@@ -312,8 +354,8 @@ func TestAppendEventsElidesNoiseAndKeepsAudit(t *testing.T) {
 	).Scan(&abandoned); err != nil {
 		t.Fatal(err)
 	}
-	if abandoned != 2 {
-		t.Fatalf("abandoned reservations = %d, want 2", abandoned)
+	if abandoned != 0 {
+		t.Fatalf("abandoned reservations = %d, want 0 for transient events", abandoned)
 	}
 }
 
@@ -434,6 +476,85 @@ func TestEventByIDReadsExactRecordAtScale(t *testing.T) {
 	}
 	if _, found, err := store.EventByID(ctx, protocol.EventID("missing")); err != nil || found {
 		t.Fatalf("missing EventByID = found=%v err=%v", found, err)
+	}
+}
+
+func TestReplayTurnReadsIndexedTurnWithoutPrefixScan(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, Options{DataDir: t.TempDir(), BusyTimeout: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.CloseAll(context.Background()) })
+
+	const total = 200
+	var want []protocol.EventID
+	for sequence := 1; sequence <= total; sequence++ {
+		turnID := protocol.TurnID(fmt.Sprintf("turn_%d", (sequence-1)%4))
+		event := testEventForTurn(
+			t,
+			protocol.Cursor(sequence),
+			turnID,
+			&protocol.TurnCompletedData{Text: fmt.Sprintf("event-%d", sequence)},
+		)
+		if turnID == "turn_1" {
+			want = append(want, event.ID)
+		}
+		if err := store.Append(ctx, event); err != nil {
+			t.Fatalf("append %d: %v", sequence, err)
+		}
+	}
+
+	events, err := store.ReplayTurn(ctx, "turn_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != len(want) {
+		t.Fatalf("ReplayTurn len = %d, want %d", len(events), len(want))
+	}
+	for index, event := range events {
+		if event.ID != want[index] || event.TurnID != "turn_1" {
+			t.Fatalf("ReplayTurn[%d] = %+v, want %s", index, event, want[index])
+		}
+		if index > 0 && event.Sequence <= events[index-1].Sequence {
+			t.Fatalf("ReplayTurn order broke at %d", index)
+		}
+	}
+	missing, err := store.ReplayTurn(ctx, "turn_missing")
+	if err != nil || len(missing) != 0 {
+		t.Fatalf("unknown ReplayTurn = %+v err=%v", missing, err)
+	}
+	empty, err := store.ReplayTurn(ctx, "")
+	if err != nil || empty != nil {
+		t.Fatalf("empty ReplayTurn = %+v err=%v", empty, err)
+	}
+}
+
+func TestReplayKindReadsIndexedKind(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, Options{DataDir: t.TempDir(), BusyTimeout: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.CloseAll(context.Background()) })
+
+	completed := testEventForTurn(t, 1, "turn_a", &protocol.TurnCompletedData{Text: "done"})
+	delta := testEventForTurn(t, 2, "turn_a", &protocol.OutputDeltaData{Text: "chunk"})
+	other := testEventForTurn(t, 3, "turn_b", &protocol.TurnCompletedData{Text: "other"})
+	if err := store.AppendEvents(ctx, completed, delta, other); err != nil {
+		t.Fatal(err)
+	}
+
+	events, err := store.ReplayKind(ctx, protocol.EventTurnCompleted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 2 || events[0].ID != completed.ID || events[1].ID != other.ID {
+		t.Fatalf("ReplayKind = %+v", events)
+	}
+	empty, err := store.ReplayKind(ctx, "")
+	if err != nil || empty != nil {
+		t.Fatalf("empty ReplayKind = %+v err=%v", empty, err)
 	}
 }
 

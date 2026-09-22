@@ -2,6 +2,7 @@ package egress
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -10,39 +11,40 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
 )
 
 type ManagedNetworkProxy struct {
-	gate     *Gate
-	listener net.Listener
-	server   *http.Server
-	done     chan struct{}
+	workspace *proxyChannel
+	protocol  http.Handler
+	mu        sync.Mutex
+	sessions  map[uint16]*processSession
 }
 
 func StartManagedNetworkProxy(gate *Gate) (*ManagedNetworkProxy, error) {
-	if gate == nil || !gate.Enforce {
-		return nil, errors.New("managed network proxy requires an enforcing egress gate")
-	}
-	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	channel, err := listenProxyChannel(gate, nil)
 	if err != nil {
-		return nil, fmt.Errorf("listen managed network proxy: %w", err)
+		return nil, err
 	}
-	proxy := &ManagedNetworkProxy{
-		gate: gate, listener: listener, done: make(chan struct{}),
+	return &ManagedNetworkProxy{
+		workspace: channel,
+		sessions:  make(map[uint16]*processSession),
+	}, nil
+}
+
+func (p *ManagedNetworkProxy) BindProtocolHandler(handler http.Handler) {
+	if p == nil {
+		return
 	}
-	proxy.server = &http.Server{
-		Handler:           http.HandlerFunc(proxy.serveHTTP),
-		ReadHeaderTimeout: 10 * time.Second,
-		IdleTimeout:       30 * time.Second,
-	}
-	go func() {
-		_ = proxy.server.Serve(listener)
-		close(proxy.done)
-	}()
-	return proxy, nil
+	p.mu.Lock()
+	p.protocol = handler
+	p.mu.Unlock()
+}
+
+type managedBackend struct {
+	sandbox.Backend
+	proxy *ManagedNetworkProxy
 }
 
 func NewManagedBackend(
@@ -64,153 +66,117 @@ func NewManagedBackend(
 		_ = proxy.Close(context.Background())
 		return nil, fmt.Errorf("create managed sandbox backend: %w", err)
 	}
-	return sandbox.WithClose(backend, func() error {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		return proxy.Close(ctx)
-	}), nil
+	return &managedBackend{Backend: backend, proxy: proxy}, nil
+}
+
+func (b *managedBackend) OpenProcessSession(targets []Target) (ProcessSession, error) {
+	if b == nil || b.proxy == nil {
+		return nil, ErrProcessSessionUnsupported
+	}
+	return b.proxy.OpenSession(targets)
+}
+
+func (b *managedBackend) BindProtocolHandler(handler http.Handler) {
+	if b == nil || b.proxy == nil {
+		return
+	}
+	b.proxy.BindProtocolHandler(handler)
+}
+
+func (b *managedBackend) InnerBackend() sandbox.Backend {
+	if b == nil {
+		return nil
+	}
+	return b.Backend
+}
+
+func (b *managedBackend) Close() error {
+	if b == nil {
+		return nil
+	}
+	return errors.Join(sandbox.CloseBackend(b.Backend), b.proxy.Close(context.Background()))
 }
 
 func (p *ManagedNetworkProxy) URL() string {
-	if p == nil || p.listener == nil {
+	if p == nil || p.workspace == nil || p.workspace.listener == nil {
 		return ""
 	}
-	return "http://" + p.listener.Addr().String()
+	return "http://" + p.workspace.listener.Addr().String()
 }
 
 func (p *ManagedNetworkProxy) Port() uint16 {
-	if p == nil || p.listener == nil {
+	if p == nil || p.workspace == nil {
 		return 0
 	}
-	address, _ := p.listener.Addr().(*net.TCPAddr)
-	if address == nil || address.Port < 1 || address.Port > 65535 {
-		return 0
-	}
-	return uint16(address.Port)
+	return p.workspace.port()
 }
 
-func (p *ManagedNetworkProxy) Close(ctx context.Context) error {
-	if p == nil || p.server == nil {
-		return nil
-	}
-	err := p.server.Shutdown(ctx)
-	select {
-	case <-p.done:
-		return err
-	case <-ctx.Done():
-		return errors.Join(err, ctx.Err())
-	}
+func (p *ManagedNetworkProxy) OpenProcessSession(targets []Target) (ProcessSession, error) {
+	return p.OpenSession(targets)
 }
 
-func (p *ManagedNetworkProxy) serveHTTP(
-	writer http.ResponseWriter,
-	request *http.Request,
-) {
-	if request.Method == http.MethodConnect {
-		p.serveConnect(writer, request)
-		return
+func (p *ManagedNetworkProxy) OpenSession(targets []Target) (ProcessSession, error) {
+	if p == nil {
+		return nil, ErrProcessSessionUnsupported
 	}
-	p.serveForward(writer, request)
-}
-
-func (p *ManagedNetworkProxy) serveConnect(
-	writer http.ResponseWriter,
-	request *http.Request,
-) {
-	host, port, err := splitAuthority(request.Host, 443)
-	if err != nil {
-		http.Error(writer, "invalid CONNECT target", http.StatusBadRequest)
-		return
+	gate := &Gate{Enforce: true}
+	for _, target := range targets {
+		gate.AllowTarget(target)
 	}
-	target, err := p.dialAuthorized(request.Context(), Target{
-		Host: host, Protocol: "https", Port: port,
-		Methods: []string{http.MethodConnect},
-	})
-	if err != nil {
-		http.Error(writer, "managed egress denied", http.StatusForbidden)
-		return
-	}
-	hijacker, ok := writer.(http.Hijacker)
-	if !ok {
-		target.Close()
-		http.Error(writer, "CONNECT is unavailable", http.StatusInternalServerError)
-		return
-	}
-	client, buffered, err := hijacker.Hijack()
-	if err != nil {
-		target.Close()
-		return
-	}
-	if _, err = buffered.WriteString("HTTP/1.1 200 Connection Established\r\n\r\n"); err == nil {
-		err = buffered.Flush()
-	}
-	if err != nil {
-		client.Close()
-		target.Close()
-		return
-	}
-	go relay(client, target)
-}
-
-func (p *ManagedNetworkProxy) serveForward(
-	writer http.ResponseWriter,
-	request *http.Request,
-) {
-	if request.URL == nil || request.URL.Hostname() == "" {
-		http.Error(writer, "absolute proxy URL is required", http.StatusBadRequest)
-		return
-	}
-	if request.Host != "" &&
-		!sameAuthority(request.Host, request.URL.Host, request.URL.Scheme) {
-		http.Error(writer, "proxy host mismatch", http.StatusBadRequest)
-		return
-	}
-	port, err := requestPort(request.URL)
-	if err != nil {
-		http.Error(writer, "invalid target port", http.StatusBadRequest)
-		return
-	}
-	ips, err := p.gate.Authorize(request.Context(), Target{
-		Host: request.URL.Hostname(), Protocol: request.URL.Scheme, Port: port,
-		Methods: []string{request.Method},
-	}, "process_proxy")
-	if err != nil {
-		http.Error(writer, "managed egress denied", http.StatusForbidden)
-		return
-	}
-	outbound := request.Clone(request.Context())
-	outbound.RequestURI = ""
-	removeHopHeaders(outbound.Header)
-	transport := &http.Transport{
-		Proxy:             nil,
-		DialContext:       pinnedDialer(ips, request.URL.Hostname(), port),
-		ForceAttemptHTTP2: false,
-	}
-	response, err := transport.RoundTrip(outbound)
-	if err != nil {
-		http.Error(writer, "managed egress upstream failed", http.StatusBadGateway)
-		return
-	}
-	defer response.Body.Close()
-	removeHopHeaders(response.Header)
-	for name, values := range response.Header {
-		for _, value := range values {
-			writer.Header().Add(name, value)
-		}
-	}
-	writer.WriteHeader(response.StatusCode)
-	_, _ = io.Copy(writer, response.Body)
-}
-
-func (p *ManagedNetworkProxy) dialAuthorized(
-	ctx context.Context,
-	target Target,
-) (net.Conn, error) {
-	ips, err := p.gate.Authorize(ctx, target, "process_proxy")
+	p.mu.Lock()
+	handler := p.protocol
+	p.mu.Unlock()
+	channel, err := listenProxyChannel(gate, handler)
 	if err != nil {
 		return nil, err
 	}
-	return dialResolved(ctx, ips, target.Port)
+	port := channel.port()
+	if port == 0 {
+		_ = channel.close()
+		return nil, fmt.Errorf("%w: session port unavailable", ErrProcessSessionUnsupported)
+	}
+	session := &processSession{parent: p, channel: channel, port: port}
+	p.mu.Lock()
+	p.sessions[port] = session
+	p.mu.Unlock()
+	return session, nil
+}
+
+func (p *ManagedNetworkProxy) removeSession(port uint16) {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	delete(p.sessions, port)
+	p.mu.Unlock()
+}
+
+func (p *ManagedNetworkProxy) Close(ctx context.Context) error {
+	if p == nil {
+		return nil
+	}
+	p.mu.Lock()
+	sessions := make([]*processSession, 0, len(p.sessions))
+	for _, session := range p.sessions {
+		sessions = append(sessions, session)
+	}
+	p.sessions = map[uint16]*processSession{}
+	p.mu.Unlock()
+	var closeErr error
+	for _, session := range sessions {
+		closeErr = errors.Join(closeErr, session.channel.close())
+	}
+	if p.workspace != nil {
+		closeErr = errors.Join(closeErr, p.workspace.close())
+	}
+	if ctx != nil {
+		select {
+		case <-ctx.Done():
+			return errors.Join(closeErr, ctx.Err())
+		default:
+		}
+	}
+	return closeErr
 }
 
 func pinnedDialer(
@@ -270,6 +236,38 @@ func defaultPort(protocol string) uint16 {
 		return 80
 	}
 	return 443
+}
+
+type deniedPayload struct {
+	Error          string `json:"error"`
+	ErrorCategory  string `json:"error_category,omitempty"`
+	RequiredAction string `json:"required_action,omitempty"`
+	Source         string `json:"source"`
+	Host           string `json:"host,omitempty"`
+	Protocol       string `json:"protocol,omitempty"`
+	Port           uint16 `json:"port,omitempty"`
+	Method         string `json:"method,omitempty"`
+	Reason         string `json:"reason,omitempty"`
+}
+
+func writeDenied(writer http.ResponseWriter, err error) {
+	payload := deniedPayload{
+		Error:  ErrDenied.Error(),
+		Source: "process_proxy",
+	}
+	var denied *DeniedError
+	if errors.As(err, &denied) && denied != nil {
+		payload.ErrorCategory = denied.Category
+		payload.RequiredAction = denied.RequiredAction
+		payload.Host = denied.Host
+		payload.Protocol = denied.Protocol
+		payload.Port = denied.Port
+		payload.Method = denied.Method
+		payload.Reason = denied.Reason
+	}
+	writer.Header().Set("Content-Type", "application/json")
+	writer.WriteHeader(http.StatusForbidden)
+	_ = json.NewEncoder(writer).Encode(payload)
 }
 
 func removeHopHeaders(header http.Header) {

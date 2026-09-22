@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -45,6 +46,74 @@ type dependencyCommand struct {
 	Ecosystem string
 	Binary    string
 	Args      []string
+	// Dir is the absolute directory of the manifest this command runs in;
+	// RelativeDir is the same directory workspace-relative, "" at the root.
+	Dir         string
+	RelativeDir string
+}
+
+// dependencyManifestSearchDepth and dependencyManifestSearchLimit bound the
+// workspace walk that locates dependency manifests: repositories with deep
+// build output or vendored trees must not turn dependency resolution into a
+// full index. They are public contract constants; boundary tests pin them.
+const (
+	dependencyManifestSearchDepth = 4
+	dependencyManifestSearchLimit = 16
+)
+
+// dependencyManifestSkips lists directories that never contain a meaningful
+// manifest but are routinely huge.
+var dependencyManifestSkips = map[string]bool{
+	".git": true, "node_modules": true, "vendor": true, "target": true,
+}
+
+// dependencyManifests maps an ecosystem to the manifest file names that
+// declare it.
+var dependencyManifests = map[string][]string{
+	"go":     {"go.mod"},
+	"node":   {"package.json"},
+	"rust":   {"Cargo.toml"},
+	"maven":  {"pom.xml"},
+	"gradle": {"gradlew", "build.gradle", "build.gradle.kts"},
+}
+
+// findManifestDirs returns workspace directories (absolute, root first,
+// lexical order) containing any of the named manifests. The walk is bounded
+// by depth and result count and skips vendored/build trees.
+func findManifestDirs(root string, names []string) []string {
+	wanted := make(map[string]bool, len(names))
+	for _, name := range names {
+		wanted[name] = true
+	}
+	var dirs []string
+	seen := make(map[string]bool)
+	_ = filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		relative, relErr := filepath.Rel(root, path)
+		if relErr != nil {
+			return nil
+		}
+		depth := 0
+		if relative != "." {
+			depth = strings.Count(filepath.ToSlash(relative), "/") + 1
+		}
+		if entry.IsDir() {
+			if depth >= dependencyManifestSearchDepth ||
+				(depth > 0 && dependencyManifestSkips[entry.Name()]) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !wanted[entry.Name()] || seen[filepath.Dir(path)] || len(seen) >= dependencyManifestSearchLimit {
+			return nil
+		}
+		seen[filepath.Dir(path)] = true
+		dirs = append(dirs, filepath.Dir(path))
+		return nil
+	})
+	return dirs
 }
 
 func registerDependency(
@@ -122,36 +191,60 @@ func (t *dependencyTool) run(
 	ctx context.Context,
 	input dependencyInput,
 ) (tool.Result, error) {
-	commands, err := detectDependencyCommands(t.root, input.Ecosystem)
+	// Walk output, the pinned directory, and the sandbox policy must share
+	// one root form: a lexical root on symlinked platforms (/var vs
+	// /private/var) makes workspace-relative resolution escape.
+	root := t.root
+	if resolved, err := filepath.EvalSymlinks(root); err == nil {
+		root = resolved
+	}
+	commands, err := detectDependencyCommands(root, input.Ecosystem)
 	if err != nil {
 		return tool.Result{}, err
 	}
 	receipts := make([]map[string]any, 0, len(commands))
-	directory, err := process.OpenPinnedDirectory(t.backend, t.root)
-	if err != nil {
-		return tool.Result{}, err
-	}
-	defer directory.Close()
 	for _, command := range commands {
+		// The pinned descriptor is the child's real cwd (fd 3), so each
+		// manifest directory gets its own pin.
+		directory, err := process.OpenPinnedDirectory(t.backend, command.Dir)
+		if err != nil {
+			return tool.Result{}, err
+		}
 		result, err := process.Run(ctx, process.Options{
-			Path: command.Binary, Args: command.Args, Dir: t.root,
+			Path: command.Binary, Args: command.Args, Dir: command.Dir,
 			DirFile: directory,
 			Sandbox: t.backend, RequireSandbox: true,
 			WorkspaceReadOnly: true, DenyNetwork: len(input.NetworkTargets) == 0,
 			OutputLimitBytes: process.ModelOutputLimitBytes,
 		})
+		closeErr := directory.Close()
 		if err != nil {
 			return tool.Result{}, err
 		}
+		if closeErr != nil {
+			return tool.Result{}, closeErr
+		}
 		receipt := map[string]any{
 			"ecosystem": command.Ecosystem, "exit_code": result.ExitCode,
+			"dir":    command.RelativeDir,
 			"stdout": strings.TrimSpace(result.Stdout),
 			"stderr": strings.TrimSpace(result.Stderr),
 		}
 		receipts = append(receipts, receipt)
 		if result.ExitCode != 0 {
 			content, _ := json.Marshal(map[string]any{"checks": receipts})
-			return tool.Result{Content: string(content), IsError: true}, nil
+			// The manager ran and failed on its own terms (for example a
+			// missing module or an upstream answer); surface structured
+			// attribution so the UI does not fall back to a generic
+			// "no structured error details" line.
+			return tool.Result{
+				Content: string(content), IsError: true,
+				Metadata: map[string]any{
+					"error_category": "dependency_resolve_failed",
+					"ecosystem":      command.Ecosystem,
+					"dir":            command.RelativeDir,
+				},
+			}, nil
 		}
 	}
 	content, err := json.Marshal(map[string]any{"checks": receipts})
@@ -169,47 +262,61 @@ func detectDependencyCommands(root, requested string) ([]dependencyCommand, erro
 	if requested == "" {
 		requested = "auto"
 	}
-	exists := func(name string) bool {
-		info, err := os.Stat(filepath.Join(root, name))
-		return err == nil && !info.IsDir()
-	}
 	var ecosystems []string
 	if requested != "auto" {
 		ecosystems = []string{requested}
 	} else {
-		if exists("go.mod") {
-			ecosystems = append(ecosystems, "go")
+		for ecosystem := range dependencyManifests {
+			ecosystems = append(ecosystems, ecosystem)
 		}
-		if exists("package.json") {
-			ecosystems = append(ecosystems, "node")
-		}
-		if exists("Cargo.toml") {
-			ecosystems = append(ecosystems, "rust")
-		}
-		if exists("pom.xml") {
-			ecosystems = append(ecosystems, "maven")
-		}
-		if exists("gradlew") || exists("build.gradle") || exists("build.gradle.kts") {
-			ecosystems = append(ecosystems, "gradle")
-		}
+		sort.Strings(ecosystems)
 	}
-	if len(ecosystems) == 0 {
-		return nil, errors.New("no supported dependency manifest was found")
-	}
-	sort.Strings(ecosystems)
 	commands := make([]dependencyCommand, 0, len(ecosystems))
 	for _, ecosystem := range ecosystems {
-		name, args, err := dependencyInvocation(root, ecosystem, exists)
-		if err != nil {
-			return nil, err
+		names, supported := dependencyManifests[ecosystem]
+		if !supported {
+			return nil, fmt.Errorf("unsupported dependency ecosystem %q", ecosystem)
 		}
-		binary, err := exec.LookPath(name)
-		if err != nil {
-			return nil, fmt.Errorf("%s dependency manager %q is unavailable", ecosystem, name)
+		dirs := findManifestDirs(root, names)
+		if len(dirs) == 0 {
+			if requested != "auto" {
+				return nil, fmt.Errorf(
+					"no %s dependency manifest was found in the workspace",
+					ecosystem,
+				)
+			}
+			continue
 		}
-		commands = append(commands, dependencyCommand{
-			Ecosystem: ecosystem, Binary: binary, Args: args,
-		})
+		for _, dir := range dirs {
+			exists := func(name string) bool {
+				info, err := os.Stat(filepath.Join(dir, name))
+				return err == nil && !info.IsDir()
+			}
+			name, args, err := dependencyInvocation(dir, ecosystem, exists)
+			if err != nil {
+				return nil, err
+			}
+			binary := name
+			if !filepath.IsAbs(name) {
+				binary, err = exec.LookPath(name)
+				if err != nil {
+					return nil, fmt.Errorf("%s dependency manager %q is unavailable", ecosystem, name)
+				}
+			}
+			relative := ""
+			if dir != root {
+				if value, relErr := filepath.Rel(root, dir); relErr == nil {
+					relative = filepath.ToSlash(value)
+				}
+			}
+			commands = append(commands, dependencyCommand{
+				Ecosystem: ecosystem, Binary: binary, Args: args,
+				Dir: dir, RelativeDir: relative,
+			})
+		}
+	}
+	if len(commands) == 0 {
+		return nil, errors.New("no supported dependency manifest was found")
 	}
 	return commands, nil
 }

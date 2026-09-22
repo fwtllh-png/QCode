@@ -816,9 +816,10 @@ func httpTransportFailure(err error) tool.Result {
 	case errors.Is(err, egress.ErrDenied):
 		category = "egress_denied"
 		meta["error_category"] = category
-		var target *tool.NetworkTarget
-		if denied, ok := egress.DeniedTarget(err); ok {
-			target = &tool.NetworkTarget{
+		denied, ok := egress.DeniedTarget(err)
+		outcome := &tool.Outcome{Status: tool.OutcomeFailed}
+		if ok {
+			target := &tool.NetworkTarget{
 				Host: denied.Host, Protocol: denied.Protocol,
 				Port: denied.Port, Method: denied.Method,
 			}
@@ -826,18 +827,20 @@ func httpTransportFailure(err error) tool.Result {
 			meta["protocol"] = target.Protocol
 			meta["port"] = target.Port
 			meta["method"] = target.Method
+			if denied.RequiredAction != "" {
+				meta["required_action"] = denied.RequiredAction
+			}
+			if denied.ApprovalSettled {
+				meta["retry_original"] = false
+			} else {
+				outcome.Security = &tool.SecuritySignal{EgressDenied: target}
+			}
 			message = fmt.Sprintf("egress denied · host=%s · port=%d", target.Host, target.Port)
 		} else {
 			message = "egress denied"
 		}
 		return tool.Result{
-			Content: message, IsError: true, Metadata: meta,
-			Outcome: &tool.Outcome{
-				Status: tool.OutcomeFailed,
-				Security: &tool.SecuritySignal{
-					EgressDenied: target,
-				},
-			},
+			Content: message, IsError: true, Metadata: meta, Outcome: outcome,
 		}
 	case errors.Is(err, errRedirectLimit):
 		category = "redirect_limit"

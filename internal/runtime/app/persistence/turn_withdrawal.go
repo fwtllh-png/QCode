@@ -18,13 +18,15 @@ func turnContextID(kind string, thread protocol.ThreadID, turn protocol.TurnID) 
 
 func (r *ContextRebaseRepository) SaveTurnBaseline(
 	ctx context.Context, thread protocol.ThreadID, turn protocol.TurnID, snapshot agentcontext.ContextSnapshot,
-) error {
+) (resultErr error) {
 	if thread == "" || turn == "" {
 		return errors.New("Turn baseline identity is required")
 	}
 	if _, found, err := r.TurnBaseline(ctx, thread, turn); found || err != nil {
 		return err
 	}
+	ctx, finishStage := agentcontext.BeginContentStage(ctx, r.store.Content())
+	defer func() { resultErr = errors.Join(resultErr, finishStage()) }()
 	manifest, err := agentcontext.BuildContextManifest(ctx, r.store.Content(), thread, turn, snapshot, nil, agentcontext.ManifestLimits{})
 	if err != nil {
 		return err
@@ -43,11 +45,16 @@ func (r *ContextRebaseRepository) SaveTurnBaseline(
 func (r *ContextRebaseRepository) saveBaselineManifest(
 	ctx context.Context, thread protocol.ThreadID, turn protocol.TurnID, raw []byte,
 ) error {
+	var manifest agentcontext.ContextManifest
+	if err := json.Unmarshal(raw, &manifest); err != nil {
+		return err
+	}
 	// Baselines have no event cursor yet and do not advance current context.
 	// Scope the kind to the admitted Turn, including repeated empty baselines.
 	_, err := snapshot.NewSQLiteRepository(r.store.SQLite(), r.store.Content()).Save(ctx, snapshot.Snapshot{
 		ID: turnContextID("turn-baseline", thread, turn), ThreadID: thread,
 		Kind: "turn-baseline:" + string(turn), Content: raw,
+		ContentIDs: manifest.ContentIDs(),
 	})
 	return err
 }

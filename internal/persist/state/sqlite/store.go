@@ -18,27 +18,7 @@ import (
 	sqlite3 "modernc.org/sqlite/lib"
 )
 
-const SchemaVersion = 4
-
-// schemaMigration moves the schema exactly one version forward. The step
-// owns its transaction and records the new user_version itself.
-type schemaMigration struct {
-	from int
-	to   int
-	run  func(context.Context, *Store) error
-}
-
-// schemaMigrations is the explicit migration chain. Adding a schema version
-// means appending one entry whose from equals the previous entry's to (or 3
-// for the first entry); databases at a version with no registered step fail
-// closed instead of being guessed.
-var schemaMigrations = []schemaMigration{
-	{
-		from: 3,
-		to:   4,
-		run:  func(ctx context.Context, s *Store) error { return s.migrateV3ToV4(ctx) },
-	},
-}
+const SchemaVersion = 5
 
 var (
 	ErrCorrupt           = errors.New("sqlite database is corrupt")
@@ -184,7 +164,7 @@ func Open(ctx context.Context, path string, options ...Options) (*Store, error) 
 	if err := db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
 		return nil, store.classify("read schema version", err)
 	}
-	if version > SchemaVersion {
+	if version != 0 && version != SchemaVersion {
 		return nil, &SchemaVersionError{Found: version, Supported: SchemaVersion}
 	}
 
@@ -194,16 +174,6 @@ func Open(ctx context.Context, path string, options ...Options) (*Store, error) 
 	if version == 0 {
 		if err := store.initializeSchema(ctx); err != nil {
 			return nil, err
-		}
-	} else if version != SchemaVersion {
-		migrated, err := store.applySchemaMigrations(ctx, version)
-		if err != nil {
-			return nil, err
-		}
-		if migrated != SchemaVersion {
-			return nil, &SchemaVersionError{
-				Found: migrated, Supported: SchemaVersion,
-			}
 		}
 	}
 	if err := store.ensureRepositoryIndexShape(ctx); err != nil {
@@ -220,23 +190,17 @@ func Open(ctx context.Context, path string, options ...Options) (*Store, error) 
 	return store, nil
 }
 
-// synchronousModeNormal is PRAGMA synchronous=1 (NORMAL). WAL + NORMAL syncs
-// the write-ahead log at checkpoints instead of on every commit, which
-// matters because each event append commits several transactions. Durability
-// contract: events-v1.jsonl keeps its per-append fsync and stays the log of
-// record; the SQLite tables are projections reconciled from it. After an OS
-// crash the projections — including the high-watermark rows that pin
-// sequence numbers for non-persisted streaming noise — may roll back to the
-// last checkpoint; the single-process runtime loses its in-flight
-// subscribers in the same crash, so no live cursor can observe reuse.
-const synchronousModeNormal = 1
+// SQLite now owns CAS bytes, reference roots and prune intents. FULL ensures
+// the intent is durable before an external log rename and prevents a committed
+// continuation from referring to a blob lost at the next OS crash.
+const synchronousModeFull = 2
 
 func sqliteDSN(path string, busyTimeout time.Duration) string {
 	u := &url.URL{Scheme: "file", Path: filepath.ToSlash(path)}
 	query := u.Query()
 	query.Add("_pragma", "foreign_keys(ON)")
 	query.Add("_pragma", "busy_timeout("+strconv.FormatInt(busyTimeout.Milliseconds(), 10)+")")
-	query.Add("_pragma", "synchronous(NORMAL)")
+	query.Add("_pragma", "synchronous(FULL)")
 	u.RawQuery = query.Encode()
 	return u.String()
 }
@@ -252,58 +216,13 @@ func (s *Store) enableWAL(ctx context.Context) error {
 	return nil
 }
 
-// applySchemaMigrations walks the explicit migration chain forward from
-// version until it reaches SchemaVersion. A version without a registered
-// step reports the unsupported-schema error without writing anything.
-func (s *Store) applySchemaMigrations(ctx context.Context, version int) (int, error) {
-	for version < SchemaVersion {
-		step, ok := schemaMigrationFrom(version)
-		if !ok {
-			return version, &SchemaVersionError{
-				Found: version, Supported: SchemaVersion,
-			}
-		}
-		if err := step.run(ctx, s); err != nil {
-			return version, err
-		}
-		version = step.to
-	}
-	return version, nil
-}
-
-func schemaMigrationFrom(from int) (schemaMigration, bool) {
-	for _, step := range schemaMigrations {
-		if step.from == from {
-			return step, true
-		}
-	}
-	return schemaMigration{}, false
-}
-
 func (s *Store) initializeSchema(ctx context.Context) error {
 	return s.WithTx(ctx, nil, func(tx *sql.Tx) error {
-		if _, err := tx.ExecContext(ctx, schemaCurrent); err != nil {
+		if _, err := tx.ExecContext(ctx, schemaCurrent+contentSchema); err != nil {
 			return s.classify("create schema v1", err)
 		}
-		if _, err := tx.ExecContext(ctx, "PRAGMA user_version = 4"); err != nil {
+		if _, err := tx.ExecContext(ctx, "PRAGMA user_version = 5"); err != nil {
 			return s.classify("record schema version", err)
-		}
-		return nil
-	})
-}
-
-func (s *Store) migrateV3ToV4(ctx context.Context) error {
-	return s.WithTx(ctx, nil, func(tx *sql.Tx) error {
-		for _, statement := range []string{
-			`ALTER TABLE usage ADD COLUMN model_metadata_json
-			 TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(model_metadata_json))`,
-			`ALTER TABLE usage_turn_context ADD COLUMN model_metadata_json
-			 TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(model_metadata_json))`,
-			`PRAGMA user_version = 4`,
-		} {
-			if _, err := tx.ExecContext(ctx, statement); err != nil {
-				return s.classify("migrate schema v3 to v4", err)
-			}
 		}
 		return nil
 	})
@@ -328,10 +247,10 @@ func (s *Store) verifyPragmas(ctx context.Context, timeout time.Duration) error 
 	if err := s.db.QueryRowContext(ctx, "PRAGMA synchronous").Scan(&synchronous); err != nil {
 		return s.classify("verify synchronous mode", err)
 	}
-	if synchronous != synchronousModeNormal {
+	if synchronous != synchronousModeFull {
 		return fmt.Errorf(
-			"sqlite synchronous mode is %d, want %d (NORMAL)",
-			synchronous, synchronousModeNormal,
+			"sqlite synchronous mode is %d, want %d (FULL)",
+			synchronous, synchronousModeFull,
 		)
 	}
 	return nil

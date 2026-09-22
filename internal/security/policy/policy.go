@@ -381,7 +381,8 @@ func (r *Runtime) evaluate(invocation Invocation) Decision {
 		}
 	}
 	decision = ApplySurfaceTightening(
-		decision, ClassifySurface(invocation.Source, invocation.Capability), r.Granular,
+		decision, ClassifySurface(invocation.Source, invocation.Capability),
+		r.Granular, effect,
 	)
 	return decision
 }

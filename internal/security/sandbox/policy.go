@@ -50,20 +50,54 @@ type Options struct {
 	// HostReadRoots. Default (false) lets user-installed tools run (e.g.
 	// ~/.local/bin/ubomcli) without opening the entire home directory.
 	SkipPATHReadRoots bool
+	// Toolchains is an inherited exposure, for example the parent policy of
+	// an isolated settlement backend. When SkipPATHReadRoots skips host
+	// discovery it is applied verbatim so child commands keep the parent's
+	// PATH prefix and preparer environment; roots are re-validated and a
+	// vanished installation is dropped instead of failing the policy.
+	// Discovery stays authoritative when it runs.
+	Toolchains *ToolchainExposure
+	// EnvironmentContract is the preparation chain identity. The only
+	// accepted value is v1; empty is stamped as v1.
+	EnvironmentContract string
+	EnvironmentProfile  string
+	SharedUserTemp      bool
+	HostWriteRoots      []string
+	// EnvironmentNetwork is the user-declared Session Gate Grant. Adapter
+	// discoveries such as GOPROXY hosts stay off this list.
+	EnvironmentNetwork []EnvironmentNetworkTarget
+	// EnvironmentValues are bindable NAME=value entries from the preparer.
+	EnvironmentValues []string
+}
+
+// EnvironmentNetworkTarget is one user-declared host the Session Gate may
+// grant. It is not a Workspace process-Gate accumulation record.
+type EnvironmentNetworkTarget struct {
+	Host         string   `json:"host"`
+	Protocol     string   `json:"protocol,omitempty"`
+	Port         uint16   `json:"port,omitempty"`
+	Methods      []string `json:"methods,omitempty"`
+	AllowPrivate bool     `json:"allow_private,omitempty"`
 }
 
 type Policy struct {
-	Version          int               `json:"version"`
-	ID               string            `json:"id"`
-	WorkspaceRoot    string            `json:"workspace_root"`
-	PrivateTemp      string            `json:"private_temp"`
-	RuntimeReadRoots []string          `json:"runtime_read_roots"`
-	HostReadRoots    []string          `json:"host_read_roots"`
-	HostReadFiles    []string          `json:"host_read_files,omitempty"`
-	Toolchains       ToolchainExposure `json:"toolchains,omitempty"`
-	AllowNetwork     bool              `json:"allow_network,omitempty"`
-	ManagedProxyPort uint16            `json:"managed_proxy_port,omitempty"`
-	ownsPrivateTemp  bool
+	Version             int                        `json:"version"`
+	ID                  string                     `json:"id"`
+	WorkspaceRoot       string                     `json:"workspace_root"`
+	PrivateTemp         string                     `json:"private_temp"`
+	RuntimeReadRoots    []string                   `json:"runtime_read_roots"`
+	HostReadRoots       []string                   `json:"host_read_roots"`
+	HostReadFiles       []string                   `json:"host_read_files,omitempty"`
+	Toolchains          ToolchainExposure          `json:"toolchains,omitempty"`
+	AllowNetwork        bool                       `json:"allow_network,omitempty"`
+	ManagedProxyPort    uint16                     `json:"managed_proxy_port,omitempty"`
+	EnvironmentContract string                     `json:"environment_contract,omitempty"`
+	EnvironmentProfile  string                     `json:"environment_profile,omitempty"`
+	SharedUserTemp      bool                       `json:"shared_user_temp,omitempty"`
+	HostWriteRoots      []string                   `json:"host_write_roots,omitempty"`
+	EnvironmentNetwork  []EnvironmentNetworkTarget `json:"environment_network,omitempty"`
+	EnvironmentValues   []string                   `json:"environment_values,omitempty"`
+	ownsPrivateTemp     bool
 }
 
 func BuildPolicy(options Options) (Policy, error) {
@@ -140,7 +174,7 @@ func BuildPolicy(options Options) (Policy, error) {
 		if fileErr != nil {
 			return Policy{}, fmt.Errorf("canonicalize host read file %q: %w", path, fileErr)
 		}
-		if err := validateInjectedRoot(filepath.Dir(canonical), workspace); err != nil {
+		if err := validateInjectedHostFile(canonical, workspace); err != nil {
 			return Policy{}, fmt.Errorf("host read file %q: %w", path, err)
 		}
 		for _, candidate := range []string{lexical, canonical} {
@@ -149,12 +183,30 @@ func BuildPolicy(options Options) (Policy, error) {
 			}
 		}
 	}
+	if options.EnvironmentContract != "" &&
+		options.EnvironmentContract != "v1" {
+		return Policy{}, fmt.Errorf(
+			"environment contract %q is not supported",
+			options.EnvironmentContract,
+		)
+	}
 	toolchains := ToolchainExposure{}
+	if options.Toolchains != nil {
+		toolchains = ToolchainExposure{
+			BinDirs:     append([]string(nil), options.Toolchains.BinDirs...),
+			ReadRoots:   append([]string(nil), options.Toolchains.ReadRoots...),
+			ReadFiles:   append([]string(nil), options.Toolchains.ReadFiles...),
+			Environment: append([]string(nil), options.Toolchains.Environment...),
+		}
+	}
 	if !options.SkipPATHReadRoots {
 		for _, root := range pathHostReadRoots(workspace, runtimeRoots, hostRoots) {
 			hostRoots = append(hostRoots, root)
 		}
 		toolchains = discoverToolchains(workspace, runtimeRoots, hostRoots)
+		if err := configuredCertificateFiles(&toolchains, workspace); err != nil {
+			return Policy{}, err
+		}
 		for _, root := range append(
 			append([]string(nil), toolchains.BinDirs...),
 			toolchains.ReadRoots...,
@@ -162,18 +214,52 @@ func BuildPolicy(options Options) (Policy, error) {
 			hostRoots = append(hostRoots, root)
 		}
 		hostFiles = append(hostFiles, toolchains.ReadFiles...)
+	} else if options.Toolchains != nil {
+		seen := make(map[string]bool, len(hostRoots))
+		for _, root := range hostRoots {
+			seen[root] = true
+		}
+		for _, root := range append(
+			append([]string(nil), toolchains.BinDirs...),
+			toolchains.ReadRoots...,
+		) {
+			addToolchainReadDirectory(&hostRoots, root, workspace, seen)
+		}
+		hostFiles = append(hostFiles, toolchains.ReadFiles...)
 	}
 	slices.Sort(runtimeRoots)
 	slices.Sort(hostRoots)
 	slices.Sort(hostFiles)
+	writeRoots := make([]string, 0, len(options.HostWriteRoots)*2)
+	for _, root := range options.HostWriteRoots {
+		lexical, canonical, canonicalErr := canonicalHostReadRoot(root)
+		if canonicalErr != nil {
+			return Policy{}, fmt.Errorf("canonicalize host write root %q: %w", root, canonicalErr)
+		}
+		if err := validateInjectedRoot(canonical, workspace); err != nil {
+			return Policy{}, fmt.Errorf("host write root %q: %w", root, err)
+		}
+		for _, candidate := range []string{lexical, canonical} {
+			if !slices.Contains(writeRoots, candidate) {
+				writeRoots = append(writeRoots, candidate)
+			}
+		}
+	}
+	slices.Sort(writeRoots)
 	policy := Policy{
 		Version: policyVersion, WorkspaceRoot: workspace, PrivateTemp: privateTemp,
 		RuntimeReadRoots: runtimeRoots, HostReadRoots: hostRoots,
-		HostReadFiles:    hostFiles,
-		Toolchains:       toolchains,
-		AllowNetwork:     options.AllowNetwork,
-		ManagedProxyPort: options.ManagedProxyPort,
-		ownsPrivateTemp:  ownsPrivateTemp,
+		HostReadFiles:       hostFiles,
+		Toolchains:          toolchains,
+		AllowNetwork:        options.AllowNetwork,
+		ManagedProxyPort:    options.ManagedProxyPort,
+		EnvironmentContract: "v1",
+		EnvironmentProfile:  options.EnvironmentProfile,
+		SharedUserTemp:      options.SharedUserTemp,
+		HostWriteRoots:      writeRoots,
+		EnvironmentNetwork:  normalizeEnvironmentNetwork(options.EnvironmentNetwork),
+		EnvironmentValues:   normalizeEnvironmentValues(options.EnvironmentValues),
+		ownsPrivateTemp:     ownsPrivateTemp,
 	}
 	hashInput := policy
 	hashInput.ID = ""
@@ -196,6 +282,97 @@ func canonicalRuntimeRoot(path string) (string, error) {
 		return "", err
 	}
 	return filepath.Clean(resolved), nil
+}
+
+func normalizeEnvironmentNetwork(
+	targets []EnvironmentNetworkTarget,
+) []EnvironmentNetworkTarget {
+	if len(targets) == 0 {
+		return nil
+	}
+	out := make([]EnvironmentNetworkTarget, 0, len(targets))
+	seen := make(map[string]bool, len(targets))
+	for _, target := range targets {
+		host := strings.TrimSpace(target.Host)
+		if host == "" {
+			continue
+		}
+		methods := append([]string(nil), target.Methods...)
+		slices.Sort(methods)
+		key := fmt.Sprintf(
+			"%s\x00%s\x00%d\x00%t\x00%s",
+			host, strings.TrimSpace(target.Protocol), target.Port,
+			target.AllowPrivate, strings.Join(methods, ","),
+		)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, EnvironmentNetworkTarget{
+			Host:         host,
+			Protocol:     strings.TrimSpace(target.Protocol),
+			Port:         target.Port,
+			Methods:      methods,
+			AllowPrivate: target.AllowPrivate,
+		})
+	}
+	slices.SortFunc(out, func(left, right EnvironmentNetworkTarget) int {
+		if left.Host != right.Host {
+			return strings.Compare(left.Host, right.Host)
+		}
+		if left.Port != right.Port {
+			return int(left.Port) - int(right.Port)
+		}
+		return strings.Compare(left.Protocol, right.Protocol)
+	})
+	return out
+}
+
+func normalizeEnvironmentValues(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	byName := make(map[string]string, len(values))
+	for _, entry := range values {
+		name, value, ok := strings.Cut(entry, "=")
+		name = strings.TrimSpace(name)
+		if !ok || name == "" {
+			continue
+		}
+		byName[name] = value
+	}
+	names := make([]string, 0, len(byName))
+	for name := range byName {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	out := make([]string, 0, len(names))
+	for _, name := range names {
+		out = append(out, name+"="+byName[name])
+	}
+	return out
+}
+
+// refuseUndeliveredManagedNetwork reports honestly when a v1 environment
+// network grant or proxy port cannot be delivered. Linux helpers enforce
+// filesystem rules only and must not start as if the grant landed. The
+// stable workspace channel delivers the declared environment network (the
+// bound auth service answers origin-form requests on it), so a managed
+// port satisfies delivery without a per-command session.
+func refuseUndeliveredManagedNetwork(policy Policy, command Command) error {
+	if command.DenyNetwork {
+		return nil
+	}
+	if SupportsManagedNetworkProxy() &&
+		(command.SessionProxyPort != 0 || policy.ManagedProxyPort != 0) {
+		return nil
+	}
+	if len(policy.EnvironmentNetwork) == 0 && command.SessionProxyPort == 0 {
+		return nil
+	}
+	return fmt.Errorf(
+		"managed process network is unavailable: backend_capability_unsupported",
+	)
 }
 
 func BindPolicy(backend Backend, options Options) (Backend, error) {
@@ -225,6 +402,8 @@ type policyBinding struct {
 }
 
 func (b *policyBinding) Policy() Policy { return b.policy }
+
+func (b *policyBinding) InnerBackend() Backend { return b.Backend }
 
 func (b *policyBinding) Prepare(ctx context.Context, command Command) (Command, error) {
 	prepared, err := b.Backend.Prepare(ctx, command)
@@ -271,6 +450,18 @@ func CommandNetworkPolicy(policy Policy, command Command) Policy {
 	if command.DenyNetwork || command.LoopbackOnly {
 		policy.AllowNetwork = false
 		policy.ManagedProxyPort = 0
+	}
+	return policy
+}
+
+// ApplySessionProxyPort binds one Process Session port onto the command policy
+// after command-level network narrowing. A missing session port on a proxied
+// command keeps the Workspace port only for capability identity; Prepare still
+// reports whatever port the command actually received.
+func ApplySessionProxyPort(policy Policy, command Command) Policy {
+	policy = CommandNetworkPolicy(policy, command)
+	if command.SessionProxyPort != 0 && policy.ManagedProxyPort != 0 {
+		policy.ManagedProxyPort = command.SessionProxyPort
 	}
 	return policy
 }
@@ -409,6 +600,23 @@ func canonicalHostReadRoot(path string) (string, string, error) {
 	return lexical, filepath.Clean(canonical), nil
 }
 
+func validateInjectedHostFile(path, workspace string) error {
+	if err := validateSensitivePath(path); err != nil {
+		return err
+	}
+	parent := filepath.Dir(path)
+	home, _ := os.UserHomeDir()
+	if home != "" {
+		if resolved, err := filepath.EvalSymlinks(home); err == nil {
+			home = resolved
+		}
+		if parent == filepath.Clean(home) {
+			return nil
+		}
+	}
+	return validateInjectedRoot(parent, workspace)
+}
+
 func validateInjectedRoot(root, workspace string) error {
 	if isFilesystemRoot(root) {
 		return errors.New("filesystem root is forbidden")
@@ -428,7 +636,16 @@ func validateInjectedRoot(root, workspace string) error {
 	if root == parent || pathContains(root, workspace) {
 		return errors.New("workspace parents and workspace-wide host injection are forbidden")
 	}
-	cleanLower := strings.ToLower(filepath.ToSlash(root))
+	return validateSensitivePath(root)
+}
+
+func validateSensitivePath(path string) error {
+	cleanLower := strings.ToLower(filepath.ToSlash(path))
+	base := strings.ToLower(filepath.Base(path))
+	switch base {
+	case ".git-credentials", ".netrc", ".netrc.gpg", "id_rsa", "id_ed25519", "id_ecdsa", "id_dsa":
+		return errors.New("sensitive credential file is forbidden")
+	}
 	for _, sensitive := range []string{"/.ssh", "/.gnupg", "/keychains", "/credentials", "/secrets"} {
 		if strings.Contains(cleanLower, sensitive) {
 			return errors.New("sensitive credential root is forbidden")
@@ -481,10 +698,6 @@ func platformRuntimeRoots(goos string) []string {
 // pathHostReadRoots returns absolute PATH directories that are safe to expose as
 // read-only host roots. Invalid / sensitive / already-covered entries are skipped.
 func pathHostReadRoots(workspace string, runtimeRoots, existing []string) []string {
-	pathEnv := os.Getenv("PATH")
-	if pathEnv == "" {
-		return nil
-	}
 	added := make([]string, 0, 8)
 	seen := make(map[string]bool, len(runtimeRoots)+len(existing))
 	for _, root := range runtimeRoots {
@@ -493,14 +706,7 @@ func pathHostReadRoots(workspace string, runtimeRoots, existing []string) []stri
 	for _, root := range existing {
 		seen[root] = true
 	}
-	for _, directory := range filepath.SplitList(pathEnv) {
-		if directory == "" || !filepath.IsAbs(directory) {
-			continue
-		}
-		info, err := os.Stat(directory)
-		if err != nil || !info.IsDir() {
-			continue
-		}
+	for _, directory := range PlatformPATHDirectories() {
 		canonical, err := canonicalExisting(directory)
 		if err != nil || seen[canonical] {
 			continue
@@ -512,4 +718,57 @@ func pathHostReadRoots(workspace string, runtimeRoots, existing []string) []stri
 		added = append(added, canonical)
 	}
 	return added
+}
+
+// ExecutableReadable reports whether the OS sandbox profile built from this
+// policy grants file-read on the executable at path. It models the profile's
+// effective read set — runtime roots, host read roots and files, the
+// command's additional read paths, the workspace, and the private temp —
+// on the symlink-resolved path, mirroring how the profile filters resolve
+// at open time. Callers use it to fail fast with a structured denial
+// instead of letting the child die on a bare EPERM errno.
+func (p Policy) ExecutableReadable(path string, additionalReadPaths []string) bool {
+	candidate := filepath.Clean(path)
+	if resolved, err := filepath.EvalSymlinks(candidate); err == nil {
+		candidate = resolved
+	}
+	roots := make([]string, 0, 8)
+	roots = append(roots, p.RuntimeReadRoots...)
+	roots = append(roots, p.HostReadRoots...)
+	roots = append(roots, additionalReadPaths...)
+	roots = append(roots, p.WorkspaceRoot, p.PrivateTemp)
+	for _, root := range roots {
+		root = filepath.Clean(root)
+		if pathWithinRoot(candidate, root) {
+			return true
+		}
+		// The candidate is symlink-resolved, so a lexical root must be
+		// resolved too (macOS /var -> /private/var) before comparing.
+		if resolvedRoot, err := filepath.EvalSymlinks(root); err == nil &&
+			pathWithinRoot(candidate, resolvedRoot) {
+			return true
+		}
+	}
+	for _, file := range p.HostReadFiles {
+		file = filepath.Clean(file)
+		if candidate == file {
+			return true
+		}
+		if resolvedFile, err := filepath.EvalSymlinks(file); err == nil &&
+			candidate == resolvedFile {
+			return true
+		}
+	}
+	return false
+}
+
+func pathWithinRoot(candidate, root string) bool {
+	root = filepath.Clean(root)
+	if root == "" {
+		return false
+	}
+	if candidate == root {
+		return true
+	}
+	return strings.HasPrefix(candidate, root+string(os.PathSeparator))
 }

@@ -213,7 +213,7 @@ func (i *Index) RelatedTestsWithEvidence(ctx context.Context, paths []string) (m
 	}
 	i.mu.Lock()
 	defer i.mu.Unlock()
-	snapshot = i.snapshot
+	snapshot = i.Snapshot()
 	if !snapshot.Ready() {
 		return nil, nil, snapshot, nil
 	}

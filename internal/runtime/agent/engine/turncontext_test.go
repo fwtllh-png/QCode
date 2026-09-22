@@ -14,6 +14,8 @@ import (
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
 	toolguard "github.com/fwtllh-png/QCode/internal/adapter/tool/guard"
 	"github.com/fwtllh-png/QCode/internal/adapter/tool/interact"
+	"github.com/fwtllh-png/QCode/internal/observability/verify"
+	"github.com/fwtllh-png/QCode/internal/runtime/agent/turnkernel"
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
 	"github.com/fwtllh-png/QCode/internal/security/controlmatrix"
 	"github.com/fwtllh-png/QCode/internal/security/policy"
@@ -105,6 +107,50 @@ func TestSnapshotTurnSpecFreezesSessionInputs(t *testing.T) {
 	if snapshot.Policy.Repository[0].Action != policy.ActionAsk {
 		t.Fatal("repository slice must be copied")
 	}
+}
+
+func TestAnswerTurnProgressLeaseOmitsVerificationReserve(t *testing.T) {
+	registry := tool.NewRegistry(nil, nil)
+	options := Options{
+		ProviderConfig: ProviderConfig{Route: testRoute(t), MaxSteps: 1},
+		ToolConfig: ToolConfig{
+			Tools: registry,
+			Verify: VerifyOptions{
+				Mode: "soft", MaxRepairSteps: 1, Runner: verifyStub{},
+			},
+		},
+		SecurityConfig: SecurityConfig{Workspace: t.TempDir()},
+	}
+	answer, err := SnapshotTurnSpec(
+		options,
+		TurnIdentity{SessionID: "session-1", TurnID: "turn-1"},
+		TurnRequest{Prompt: "inspect", Intent: protocol.TurnIntentAnswer},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantAnswer := turnkernel.ConvergencePolicyForStepLimit(5)
+	if answer.Kernel.Convergence != wantAnswer {
+		t.Fatalf("answer lease = %+v, want %+v", answer.Kernel.Convergence, wantAnswer)
+	}
+	change, err := SnapshotTurnSpec(
+		options,
+		TurnIdentity{SessionID: "session-1", TurnID: "turn-2"},
+		TurnRequest{Prompt: "edit", Intent: protocol.TurnIntentWorkspaceChange},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantChange := turnkernel.ConvergencePolicyForStepLimit(6)
+	if change.Kernel.Convergence != wantChange {
+		t.Fatalf("workspace-change lease = %+v, want %+v", change.Kernel.Convergence, wantChange)
+	}
+}
+
+type verifyStub struct{}
+
+func (verifyStub) Verify(context.Context, verify.Request) (verify.Receipt, error) {
+	return verify.Receipt{}, nil
 }
 
 func TestSnapshotTurnSpecLeavesStructuredTerminalOff(

@@ -102,6 +102,35 @@ func TestOmittedTurnHintSurvivesOldSessionWithoutGuessingP2s(t *testing.T) {
 	}
 }
 
+func TestSessionStateCarriesConfirmedContinuityIntoNextTurn(t *testing.T) {
+	runtime := &scriptedProvider{streams: []provider.Stream{
+		textStream("hasGlobalLock must be held across the lease."),
+		textStream("I will restore previous analysis"),
+	}}
+	engine := newEngine(t, runtime, tool.NewRegistry(nil, nil))
+	engine.options.Workspace = t.TempDir()
+	engine.context.Evidence().Observe(agentcontext.EvidenceFact{
+		Kind:   agentcontext.KindDefinition,
+		Path:   "eds_metaserver.cc",
+		Line:   88,
+		Symbol: "hasGlobalLock",
+		Tool:   "search_definition",
+		Turn:   1,
+	})
+	if _, err := engine.Run(t.Context(), "analyze the lock", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := engine.Run(t.Context(), "how should we fix it", nil); err != nil {
+		t.Fatal(err)
+	}
+	joined := joinMessageText(runtime.requests[1].Messages)
+	if !strings.Contains(joined, "hasGlobalLock must be held across the lease") ||
+		!strings.Contains(joined, "eds_metaserver.cc:88 hasGlobalLock") ||
+		!strings.Contains(joined, "Do not call turn_history or search the repository") {
+		t.Fatalf("next turn lost continuity: %s", joined)
+	}
+}
+
 func TestResumeHintSurfacesCompletedPlanAndReadPaths(t *testing.T) {
 	runtime := &scriptedProvider{streams: []provider.Stream{
 		textStream("one"), textStream("two"),

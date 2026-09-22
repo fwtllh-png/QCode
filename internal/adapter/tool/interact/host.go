@@ -40,6 +40,7 @@ type Host struct {
 	ttl       time.Duration
 	now       func() time.Time
 	emit      func(context.Context, Request) error
+	expiry    func(Request)
 	pending   map[string]*pending
 	recovered map[string]Request
 	restore   func(Request) error
@@ -65,6 +66,25 @@ func (h *Host) SetEmitter(emit func(context.Context, Request) error) {
 	h.mu.Lock()
 	h.emit = emit
 	h.mu.Unlock()
+}
+
+// SetExpiryHandler registers the cleanup for an input wait that ends
+// without a user reply (TTL expiry or context cancellation). The engine
+// resolves the kernel input wait there so the turn keeps a legal phase
+// instead of failing on the tool result that follows.
+func (h *Host) SetExpiryHandler(handler func(Request)) {
+	h.mu.Lock()
+	h.expiry = handler
+	h.mu.Unlock()
+}
+
+func (h *Host) notifyExpiry(request Request) {
+	h.mu.Lock()
+	expiry := h.expiry
+	h.mu.Unlock()
+	if expiry != nil {
+		expiry(request)
+	}
 }
 
 func (h *Host) Wait(
@@ -123,12 +143,15 @@ func (h *Host) Wait(
 	defer timer.Stop()
 	select {
 	case <-ctx.Done():
+		h.notifyExpiry(req)
 		return Reply{}, ctx.Err()
 	case <-timer.C:
+		h.notifyExpiry(req)
 		return Reply{}, errors.New("input request expired")
 	case reply := <-entry.reply:
 		select {
 		case <-ctx.Done():
+			h.notifyExpiry(req)
 			return Reply{}, ctx.Err()
 		case <-entry.resume:
 		}

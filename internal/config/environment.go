@@ -38,6 +38,12 @@ func applyEnvironment(lookup func(string) (string, bool), config *Config, proven
 	if err := applyEnvInt(lookup, "QCODE_STATE_EVENT_RETENTION", fieldStateRetention, &config.State.EventRetention, provenance); err != nil {
 		return err
 	}
+	if err := applyEnvDuration(lookup, "QCODE_STATE_DELETED_EVENT_RETENTION", fieldDeletedEventRetention, &config.State.DeletedEventRetention, provenance); err != nil {
+		return err
+	}
+	if err := applyEnvBool(lookup, "QCODE_STATE_ARCHIVE_DELETED_EVENTS", fieldArchiveDeletedEvents, &config.State.ArchiveDeletedEvents, provenance); err != nil {
+		return err
+	}
 	if err := applyEnvBool(lookup, "QCODE_MEMORY_ENABLED", fieldMemoryEnabled, &config.Memory.Enabled, provenance); err != nil {
 		return err
 	}
@@ -440,6 +446,24 @@ func applyEnvironment(lookup func(string) (string, bool), config *Config, proven
 	applyEnvString(lookup, "QCODE_VISION_PROVIDER", fieldVisionProvider, &config.Vision.Provider, provenance)
 	applyEnvString(lookup, "QCODE_VISION_MODEL", fieldVisionModel, &config.Vision.Model, provenance)
 	applyEnvString(lookup, "QCODE_WEB_SEARCH_BACKEND", fieldWebSearchBackend, &config.Web.SearchBackend, provenance)
+	applyEnvString(
+		lookup, "QCODE_ENVIRONMENT_CONTRACT",
+		fieldEnvironmentContract, &execution.Environment.Contract, provenance,
+	)
+	applyEnvString(
+		lookup, "QCODE_ENVIRONMENT_PROFILE",
+		fieldEnvironmentProfile, &execution.Environment.Profile, provenance,
+	)
+	if err := applyEnvBool(
+		lookup, "QCODE_ENVIRONMENT_SHARED_USER_TEMP",
+		fieldEnvironmentSharedUserTemp, &execution.Environment.SharedUserTemp, provenance,
+	); err != nil {
+		return err
+	}
+	applyEnvString(
+		lookup, "QCODE_ENVIRONMENT_SOURCE",
+		fieldEnvironmentSource, &execution.Environment.Source, provenance,
+	)
 	return nil
 }
 

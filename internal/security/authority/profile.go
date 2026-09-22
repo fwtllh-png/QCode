@@ -176,7 +176,10 @@ func compileResources(profile *EffectivePermissionProfile, invocation policy.Inv
 		case "file", "directory", "repo", "workspace":
 			if resource.Access == tool.AccessRead {
 				profile.Filesystem.ReadRoots = append(profile.Filesystem.ReadRoots, value)
-			} else if resource.Tree || resource.Kind != "file" || invocation.Journaled {
+			} else if resource.Kind == "directory" ||
+				(resource.Kind == "file" && resource.Tree) {
+				profile.Filesystem.WritePaths = append(profile.Filesystem.WritePaths, value)
+			} else if resource.Kind != "file" || invocation.Journaled {
 				profile.Filesystem.WorkspaceBaseWrite = true
 			} else {
 				profile.Filesystem.WritePaths = append(profile.Filesystem.WritePaths, value)

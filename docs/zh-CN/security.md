@@ -61,6 +61,35 @@ Web Markdown 不执行原始 HTML 或危险 URL。同源图片可以直接显示
   Runtime 外部状态目录中的 Journal 恢复。
 - Workspace State 分为互不重叠的 `control`、`sandbox-home` 和 `artifacts`；
   在这三个状态域中，Sandbox 只获得 `sandbox-home` 写权限。
+  `[execution.environment]` 默认 `v1` + `native`：准备链物化已批准的宿主配置
+  只读、缓存分区和 `credential`+`use`，主 Agent 保留 HOME 变量，但不开放整个
+  Home。准备器会把启动 PATH 与平台路径源（Darwin 的 `/etc/paths`、存在的
+  Homebrew bin）合并后写入进程 PATH，并把这些目录列为 `host_toolchain`。
+  策略跟随 PATH 目录中指向目录外的可执行符号链接，只读暴露解析后的安装根，
+  不开放整个包管理器前缀。`native` 按 Git 文档位置精确暴露已存在的用户 git
+  配置文件（`~/.gitconfig` 或 `~/.config/git/config`），不暴露
+  `.git-credentials`、`.netrc` 或 `~/.ssh`。宿主 `go env GOPROXY` 已有的 userinfo 或宿主
+  `~/.netrc` 由 runtime 在进程外认证服务上使用，并改写沙箱 `GOPROXY` 为
+  Session loopback；凭证不进进程环境，`.netrc` 也不进入 Seatbelt。
+  可信配置里的 `[[execution.environment.auth_services]]` 覆盖该宿主绑定。
+  不能把 token 写进 `$TMPDIR/.netrc`。
+  子 Agent 仍 isolated，看不到宿主 git 配置。
+  `shared_user_temp` 仍默认关，是显式安全合同变更。`contract` 只接受
+  `v1`。见
+  [Sandbox 执行环境重构方案](./sandbox-execution-environment-plan.md)。
+  进程出网拒绝由 Session Gate 写成 `network_target_unapproved` /
+  `approve_network_target`；代理 403 使用同一结构化回执，不把
+  Forbidden 说成上游响应。连接前审批走现有 Approval；探测
+  `Authorize` 不能补授权。同一执行内同一 origin 只问一次，超时或拒绝后
+  `retry_original=false`，进程命令不整段重放。绑定 GOPROXY 认证服务后，上游 401/403 写成
+  `credential_rejected` / `bind_credential`，前缀外模块写成
+  `trust_validation_failed`；这两类不与未批准 CONNECT 混淆。
+  对已绑定上游主机的 CONNECT 或绝对形式请求同样写成
+  `trust_validation_failed`，避免绕过 Session 认证服务后把上游 401 误判成宿主没有凭证。
+  不能把 token 写进 `$TMPDIR/.netrc`，也不要向用户索要 GOPROXY token。
+  无权威事实的失败保持 `unknown`。
+  `[[execution.environment.auth_services]]` 只接受可信配置中的 `goproxy`，
+  凭证引用不得写入配置值或进程环境。
 - Tool Contract 要求时先读后写。
 - Tool Catalog 将模型可见的 `ExternalDescriptor` 与 Registry 可信的
   `TrustedBinding` 分开冻结。MCP 等外部来源只能提交
@@ -92,9 +121,15 @@ Web Markdown 不执行原始 HTML 或危险 URL。同源图片可以直接显示
 - File Broker 拒绝 Symlink、Hardlink、Device Boundary、Root/Parent Replacement，
   并在自身边界拒绝 `.git`、`.qcode`、`.qcode-worktree`、`.agents` 和
   `.codex`。Unified Diff 先解析为 File Plan，不调用 `git apply` 修改 Workspace。
-- `exec_command` 的写权限只授予显式 `write_paths`。目标可以是现有普通文件，或位于
-  已存在父目录下的待创建文件；Guard 在执行前完成 Preflight，Strong Sandbox 只为
-  这些精确路径物化最小占位。目录、Symlink、重复路径和执行前发生的身份漂移均拒绝。
+- `exec_command` 的写权限只授予显式 `write_paths`。目标可以是现有普通文件、位于
+  已存在父目录下的待创建文件，或**已存在**的工作区子目录（有界树写）。Guard 在
+  执行前完成 Preflight；Strong Sandbox 对精确文件物化最小占位，对已存在目录授予
+  树写。工作区根、缺失目录、Symlink、受保护元数据、重复路径和执行前发生的身份
+  漂移均拒绝。树内新建文件不必再逐条列出。带写树的 `exec_command` 在隔离
+  执行工作区运行，退出后经 File Broker / Journal 三方结算；用户并发修改不
+  自动算 Agent 修改，重叠冲突拒绝。`Isolator` 不可用时保持原地树写；隔离
+  准备失败则拒绝并要求精确 `write_paths`。隔离 cwd 出现在结果的
+  `isolated_cwd`。
 - 配置后，写入型 Subagent 使用 Worktree。
 - 隔离 Worktree 仅可只读访问经过校验的自身 Git Administration Directory，以及
   Repository Common Git Directory 中必要的 Object、Ref 与配置路径；这不会授予
@@ -157,7 +192,9 @@ Web Markdown 不执行原始 HTML 或危险 URL。同源图片可以直接显示
   远端服务不可达。Linux 在 namespace proxy bridge 交付前保持进程全禁网。
   macOS 的代理能力通过启动时的精确端口允许/拒绝探测单独确认，不从默认禁网状态
   推断。获批目标的 Effective Profile 保留代理端口，进程环境注入 Runtime 代理；
-  没有声明目标的命令仍禁网，也不注入代理变量。
+  没有声明目标且没有用户声明环境网络时，命令仍禁网，也不注入代理变量。
+  用户声明的环境网络资源可被空 `network_targets` 继承到当前 Session Gate；
+  适配器发现的 GOPROXY 主机不自动获得 CONNECT。
 - 测试 Fixture 或本地开发服务必须绑定并连接临时 Localhost 端口时，
   `exec_command` 可声明 `allow_loopback`。
   该能力默认关闭；Strong Sandbox 内仅包含精确 Localhost Grant 且没有 Workspace
@@ -270,12 +307,16 @@ make secret-leak-test
 - Provider Base URL 与 Redirect 属于安全敏感配置。
 - Provider、Web 工具和进程代理分别使用独立 Egress Gate。固定 Provider Endpoint
   与 Web Search Backend 的授权不会授予进程代理；Guard 按可信 Tool Capability
-  将获批目标交给对应的 Web 或 Process Gate，工具审批不修改 Provider Gate。
+  将获批 Web 目标交给 Web Gate，工具审批不修改 Provider Gate，也不写入
+  Workspace 共享进程 Gate。
 - 同一个 Gate 按 Protocol、Host、Port 累计授权，新增 Method 不撤销已有 Method。
   `allow_private` 只作用于同次获批的 Method；例如公网 GET 与私网 POST 合并后，
   私网 GET 仍拒绝。空 Method 授权表示所有方法，后续精确方法授权不能将其收窄；
   请求省略 Method 时则必须具有所有方法的授权。
-  当前进程代理的目标授权在 Runtime 会话内共享，并非逐进程身份或租约的独立授权表。
+  Darwin 上每个 Process Session 绑定独立 loopback 端口和 Session Gate；兄弟命令、
+  子 Agent 和 Workspace 共享端口不能消费该 Session 的目标。Linux/Windows 对需要
+  Session 通道的进程报告 `backend_capability_unsupported` 并保持禁网。
+  取消或关闭 Session 会停止 listen 并回收已 hijack 的 CONNECT。
 - Native/Web Search Result 仍是不可信内容。
 - 可记录 Endpoint Inventory，但不能记录 Credential。
 

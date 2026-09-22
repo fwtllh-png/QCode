@@ -13,7 +13,8 @@ func (f guardFactory) Build(context.Context) (*toolguard.Guard, error) {
 		Registry: f.registry, Policy: f.runtime,
 
 		ForceEditPlanApproval: f.forceEditReview, Now: f.now, Diagnostics: f.diagnostics, OnNetworkAllow: f.onNetworkAllow, Workspace: f.workspace, WorkspaceID: f.workspaceID, WorkspaceGeneration: 1, LeaseAuthority: f.leaseAuthority, LeaseTTL: f.leaseTTL, ApprovalTTL: f.approvalTTL,
-		ReadTracker: f.readTracker, Journal: f.journal,
+		ReadTracker: f.readTracker, Journal: f.journal, Isolator: f.isolator,
+		ModuleProxy: f.moduleProxy, AuthBindReport: f.authBindReport,
 	}
 	if f.permissions != nil {
 		f.runtime.BindUserRuleSource(f.permissions)
@@ -45,6 +46,7 @@ func bindEngineGuardFactory(
 	factory.now = options.Observability.Now
 	if options.Workspace != base.workspace {
 		factory.permissions, factory.workspaceID = nil, ""
+		factory.isolator = nil
 	}
 	options.Guard = nil
 	options.GuardFactory = func(ctx context.Context) (*toolguard.Guard, error) {

@@ -99,6 +99,34 @@ func TestTurnContinuationRoundtrip(t *testing.T) {
 	}
 }
 
+func TestContinuationReusesMessagesAndValidatesEveryChild(t *testing.T) {
+	store := newContinuationBlobStore()
+	record := continuationFixture()
+	first, err := StoreTurnContinuation(t.Context(), store, record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalCount := len(store.data)
+	record.Sequence++
+	record.Messages = append(record.Messages, provider.TextMessage(provider.RoleAssistant, "new answer"))
+	second, err := StoreTurnContinuation(t.Context(), store, record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(store.data) != originalCount+2 {
+		t.Fatalf("new continuation stored %d new objects, want one message and one manifest", len(store.data)-originalCount)
+	}
+	var firstStored storedContinuation
+	if err := readValue(t.Context(), store, first, &firstStored); err != nil {
+		t.Fatal(err)
+	}
+	sharedID := firstStored.MessageRefs[0].Handle
+	store.data[sharedID] = []byte("corrupt")
+	if _, err := LoadTurnContinuation(t.Context(), store, second.Handle, second.Digest); !errors.Is(err, ErrTurnContinuationUnavailable) {
+		t.Fatalf("corrupt shared message accepted: %v", err)
+	}
+}
+
 func TestTurnContinuationRejectsMissingAndCorruptContent(t *testing.T) {
 	store := newContinuationBlobStore()
 	record := continuationFixture()

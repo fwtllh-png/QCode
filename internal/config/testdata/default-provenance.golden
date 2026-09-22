@@ -57,6 +57,12 @@ execution.approval_timeout
 execution.budget_tokens
 execution.budget_usd
 execution.connection_timeout
+execution.environment.auth_services
+execution.environment.contract
+execution.environment.profile
+execution.environment.resources
+execution.environment.shared_user_temp
+execution.environment.source
 execution.idle_timeout
 execution.implement_no_progress_samples
 execution.journal.durable
@@ -106,8 +112,10 @@ memory.semantic_rerank
 runtime.event_history
 runtime.operation_buffer
 runtime.subscriber_buffer
+state.archive_deleted_events
 state.busy_timeout
 state.data_dir
+state.deleted_event_retention
 state.event_retention
 telemetry.log_level
 vision.enabled

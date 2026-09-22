@@ -8,6 +8,7 @@ import (
 
 	"github.com/fwtllh-png/QCode/internal/adapter/provider"
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
+	agentcontext "github.com/fwtllh-png/QCode/internal/runtime/agent/context"
 )
 
 func TestTurnHistoryReadsBoundedTurnAndIsIdempotentRegister(t *testing.T) {
@@ -50,6 +51,51 @@ func TestTurnHistoryReadsBoundedTurnAndIsIdempotentRegister(t *testing.T) {
 	}
 	if _, err := executor.Execute(t.Context(), []byte(`{"turn":1}`)); err == nil {
 		t.Fatal("missing turn succeeded")
+	}
+}
+
+func TestTurnHistoryFirstPageKeepsFindingsAfterTail(t *testing.T) {
+	registry := tool.NewRegistry(nil, nil)
+	lookup := func(_ context.Context, turn uint64) ([]provider.Message, error) {
+		return []provider.Message{
+			{
+				Role: provider.RoleUser, Turn: 7,
+				Blocks: []provider.ContentBlock{{
+					Type: provider.ContentText,
+					Text: "audit the parser " + strings.Repeat("explore ", 80),
+				}},
+			},
+			{
+				Role: provider.RoleAssistant, Turn: 7,
+				Blocks: []provider.ContentBlock{{
+					Type: provider.ContentText,
+					Text: "summary without paths",
+				}},
+			},
+		}, nil
+	}
+	findings := func(_ context.Context, turn uint64) (agentcontext.TurnFindings, bool) {
+		return agentcontext.TurnFindings{
+			Conclusion: "hasGlobalLock is the root cause",
+			Sites:      []string{"eds_metaserver.cc:88 hasGlobalLock"},
+		}, turn == 7
+	}
+	if err := Register(registry, lookup, findings); err != nil {
+		t.Fatal(err)
+	}
+	_, _, executor, err := registry.Resolve(Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	page, err := executor.Execute(t.Context(), []byte(`{"turn":7,"max_bytes":160}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !page.Truncated ||
+		!strings.Contains(page.Content, "hasGlobalLock is the root cause") ||
+		!strings.Contains(page.Content, "eds_metaserver.cc:88 hasGlobalLock") ||
+		strings.Contains(page.Content, "audit the parser") {
+		t.Fatalf("findings page = %+v", page)
 	}
 }
 

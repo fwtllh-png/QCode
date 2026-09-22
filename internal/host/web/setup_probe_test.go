@@ -18,6 +18,25 @@ func TestSetupProbeConnectionMatchesApplyBoundary(t *testing.T) {
 			t.Fatalf("%s: id=%s endpoint=%s protocol=%s err=%v", providerID, gotID, endpoint, protocol, err)
 		}
 	}
+	for _, test := range []struct {
+		providerID string
+		modelID    string
+		wantID     string
+	}{
+		{"glm", "glm-5.3-flash", "glm"},
+		{"glm", "glm-5.3-flashx", "glm"},
+		{"deepseek", "glm-5.3-flashx", "deepseek"},
+	} {
+		gotID, endpoint, protocol, err := resolveSetupProbeConnection(webhost.SetupProbeRequest{
+			Provider: test.providerID, Model: test.modelID,
+			BaseURL: "https://ignored.invalid", Protocol: "ignored",
+		})
+		provider, _ := model.DefaultCatalog().Provider(test.wantID)
+		if err != nil || gotID != test.wantID || endpoint != provider.Endpoint || protocol != provider.Protocol {
+			t.Fatalf("%s/%s: id=%s endpoint=%s protocol=%s err=%v",
+				test.providerID, test.modelID, gotID, endpoint, protocol, err)
+		}
+	}
 	for _, protocol := range []string{"openai_chat", "openai_responses"} {
 		_, endpoint, got, err := resolveSetupProbeConnection(webhost.SetupProbeRequest{
 			Provider: customProviderID, BaseURL: "https://models.example.com/v1/", Protocol: protocol,

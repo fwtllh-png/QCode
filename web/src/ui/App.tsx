@@ -1727,17 +1727,24 @@ export function App({client}: Props) {
             // using a newer scrollHeight or trigger another history window shift.
             if (delta === 0) return;
             interactionAnchorRef.current = undefined;
+            navigationReaderLockRef.current = "";
             scrollDirectionRef.current = delta < 0 ? -1 : 1;
             const next = transcriptEnd === entries.length &&
               node.scrollHeight - node.scrollTop - node.clientHeight <=
               experience.scrolling.followThreshold;
             atBottomRef.current = next;
             setAtBottom(next);
-            if (!next && !transcriptWindowEndID) {
-              setTranscriptWindowEndID(visibleEntries.at(-1)?.id);
+            const windowEndID = transcriptWindowEndID ??
+              (!next ? visibleEntries.at(-1)?.id : undefined);
+            // A queued stream render can run before the next animation frame.
+            // Commit the user's position now; only navigation/history work is deferred.
+            const position = readTranscriptPosition(node, windowEndID, next);
+            if (position) {
+              readingPositionsRef.current.set(snapshot.selectedSessionID, position);
+              if (historyLoadRef.current) pendingReadingRestoreRef.current = position;
             }
-            if (delta !== 0 && historyLoadRef.current) {
-              pendingReadingRestoreRef.current = captureReadingPosition(true);
+            if (!next && !transcriptWindowEndID) {
+              setTranscriptWindowEndID(windowEndID);
             }
             scheduleReadingPositionCapture();
           }}
@@ -1831,6 +1838,7 @@ export function App({client}: Props) {
                   key={turn.id}
                   entries={turn.entries}
                   terminalKind={terminalTurns.get(turn.turnID)}
+                  preserveReading={!atBottom}
                   revealEntryID={navigationTarget?.entryID}
                   client={client}
                   onError={reportLocalError}
@@ -2667,6 +2675,7 @@ function terminalConclusion(
 function TurnTranscript({
   entries,
   terminalKind,
+  preserveReading,
   revealEntryID,
   client,
   onError,
@@ -2682,6 +2691,7 @@ function TurnTranscript({
 }: {
   entries: readonly ConversationNode[];
   terminalKind?: TerminalTurnKind;
+  preserveReading: boolean;
   revealEntryID?: string;
   client: RuntimeClient;
   onError: (error: unknown) => void;
@@ -2695,13 +2705,24 @@ function TurnTranscript({
   selectedSessionID: string;
   navigationHighlightID: string;
 }) {
+  const [layout, setLayout] = useState<"live" | "reading" | "settled">(
+    terminalKind ? "settled" : "live"
+  );
+  // Decide before committing DOM: moving an inspected entry into a different
+  // subtree would discard its disclosure state, focus and selection.
+  if (layout === "live" && terminalKind) {
+    setLayout(preserveReading ? "reading" : "settled");
+  } else if (layout === "reading" && !preserveReading) {
+    setLayout("settled");
+  }
+  const summarizeExecution = Boolean(terminalKind) && layout === "settled";
   const conclusion = terminalKind
     ? terminalConclusion(entries, terminalKind)
     : undefined;
-  const executionEntries = terminalKind
+  const executionEntries = summarizeExecution
     ? entries.filter((entry) => entry.kind !== "user" && entry.id !== conclusion?.id)
     : [];
-  const visibleEntries = terminalKind
+  const visibleEntries = summarizeExecution
     ? entries.filter((entry) => entry.kind === "user" || entry.id === conclusion?.id)
     : entries;
   const revealExecution = Boolean(

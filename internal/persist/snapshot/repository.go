@@ -73,8 +73,10 @@ type Snapshot struct {
 	SchemaVersion int
 	ContentHash   string
 	Content       []byte
-	Metadata      json.RawMessage
-	CreatedAt     time.Time
+	// ContentIDs are children already staged by the caller (e.g. a baseline manifest).
+	ContentIDs []string
+	Metadata   json.RawMessage
+	CreatedAt  time.Time
 }
 
 type Repository struct {
@@ -93,13 +95,15 @@ func NewSQLiteRepository(store *sqlitestate.Store, content *cas.Store) *Reposito
 	return NewRepository(store.DB(), content)
 }
 
-func (r *Repository) Save(ctx context.Context, value Snapshot) (Snapshot, error) {
+func (r *Repository) Save(ctx context.Context, value Snapshot) (result Snapshot, resultErr error) {
 	if r.db == nil || r.content == nil {
 		return Snapshot{}, errors.New("snapshot database and content store are required")
 	}
 	if value.ID == "" || value.ThreadID == "" || value.Kind == "" {
 		return Snapshot{}, errors.New("snapshot id, thread id, and kind are required")
 	}
+	ctx, finishStage := r.content.BeginContentStage(ctx)
+	defer func() { resultErr = errors.Join(resultErr, finishStage()) }()
 	if value.SchemaVersion == 0 {
 		value.SchemaVersion = SchemaVersion
 	}
@@ -122,18 +126,27 @@ func (r *Repository) Save(ctx context.Context, value Snapshot) (Snapshot, error)
 	}
 	inserted := false
 	defer func() {
-		if !inserted {
-			_ = r.content.Release(context.Background(), value.ContentHash)
+		if !inserted && !r.content.ManagedOwnership() {
+			_ = r.content.ReleaseUnreferenced(context.Background(), value.ContentHash)
 		}
 	}()
-	_, err = r.db.ExecContext(ctx, `
+	err = sqlkit.WithTx(ctx, r.db, nil, func(tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, `
 		INSERT INTO snapshots(
 			id, thread_id, turn_id, cursor, kind, content_hash,
 			schema_version, metadata_json, created_at
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		value.ID, value.ThreadID, nullableTurn(value.TurnID), value.Cursor, value.Kind,
-		value.ContentHash, value.SchemaVersion, metadata, sqlkit.Timestamp(value.CreatedAt),
-	)
+			value.ID, value.ThreadID, nullableTurn(value.TurnID), value.Cursor, value.Kind,
+			value.ContentHash, value.SchemaVersion, metadata, sqlkit.Timestamp(value.CreatedAt),
+		)
+		if err != nil || !r.content.ManagedOwnership() {
+			return err
+		}
+		if err := cas.LinkTx(ctx, tx, value.ContentHash, value.ContentIDs...); err != nil {
+			return err
+		}
+		return cas.BindTx(ctx, tx, "snapshot", value.ID, value.ContentHash)
+	})
 	if err != nil {
 		return Snapshot{}, fmt.Errorf("persist snapshot: %w", err)
 	}

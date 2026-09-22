@@ -24,8 +24,9 @@ import (
 const ErrUnavailableCode = "sandbox_unavailable"
 
 // MaxExactWorkspaceWritePaths bounds one explicitly approved sandbox policy.
-// Argument expansion, tool schema validation, and backend policy generation
-// share this value so an approved call cannot fail at a later boundary.
+// Exact write files, files settled under write trees, argument expansion,
+// tool schema validation, and backend policy generation share this value so
+// an approved call cannot fail at a later boundary.
 const MaxExactWorkspaceWritePaths = 512
 
 type Capability struct {
@@ -62,6 +63,10 @@ type Command struct {
 	PreparedNetworkDenied   bool
 	PreparedLoopbackAllowed bool
 	PreparedProxyPort       uint16
+	// SessionProxyPort is the Process Session loopback port allocated by the
+	// Workspace proxy. Prepare must write this exact port into Seatbelt and
+	// PreparedProxyPort; it must not keep the Workspace shared port.
+	SessionProxyPort uint16
 }
 
 type Backend interface {
@@ -75,12 +80,28 @@ type PolicyBackend interface {
 }
 
 func BackendPolicy(backend Backend) (Policy, bool) {
-	policyBackend, ok := backend.(PolicyBackend)
-	if !ok {
-		return Policy{}, false
+	current := backend
+	for range 8 {
+		if current == nil {
+			return Policy{}, false
+		}
+		if policyBackend, ok := current.(PolicyBackend); ok {
+			policy := policyBackend.Policy()
+			if policy.ID != "" {
+				return policy, true
+			}
+		}
+		wrapper, ok := current.(interface{ InnerBackend() Backend })
+		if !ok {
+			return Policy{}, false
+		}
+		next := wrapper.InnerBackend()
+		if next == nil || next == current {
+			return Policy{}, false
+		}
+		current = next
 	}
-	policy := policyBackend.Policy()
-	return policy, policy.ID != ""
+	return Policy{}, false
 }
 
 type UnavailableError struct {
@@ -287,7 +308,10 @@ func (b *seatbeltBackend) Prepare(ctx context.Context, command Command) (Command
 	if err != nil {
 		return Command{}, err
 	}
-	policy := CommandNetworkPolicy(b.policy, command)
+	if err := refuseUndeliveredManagedNetwork(b.policy, command); err != nil {
+		return Command{}, err
+	}
+	policy := ApplySessionProxyPort(b.policy, command)
 	profile := seatbeltProfileForCommand(
 		policy,
 		executable,
@@ -383,6 +407,9 @@ func (b *bubblewrapBackend) Prepare(ctx context.Context, command Command) (Comma
 		command.WorkspaceHiddenPaths,
 	)
 	if err != nil {
+		return Command{}, err
+	}
+	if err := refuseUndeliveredManagedNetwork(b.policy, command); err != nil {
 		return Command{}, err
 	}
 	var helper, requestPath string
@@ -521,6 +548,8 @@ func (b *closeBinding) Policy() Policy {
 	return policy
 }
 
+func (b *closeBinding) InnerBackend() Backend { return b.Backend }
+
 func seatbeltProfile(policy Policy, executable string) string {
 	return seatbeltProfileForCommand(
 		policy, executable, false, nil, nil, nil, false, false,
@@ -562,11 +591,10 @@ func seatbeltProfileForCommand(
 		)
 	}
 	for _, path := range workspaceWritePaths {
-		fmt.Fprintf(
-			&profile,
-			"(allow file-write* (literal %s))\n",
-			seatbeltQuote(path),
-		)
+		profile.WriteString(seatbeltWriteGrant(path))
+	}
+	for _, root := range policy.HostWriteRoots {
+		profile.WriteString(seatbeltWriteGrant(root))
 	}
 	fmt.Fprintf(
 		&profile,
@@ -659,6 +687,14 @@ func seatbeltProfileForCommand(
 	return profile.String()
 }
 
+func seatbeltWriteGrant(path string) string {
+	info, err := os.Stat(path)
+	if err == nil && info.IsDir() {
+		return fmt.Sprintf("(allow file-write* (subpath %s))\n", seatbeltQuote(path))
+	}
+	return fmt.Sprintf("(allow file-write* (literal %s))\n", seatbeltQuote(path))
+}
+
 func validateWorkspaceHiddenPaths(
 	workspace *Workspace,
 	paths []string,
@@ -728,6 +764,17 @@ func validateExactWorkspaceWritePaths(
 			}
 		} else if err != nil {
 			return nil, err
+		} else if info.Mode()&os.ModeSymlink != 0 {
+			return nil, fmt.Errorf("exact write path %q is a symlink", path)
+		} else if info.IsDir() {
+			if resolved == workspace.Root() {
+				return nil, errors.New("write tree cannot cover the entire workspace")
+			}
+			if err := classifier.CheckWrite(resolved, true); err != nil {
+				return nil, err
+			}
+			canonical = append(canonical, resolved)
+			continue
 		} else if !info.Mode().IsRegular() {
 			return nil, fmt.Errorf("exact write path %q is not a regular file", path)
 		}
@@ -757,6 +804,13 @@ func materializeMissingExactWritePaths(
 	}
 	for _, path := range paths {
 		if info, err := os.Lstat(path); err == nil {
+			if info.IsDir() {
+				if info.Mode()&os.ModeSymlink != 0 {
+					cleanup()
+					return fmt.Errorf("exact write path %q changed type", path)
+				}
+				continue
+			}
 			if !info.Mode().IsRegular() {
 				cleanup()
 				return fmt.Errorf("exact write path %q changed type", path)

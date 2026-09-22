@@ -87,7 +87,8 @@ func TestAssembleTurnRendersBothSectionsAsSystemMessages(t *testing.T) {
 		strings.Contains(setText, "file may have changed") {
 		t.Fatalf("working set still authorizes tail-missing re-read:\n%s", setText)
 	}
-	if !strings.Contains(setText, "prior text is no longer in this sample") ||
+	if !strings.Contains(setText, "turn_history or result_get for prior text outside") ||
+		!strings.Contains(setText, "read-only analysis or edits") ||
 		!strings.Contains(setText, "A dirty git status or git_diff is not a reason to file_read") {
 		t.Fatalf("working set missing resume constraint:\n%s", setText)
 	}

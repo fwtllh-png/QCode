@@ -44,6 +44,7 @@ const (
 // checked-in vendor directory stays out of search results.
 var skippedDirectories = map[string]struct{}{
 	".git": {}, ".hg": {}, ".svn": {}, "node_modules": {}, "vendor": {}, "bin": {},
+	"target": {},
 	// The runtime's own state lives here. Reading it back as workspace content
 	// would feed a session its own transcript.
 	".qcode": {},
@@ -68,6 +69,7 @@ const (
 	SkipBinary   SkipReason = "binary"
 	SkipEncoding SkipReason = "encoding"
 	SkipMissing  SkipReason = "missing"
+	SkipLinked   SkipReason = "linked"
 )
 
 // Skips counts the files enumeration and reads left out, by reason.
@@ -79,6 +81,7 @@ type Skips struct {
 	Binary    int `json:"binary,omitempty"`
 	Encoding  int `json:"encoding,omitempty"`
 	Missing   int `json:"missing,omitempty"`
+	Linked    int `json:"linked,omitempty"`
 }
 
 // Add records one skipped file.
@@ -92,6 +95,8 @@ func (s *Skips) Add(reason SkipReason) {
 		s.Encoding++
 	case SkipMissing:
 		s.Missing++
+	case SkipLinked:
+		s.Linked++
 	}
 }
 
@@ -214,6 +219,8 @@ func (w *Walker) Read(entry Entry, maxBytes int64) (Content, SkipReason, error) 
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
 		return Content{}, SkipMissing, nil
+	case errors.Is(err, sandbox.ErrMultiplyLinked):
+		return Content{}, SkipLinked, nil
 	case err != nil:
 		return Content{}, SkipNone, err
 	}

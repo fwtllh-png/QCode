@@ -249,7 +249,7 @@ func (i *Index) ReferenceEvidence(ctx context.Context, name string) (map[string]
 	}
 	i.mu.Lock()
 	defer i.mu.Unlock()
-	snapshot = i.snapshot
+	snapshot = i.Snapshot()
 	if !snapshot.Ready() {
 		return nil, nil, nil, snapshot, nil
 	}

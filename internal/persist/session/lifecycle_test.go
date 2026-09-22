@@ -172,11 +172,7 @@ func TestPresentationReadFenceBindsLifecycleThreadsAndEventWatermark(t *testing.
 		t.Fatal(err)
 	}
 	if _, err := store.DB().ExecContext(t.Context(), `
-		INSERT INTO event_reservations(
-			sequence, event_id, status, created_at, updated_at
-		) VALUES (7, 'event-fence', 'abandoned', ?, ?)`,
-		now,
-		now,
+		UPDATE event_watermark SET sequence = 7 WHERE id = 1`,
 	); err != nil {
 		t.Fatal(err)
 	}

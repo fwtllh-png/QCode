@@ -58,6 +58,9 @@ func TestWiredNetworkGrantsIsolateProviderWebAndProcess(t *testing.T) {
 	})
 	providerClient := egress.WrapClient(providerServer.Client(), built.provider.egress)
 	backendPolicy, ok := sandbox.BackendPolicy(built.platform.backend)
+	if !sandbox.SupportsManagedNetworkProxy() {
+		t.Skip("workspace process proxy is Darwin-only")
+	}
 	if !ok || backendPolicy.ManagedProxyPort == 0 {
 		t.Fatal("workspace has no managed network proxy")
 	}
@@ -90,6 +93,14 @@ func TestWiredNetworkGrantsIsolateProviderWebAndProcess(t *testing.T) {
 		}
 		if want == http.StatusOK && string(body) != method+" ok" {
 			t.Fatalf("%s: upstream body=%q", method, body)
+		}
+	}
+	assertCONNECTDenied := func(client *http.Client, endpoint string) {
+		t.Helper()
+		response, err := client.Get(endpoint)
+		if err == nil {
+			response.Body.Close()
+			t.Fatalf("%s: CONNECT via shared workspace proxy succeeded", endpoint)
 		}
 	}
 	assertDenied := func(gate *egress.Gate, target egress.Target) {
@@ -127,20 +138,53 @@ func TestWiredNetworkGrantsIsolateProviderWebAndProcess(t *testing.T) {
 
 	allow := built.security.guardFactory.onNetworkAllow
 	allow(tool.CapabilityProcess, targetOf(providerServer.URL, http.MethodConnect))
-	assertHTTP(processClient, http.MethodGet, providerServer.URL, http.StatusOK)
-	// A process CONNECT grant must neither revoke provider POST nor grant direct POST.
+	assertCONNECTDenied(processClient, providerServer.URL)
+	assertDenied(built.platform.processEgress, targetOf(providerServer.URL, http.MethodConnect))
 	assertHTTP(providerClient, http.MethodPost, providerServer.URL, http.StatusOK)
-	assertDenied(built.platform.processEgress, targetOf(providerServer.URL, http.MethodPost))
 	assertDenied(built.platform.webEgress, targetOf(providerServer.URL, http.MethodGet))
 
 	allow(tool.CapabilityNetwork, targetOf(providerServer.URL, http.MethodGet))
 	assertDenied(built.platform.processEgress, targetOf(providerServer.URL, http.MethodGet))
 	assertDenied(built.platform.webEgress, targetOf(providerServer.URL, http.MethodConnect))
 	allow(tool.CapabilityProcess, targetOf(webServer.URL, http.MethodGet))
-	assertHTTP(processClient, http.MethodGet, webServer.URL, http.StatusOK)
-	assertHTTP(processClient, http.MethodDelete, webServer.URL, http.StatusForbidden)
+	assertHTTP(processClient, http.MethodGet, webServer.URL, http.StatusForbidden)
 	assertHTTP(built.platform.web.HTTP, http.MethodPost, webServer.URL, http.StatusOK)
 	assertDenied(built.provider.egress, targetOf(webServer.URL, http.MethodGet))
+
+	opener, ok := egress.LookupProcessSessionOpener(built.platform.backend)
+	if !ok {
+		t.Fatal("workspace proxy has no session allocator")
+	}
+	sessionA, err := opener.OpenProcessSession([]egress.Target{
+		targetOf(providerServer.URL, http.MethodConnect),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sessionA.Close() })
+	sessionB, err := opener.OpenProcessSession([]egress.Target{
+		targetOf(webServer.URL, http.MethodGet),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sessionB.Close() })
+	clientFor := func(port uint16) *http.Client {
+		t.Helper()
+		cloned := transport.Clone()
+		cloned.Proxy = http.ProxyURL(&url.URL{
+			Scheme: "http",
+			Host:   net.JoinHostPort("127.0.0.1", strconv.Itoa(int(port))),
+		})
+		client := &http.Client{Transport: cloned}
+		t.Cleanup(client.CloseIdleConnections)
+		return client
+	}
+	assertHTTP(clientFor(sessionA.Port()), http.MethodGet, providerServer.URL, http.StatusOK)
+	assertHTTP(clientFor(sessionA.Port()), http.MethodGet, webServer.URL, http.StatusForbidden)
+	assertHTTP(clientFor(sessionB.Port()), http.MethodGet, webServer.URL, http.StatusOK)
+	assertCONNECTDenied(clientFor(sessionB.Port()), providerServer.URL)
+	assertCONNECTDenied(processClient, providerServer.URL)
 
 	// A Guard call must not inherit either fixed backend or other call grants.
 	ctx, closeScope := egress.WithScope(t.Context())

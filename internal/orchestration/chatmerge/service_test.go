@@ -27,6 +27,21 @@ func TestMergeBatchAndPlanCompaction(t *testing.T) {
 	}
 }
 
+func TestMatchPathPrefix(t *testing.T) {
+	if !matchPathPrefix("generated/out.txt", nil) {
+		t.Fatal("empty prefixes should match all paths")
+	}
+	if !matchPathPrefix("generated/out.txt", []string{"generated"}) {
+		t.Fatal("prefix should match nested path")
+	}
+	if matchPathPrefix("user.txt", []string{"generated"}) {
+		t.Fatal("unrelated path matched write tree")
+	}
+	if !matchPathPrefix("generated/out.txt", []string{"."}) {
+		t.Fatal("workspace root prefix should match")
+	}
+}
+
 func TestReadChatMergeFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "file.txt")
 	if err := os.WriteFile(path, []byte("content\n"), 0o600); err != nil {

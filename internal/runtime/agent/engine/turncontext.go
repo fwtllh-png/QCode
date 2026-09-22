@@ -161,8 +161,14 @@ func SnapshotTurnSpec(
 	if progressLease > 0 {
 		progressLease += kernelPolicy.CompletionRepairLimit +
 			kernelPolicy.WorkspaceRepairLimit +
-			kernelPolicy.DeclarationRepairLimit +
-			kernelPolicy.VerificationRepairLimit
+			kernelPolicy.DeclarationRepairLimit
+		// Verification repairs only consume samples on workspace-change
+		// turns. Explore/answer children inherit soft verify options but
+		// cannot spend that reserve, so it must not stretch their lease.
+		if kernelPolicy.VerificationRequired &&
+			request.Intent == protocol.TurnIntentWorkspaceChange {
+			progressLease += kernelPolicy.VerificationRepairLimit
+		}
 	}
 	kernelPolicy.Convergence = turnkernel.ConvergencePolicyForStepLimit(
 		progressLease,

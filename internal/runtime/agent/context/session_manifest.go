@@ -86,6 +86,31 @@ type BlobStore interface {
 	Get(context.Context, string) ([]byte, error)
 }
 
+// BeginContentStage pins unpublished objects until their durable owner commits
+// or the attempt ends. In-memory stores need no collection coordination.
+func BeginContentStage(ctx context.Context, store BlobStore) (context.Context, func() error) {
+	if staging, ok := store.(interface {
+		BeginContentStage(context.Context) (context.Context, func() error)
+	}); ok {
+		return staging.BeginContentStage(ctx)
+	}
+	return ctx, func() error { return nil }
+}
+
+func (m ContextManifest) ContentIDs() []string {
+	ids := []string{m.History.BaseRef.Handle}
+	for _, ref := range m.History.TailRefs {
+		ids = append(ids, ref.Handle)
+	}
+	for _, owner := range []OwnerManifest{m.Working, m.Evidence, m.Failures, m.Plan} {
+		ids = append(ids, owner.BaseRef.Handle)
+		for _, ref := range owner.DeltaRefs {
+			ids = append(ids, ref.Handle)
+		}
+	}
+	return ids
+}
+
 type ContextEnvelope struct {
 	Version    int             `json:"version"`
 	Manifest   ContextManifest `json:"manifest"`

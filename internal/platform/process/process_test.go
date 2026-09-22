@@ -237,32 +237,39 @@ func TestTraceContextOnlyReachesTrustedRuntimeHelpers(t *testing.T) {
 	}
 }
 
-func TestSanitizedEnvironmentRejectsExplicitSecretsAndUnknownNames(t *testing.T) {
+func TestSanitizedEnvironmentRejectsSecretsAndMalformedNames(t *testing.T) {
 	for _, extra := range [][]string{
 		{"API_TOKEN=value"},
-		{"CUSTOM_UNREVIEWED=value"},
 		{"malformed"},
+		{"=leading-equals"},
+		{"1STARTSWITHDIGIT=value"},
 	} {
 		if _, err := SanitizedEnvironment(extra); err == nil {
 			t.Fatalf("SanitizedEnvironment(%q) succeeded", extra)
 		}
 	}
-	environment, err := SanitizedEnvironment([]string{"LANG=C"})
+	// Well-formed non-secret names are explicit reviewed input: language
+	// and build variables (CGO_ENABLED, CARGO_HOME, ...) declare freely.
+	environment, err := SanitizedEnvironment([]string{
+		"LANG=C", "CGO_ENABLED=0", "CARGO_HOME=/cargo", "GOTMPDIR=/tmp/go-tmp",
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Contains(environment, "LANG=C") {
-		t.Fatalf("environment = %q", environment)
+	for _, want := range []string{
+		"LANG=C", "CGO_ENABLED=0", "CARGO_HOME=/cargo", "GOTMPDIR=/tmp/go-tmp",
+	} {
+		if !slices.Contains(environment, want) {
+			t.Fatalf("environment omitted %q: %q", want, environment)
+		}
 	}
 }
 
-func TestSanitizedEnvironmentPreservesGoModulePolicy(t *testing.T) {
+func TestSanitizedEnvironmentDropsHostLanguageVariables(t *testing.T) {
 	values := map[string]string{
 		"GOPROXY":   "https://proxy.internal.example|direct",
 		"GOPRIVATE": "code.internal.example",
-		"GONOPROXY": "code.internal.example",
 		"GOSUMDB":   "sum.golang.org",
-		"GONOSUMDB": "code.internal.example",
 		"GOVCS":     "public:git|hg,private:all",
 	}
 	for name, value := range values {
@@ -272,11 +279,22 @@ func TestSanitizedEnvironmentPreservesGoModulePolicy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for name, value := range values {
-		entry := name + "=" + value
-		if !slices.Contains(environment, entry) {
-			t.Fatalf("environment omitted %q: %q", entry, environment)
+	for name := range values {
+		for _, entry := range environment {
+			if strings.HasPrefix(entry, name+"=") {
+				t.Fatalf("host language variable %s leaked: %q", name, entry)
+			}
 		}
+	}
+	// Explicit declarations are the delivery path for the same names.
+	environment, err = SanitizedEnvironment([]string{
+		"GOPROXY=https://proxy.internal.example|direct",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(environment, "GOPROXY=https://proxy.internal.example|direct") {
+		t.Fatalf("declared GOPROXY omitted: %q", environment)
 	}
 }
 
@@ -345,23 +363,92 @@ func TestStructuredCommandUsesSanitizedEnvironmentAndSandbox(t *testing.T) {
 	}
 }
 
-func TestSandboxEnvironmentForcesPrivateTempVariables(t *testing.T) {
+func TestV1DropsHostLanguageEnvironmentUnlessExtraOrPrepared(t *testing.T) {
+	t.Setenv("GOPROXY", "https://proxy.internal.example")
+	t.Setenv("GOROOT", "/host/go")
+	t.Setenv("LANG", "C")
+	root := t.TempDir()
+	directory, err := os.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer directory.Close()
+	backend := &recordingBackend{
+		root:                root,
+		environmentContract: "v1",
+		environmentValues:   []string{"GOROOT=/prepared/go"},
+	}
+	result, err := Run(t.Context(), Options{
+		Command: "printf ok", Dir: root, DirFile: directory,
+		Env:     []string{"GOPROXY=http://127.0.0.1:9"},
+		Sandbox: backend, RequireSandbox: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Stdout != "ok" || result.ExitCode != 0 {
+		t.Fatalf("result = %+v", result)
+	}
+	if environmentValue(backend.command.Env, "GOPROXY") != "http://127.0.0.1:9" {
+		t.Fatalf("extra GOPROXY lost: %v", backend.command.Env)
+	}
+	if environmentValue(backend.command.Env, "GOROOT") != "/prepared/go" {
+		t.Fatalf("prepared GOROOT lost: %v", backend.command.Env)
+	}
+	if environmentValue(backend.command.Env, "LANG") != "C" {
+		t.Fatalf("LANG dropped: %v", backend.command.Env)
+	}
+}
+
+func TestSandboxEnvironmentDoesNotRewriteHomeOrCaches(t *testing.T) {
 	privateTemp := filepath.Join(t.TempDir(), "private")
-	environment := sandboxEnvironment([]string{
+	environment := applyManagedProxyEnvironment([]string{
 		"HOME=/host/home",
 		"TMPDIR=/host/tmpdir",
-		"TMP=/host/tmp",
-		"TEMP=/host/temp",
+		"GOCACHE=/host/cache",
 		"LANG=C",
-	}, sandbox.Policy{PrivateTemp: privateTemp}, true)
-
-	for _, name := range []string{"HOME", "TMPDIR", "TMP", "TEMP"} {
-		if got := environmentValue(environment, name); got != privateTemp {
-			t.Fatalf("%s=%q, want private temp %q", name, got, privateTemp)
+	}, sandbox.Policy{
+		PrivateTemp:         privateTemp,
+		EnvironmentContract: "v1",
+	}, true)
+	if environmentValue(environment, "HOME") != "/host/home" ||
+		environmentValue(environment, "TMPDIR") != "/host/tmpdir" ||
+		environmentValue(environment, "GOCACHE") != "/host/cache" ||
+		environmentValue(environment, "LANG") != "C" {
+		t.Fatalf("home rewrite leaked: %v", environment)
+	}
+	for _, name := range []string{"GOTMPDIR", "GOMODCACHE"} {
+		if environmentValue(environment, name) != "" {
+			t.Fatalf("injected %s=%q", name, environmentValue(environment, name))
 		}
 	}
-	if got := environmentValue(environment, "LANG"); got != "C" {
-		t.Fatalf("LANG=%q, want C", got)
+}
+
+func TestV1ShellUsesNonLoginCommand(t *testing.T) {
+	root := t.TempDir()
+	directory, err := os.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer directory.Close()
+	backend := &recordingBackend{root: root, environmentContract: "v1"}
+	result, err := Run(t.Context(), Options{
+		Command: "printf v1", Dir: root, DirFile: directory,
+		Sandbox: backend, RequireSandbox: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Stdout != "v1" || result.ExitCode != 0 {
+		t.Fatalf("result = %+v", result)
+	}
+	if len(backend.command.Args) < 2 || backend.command.Args[1] != "-c" {
+		t.Fatalf("v1 shell args = %+v", backend.command.Args)
+	}
+	for _, arg := range backend.command.Args {
+		if arg == "-lc" {
+			t.Fatalf("v1 still used a login shell: %+v", backend.command.Args)
+		}
 	}
 }
 
@@ -830,13 +917,15 @@ func TestRunBindsApprovedLoopbackToSandboxCommand(t *testing.T) {
 }
 
 type recordingBackend struct {
-	command            sandbox.Command
-	root               string
-	proxyPort          uint16
-	preparedControls   *controlmatrix.Matrix
-	ignoreRestrictions bool
-	ignoreWritePaths   bool
-	ignoreAuthority    bool
+	command             sandbox.Command
+	root                string
+	proxyPort           uint16
+	environmentContract string
+	environmentValues   []string
+	preparedControls    *controlmatrix.Matrix
+	ignoreRestrictions  bool
+	ignoreWritePaths    bool
+	ignoreAuthority     bool
 }
 
 func (b *recordingBackend) Capability() sandbox.Capability {
@@ -867,7 +956,7 @@ func (b *recordingBackend) Prepare(_ context.Context, command sandbox.Command) (
 		)
 		command.PreparedNetworkDenied = command.DenyNetwork
 		command.PreparedLoopbackAllowed = command.AllowLoopback && !command.DenyNetwork
-		command.PreparedProxyPort = sandbox.CommandNetworkPolicy(b.Policy(), command).ManagedProxyPort
+		command.PreparedProxyPort = sandbox.ApplySessionProxyPort(b.Policy(), command).ManagedProxyPort
 		if !b.ignoreWritePaths {
 			command.PreparedWritePaths = append(
 				[]string(nil), command.WorkspaceWritePaths...,
@@ -896,49 +985,44 @@ func (b *recordingBackend) Policy() sandbox.Policy {
 	return sandbox.Policy{
 		Version: 1, ID: "fixture-policy", WorkspaceRoot: b.root,
 		PrivateTemp: b.root, ManagedProxyPort: b.proxyPort,
+		EnvironmentContract: b.environmentContract,
+		EnvironmentValues:   append([]string(nil), b.environmentValues...),
 	}
 }
 
-func TestEnsureGoToolchainPrependsGOROOTBin(t *testing.T) {
-	root := runtime.GOROOT()
-	if root == "" {
-		t.Skip("no GOROOT")
+func TestEnsurePlatformToolchainPATHPrependsPlatformDirectories(t *testing.T) {
+	bin := t.TempDir()
+	tool := filepath.Join(bin, "qcode-probe-tool")
+	if err := os.WriteFile(tool, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
 	}
-	bin := filepath.Join(root, "bin")
-	if _, err := os.Stat(filepath.Join(bin, "go")); err != nil {
-		t.Skip("GOROOT/bin/go missing")
-	}
-	env := ensureGoToolchain([]string{"PATH=/usr/bin:/bin", "LANG=C"})
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+"/usr/bin:/bin")
+	env := ensurePlatformToolchainPATH([]string{"PATH=/nonexistent-only", "LANG=C"})
 	path := environmentValue(env, "PATH")
-	if !strings.HasPrefix(path, bin+string(os.PathListSeparator)) &&
-		!strings.Contains(path, bin) {
-		t.Fatalf("PATH=%q, want GOROOT/bin prepended", path)
-	}
-	if environmentValue(env, "GOROOT") == "" {
-		t.Fatal("expected GOROOT to be set")
-	}
-	// Minimal PATH + injected GOROOT/bin must resolve go.
-	cmd := exec.Command("sh", "-c", "command -v go && go env GOROOT")
-	cmd.Env = env
-	out, err := cmd.CombinedOutput()
+	canonical, err := filepath.EvalSymlinks(bin)
 	if err != nil {
-		t.Fatalf("go via injected PATH: %v\n%s", err, out)
+		t.Fatal(err)
 	}
-	if !strings.Contains(string(out), root) {
-		t.Fatalf("output=%q", out)
+	if !strings.HasPrefix(path, canonical+string(os.PathListSeparator)) {
+		t.Fatalf("PATH=%q, want platform directory %q prepended", path, canonical)
+	}
+	// The prepended PATH must resolve arbitrary platform tools, not only
+	// one hardcoded language toolchain.
+	cmd := exec.Command("sh", "-c", "command -v qcode-probe-tool")
+	cmd.Env = env
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("probe tool via injected PATH: %v\n%s", err, out)
+	} else if strings.TrimSpace(string(out)) != tool &&
+		strings.TrimSpace(string(out)) != canonical+"/qcode-probe-tool" {
+		t.Fatalf("resolved %q, want %q", out, tool)
 	}
 }
 
-func TestEnsureToolchainsAppliesGenericExposure(t *testing.T) {
+func TestPreparedToolchainExposurePrependsPathAndEnv(t *testing.T) {
 	first := filepath.Join(t.TempDir(), "first")
 	second := filepath.Join(t.TempDir(), "second")
-	env := ensureToolchains(
-		[]string{"PATH=/usr/bin:/bin", "LANG=C"},
-		sandbox.ToolchainExposure{
-			BinDirs:     []string{first, second},
-			Environment: []string{"TOOLCHAIN_HOME=/host/toolchain"},
-		},
-	)
+	env := prependPATH([]string{"PATH=/usr/bin:/bin", "LANG=C"}, first, second)
+	env = applyPreparedEnvironment(env, []string{"TOOLCHAIN_HOME=/host/toolchain"}, nil)
 	path := environmentValue(env, "PATH")
 	wantPrefix := strings.Join(
 		[]string{first, second, "/usr/bin", "/bin"},

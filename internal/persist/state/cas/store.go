@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -46,6 +47,7 @@ const (
 // Store serializes operations within an instance and uses a filesystem lock to
 // coordinate with other Store instances opened on the same root.
 type Store struct {
+	database *sql.DB
 	mu       sync.Mutex
 	root     *os.Root
 	lock     *os.File
@@ -117,6 +119,9 @@ func (s *Store) Root() string {
 // Put stores data and acquires one reference. Repeated puts of the same ID
 // deduplicate the content and acquire additional references.
 func (s *Store) Put(ctx context.Context, id string, data []byte) error {
+	if s.database != nil {
+		return s.putSQL(ctx, id, data)
+	}
 	if err := checkContext(ctx); err != nil {
 		return err
 	}
@@ -165,6 +170,9 @@ func (s *Store) Put(ctx context.Context, id string, data []byte) error {
 // Get returns a copy of the content. It verifies the SHA-256 digest on every
 // read and reports corruption rather than returning tampered bytes.
 func (s *Store) Get(ctx context.Context, id string) ([]byte, error) {
+	if s.database != nil {
+		return GetTx(ctx, s.database, id)
+	}
 	if err := checkContext(ctx); err != nil {
 		return nil, err
 	}
@@ -199,6 +207,9 @@ func (s *Store) Get(ctx context.Context, id string) ([]byte, error) {
 // the lifetime of what they store need this to know when a Release left content
 // unreferenced, since Release itself keeps zero-reference content on disk.
 func (s *Store) References(ctx context.Context, id string) (uint64, error) {
+	if s.database != nil {
+		return s.referencesSQL(ctx, id)
+	}
 	if err := checkContext(ctx); err != nil {
 		return 0, err
 	}
@@ -222,6 +233,9 @@ func (s *Store) References(ctx context.Context, id string) (uint64, error) {
 
 // Retain acquires one additional reference to existing content.
 func (s *Store) Retain(ctx context.Context, id string) error {
+	if s.database != nil {
+		return s.adjustSQL(ctx, id, 1)
+	}
 	if err := checkContext(ctx); err != nil {
 		return err
 	}
@@ -256,6 +270,9 @@ func (s *Store) Retain(ctx context.Context, id string) error {
 // Release relinquishes one reference. Releasing an already-zero count is
 // idempotent; zero-reference content remains available until Delete.
 func (s *Store) Release(ctx context.Context, id string) error {
+	if s.database != nil {
+		return s.adjustSQL(ctx, id, -1)
+	}
 	if err := checkContext(ctx); err != nil {
 		return err
 	}
@@ -290,6 +307,9 @@ func (s *Store) Release(ctx context.Context, id string) error {
 // Delete removes content and its reference metadata regardless of the current
 // reference count.
 func (s *Store) Delete(ctx context.Context, id string) error {
+	if s.database != nil {
+		return s.deleteSQL(ctx, id)
+	}
 	if err := checkContext(ctx); err != nil {
 		return err
 	}
@@ -302,43 +322,177 @@ func (s *Store) Delete(ctx context.Context, id string) error {
 		} else if !exists {
 			return ErrNotFound
 		}
-		content, exists, err := s.readObject(ctx, id)
+		return s.removeCommitted(ctx, id)
+	})
+}
+
+// CollectIfUnreferenced deletes id only when its reference count is already
+// zero. A live reference is left untouched, including when another caller
+// retains the object between a prior Release and this check.
+func (s *Store) CollectIfUnreferenced(ctx context.Context, id string) error {
+	if s.database != nil {
+		_, err := s.collectSQL(ctx, id)
+		return err
+	}
+	_, err := s.collectIfUnreferenced(ctx, id)
+	return err
+}
+
+// CollectUnreferenced deletes every object whose reference count is zero.
+// The only collection condition is the reference count; there is no grace
+// period or deletion cap. Each object is digest-verified before removal.
+func (s *Store) CollectUnreferenced(ctx context.Context) (int, error) {
+	if s.database != nil {
+		return s.collectSQL(ctx, "")
+	}
+	if err := checkContext(ctx); err != nil {
+		return 0, err
+	}
+	var ids []string
+	err := s.shared(ctx, func() error {
+		var listErr error
+		ids, listErr = s.listReferenceIDs(ctx)
+		return listErr
+	})
+	if err != nil {
+		return 0, err
+	}
+	collected := 0
+	for _, id := range ids {
+		deleted, err := s.collectIfUnreferenced(ctx, id)
+		if err != nil {
+			return collected, err
+		}
+		if deleted {
+			collected++
+		}
+	}
+	return collected, nil
+}
+
+// ReleaseUnreferenced releases one reference and deletes the object if that
+// leaves it unreferenced. Release itself still keeps zero-reference content
+// until this, CollectIfUnreferenced, or CollectUnreferenced runs.
+func (s *Store) ReleaseUnreferenced(ctx context.Context, id string) error {
+	if err := s.Release(ctx, id); err != nil {
+		return err
+	}
+	return s.CollectIfUnreferenced(ctx, id)
+}
+
+func (s *Store) collectIfUnreferenced(ctx context.Context, id string) (bool, error) {
+	if err := checkContext(ctx); err != nil {
+		return false, err
+	}
+	if err := validateID(id); err != nil {
+		return false, err
+	}
+	deleted := false
+	err := s.exclusive(ctx, func() error {
+		refs, exists, err := s.readReferences(ctx, id)
 		if err != nil {
 			return err
 		}
-		if !exists {
-			return corruptf("reference metadata exists without object %q", id)
+		if !exists || refs != 0 {
+			return nil
 		}
-		if ID(content) != id {
-			return tamperedf("object %q has a different digest", id)
-		}
-		if err := checkContext(ctx); err != nil {
+		if err := s.removeCommitted(ctx, id); err != nil {
 			return err
 		}
-
-		refPath := referencePath(id)
-		if err := s.root.Remove(refPath); err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				return ErrNotFound
-			}
-			return fmt.Errorf("remove reference metadata: %w", err)
-		}
-		if err := s.syncDir(referenceParent(id)); err != nil {
-			return fmt.Errorf("sync reference directory: %w", err)
-		}
-
-		if err := s.root.Remove(objectPath(id)); err != nil {
-			return fmt.Errorf("%w: remove object after metadata: %v", ErrCorrupt, err)
-		}
-		if err := s.syncDir(objectParent(id)); err != nil {
-			return fmt.Errorf("sync object directory: %w", err)
-		}
+		deleted = true
 		return nil
 	})
+	return deleted, err
+}
+
+func (s *Store) removeCommitted(ctx context.Context, id string) error {
+	content, exists, err := s.readObject(ctx, id)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return corruptf("reference metadata exists without object %q", id)
+	}
+	if ID(content) != id {
+		return tamperedf("object %q has a different digest", id)
+	}
+	if err := checkContext(ctx); err != nil {
+		return err
+	}
+
+	refPath := referencePath(id)
+	if err := s.root.Remove(refPath); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return ErrNotFound
+		}
+		return fmt.Errorf("remove reference metadata: %w", err)
+	}
+	if err := s.syncDir(referenceParent(id)); err != nil {
+		return fmt.Errorf("sync reference directory: %w", err)
+	}
+
+	if err := s.root.Remove(objectPath(id)); err != nil {
+		return fmt.Errorf("%w: remove object after metadata: %v", ErrCorrupt, err)
+	}
+	if err := s.syncDir(objectParent(id)); err != nil {
+		return fmt.Errorf("sync object directory: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) listReferenceIDs(ctx context.Context) ([]string, error) {
+	shards, err := readRootDir(s.root, referencesDir)
+	if err != nil {
+		return nil, fmt.Errorf("list CAS references: %w", err)
+	}
+	ids := make([]string, 0)
+	for _, shard := range shards {
+		if err := checkContext(ctx); err != nil {
+			return nil, err
+		}
+		if !shard.IsDir() {
+			continue
+		}
+		name := shard.Name()
+		if len(name) != 2 || validateID(name+strings.Repeat("0", 62)) != nil {
+			continue
+		}
+		entries, err := readRootDir(s.root, referencesDir+"/"+name)
+		if err != nil {
+			return nil, fmt.Errorf("list CAS reference shard %q: %w", name, err)
+		}
+		for _, entry := range entries {
+			if entry.IsDir() {
+				continue
+			}
+			file := entry.Name()
+			if !strings.HasSuffix(file, ".ref") {
+				continue
+			}
+			id := name + strings.TrimSuffix(file, ".ref")
+			if err := validateID(id); err != nil {
+				return nil, corruptf("reference metadata name %q is not a content ID", file)
+			}
+			ids = append(ids, id)
+		}
+	}
+	return ids, nil
+}
+
+func readRootDir(root *os.Root, name string) ([]os.DirEntry, error) {
+	directory, err := root.Open(name)
+	if err != nil {
+		return nil, err
+	}
+	defer directory.Close()
+	return directory.ReadDir(-1)
 }
 
 // Close closes the store. It is safe to call Close repeatedly.
 func (s *Store) Close(ctx context.Context) error {
+	if s.database != nil {
+		return nil // The state store owns the shared database.
+	}
 	if err := checkContext(ctx); err != nil {
 		return err
 	}

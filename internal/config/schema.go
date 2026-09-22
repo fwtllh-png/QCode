@@ -20,9 +20,11 @@ type Runtime struct {
 }
 
 type State struct {
-	DataDir        string        `json:"data_dir" toml:"data_dir"`
-	BusyTimeout    time.Duration `json:"busy_timeout" toml:"-"`
-	EventRetention int           `json:"event_retention" toml:"event_retention"`
+	DataDir               string        `json:"data_dir" toml:"data_dir"`
+	BusyTimeout           time.Duration `json:"busy_timeout" toml:"-"`
+	EventRetention        int           `json:"event_retention" toml:"event_retention"`
+	DeletedEventRetention time.Duration `json:"deleted_event_retention" toml:"-"`
+	ArchiveDeletedEvents  bool          `json:"archive_deleted_events" toml:"archive_deleted_events"`
 }
 
 type Memory struct {
@@ -233,13 +235,96 @@ type Execution struct {
 	BudgetTokens    uint64 `json:"budget_tokens" toml:"budget_tokens"`
 	// TurnBudgetTokens is an optional cumulative operator ceiling. Zero leaves
 	// the Turn uncapped; each request remains bounded by model capacity.
-	TurnBudgetTokens uint64   `json:"turn_budget_tokens" toml:"turn_budget_tokens"`
-	BudgetUSD        float64  `json:"budget_usd" toml:"budget_usd"`
-	ReasoningEffort  string   `json:"reasoning_effort" toml:"reasoning_effort"`
-	NativeSearch     bool     `json:"native_search" toml:"native_search"`
-	Verify           Verify   `json:"verify" toml:"verify"`
-	Subagent         Subagent `json:"subagent" toml:"subagent"`
-	Journal          Journal  `json:"journal" toml:"journal"`
+	TurnBudgetTokens uint64               `json:"turn_budget_tokens" toml:"turn_budget_tokens"`
+	BudgetUSD        float64              `json:"budget_usd" toml:"budget_usd"`
+	ReasoningEffort  string               `json:"reasoning_effort" toml:"reasoning_effort"`
+	NativeSearch     bool                 `json:"native_search" toml:"native_search"`
+	Environment      ExecutionEnvironment `json:"environment" toml:"environment"`
+	Verify           Verify               `json:"verify" toml:"verify"`
+	Subagent         Subagent             `json:"subagent" toml:"subagent"`
+	Journal          Journal              `json:"journal" toml:"journal"`
+}
+
+const (
+	EnvironmentContractV1      = "v1"
+	EnvironmentProfileIsolated = "isolated"
+	EnvironmentProfileNative   = "native"
+)
+
+// ExecutionEnvironment is the public sandbox execution-environment contract.
+// The product default is v1 + native. shared_user_temp stays off.
+type ExecutionEnvironment struct {
+	// Contract is the environment preparation chain. The only accepted
+	// value is v1; the preparer is the environment authority.
+	Contract string `json:"contract" toml:"contract"`
+	// Profile is isolated or native. The main-agent product default is
+	// native. Child agents stay isolated.
+	Profile string `json:"profile" toml:"profile"`
+	// SharedUserTemp allows the current-user system temp directory.
+	// It is valid only with profile=native and remains off by default.
+	SharedUserTemp bool `json:"shared_user_temp" toml:"shared_user_temp"`
+	// Source is an explicit environment-source id. Empty uses the
+	// process environment that started QCode.
+	Source string `json:"source" toml:"source"`
+	// Resources are user-declared environment resources. They compile
+	// through the same chain as adapter output and do not require an
+	// ecosystem adapter. Only trusted configuration may set this list.
+	Resources []EnvironmentResource `json:"resources,omitempty" toml:"resources,omitempty"`
+	// AuthServices bind out-of-process protocol auth. Only trusted
+	// configuration may set this list. The first registered protocol is
+	// goproxy; unknown protocols are rejected.
+	AuthServices []EnvironmentAuthService `json:"auth_services,omitempty" toml:"auth_services,omitempty"`
+}
+
+// MaxDeclaredEnvironmentResources is the public safety ceiling for
+// [[execution.environment.resources]]. Excess entries are rejected.
+const MaxDeclaredEnvironmentResources = 64
+
+// EnvironmentResource is one user-declared environment resource.
+// Source is always stamped as user-declaration at load time.
+type EnvironmentResource struct {
+	Name      string   `json:"name" toml:"name"`
+	Namespace string   `json:"namespace" toml:"namespace"`
+	Access    string   `json:"access" toml:"access"`
+	Path      string   `json:"path,omitempty" toml:"path,omitempty"`
+	Host      string   `json:"host,omitempty" toml:"host,omitempty"`
+	Port      uint16   `json:"port,omitempty" toml:"port,omitempty"`
+	Protocol  string   `json:"protocol,omitempty" toml:"protocol,omitempty"`
+	Methods   []string `json:"methods,omitempty" toml:"methods,omitempty"`
+	Env       string   `json:"env,omitempty" toml:"env,omitempty"`
+	Value     string   `json:"value,omitempty" toml:"value,omitempty"`
+	Tree      bool     `json:"tree,omitempty" toml:"tree,omitempty"`
+	Shared    bool     `json:"shared,omitempty" toml:"shared,omitempty"`
+	Purpose   string   `json:"purpose,omitempty" toml:"purpose,omitempty"`
+	Required  *bool    `json:"required,omitempty" toml:"required,omitempty"`
+	Lifecycle string   `json:"lifecycle,omitempty" toml:"lifecycle,omitempty"`
+}
+
+// MaxDeclaredAuthServices is the public safety ceiling for
+// [[execution.environment.auth_services]]. Excess entries are rejected.
+const MaxDeclaredAuthServices = 8
+
+// MaxAuthServicePrefixes is the public safety ceiling for one service's
+// module-path prefixes.
+const MaxAuthServicePrefixes = 32
+
+// EnvironmentAuthService binds one protocol auth service. Credentials are
+// references only; secret material stays out of configuration.
+type EnvironmentAuthService struct {
+	Protocol string   `json:"protocol" toml:"protocol"`
+	Upstream string   `json:"upstream" toml:"upstream"`
+	Prefixes []string `json:"prefixes" toml:"prefixes"`
+	// UpstreamTimeoutMS bounds one upstream fetch in milliseconds. Zero
+	// keeps the documented goproxy default ceiling; negative values are
+	// rejected. Large module archives may need a higher bound.
+	UpstreamTimeoutMS int64                     `json:"upstream_timeout_ms,omitempty" toml:"upstream_timeout_ms,omitempty"`
+	Credential        EnvironmentAuthCredential `json:"credential" toml:"credential"`
+}
+
+// EnvironmentAuthCredential names a host credential without storing it.
+type EnvironmentAuthCredential struct {
+	Kind string `json:"kind" toml:"kind"`
+	Name string `json:"name" toml:"name"`
 }
 
 // RateLimitWaitBudget is the cumulative 429 wait bound used by the engine.
@@ -498,6 +583,11 @@ type Overrides struct {
 	VisionProvider   *string
 	VisionModel      *string
 	WebSearchBackend *string
+
+	EnvironmentContract       *string
+	EnvironmentProfile        *string
+	EnvironmentSharedUserTemp *bool
+	EnvironmentSource         *string
 
 	// RouteLock forbids falling back to the act route. Slots themselves are
 	// configuration-only: six purposes worth of provider/model flags would crowd

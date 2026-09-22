@@ -38,11 +38,14 @@ func NetworkTargetsInputSchema() map[string]any {
 						"listener, not a network destination; use allow_loopback instead.",
 				},
 				"methods": map[string]any{
-					"type":        "array",
-					"items":       map[string]any{"type": "string"},
-					"minItems":    1,
-					"maxItems":    16,
-					"description": "Use exactly CONNECT for HTTPS; use HTTP methods for HTTP.",
+					"type":     "array",
+					"items":    map[string]any{"type": "string"},
+					"minItems": 1,
+					"maxItems": 16,
+					"description": "Planned request methods. Enforced per method for " +
+						"plaintext HTTP only; for HTTPS the managed proxy controls the " +
+						"tunnel endpoint (CONNECT) and cannot see or restrict methods " +
+						"inside TLS, so any declared method grants the endpoint.",
 				},
 				"allow_private": map[string]any{
 					"type":        "boolean",
@@ -59,6 +62,10 @@ func NetworkTargetsInputSchema() map[string]any {
 }
 
 // ValidateDeclaredNetworkTargets rejects destinations the Guard cannot bind.
+// Methods are names only: for HTTPS the managed proxy terminates policy at
+// the tunnel endpoint and never inspects TLS, so no protocol/method pairing
+// is enforced here. Plaintext HTTP forward requests are matched per method
+// by the session gate.
 func ValidateDeclaredNetworkTargets(targets []DeclaredNetworkTarget) error {
 	if len(targets) > 32 {
 		return errors.New("network_targets exceeds 32 entries")
@@ -73,15 +80,8 @@ func ValidateDeclaredNetworkTargets(targets []DeclaredNetworkTarget) error {
 			return errors.New("network target requires 1-16 methods")
 		}
 		for _, method := range target.Methods {
-			method = strings.ToUpper(strings.TrimSpace(method))
-			if method == "" {
+			if strings.ToUpper(strings.TrimSpace(method)) == "" {
 				return errors.New("network target method is empty")
-			}
-			if target.Protocol == "https" && method != "CONNECT" {
-				return errors.New("https network target requires method CONNECT")
-			}
-			if target.Protocol == "http" && method == "CONNECT" {
-				return errors.New("http network target cannot use method CONNECT")
 			}
 		}
 	}

@@ -128,7 +128,7 @@ func TestSampleLedgerUsesMemberDeltas(t *testing.T) {
 	if err := json.Unmarshal(second, &stored); err != nil {
 		t.Fatal(err)
 	}
-	if len(stored.ObjectDelta["sample_ledger"]) != 1 ||
+	if len(stored.ObjectDelta["sample_ledger"].Set) != 1 ||
 		stored.Delta["sample_ledger"] != nil {
 		t.Fatalf("sample ledger delta = %+v", stored)
 	}

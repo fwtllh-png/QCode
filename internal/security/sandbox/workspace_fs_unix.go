@@ -280,7 +280,7 @@ func (w *Workspace) validateOpened(file *os.File, directory bool) error {
 		return errors.New("workspace object crosses a device boundary")
 	}
 	if !directory && identity.links > 1 {
-		return errors.New("workspace file is multiply linked")
+		return ErrMultiplyLinked
 	}
 	return nil
 }

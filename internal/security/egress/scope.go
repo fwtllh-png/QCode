@@ -12,6 +12,7 @@ type scopeKey struct{}
 type callScope struct {
 	mu     sync.Mutex
 	grants *Gate
+	asks   askState
 }
 
 // WithScope starts an independent network authorization lifetime. Close removes

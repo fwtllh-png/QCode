@@ -112,6 +112,11 @@ func Defaults() Config {
 			},
 
 			Journal: Journal{Durable: true, RecoverOnStart: true},
+
+			Environment: ExecutionEnvironment{
+				Contract: EnvironmentContractV1,
+				Profile:  EnvironmentProfileNative,
+			},
 		},
 	}
 }

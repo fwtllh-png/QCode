@@ -52,6 +52,7 @@ const maxArchiveReplay = 256 << 10
 
 type SessionOptions struct {
 	Command              string
+	DisplayCommand       string // original command before QCode's sandbox wrapper
 	Dir                  string
 	DirFile              *os.File
 	SessionID            string
@@ -69,18 +70,25 @@ type SessionOptions struct {
 	WorkspaceReadOnly    bool
 	WorkspaceWritePaths  []string
 	DenyNetwork          bool
+	SessionProxyPort     uint16
+	Network              io.Closer
 	TrustedRuntimeHelper bool
 	// DetachFromCaller keeps the process alive after Create's ctx ends (background/PTY).
 	DetachFromCaller bool
 }
 
 type SessionRead struct {
-	Data       string
-	Cursor     uint64
-	Running    bool
-	ExitCode   int
-	TTY        bool
-	Terminated bool
+	Command   string
+	CallID    string
+	CreatedAt time.Time
+	// ProcessTimedOut records the process deadline, not a caller's wait timeout.
+	ProcessTimedOut bool
+	Data            string
+	Cursor          uint64
+	Running         bool
+	ExitCode        int
+	TTY             bool
+	Terminated      bool
 	// Archived is true when the data came from the durable log rather than the
 	// live buffer, which tells a caller its cursor had fallen behind.
 	Archived bool
@@ -96,20 +104,21 @@ type SessionWait struct {
 }
 
 type Session struct {
-	id           string
-	commandText  string
-	cwd          string
-	linkedTaskID string
-	threadID     string
-	turnID       string
-	callID       string
-	createdAt    time.Time
-	command      *exec.Cmd
-	process      *sessionProcess
-	input        io.WriteCloser
-	outputReader io.ReadCloser
-	terminal     *os.File
-	tty          bool
+	id             string
+	commandText    string
+	displayCommand string
+	cwd            string
+	linkedTaskID   string
+	threadID       string
+	turnID         string
+	callID         string
+	createdAt      time.Time
+	command        *exec.Cmd
+	process        *sessionProcess
+	input          io.WriteCloser
+	outputReader   io.ReadCloser
+	terminal       *os.File
+	tty            bool
 
 	archive    Archive
 	mu         sync.RWMutex
@@ -120,11 +129,13 @@ type Session struct {
 	running    bool
 	exitCode   int
 	terminated bool
+	timedOut   bool
 	waitDone   chan struct{}
 	readDone   chan struct{}
 	notify     chan struct{}
 	closeOnce  sync.Once
 	maxOutput  int
+	network    io.Closer
 }
 
 func NewSessionManager(maxOutputBytes int) *SessionManager {
@@ -169,9 +180,13 @@ func (m *SessionManager) Create(
 		return "", err
 	}
 	registered := false
+	network := options.Network
 	defer func() {
 		if registered {
 			return
+		}
+		if network != nil {
+			resultErr = errors.Join(resultErr, network.Close())
 		}
 		resultErr = errors.Join(
 			resultErr,
@@ -189,6 +204,7 @@ func (m *SessionManager) Create(
 		RequireSandbox:       options.RequireSandbox,
 		WorkspaceReadOnly:    options.WorkspaceReadOnly,
 		DenyNetwork:          options.DenyNetwork,
+		SessionProxyPort:     options.SessionProxyPort,
 		WorkspaceWritePaths: append(
 			[]string(nil), options.WorkspaceWritePaths...,
 		),
@@ -246,16 +262,21 @@ func (m *SessionManager) Create(
 	}
 	session := &Session{
 		id: sessionID, commandText: commandText, cwd: options.Dir,
-		linkedTaskID: strings.TrimSpace(options.LinkedTaskID),
-		threadID:     ownerThreadID,
-		turnID:       strings.TrimSpace(options.TurnID),
-		callID:       strings.TrimSpace(options.CallID),
-		createdAt:    createdAt,
-		command:      command, process: owner, input: input, outputReader: output,
+		displayCommand: options.DisplayCommand,
+		linkedTaskID:   strings.TrimSpace(options.LinkedTaskID),
+		threadID:       ownerThreadID,
+		turnID:         strings.TrimSpace(options.TurnID),
+		callID:         strings.TrimSpace(options.CallID),
+		createdAt:      createdAt,
+		command:        command, process: owner, input: input, outputReader: output,
 		terminal: terminal, tty: options.PTY,
 		running: true, exitCode: -1,
 		waitDone: make(chan struct{}), readDone: make(chan struct{}),
 		notify: make(chan struct{}, 1), maxOutput: m.maxOutputBytes,
+		network: network,
+	}
+	if session.displayCommand == "" {
+		session.displayCommand = commandText
 	}
 	m.mu.RLock()
 	session.archive = m.archive
@@ -274,7 +295,7 @@ func (m *SessionManager) Create(
 			defer timer.Stop()
 			select {
 			case <-timer.C:
-				session.close()
+				session.closeWithReason(true)
 			case <-session.waitDone:
 			}
 		}()
@@ -341,6 +362,7 @@ func (m *SessionManager) Read(id, threadID string, cursor uint64) (SessionRead, 
 	base := session.baseCursor
 	running, exitCode, tty := session.running, session.exitCode, session.tty
 	terminated := session.terminated
+	timedOut := session.timedOut
 	var live string
 	if cursor >= base && cursor <= end {
 		live = string(session.output[cursor-base:])
@@ -351,6 +373,7 @@ func (m *SessionManager) Read(id, threadID string, cursor uint64) (SessionRead, 
 	}
 	if cursor >= base {
 		return SessionRead{
+			Command: session.displayCommand, CallID: session.callID, CreatedAt: session.createdAt, ProcessTimedOut: timedOut,
 			Data: live, Cursor: end, Running: running, ExitCode: exitCode,
 			TTY: tty, Terminated: terminated,
 		}, nil
@@ -373,6 +396,7 @@ func (m *SessionManager) Read(id, threadID string, cursor uint64) (SessionRead, 
 		pending = total - next
 	}
 	return SessionRead{
+		Command: session.displayCommand, CallID: session.callID, CreatedAt: session.createdAt, ProcessTimedOut: timedOut,
 		Data: string(data), Cursor: next, Running: running, ExitCode: exitCode,
 		TTY: tty, Terminated: terminated, Archived: true, Pending: pending,
 	}, nil
@@ -519,6 +543,23 @@ func (m *SessionManager) Close(id, threadID string) error {
 		return err
 	}
 	return m.closeSession(id, session)
+}
+
+// CloseWithResult keeps the settled process identity available to its caller
+// after releasing the session and its journal row.
+func (m *SessionManager) CloseWithResult(id, threadID string) (SessionRead, error) {
+	session, err := m.getOwned(id, threadID)
+	if err != nil {
+		return SessionRead{}, err
+	}
+	err = m.closeSession(id, session)
+	session.mu.RLock()
+	defer session.mu.RUnlock()
+	return SessionRead{
+		Command: session.displayCommand, CallID: session.callID, CreatedAt: session.createdAt,
+		Running: session.running, ExitCode: session.exitCode, Terminated: session.terminated,
+		ProcessTimedOut: session.timedOut, TTY: session.tty,
+	}, err
 }
 
 func (m *SessionManager) closeSession(id string, session *Session) error {
@@ -721,16 +762,24 @@ func (s *Session) waitLoop() {
 }
 
 func (s *Session) close() {
+	s.closeWithReason(false)
+}
+
+func (s *Session) closeWithReason(timedOut bool) {
 	s.closeOnce.Do(func() {
 		s.mu.Lock()
 		if s.running {
 			if err := s.process.terminate(); err == nil {
 				s.terminated = true
+				s.timedOut = timedOut
 			}
 		}
 		s.mu.Unlock()
 		_ = s.input.Close()
 		<-s.waitDone
+		if s.network != nil {
+			_ = s.network.Close()
+		}
 	})
 }
 

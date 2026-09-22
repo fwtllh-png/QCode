@@ -43,8 +43,11 @@ func TestClassifierRejectsTreeAndOutsideWrites(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := classifier.CheckWrite("internal", true); !errors.Is(err, ErrProtected) {
-		t.Fatalf("tree write error = %v", err)
+	if err := classifier.CheckWrite("internal", true); err != nil {
+		t.Fatalf("bounded subtree write error = %v", err)
+	}
+	if err := classifier.CheckWrite(".", true); !errors.Is(err, ErrProtected) {
+		t.Fatalf("workspace root tree write error = %v", err)
 	}
 	if err := classifier.CheckWrite(filepath.Join(root, "..", "outside"), false); err == nil {
 		t.Fatal("outside write was accepted")

@@ -795,12 +795,35 @@ func TestAgentInterruptFollowUpViaTools(t *testing.T) {
 	if interruptBody["status"] != "running" || interruptBody["previous_status"] != "running" {
 		t.Fatalf("interrupt = %+v", interruptBody)
 	}
+	if action, _ := interruptBody["next_action"].(string); !strings.Contains(action, "wait_agent") {
+		t.Fatalf("interrupt omitted settlement guidance: %+v", interruptBody)
+	}
+	_, descriptor, _, err := registry.Resolve("followup_task")
+	if err != nil || !strings.Contains(descriptor.Description, "interrupt_agent, then wait_agent, then followup_task") {
+		t.Fatalf("followup order: %+v err=%v", descriptor, err)
+	}
+	earlyArgs, _ := json.Marshal(map[string]any{"agent_id": agentID, "prompt": "too soon"})
+	if result, err := tooltest.Execute(t.Context(), registry, tool.Call{
+		Name: "followup_task", Arguments: earlyArgs,
+	}); err == nil && !result.IsError {
+		t.Fatalf("followup accepted before settlement: %+v", result)
+	}
+	waiting := execute(t, registry, "wait_agent", map[string]any{
+		"agent_ids": []string{agentID}, "timeout_ms": 1,
+	})
+	if waiting.Metadata["timed_out"] != true {
+		t.Fatalf("wait must observe pending cancellation: %+v", waiting)
+	}
 	snap, _ := manager.Agent(agentID)
 	if err := manager.Settle(subagent.Result{
 		AgentID: agentID, ThreadID: snap.ThreadID, TurnID: snap.TurnID,
 		Status: subagent.StatusInterrupted,
 	}); err != nil {
 		t.Fatal(err)
+	}
+	waited := execute(t, registry, "wait_agent", map[string]any{"agent_ids": []string{agentID}})
+	if waited.Metadata["timed_out"] != false || !strings.Contains(waited.Content, `"status":"interrupted"`) {
+		t.Fatalf("wait did not confirm settlement: %+v", waited)
 	}
 	follow := execute(t, registry, "followup_task", map[string]any{
 		"agent_id": agentID, "prompt": "resume please",

@@ -107,7 +107,7 @@ func (c *Service) Apply(
 	}
 	defer release()
 
-	plan, err := c.plan(ctx, worktree)
+	plan, err := c.plan(ctx, worktree, nil)
 	if err != nil {
 		return tool.EditPlan{}, err
 	}
@@ -157,6 +157,42 @@ func (c *Service) Apply(
 	return plan.edit, nil
 }
 
+// ApplyPaths applies a prefix-filtered merge through the current journal
+// turn. Callers already holding the workspace gate (a running Turn or an
+// isolated command) must not acquire it again.
+func (c *Service) ApplyPaths(
+	ctx context.Context,
+	transactionID string,
+	worktree string,
+	planID string,
+	prefixes []string,
+) (tool.EditPlan, error) {
+	if !c.allowApply {
+		return tool.EditPlan{}, errors.New(
+			"isolated workspace merge is unavailable in a read-only workspace",
+		)
+	}
+	if len(planID) != 64 {
+		return tool.EditPlan{}, errors.New("isolated workspace merge plan id is invalid")
+	}
+	if strings.TrimSpace(transactionID) == "" {
+		return tool.EditPlan{}, errors.New("isolated workspace merge transaction is required")
+	}
+	plan, err := c.plan(ctx, worktree, prefixes)
+	if err != nil {
+		return tool.EditPlan{}, err
+	}
+	if plan.edit.ID != planID {
+		return tool.EditPlan{}, errors.New("isolated workspace merge plan is stale")
+	}
+	if _, err := c.brokers.CommitFiles(
+		ctx, "exec_settle", plan.filePlan, c.journal,
+	); err != nil {
+		return tool.EditPlan{}, fmt.Errorf("apply isolated workspace merge: %w", err)
+	}
+	return plan.edit, nil
+}
+
 type preparedChatMerge struct {
 	worktree string
 	edit     tool.EditPlan
@@ -166,15 +202,25 @@ type preparedChatMerge struct {
 
 // Plan returns a compact, digest-bound merge preview.
 func (c *Service) Plan(ctx context.Context, worktree string) (tool.EditPlan, error) {
-	plan, err := c.plan(ctx, worktree)
+	return c.PlanPaths(ctx, worktree, nil)
+}
+
+// PlanPaths plans a merge for changed paths under prefixes. Empty prefixes
+// include every changed path.
+func (c *Service) PlanPaths(
+	ctx context.Context, worktree string, prefixes []string,
+) (tool.EditPlan, error) {
+	plan, err := c.plan(ctx, worktree, prefixes)
 	if err != nil {
 		return tool.EditPlan{}, err
 	}
 	return plan.edit, nil
 }
 
-func (c *Service) plan(ctx context.Context, worktree string) (preparedChatMerge, error) {
-	paths, err := c.changedPaths(ctx, worktree)
+func (c *Service) plan(
+	ctx context.Context, worktree string, prefixes []string,
+) (preparedChatMerge, error) {
+	paths, err := c.changedPaths(ctx, worktree, prefixes)
 	if err != nil {
 		return preparedChatMerge{}, err
 	}
@@ -323,6 +369,7 @@ func (c *Service) Verify(ctx context.Context, worktree string) error {
 func (c *Service) changedPaths(
 	ctx context.Context,
 	worktree string,
+	prefixes []string,
 ) ([]string, error) {
 	tracked, err := c.git(
 		ctx, worktree, "diff", "--name-only", "-z", "HEAD",
@@ -343,6 +390,9 @@ func (c *Service) changedPaths(
 		path = filepath.ToSlash(filepath.Clean(path))
 		if path == "." ||
 			path == ".qcode" || strings.HasPrefix(path, ".qcode/") {
+			continue
+		}
+		if !matchPathPrefix(path, prefixes) {
 			continue
 		}
 		unique[path] = struct{}{}
@@ -548,6 +598,22 @@ func (c *Service) git(
 	arguments ...string,
 ) (string, error) {
 	return c.brokers.ReadVCS(ctx, directory, arguments...)
+}
+
+func matchPathPrefix(path string, prefixes []string) bool {
+	if len(prefixes) == 0 {
+		return true
+	}
+	for _, prefix := range prefixes {
+		prefix = filepath.ToSlash(filepath.Clean(strings.TrimSpace(prefix)))
+		if prefix == "" || prefix == "." {
+			return true
+		}
+		if path == prefix || strings.HasPrefix(path, prefix+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 func splitNUL(value string) []string {

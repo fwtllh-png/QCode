@@ -26,6 +26,9 @@ type Evidence struct {
 	ExitCode          int      `json:"exit_code"`
 	WorkspaceRevision uint64   `json:"workspace_revision,omitempty"`
 	MutationRevision  uint64   `json:"mutation_revision,omitempty"`
+	// InvalidationReason explains a post-execution downgrade to
+	// StatusInvalidated; empty for every other status.
+	InvalidationReason string `json:"invalidation_reason,omitempty"`
 }
 
 func (e Evidence) Bind(callID string, workspaceRevision, mutationRevision uint64) Evidence {

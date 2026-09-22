@@ -12,6 +12,11 @@ import (
 	"strings"
 )
 
+// ErrMultiplyLinked is returned when a workspace regular file has more than
+// one hard link. Search and other read-only walkers skip these files instead
+// of failing the whole tree.
+var ErrMultiplyLinked = errors.New("workspace file is multiply linked")
+
 type ResolveMode uint8
 
 const (
@@ -145,7 +150,7 @@ func (w *Workspace) Resolve(name string, mode ResolveMode) (string, error) {
 			return "", fmt.Errorf("workspace path %q crosses a device boundary", name)
 		}
 		if info.Mode().IsRegular() && identity.links > 1 {
-			return "", fmt.Errorf("workspace path %q is a multiply linked file", name)
+			return "", fmt.Errorf("workspace path %q: %w", name, ErrMultiplyLinked)
 		}
 		if index != len(parts)-1 && !info.IsDir() {
 			return "", fmt.Errorf("workspace path %q has a non-directory component", name)

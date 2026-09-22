@@ -706,7 +706,13 @@ func (s *Scope) Run(ctx context.Context) (result Result, resultErr error) {
 			Model:             spec.Model,
 			Messages:          messages,
 		}
-		ref, err := agentcontext.StoreTurnContinuation(ctx, blobs, record)
+		stageCtx, finishStage := agentcontext.BeginContentStage(ctx, blobs)
+		defer func() {
+			if err := finishStage(); err != nil {
+				terminal.addSecondary("turn_continuation", err)
+			}
+		}()
+		ref, err := agentcontext.StoreTurnContinuation(stageCtx, blobs, record)
 		if err != nil {
 			terminal.addSecondary("turn_continuation", err)
 			return

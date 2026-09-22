@@ -47,7 +47,10 @@ func (e *Engine) buildTruthCapsule(
 		CriticalPaths: summary.CriticalPaths,
 		ExtraEntities: append(
 			append(
-				e.pendingInputTruthEntities(),
+				append(
+					e.pendingInputTruthEntities(),
+					e.continuityTruthEntities()...,
+				),
 				e.resumeTruthEntities()...,
 			),
 			e.omittedTurnTruthEntities(history)...,

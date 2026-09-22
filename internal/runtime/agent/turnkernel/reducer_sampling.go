@@ -496,6 +496,18 @@ func applyObserveProgress(
 			current.Policy.DeclarationRepairLimit +
 			current.Policy.VerificationRepairLimit
 		limit = max(lease+1, lease+repairReserve)
+		// The implement lease is a tighter identical-call bound, not a way
+		// to outrun an explicit MaxSteps-derived ceiling. Child budgets
+		// such as SubagentMaxSteps=1 must still exhaust.
+		if policy.ProgressLimit > 0 {
+			limit = min(limit, policy.ProgressLimit)
+			if policy.ProgressFinishOnly > 0 {
+				finishOnlyAt = min(finishOnlyAt, policy.ProgressFinishOnly)
+			}
+			if policy.ProgressConverge > 0 {
+				convergeAt = min(convergeAt, policy.ProgressConverge)
+			}
+		}
 	}
 	switch {
 	case limit == 0:

@@ -51,7 +51,7 @@ Follow the review checklist.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Content != "Follow the review checklist." ||
+	if !strings.HasSuffix(result.Content, "\n\nFollow the review checklist.") ||
 		result.Metadata["name"] != "review" {
 		t.Fatalf("result = %+v", result)
 	}

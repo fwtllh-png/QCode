@@ -21,13 +21,14 @@ export function ExecutionStages({
     }
     return result;
   }, [entries]);
-  if (!entries.some((entry) => entry.kind === "commentary")) {
-    return <>{entries.map(renderEntry)}</>;
-  }
+  const grouped = entries.some((entry) => entry.kind === "commentary");
+  // Keep the same owners before and after the first commentary arrives.
+  // Adding a stage heading must not remount an already inspected tool.
   return <>{groups.map((group) => group.detail ? (
     <ExecutionStage
       key={group.id}
       entries={group.entries}
+      grouped={grouped}
       revealEntryID={revealEntryID}
       renderEntry={renderEntry}
     />
@@ -35,9 +36,10 @@ export function ExecutionStages({
 }
 
 function ExecutionStage({
-  entries, revealEntryID, renderEntry
+  entries, grouped, revealEntryID, renderEntry
 }: {
   entries: readonly ConversationNode[];
+  grouped: boolean;
   revealEntryID?: string;
   renderEntry: (entry: ConversationNode) => ReactNode;
 }) {
@@ -48,7 +50,7 @@ function ExecutionStage({
   }, [reveal, revealEntryID]);
   return (
     <div className="turnExecution">
-      <button
+      {grouped && <button
         type="button"
         className="turnExecutionToggle"
         aria-expanded={open}
@@ -57,8 +59,8 @@ function ExecutionStage({
         {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
         <span>Stage details</span>
         <small>{entries.length} {entries.length === 1 ? "step" : "steps"}</small>
-      </button>
-      <Collapse open={open}><div className="turnExecutionItems">{entries.map(renderEntry)}</div></Collapse>
+      </button>}
+      <Collapse open={!grouped || open}><div className="turnExecutionItems">{entries.map(renderEntry)}</div></Collapse>
     </div>
   );
 }

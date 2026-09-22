@@ -100,11 +100,48 @@ func TestListSkipsVendorDirectoriesEvenWhenTracked(t *testing.T) {
 	if got := paths(listing); !equal(got, []string{"main.go"}) {
 		t.Fatalf("paths = %#v", got)
 	}
-	if listing.Skips.Ignored != 5 {
+	if listing.Skips.Ignored != 4 {
 		t.Fatalf("skipped ignored = %d", listing.Skips.Ignored)
 	}
 	if !Skippable("vendor/dep/dep.go") || Skippable("main.go") {
 		t.Fatal("Skippable disagrees with the listing")
+	}
+}
+
+func TestListSkipsTargetBuildArtifactsEvenWhenTracked(t *testing.T) {
+	root := t.TempDir()
+	git(t, root, "init", "-q")
+	write(t, filepath.Join(root, "main.go"), "body\n")
+	write(t, filepath.Join(root, "target", "debug", "deps.rs"), "body\n")
+	git(t, root, "add", ".")
+
+	listing := list(t, root)
+	if got := paths(listing); !equal(got, []string{"main.go"}) {
+		t.Fatalf("paths = %#v", got)
+	}
+	if listing.Skips.Ignored < 1 {
+		t.Fatalf("skipped ignored = %d", listing.Skips.Ignored)
+	}
+	if !Skippable("target/debug/deps.rs") {
+		t.Fatal("target build artifacts must be skippable")
+	}
+}
+
+func TestReadSkipsMultiplyLinkedFiles(t *testing.T) {
+	root := t.TempDir()
+	original := filepath.Join(root, "original.txt")
+	linked := filepath.Join(root, "linked.txt")
+	write(t, original, "secret-should-not-fail-search\n")
+	if err := os.Link(original, linked); err != nil {
+		t.Fatal(err)
+	}
+	walker, err := New(root, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content, reason, err := walker.Read(Entry{Path: "linked.txt"}, 0)
+	if err != nil || reason != SkipLinked || content.Data != nil {
+		t.Fatalf("content = %+v reason=%q err=%v", content, reason, err)
 	}
 }
 

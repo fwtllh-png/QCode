@@ -562,7 +562,10 @@ func (a *EngineAdapter) StartTurn(
 		return sink.Emit(&protocol.ToolStateData{State: string(event.State), Text: event.Text})
 	}
 	security := a.engine.OptionsSeed().Security
-	defer security.ResetPlanState()
+	// PlanSubmitted persists across turns: resetting it per turn forced a
+	// plan re-submission before the first consequential action of every
+	// turn. ConfigurePlanning still resets on policy/profile changes, and
+	// each plan-approved turn re-submits explicitly.
 	_, planTransition, planApproved := turnPlanExecution(payload)
 	if planApproved {
 		mode, permission := security.ModeValue(), security.PermissionValue()
@@ -1109,6 +1112,9 @@ func commandExecutionFromResult(callID string, result *tool.Result) (*protocol.C
 	status, _ := raw["status"].(string)
 	if command == "" || status == "" {
 		return nil, false
+	}
+	if origin, _ := raw["call_id"].(string); origin != "" {
+		callID = origin
 	}
 	data := &protocol.CommandExecutionData{
 		CallID: callID, Command: command, Status: status,

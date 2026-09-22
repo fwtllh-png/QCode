@@ -2,6 +2,7 @@ package authority
 
 import (
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"slices"
 	"testing"
@@ -78,6 +79,27 @@ func TestCompileProducesDeterministicEffectiveProfile(t *testing.T) {
 		) {
 			t.Fatalf("denied roots = %v", first.Filesystem.DeniedWriteRoots)
 		}
+	}
+}
+
+func TestCompileDirectoryWriteDoesNotOpenWorkspace(t *testing.T) {
+	input := fixtureCompileInput(t)
+	generated := filepath.Join(input.SandboxPolicy.WorkspaceRoot, "generated")
+	if err := os.Mkdir(generated, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	input.Invocation.Resources = append(input.Invocation.Resources, tool.Resource{
+		Kind: "directory", Path: generated, Access: tool.AccessWrite, Tree: true,
+	})
+	profile, err := Compile(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile.Filesystem.WorkspaceBaseWrite {
+		t.Fatal("bounded write tree opened the workspace")
+	}
+	if !slices.Contains(profile.Filesystem.WritePaths, generated) {
+		t.Fatalf("write paths = %v", profile.Filesystem.WritePaths)
 	}
 }
 

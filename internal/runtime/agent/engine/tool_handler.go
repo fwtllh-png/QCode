@@ -50,6 +50,7 @@ func (e *Engine) runToolsWithCache(
 	}
 	toolCtx, cancel := context.WithCancelCause(tool.WithInvocationIdentity(ctx, identity))
 	toolCtx = tool.WithInvocationSource(toolCtx, tool.InvocationSourceModel)
+	toolCtx = toolsearch.WithEnabled(toolCtx, e.toolEnabled)
 	// The per-result ceiling guides producer pre-clamping and bounds any
 	// single projection; the batch total is the aggregate pool the batch
 	// admission redistributes by real result size. Both derive from the same
@@ -210,9 +211,21 @@ func (e *Engine) runToolsWithCache(
 				mutationRevision,
 			)
 			for _, change := range turnkernel.ObservedFileChanges(*result) {
-				if relative, ok := agentcontext.WorkspaceRelative(e.options.Workspace, change.Path); ok {
-					change.Path = relative
+				relative, ok := agentcontext.WorkspaceRelative(e.options.Workspace, change.Path)
+				if !ok {
+					// The change sits outside the workspace (for example an
+					// absolute path a tool reported for a host location).
+					// It still enters the turn-local diff, but durable
+					// workspace evidence must stay workspace-relative:
+					// bound-path validation rejects anything else and one
+					// malformed entry would fail every later snapshot.
+					scope.state.diff.Record(turnkernel.TurnDiffEntry{
+						Path: change.Path, Tool: call.Name, Kind: change.Kind,
+						Added: change.Added, Removed: change.Removed,
+					})
+					continue
 				}
+				change.Path = relative
 				scope.state.diff.Record(turnkernel.TurnDiffEntry{
 					Path: change.Path, Tool: call.Name, Kind: change.Kind,
 					Added: change.Added, Removed: change.Removed,
@@ -223,12 +236,16 @@ func (e *Engine) runToolsWithCache(
 				e.contextAuthority().ObserveChange(e.options.Workspace, change, e.turn)
 			}
 			if !result.IsError {
-				e.contextAuthority().ObservePath(
-					e.options.Workspace,
-					agentcontext.SourceRead,
-					e.turn,
-					turnkernel.ObservedFileRead(*result),
-				)
+				if read := turnkernel.ObservedFileRead(*result); read != "" {
+					if relative, ok := agentcontext.WorkspaceRelative(e.options.Workspace, read); ok {
+						e.contextAuthority().ObservePath(
+							e.options.Workspace,
+							agentcontext.SourceRead,
+							e.turn,
+							relative,
+						)
+					}
+				}
 				e.contextAuthority().ObserveToolResult(
 					e.options.Workspace,
 					call,

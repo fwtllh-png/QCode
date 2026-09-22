@@ -133,6 +133,49 @@ func (s *Store) ReplaySessionBefore(ctx context.Context, sessionID string, threa
 	return s.events.ReplaySessionBefore(ctx, sessionID, threads, before, through, limit)
 }
 
+func (s *WorkspaceEventStore) ReplayTurn(
+	ctx context.Context,
+	turnID protocol.TurnID,
+) ([]protocol.Event, error) {
+	events, err := s.store.ReplayTurn(ctx, turnID)
+	if err != nil || s.workspaceRoot == "" {
+		return events, err
+	}
+	return s.filterWorkspaceEvents(ctx, events)
+}
+
+func (s *WorkspaceEventStore) ReplayKind(
+	ctx context.Context,
+	kind protocol.EventKind,
+) ([]protocol.Event, error) {
+	events, err := s.store.ReplayKind(ctx, kind)
+	if err != nil || s.workspaceRoot == "" {
+		return events, err
+	}
+	return s.filterWorkspaceEvents(ctx, events)
+}
+
+func (s *WorkspaceEventStore) filterWorkspaceEvents(
+	ctx context.Context,
+	events []protocol.Event,
+) ([]protocol.Event, error) {
+	owned := make([]protocol.Event, 0, len(events))
+	for _, event := range events {
+		belongs, err := s.store.EventBelongsToWorkspace(
+			ctx,
+			event,
+			s.workspaceRoot,
+		)
+		if err != nil {
+			return nil, err
+		}
+		if belongs {
+			owned = append(owned, event)
+		}
+	}
+	return owned, nil
+}
+
 func (s *WorkspaceEventStore) EventByID(
 	ctx context.Context,
 	eventID protocol.EventID,

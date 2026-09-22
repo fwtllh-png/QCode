@@ -154,7 +154,7 @@ func TestClosedTurnCheckpointsBackfillOmittedTurnsWithoutGuessing(t *testing.T) 
 	}
 	joined := joinMessageText(runtime.requests[len(runtime.requests)-1].Messages)
 	if !strings.Contains(joined, "turn_history") ||
-		!strings.Contains(joined, "turn=1") {
+		!strings.Contains(joined, "preferred_turn=2") {
 		t.Fatalf("restored session missing retrieval hint: %s", joined)
 	}
 	if strings.Contains(joined, "missing overflow test") {
@@ -179,6 +179,42 @@ func TestClosedTurnCheckpointsBackfillOmittedTurnsWithoutGuessing(t *testing.T) 
 	}
 	if !sawTurnOne || !sawTurnTwo || !sawTurnThree {
 		t.Fatalf("backfill = %+v", engine.closedTurnCheckpointMessages())
+	}
+}
+
+func TestTurnHistoryFirstPageIncludesSealedFindings(t *testing.T) {
+	engine := newEngine(t, &scriptedProvider{}, tool.NewRegistry(nil, nil))
+	engine.options.Workspace = t.TempDir()
+	engine.turn = 7
+	engine.history = []provider.Message{
+		messageWithText(provider.RoleUser, "how should we fix the lock", 7),
+		messageWithText(provider.RoleAssistant, "hasGlobalLock is the root cause", 7),
+	}
+	engine.context.Evidence().Observe(agentcontext.EvidenceFact{
+		Kind:   agentcontext.KindDefinition,
+		Path:   "eds_metaserver.cc",
+		Line:   88,
+		Symbol: "hasGlobalLock",
+		Tool:   "search_definition",
+		Turn:   7,
+	})
+	engine.sealClosedTurnMemory(agentcontext.CheckpointCompleted, nil, "")
+	_, _, executor, err := engine.options.Tools.Resolve(turnhistory.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := executor.Execute(t.Context(), []byte(`{"turn":7}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result.Content, "[turn 7 findings]") ||
+		!strings.Contains(result.Content, "hasGlobalLock is the root cause") ||
+		!strings.Contains(result.Content, "eds_metaserver.cc:88 hasGlobalLock") {
+		t.Fatalf("turn_history = %q", result.Content)
+	}
+	visible := engine.closedTurnCheckpointMessages()
+	if len(visible) != 1 || strings.Contains(visible[0].Text(), "hasGlobalLock is the root cause") {
+		t.Fatalf("visible checkpoint leaked findings: %+v", visible)
 	}
 }
 

@@ -23,6 +23,13 @@ type EventIdentityStore interface {
 	) (protocol.Event, bool, error)
 }
 
+// IndexedEventReplay locates Turn or kind-scoped events without a prefix
+// scan of the durable log. Memory stores filter their retained window.
+type IndexedEventReplay interface {
+	ReplayTurn(context.Context, protocol.TurnID) ([]protocol.Event, error)
+	ReplayKind(context.Context, protocol.EventKind) ([]protocol.Event, error)
+}
+
 type ContentStore interface {
 	Put(context.Context, string, []byte) error
 	Get(context.Context, string) ([]byte, error)
@@ -117,6 +124,51 @@ func (s *MemoryEventStore) replay(ctx context.Context, cursor protocol.Cursor, t
 		}
 	}
 	return result, false, nil
+}
+
+func (s *MemoryEventStore) ReplayTurn(
+	ctx context.Context,
+	turnID protocol.TurnID,
+) ([]protocol.Event, error) {
+	if turnID == "" {
+		return nil, ctx.Err()
+	}
+	return s.filterReplay(ctx, func(event protocol.Event) bool {
+		return event.TurnID == turnID
+	})
+}
+
+func (s *MemoryEventStore) ReplayKind(
+	ctx context.Context,
+	kind protocol.EventKind,
+) ([]protocol.Event, error) {
+	if kind == "" {
+		return nil, ctx.Err()
+	}
+	return s.filterReplay(ctx, func(event protocol.Event) bool {
+		return event.Kind == kind
+	})
+}
+
+func (s *MemoryEventStore) filterReplay(
+	ctx context.Context,
+	keep func(protocol.Event) bool,
+) ([]protocol.Event, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return nil, ErrClosed
+	}
+	result := make([]protocol.Event, 0)
+	for _, event := range s.events {
+		if keep(event) {
+			result = append(result, event)
+		}
+	}
+	return result, nil
 }
 
 func (s *MemoryEventStore) EventByID(

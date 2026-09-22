@@ -121,6 +121,7 @@ const (
 	AccessRead  AccessMode = "read"
 	AccessWrite AccessMode = "write"
 	AccessTree  AccessMode = "tree"
+	AccessUse   AccessMode = "use"
 )
 
 type ParallelPolicy string
@@ -169,7 +170,7 @@ type ResourceTemplate struct {
 type ResourceResolver struct {
 	Templates  []ResourceTemplate `json:"templates,omitempty"`
 	PatchField string             `json:"patch_field,omitempty"`
-	// PathsField resolves exact write paths, never globs or directory trees.
+	// PathsField resolves exact write files or existing directory trees.
 	PathsField string `json:"paths_field,omitempty"`
 	// ReadPathsField binds read-only verification coverage.
 	ReadPathsField string `json:"read_paths_field,omitempty"`
@@ -904,7 +905,7 @@ func validateDescriptor(descriptor Descriptor) error {
 		return fmt.Errorf("tool %q has invalid capability", descriptor.Name)
 	}
 	if descriptor.AccessMode != AccessRead && descriptor.AccessMode != AccessWrite &&
-		descriptor.AccessMode != AccessTree {
+		descriptor.AccessMode != AccessTree && descriptor.AccessMode != AccessUse {
 		return fmt.Errorf("tool %q has invalid access mode", descriptor.Name)
 	}
 	if descriptor.ParallelPolicy != ParallelConcurrent && descriptor.ParallelPolicy != ParallelSerial {
@@ -939,7 +940,8 @@ func validateDescriptor(descriptor Descriptor) error {
 	}
 	for _, template := range descriptor.ResourceResolver.Templates {
 		if template.Kind == "" || (template.Field == "" && template.ID == "") ||
-			(template.Access != AccessRead && template.Access != AccessWrite) {
+			(template.Access != AccessRead && template.Access != AccessWrite &&
+				template.Access != AccessUse) {
 			return fmt.Errorf("tool %q has invalid resource template", descriptor.Name)
 		}
 	}
@@ -1639,10 +1641,11 @@ func TurnHistoryTruncationNotice(originalBytes int, handle, body string) string 
 	if handle != "" {
 		fmt.Fprintf(
 			&b,
-			". This page is the turn tail (conclusions). Use result_get with handle %q and mode=%q or mode=%q (for example query=%q). Default mode=%q does not reconstruct audit lists",
+			". This page is the turn tail plus findings index. Use result_get with handle %q and mode=%q or mode=%q (for example query=%q or query=%q). Default mode=%q does not reconstruct audit lists",
 			handle,
 			"tail",
 			"query",
+			"sites",
 			"P2",
 			"summary",
 		)

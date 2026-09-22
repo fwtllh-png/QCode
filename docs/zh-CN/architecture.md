@@ -36,7 +36,7 @@ Web
 | Runtime | `internal/runtime` | 协议、应用状态、Agent 循环、装配 |
 | Adapter | `internal/adapter` | 模型、Provider、Tool、MCP、Skill |
 | Security | `internal/security` | Policy、Permission、Constitution、Sandbox |
-| Orchestration | `internal/orchestration` | Subagent、Admission/Budget、Chat Merge |
+| Orchestration | `internal/orchestration` | Subagent、Admission/Budget、Chat Merge、Exec Settle |
 | Persistence | `internal/persist` | 关系状态、Event、CAS、Session、Snapshot、Journal |
 | Observability | `internal/observability` | Usage、Trace、Receipt、Diagnostics、Verify、Telemetry |
 | Platform | `internal/platform` | 进程、PTY、操作系统差异 |
@@ -74,7 +74,8 @@ config -> provider -> persistence -> platform -> builtin tools
 Runtime、Engine 和
 Session Service 都不得持有 `buildState`。Persistence 拥有 Content、Job Log 和
 SQLite 基础；Platform 拥有 Process、Sandbox 与 Repository Index；Orchestration
-拥有 Subagent、Admission/Budget、Child Worktree/Toolset 与 Chat Merge 构造。
+拥有 Subagent、Admission/Budget、Child Worktree/Toolset、Chat Merge
+与 Exec Settle 构造。
 Provider 显式输出 Provider/Model Catalog，Security 显式输出 Permission Store 与
 Guard Factory。
 
@@ -173,6 +174,7 @@ eventview + Web Projection -> 仅负责 Host Presentation
 | Composition Root | `internal/runtime/app/wire` | Concrete Construction 与 Resource Registration |
 | Durable Runtime Assembly | `internal/runtime/app/persistence` | Repository、Lifecycle Recovery、Persistent Runtime Options |
 | Chat Merge Service | `internal/orchestration/chatmerge` | Isolated Baseline、Three-way Preview、Journaled Apply |
+| Exec Settle | `internal/orchestration/execsettle` | 命令级隔离工作区、写树三方结算 |
 | Operation Service | `internal/runtime/app` | Queue、Idempotency、Typed Dispatch 与 Operation Commit/Reject |
 | Turn Service | `internal/runtime/app` | Active Lease、Control、Cancel Provenance 与 Turn goroutine 生命周期 |
 | Event/Recovery Service | `internal/runtime/app` | Event Projection 索引、Observer 与 Durable Recovery |
@@ -301,6 +303,11 @@ Composer 草稿在输入事件中立即写入当前 Workspace/Session 的浏览�
 保存实际交互目标的位置，流式更新与详情展开期间保持该锚点。用户滚动、主动导航、
 切换会话/视图或返回底部时解除交互锚定。程序恢复位置所产生的重复滚动事件不重新
 判断跟随意图；内容收起后仍遵守浏览器合法滚动范围，不人为增加空白空间。
+用户滚动事件同步保存阅读位置和窗口边界，导航统计与历史加载检查再按动画帧合并，
+避免已排队的流式渲染恢复旧位置。相邻执行细节始终使用稳定的阶段组件，
+首条阶段说明只增加折叠入口，不重建工具内容。运行中的 Turn 到达终态时，
+若用户已停止跟随底部，则保留原有执行布局；回到底部后再转入默认折叠的历史布局。
+初次加载的历史 Turn 仍默认折叠，之后上翻不会重新展开已经收起的执行过程。
 弹窗关闭只恢复焦点，不隐式滚回原触发控件；该焦点恢复也不能覆盖正在执行的显式导航。
 Trajectory Event Ledger 与 Chat 复用完整事件窗口；`trace/query` 只补充
 经过 Session/Turn 归属校验和字段白名单投影的时序，不返回任意 Span Attribute。
@@ -511,6 +518,10 @@ Trace 与 Receipt 保留逻辑公共前缀指标和最终 Transport Payload Dige
 30s）。进程仍在运行时返回 `session_id`，由 `write_stdin` 继续收输出或关闭；TTY
 与非 TTY 相同，Runtime 不再把非 TTY 命令挂到进程自行退出。`timeout_ms` 只杀进程
 组，不延长第一次等待。Cancel 会终止等待并回收进程组。
+`command.execution` 对尚未退出的命令使用 `started`，不附带退出码；
+`write_stdin` 续读或关闭后按原始 Call ID 和 Session ID 更新同一条命令，
+终态区分 `completed`、`failed`、`canceled` 和 `timed_out`。
+一次等待窗口结束不代表进程超时，Web 实时视图与历史回放采用同一状态投影。
 
 `exec_command` 可声明验证用途与精确覆盖路径。Runtime 将真实命令、退出码、启动与
 结算调用、声明输入摘要、Workspace Revision 和 Mutation Revision 绑定为证据；
@@ -554,16 +565,17 @@ Durable State 由多个明确组件组合：
 | Workspace Journal | Before Image 与编辑恢复 |
 | Snapshot | 显式 Thread 状态检查点 |
 
-SQLite Schema 版本记录在 `PRAGMA user_version`，当前为版本 4。版本演进以显式
-迁移链登记：每一步恰好前进一个版本并在自己的事务内记录新版本号，链必须连续且
-终点等于当前版本（源码级测试锁定）；更高版本拒绝打开，没有登记步骤的版本
-不做自动迁移。首次稳定基线前的开发迁移历史已有意压缩；公开版本后的 Schema
-变更必须继续在迁移链上追加显式步骤。
+SQLite Schema 版本记录在 `PRAGMA user_version`，当前为版本 5。只接受空数据库和
+当前版本；其他版本在启用 WAL 或修改 Schema 前拒绝打开，不执行开发期数据迁移。
+切换到当前版本时须使用新的空数据目录，或由用户自行移走旧数据。
 
 Session 删除与 Discard 在同一 SQLite 事务中清理所有所属 Thread/Turn 的
 Domain Fact、Terminal Envelope 和 Terminal Outbox，再级联删除 Session 关系记录。
-这些 Kernel 表不依赖生命周期外键；清理失败必须回滚整个删除事务。审计 Event Log、
-事件索引与预留序号不随 Session 删除，以保留重放证据和全局序号水位。
+这些 Kernel 表不依赖生命周期外键；清理失败必须回滚整个删除事务。删除触发器在同一
+事务释放事实、终态、快照和 Context Rebase 的 CAS 根引用，并记录已删除 Thread 的
+日志归属。共享内容在最后一个可达引用消失后回收，活跃暂存批次仍受保护。
+审计日志按 `state.deleted_event_retention` 保留；默认 `0s`，删除后即可清理，
+也可通过 `state.archive_deleted_events` 在清理前导出 gzip JSONL。
 
 Event Log 与 SQLite 投影之间的一致性以事件日志为准：启动时仍完整校验日志，并批量
 读取已提交的事件投影。只有事件身份、归属、类型、时间、偏移、长度和摘要全部匹配，
@@ -573,12 +585,12 @@ Event Log 与 SQLite 投影之间的一致性以事件日志为准：启动时�
 结果保留预留状态，交由下一次对账裁决，不会写入重复记录；此前的干净失败则允许
 重试诚实地补写日志。
 
-非持久流事件只用一次 SQLite 事务插入最终 `abandoned` 序号预留，不写 JSONL，
-不再先插入 `reserved` 再单独更新。相同 Event ID 重试不写入，重启仍保留全局序号
-高水位，已占用序号及水位以下的空洞不能分配给新事件。持久事件继续使用预留、
+非持久流事件只在 SQLite 更新单行 `event_watermark`，不写 JSONL 或逐事件预留。
+重启仍保留全局序号高水位，已占用序号及水位以下的空洞不能分配给新事件。
+流事件重试返回序号冲突，由 Hub 重新分配；持久事件继续使用预留、
 日志追加与投影提交的原有恢复流程。流事件不触发生命周期投影：usage 与关系条目
 投影本就只关心持久事件类型，`threads.updated_at` 仅随持久事件推进，流事件的
-序号预留是其唯一 SQLite 写入。
+高水位是其唯一 SQLite 写入。
 
 并发追加按组提交落盘：追加请求在存储内部排队，与在途刷新并发到达的事件合并为
 一个批次，整批共享一次序号预留事务、一次 JSONL 追加 fsync 和一次投影事务。批内
@@ -587,16 +599,28 @@ Event Log 与 SQLite 投影之间的一致性以事件日志为准：启动时�
 回退到逐事件的既有语义（含自愈对账），单事件结果不变。生产者在入队后不可再因
 自身上下文取消中止追加——批次会完整落盘并回传结果。
 
-SQLite 连接以 WAL + `synchronous=NORMAL` 打开：事务提交不再逐次 fsync 写前
-日志，仅在检查点同步。耐久契约不变——events-v1.jsonl 保持逐次追加 fsync 并
-作为事实源，SQLite 表是可从日志对账修复的投影。操作系统级崩溃后，投影（包括
-为非持久流事件固定序号的 `abandoned` 预留行）可能回退到最近检查点；单进程
-运行时的在线订阅者与进程一同消失，不存在能观察到序号复用的存活游标。
+SQLite 连接使用 WAL + `synchronous=FULL`：CAS、领域事实、内容归属、高水位和
+日志清理意图均是事务事实，不能仅依赖 JSONL 重建。事务提交必须先持久化，才能进行
+后续日志文件替换；事件追加仍通过组提交合并 fsync。
+
+日志清理在启动、会话删除后及显式 `Store.Maintain` 时运行。保留时长从 Thread 删除
+时间计算，到期内容在下一次维护时清理。先提交 `event_prune_queue`，再持有读生命周期
+锁原子替换日志，最后在同一事务更新保留事件偏移、删除目标索引和预留、清空队列。
+崩溃后先完成队列再对账，避免被删除日志复活或误报损坏。可选归档在日志替换前 fsync，
+按内容摘要命名，重复维护不生成重复归档；归档文件不参与在线回放，独立保留。
+保留事件序号不重排，高水位不降低；旧游标继续返回其后的保留事件，删除形成的空洞
+直接跳过，超过高水位的游标仍报错。会话归档（archive）本身不视为删除。
 
 事件日志与状态存储的读路径与追加并发执行：锁内固定已提交高水位和不可变的偏移
 证据，锁外读取、校验和解码日志；独立的读取生命周期锁保证关闭文件前等待读取完成，
-追加不获取这把锁。已提交区域只追加不收缩，失败回滚只影响上一个已提交末尾之后
+追加不获取这把锁。日常已提交区域只追加，维护时独占读取生命周期锁；失败回滚只影响上一个已提交末尾之后
 的字节。`EventByID` 经 `event_index` 的偏移证据直达读取日志记录，不重放日志前缀。
+Turn 恢复、终态 Checkpoint 与 Plan 绑定经 `event_index_turn_sequence` 按 `turn_id`
+定位后直达读取对应记录，空或未知 Turn 如实返回空，不回退成全量日志重放。
+Continue 解包嵌套恢复 Prompt 时，对提示中声明的祖先 Turn 逐个做同样的索引读取。
+Checkpoint 副作用中的 fork 归属另按 `kind=checkpoint.forked` 从 `event_index` 读取，
+因为 fork 事件的 `turn_id` 属于源 Turn，而 `NewThreadID` 才指向新 Thread。
+无持久索引的内存 Runtime 在已缓存事件上按 TurnID / Kind 过滤。
 EventHub 只在固定读取栅栏和注册订阅时持发布锁，历史回放在锁外执行。订阅使用配置
 的 Buffer 容量缓存栅栏后的实时事件，回放完成后依次交接历史与缓存；栅栏内稳定事件
 的重试不重复推送。缓存溢出则取消本次回放、移除订阅并返回错误，调用方可从已消费
@@ -698,9 +722,28 @@ Provider Replay State 同时绑定 Adapter、Provider 和 Model。Router 在目�
 清除不兼容的原生 Replay，仅保留可见 Assistant 内容，避免同 Adapter 跨模型切换后因
 Provenance 不匹配导致下一 Turn 失败。
 
-Terminal Envelope 不再重复写入完整 Session Snapshot，而是引用 CAS 中的 Context
-Manifest。CAS 先按 Digest 幂等 Stage，SQLite 再提交 Manifest 可达性和 Terminal
-事实。采样路径按公开合同 `context.view.recent_tail_turns` 和剩余硬输入（或显式
+状态数据库使用 schema 5，只创建新格式；旧 schema 在任何写入前拒绝，不提供迁移。
+领域事实格式 2 保留每 16 条快照的现有恢复间隔，所有 JSON 对象字段按成员增改/删除
+记录增量；成员值 `null` 与成员删除分开编码，不按字段名决定增量算法。
+模型响应 Assembly 和 Effect / Outbox payload 压缩后按 SHA-256 存入
+`content_objects`，事实和终态只存内容引用，读取时还原原文再验证 State Digest。
+引用替换只修改对应值，保留原始 JSON 字节顺序，避免 Operation Receipt 等原始
+JSON 在恢复后改变终态摘要；重复写入已存在内容也验证其字节摘要。
+TurnContinuation 格式 2 使用独立消息 CAS 引用列表，后续续跑点复用未变化消息，
+读取逐条验证摘要、长度和内容结构。
+
+Terminal Envelope 引用 Context Manifest。状态 CAS 的字节、根引用
+`content_roots`、子引用 `content_edges` 和暂存批次 `content_staging` 都存于同一
+SQLite 数据库。先暂存后提交根引用；事实正文与所属事实在同一事务写入，失败全量回滚。
+Turn Checkpoint 的可选 Findings 在结论、定位和来源均为空时不写入 JSON，
+恢复时保持字段缺省，避免空对象改变已保存的 Context Snapshot、Manifest 和 Envelope 摘要；
+非空 Findings 仍完整参与摘要校验。
+Context Rebase、基线快照、终态和续跑批次在成功、失败及部分准备失败后都释放暂存。
+启动只释放已不属于本进程活跃批次的遗留暂存；回收从根引用、暂存及显式保留引用遍历
+可达图，保护跨会话复用内容，删除不可达边和对象，重试幂等。
+单独使用的文件 CAS 保留原有接口；`cas.Release` 本身不删盘，状态 CAS 的回收与写入
+通过 SQLite 事务串行，避免检查引用后被并发保留的竞态。
+采样路径按公开合同 `context.view.recent_tail_turns` 和剩余硬输入（或显式
 `context.view.history_token_ceiling`）投影原文，超窗时再用一次 Visible Tail
 Fold。Fold 后仍超硬输入时，对当前 Turn 做钉死用户请求的 working-set 替换：
 已闭合因果组收成一条 Truth Capsule，当前 Turn 的 world patch 收成最新基线；
@@ -719,18 +762,23 @@ Dynamic（History 之后）追加一块 write-once Checkpoint。旧 Turn 原文�
 句柄与 Turn ID 映射，工具回读使用该快照，不获取覆盖整轮执行的 Engine 锁；
 归档读取继续传递取消信号并检查撤回状态，未知 Turn 或缺少归档时如实返回未命中。
 被裁掉的旧 Turn
-在 `session_state` 给出检索指针；升级前缺失的 Checkpoint 只回封 turn id。
-Plan 已有完成步骤或已读路径时，`session_state` 另带 Resume Fact，避免
+在 `session_state` 给出检索指针，并指向最近带 Findings 的 omitted turn
+（`preferred_turn`）；升级前缺失的 Checkpoint 只回封 turn id。
+最近闭合且已完成的用户可见终答，以及工具定位的 `path:line` / 符号，写入
+mandatory Continuity 胶囊，不依赖可见 Tail，也不把旧轮对话清单写进 Checkpoint
+正文。Plan 已有完成步骤或已读路径时，`session_state` 另带 Resume Fact，避免
 Continue / Retry / 新 prompt 把已读文件再读一遍；Resume 使用全部已读路径，
 不继承 `context.working_set.max_entries`，超 `session_state` 分区预算时写
-omitted 计数。有行号命中时列出
-`Located sites`。搜索命中后对该路径的 `file_read` 必须带 `start_line`。
+omitted 计数。有行号命中时 Continuity / Resume 列出
+`Located sites`。搜索命中后优先按 `start_line` 读取相关窗口，根据当前问题扩展，
+不要求读取后必须编辑；Plan 和只读分析同样可补读未覆盖窗口。已有 Continuity
+或 Located sites 时，不要用 `turn_history` 或搜索做开场恢复。
 相邻 Sample 在同一工作状态上重复同一工具身份达到
 `execution.implement_no_progress_samples`（默认 6）即进入 Finish-only；该阶段
 不允许 `git_status` / `git_diff` 或整文件读取。新的内容版本、翻页窗口或新的
 工具结果语义 digest 会同时续期长短租约；A/B 交替但观察键已见时只走 `max_steps`
-长租约。已知路径整文件 `file_read` 与
-Continue 巡视 git 在工具执行前被拒绝，不续租。脏的 `git_status` /
+长租约。重复 `file_read` 仅在请求参数一致且文件摘要未变时回放原结果；
+未覆盖窗口、版本变化或原结果不可恢复时允许重新读取。脏的 `git_status` /
 `git_diff` 或可见 Tail 没有那次读取都不是重读理由，应走 `turn_history` /
 `result_get`。取消和失败 Checkpoint 均保留下一项 Plan 与全部已读路径指针，超 Checkpoint 预算时写 omitted，但不带未提交的半开
 Tool 链。缺少终态证据的旧 Checkpoint 只回封检索指针，状态为 `unknown`，
@@ -777,8 +825,10 @@ Envelope、Trace、Usage、Receipt、Job Log 与 Workspace Journal 交叉核对�
 的查询共享同一次刷新：在刷新等待队列中排队的调用者，若刷新在其进入后完成，直接
 复用该结果，不各自重走全仓枚举；刷新完成后新到达的调用仍会刷新——这不是时间
 窗口，而是重叠去重。同一条调用链内的后续查询（如 Repo Map 构建中的大纲查询）
-复用链上已确认的快照，不重复刷新。进程启动后在后台预热首次构建，不占用任何
-会话的首次查询延迟；预热期间到达的查询经重叠去重与预热共享同一次构建。
+复用链上已确认的快照，不重复刷新。进程启动后在后台预热首次构建；状态快照独立
+原子发布，工具注册和状态展示不等待构建锁。首次构建完成前返回 Pending，后续刷新
+期间返回上一次完整发布的状态；成功与降级状态均整体替换，取消不发布未完成结果。
+实际索引查询仍等待刷新完成，预热期间到达的查询经重叠去重与预热共享同一次构建。
 依赖图与排名在后台构建，不在刷新的同步路径上：刷新以确认的文件行完成，图随后
 跟上，期间的排名与影响面回答描述最近一次成功构建的文件集——这是质量边界而非
 正确性边界，与图构建失败时回退声明计数排序的既有降级一致。内容级编辑走增量
@@ -865,13 +915,56 @@ Execution Receipt 会保留每次 Verification Attempt、命令推导原因、�
 
 每个 Workspace 使用位于 State Data Directory 下、权限为 `0700` 的持久私有 Home。
 它跨 Turn 和进程重启保留编译缓存与 Agent 安装的工具，但不与其他 Workspace 或宿主
-Home 混用。Sandbox 还通过统一的 Toolchain Exposure 发现宿主 PATH 中的 Go、Rust、
-Node.js、Python 等安装，将已校验的可执行目录和依赖根只读挂载，并只投影运行所需的
-环境变量。平台适配器还会解析可执行文件的传递运行时依赖；例如 macOS 会读取 Mach-O
-依赖和 RPATH，并将经过校验的动态库、包版本根、共享资源目录和顶层配置文件精确地
-只读暴露，而不是开放整个包管理器配置目录或包内私有子目录。凭证目录和整个宿主 Home
-始终不开放。主 Agent 与子 Agent 使用同一模型，但各自拥有独立的 Workspace 范围私有
-Home。
+Home 混用。Sandbox 只继承 PATH 目录、Darwin `/etc/paths` 与存在的 Homebrew bin，以及平台
+SDK（`SDKROOT`），不再按语言名探测安装根。PATH 目录里指向目录外的可执行符号
+链接会把解析后的 `bin` 及其父级（若目录名为 `bin`）只读加入，以覆盖 Homebrew
+Cellar 这类布局；证书发现走准备链。平台适配器还会解析可执行文件的传递运行时依赖；
+例如 macOS 会读取 Mach-O 依赖和 RPATH，并将经过校验的动态库、包版本根、共享资源
+目录和顶层配置文件精确地只读暴露，而不是开放整个包管理器配置目录或包内私有
+子目录。凭证目录和整个宿主 Home 始终不开放。主 Agent 与子 Agent 使用同一模型，
+但各自拥有独立的 Workspace 范围私有 Home。
+
+将私有 Home 过滤模型替换为可授权环境契约的设计见
+[Sandbox 执行环境重构方案](./sandbox-execution-environment-plan.md)。
+产品默认现为 `execution.environment.contract=v1` 与 `profile=native`：
+准备器按通用 `host_config` / `cache` / `shared_user_temp` / `credential`+`use`
+资源物化环境；主 Agent 保留宿主 HOME 变量，但不开放整个 Home。
+Git 适配器只翻译文档中的用户配置文件位置；`.git-credentials` 不进入策略。
+`shared_user_temp` 仍须显式打开。GOPROXY 认证在宿主已有凭证时由 runtime
+绑定。`contract` 只接受 `v1`。
+用户或可信配置的 `[[execution.environment.resources]]` 即可接入，
+Go 适配器只是可选翻译器。`exec_command` 的 `write_paths` 还可指向已存在的
+工作区子目录，授予有界树写而不打开整个工作区。带写树的命令在隔离执行工作区
+运行，真实 cwd 写入 `isolated_cwd`，退出后经 File Broker / Journal 三方结算；
+用户并发修改不自动算 Agent 修改。进程不再无条件重写 HOME / 缓存，
+证书发现改走准备链，v1 shell 使用非登录 `sh -c`。
+`exec_command` / `write_stdin` 失败时，`error_category` 与 `required_action`
+只来自 Gate、代理或 OS 后端的结构化事实；没有事实时标记 `unknown`，
+不从命令输出中的 `401` 或 `permission denied` 改判。
+Darwin 进程出网走 Workspace 代理进程上的 Session 端口与 Session Gate，
+Seatbelt 只放行该端口；`contract=v1` 时空 `network_targets` 继承用户声明
+的环境网络资源，不继承适配器发现的 GOPROXY 主机。Linux/Windows 在命名空间
+助手交付前对需要 Session 通道的进程报告 `backend_capability_unsupported`。
+主/子 Agent、PTY 与后台共用该契约；子 Agent 固定 `isolated`，Skill 仍在
+`sandbox-home`。
+GOPROXY 认证服务挂在同一 Session loopback 上处理 origin-form 模块请求，
+不写共享 Gate，也不把长期凭证放进进程环境。对已绑定上游主机的 CONNECT
+或绝对形式请求会被拒绝并记 `trust_validation_failed`，避免绕过认证服务。
+可信配置 `[[execution.environment.auth_services]]` 可覆盖绑定；否则 runtime
+使用宿主 `go env GOPROXY` 的 userinfo 或宿主 `~/.netrc`。第二种制品协议尚未开放。
+运行中新发现的出网目标在拨号前走现有 Approval；同一执行内同一 origin 不重复
+询问。获批只修订当前 Session / Call Scope。已开始的进程命令不会因出网缺失
+被整段重放。
+
+证书依赖独立于包管理器布局：环境准备器从 PATH 中的 OpenSSL
+查询公开的 `version -d` 元数据，定位 `OPENSSLDIR/cert.pem`。同时支持宿主显式设置的
+`SSL_CERT_FILE`、`NODE_EXTRA_CA_CERTS`、`REQUESTS_CA_BUNDLE` 和 `CURL_CA_BUNDLE`。
+路径必须为绝对路径，符号链接与真实目标均通过普通文件、敏感目录和 Workspace
+边界校验后，仅按文件只读暴露；显式配置无效时拒绝构造，不静默丢弃。
+其他信任库布局可通过显式证书文件或 Host Read File 配置接入，不猜测安装前缀，
+不关闭 TLS 校验。元数据查询沿用沙箱能力探测的 5 秒预算
+（`ToolchainProbeTimeout`），单次输出安全上限为公开的 64 KiB
+（`ToolchainProbeMaxOutputBytes`）；超时、超限或无法解析的自动发现结果不授予读取权限。
 
 ## Secret 与网络边界
 
@@ -904,7 +997,11 @@ Skill 打包指令和资源。Discovery、Manifest、Lock 与 Enablement State �
 Runtime 构造时从实际 Sandbox Policy 取得私有 Home，将其中的标准 Skill 目录以
 Workspace 来源加入 Catalog；模型工具和 Web Skill Control 使用同一 Home，不根据
 宿主 HOME 或另算的 Workspace ID 推断安装位置。私有 Skill 根不得经符号链接逃出
-该 Home。Catalog 保持构造期快照，新安装内容在 Runtime 重启后发现。
+该 Home。Catalog 固定这些发现范围，在 `skills_list` 首页请求与新 Turn 的
+技能选择入口重新扫描；完整扫描结果原子替换目录快照，变化时清理选择缓存。
+安装后可在当前 Turn 重新列出，无需重启。后续分页不重新扫描；
+若其他请求已刷新并改变目录，旧游标明确失效，不能跨快照混页。
+按句柄加载与依赖解析固定在同一目录快照上，旧句柄不能被刷新后的新内容替代。
 隔离 Chat 与使用独立工具集的子 Agent 同样构造各自的 Catalog，并将
 `skills_list`、`skills_read` 和 Turn Selection 绑定到这一份 Catalog。发现范围使用
 子 Workspace、实际子 Sandbox Home 及已配置的公共 Skill 目录，不继承父或兄弟的
@@ -919,6 +1016,12 @@ Turn Selection 会先保留被精确点名、Required 以及此前使用过的 S
 候选上限。Turn 会冻结 Name-to-handle Binding；加载时重新校验 Content Digest、
 Dependency Plan 与 Lock。`skills_read` 接受该冻结条目广告的
 任一精确 Handle（Skill、Package 或 Resource），并在结果中返回规范化 Skill Handle。
+候选摘要与 `skills_list` 保留真实 `SKILL.md` 来源路径；`skills_read` 在正文中逐项标明
+根 Skill 与依赖的 `source_path` 和 `resource_base`，结构化结果也保留路径。
+相对引用、脚本和资源以所属 Skill 的实际目录解析，不从 Skill 名称猜目录，
+也不沿用根 Skill 的目录解析依赖。工作区内资源用 `file_read`，外部路径可用
+`shell_read`，继续经过现有 Policy 与 Sandbox；来源元数据本身不授予权限。
+内置 Skill 的 `builtin://` 来源标记为自包含嵌入内容，不作为文件系统路径使用。
 真正无效或过期的 Handle 会返回结构化 `skills_list` 恢复动作，而不会直接终止 Turn。
 Execution Receipt 会记录选择规模、显式命中、Token Projection、Cache 使用情况以及
 Query/Candidate 截断。

@@ -15,6 +15,9 @@ import (
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
 )
 
+// Isolated posture: HOME/TMPDIR stay in PrivateTemp so compiler outputs
+// do not land on host /tmp. The shared-temp posture is
+// TestV1NativeSharedUserTempAllowsMktemp.
 func TestSandboxCompilerUsesPrivateTempAndHostTmpRemainsDenied(t *testing.T) {
 	if err := exec.Command("/usr/bin/xcrun", "--find", "clang++").Run(); err != nil {
 		t.Skipf("xcrun clang++ unavailable: %v", err)
@@ -32,10 +35,12 @@ func TestSandboxCompilerUsesPrivateTempAndHostTmpRemainsDenied(t *testing.T) {
 		t.Fatal(err)
 	}
 	backend, err := sandbox.NewPlatformBackend(sandbox.Options{
-		WorkspaceRoot: root,
-		PrivateTemp:   t.TempDir(),
-		HelperPath:    helper,
-		AllowNetwork:  false,
+		WorkspaceRoot:       root,
+		PrivateTemp:         t.TempDir(),
+		HelperPath:          helper,
+		AllowNetwork:        false,
+		EnvironmentContract: "v1",
+		EnvironmentProfile:  "isolated",
 	})
 	if err != nil {
 		t.Fatal(err)

@@ -14,6 +14,57 @@ func (r *Runtime) ReplayArtifactEvents(
 	return r.events.Replay(ctx, after)
 }
 
+func (r *Runtime) ReplayArtifactTurn(
+	ctx context.Context,
+	turnID protocol.TurnID,
+) ([]protocol.Event, error) {
+	if store, ok := r.events.(IndexedEventReplay); ok {
+		return store.ReplayTurn(ctx, turnID)
+	}
+	if turnID == "" {
+		return nil, nil
+	}
+	events, err := r.events.Replay(ctx, 0)
+	if err != nil {
+		return nil, err
+	}
+	return filterReplayEvents(events, func(event protocol.Event) bool {
+		return event.TurnID == turnID
+	}), nil
+}
+
+func (r *Runtime) ReplayArtifactKind(
+	ctx context.Context,
+	kind protocol.EventKind,
+) ([]protocol.Event, error) {
+	if store, ok := r.events.(IndexedEventReplay); ok {
+		return store.ReplayKind(ctx, kind)
+	}
+	if kind == "" {
+		return nil, nil
+	}
+	events, err := r.events.Replay(ctx, 0)
+	if err != nil {
+		return nil, err
+	}
+	return filterReplayEvents(events, func(event protocol.Event) bool {
+		return event.Kind == kind
+	}), nil
+}
+
+func filterReplayEvents(
+	events []protocol.Event,
+	keep func(protocol.Event) bool,
+) []protocol.Event {
+	result := make([]protocol.Event, 0)
+	for _, event := range events {
+		if keep(event) {
+			result = append(result, event)
+		}
+	}
+	return result
+}
+
 func (r *Runtime) PublishArtifactEvent(
 	operationID protocol.OperationID,
 	threadID protocol.ThreadID,

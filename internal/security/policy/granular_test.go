@@ -21,6 +21,40 @@ func TestGranularTightensAllowToAsk(t *testing.T) {
 	}
 }
 
+func TestGranularAskKeepsReadOnlyProcessProbesFrictionless(t *testing.T) {
+	runtime := DefaultRuntime(ModeAct, PermissionBypass)
+	runtime.Granular.Sandbox = SurfaceAsk
+	probe := Invocation{
+		CallID: "c1", Tool: "exec_command", Capability: CapabilityProcess,
+		Arguments: json.RawMessage(`{"command":"ls -la"}`), Validated: true,
+		Resources: []tool.Resource{{
+			Kind: "process", ID: "workspace", Access: tool.AccessRead, Tree: true,
+		}},
+		Access: tool.AccessRead, Sandbox: tool.SandboxStrong,
+	}
+	decision := runtime.Evaluate(probe)
+	if decision.Action != ActionAllow {
+		t.Fatalf("read-only probe decision = %+v, want allow under sandbox ask", decision)
+	}
+	mutating := probe
+	mutating.Resources = []tool.Resource{
+		{Kind: "process", ID: "workspace", Access: tool.AccessRead, Tree: true},
+		{Kind: "file", Path: "bin/app", Access: tool.AccessWrite},
+	}
+	mutating.Access = tool.AccessWrite
+	mutating.Arguments = json.RawMessage(
+		`{"command":"go build -o bin/app ./...","write_paths":["bin/app"]}`,
+	)
+	if decision := runtime.Evaluate(mutating); decision.Action != ActionAsk ||
+		decision.Code != "granular_ask" {
+		t.Fatalf("mutating decision = %+v, want granular ask", decision)
+	}
+	runtime.Granular.Sandbox = SurfaceDeny
+	if decision := runtime.Evaluate(probe); decision.Action != ActionDeny {
+		t.Fatalf("deny posture softened for read-only: %+v", decision)
+	}
+}
+
 func TestGranularAllowDoesNotBypassAutoApproval(t *testing.T) {
 	runtime := DefaultRuntime(ModeAct, PermissionAuto)
 	runtime.Granular.Sandbox = SurfaceAllow

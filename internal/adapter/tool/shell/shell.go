@@ -99,6 +99,13 @@ func registerWithBackend(
 	return registerProcessProtocol(registry, workspace, backend, manager)
 }
 
+const explorationInstructions = " For repository exploration, prefer file_list " +
+	"for directories and file_read for files, using paths discovered by tools. " +
+	"Run independent probes as separate calls. Preserve stderr and real exit " +
+	"status; do not hide diagnostics with 2>/dev/null or mask failures with " +
+	"|| true. Report confirmed absence of an optional path explicitly; do not " +
+	"treat permission, sandbox, or I/O failures as absence."
+
 func (t *Tool) Descriptor() tool.Descriptor {
 	description := "Run a read-only, network-isolated POSIX sh command. " +
 		"The sandbox permits workspace reads and private temporary files, " +
@@ -109,6 +116,7 @@ func (t *Tool) Descriptor() tool.Descriptor {
 		"pipelines report the last command's status."
 	description += " Commands run under POSIX sh, not Bash. Do not use Bash-only " +
 		"syntax such as process substitution (<(...))."
+	description += explorationInstructions
 	properties := map[string]any{
 		"command": map[string]any{"type": "string", "minLength": float64(1)},
 		"cwd":     map[string]any{"type": "string"},
@@ -454,6 +462,12 @@ func (t *Tool) resolveWritePaths(paths []string) ([]string, error) {
 			}
 		} else if err != nil {
 			return nil, err
+		} else if info.Mode()&os.ModeSymlink != 0 {
+			return nil, fmt.Errorf("write path %q is a symlink", path)
+		} else if info.IsDir() {
+			if canonical == t.workspace.Root() {
+				return nil, fmt.Errorf("write path %q cannot cover the entire workspace", path)
+			}
 		} else if !info.Mode().IsRegular() {
 			return nil, fmt.Errorf("write path %q is not a regular file", path)
 		}

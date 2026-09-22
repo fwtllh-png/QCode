@@ -31,6 +31,8 @@ subscriber_buffer = 64
 data_dir = "/absolute/path/outside/workspace/qcode-state"
 busy_timeout = "5s"
 event_retention = 1000000
+deleted_event_retention = "0s"
+archive_deleted_events = false
 
 [memory]
 enabled = false
@@ -74,6 +76,13 @@ turn_budget_tokens = 0       # 0 表示不设置累计 Turn Token 上限
 budget_usd = 0               # 0 表示不增加成本上限
 reasoning_effort = ""        # 空值为自适应；显式值固定 Effort
 native_search = false
+
+[execution.environment]
+contract = "v1"              # 只接受 v1；准备器是唯一环境权威
+profile = "native"           # native | isolated；主 Agent 默认 native，子 Agent 仍 isolated
+shared_user_temp = false     # 仅 native 可开；默认关，是安全合同变更
+source = ""                  # 空 = 启动进程环境；非空为用户绑定的来源 ID
+# [[execution.environment.resources]]  # 精确声明；不依赖语言适配器；仅可信配置
 
 
 `turn_budget_tokens` 统计一个 Turn 内所有模型调用的累计输入与输出。它不是模型的
@@ -248,11 +257,14 @@ State；`narrative_mode=post_turn` 另加非阻塞 Narrative 分区。`digest=of
 条目。同时在 History 之后的 Dynamic 区追加一块 write-once Turn Checkpoint，不写
 Stable、不插到 last-2 前面、不改写旧块。`checkpoint_max_bytes=0` 继承
 `summary_max_bytes`，再继承 `semantic_narrative_item_max_bytes`（默认 512）。
-超限只保留标题与检索指针。完整旧 Turn 原文用 `turn_history`（按 turn id）；
-首次投影是该 Turn 尾部结论，全文进 Handle。继续分页用 `result_get` 的
-`mode=tail` 或 `mode=query`，不要用默认 `summary`。首次写入后不再改写。被裁掉的旧 Turn 在 `session_state`
-给出确定性 `turn_history` 指针；升级前缺失的 Checkpoint 只回封 turn id，不
-猜测会话清单。继续原 Session 即可，不必开新会话。当 Plan 已有完成步骤或
+超限只保留标题与检索指针。闭合完成轮另存 Findings（终答与工具位点），不写入
+模型可见 Checkpoint 正文，以免旧轮对话清单漏进后续 Sample。完整旧 Turn 原文用
+`turn_history`（按 turn id）；首次投影是该 Turn 尾部，并以 Findings 索引结尾。
+继续分页用 `result_get` 的 `mode=tail` 或 `mode=query`（例如 `query=sites`），
+不要用默认 `summary`。首次写入后不再改写。被裁掉的旧 Turn 在 `session_state`
+给出确定性 `turn_history` 指针和 `preferred_turn`；升级前缺失的 Checkpoint
+只回封 turn id，不猜测会话清单。最近完成轮的终答与会话内工具位点进入
+mandatory Continuity 胶囊。继续原 Session 即可，不必开新会话。当 Plan 已有完成步骤或
 Working Set 已有已读路径时，`session_state` 还给出 Resume Fact：不要重复已
 完成步骤，下一项未完成工作取第一项 outstanding Plan 标题，并列出全部已读路径。
 Prompt 工作集仍按 `context.working_set.max_entries` 取 top-N，两层不要混用。
@@ -532,8 +544,12 @@ Memory 使用带稳定 ID 和 Generation 的记录存储。`user`、`workspace` 
 - `openai_responses`
 
 首次 Setup 的一级 Provider 包括 OpenAI、DeepSeek、GLM 和自定义
-OpenAI-Compatible。GLM 内置 `glm-5.3`、`glm-5.3-flash`，固定使用
+OpenAI-Compatible。GLM 内置 `glm-5.3`、`glm-5.3-flash`、`glm-5.3-flashx`，
+均属于 `glm` Provider，使用
 `https://open.bigmodel.cn/api/coding/paas/v4` 与 `openai_chat`。
+三个模型进入同一默认目录，可在聊天框的模型菜单中直接切换。
+FlashX 的 1M 上下文、128K 最大输出、图像输入及推理能力依据
+[智谱官方模型文档](https://docs.bigmodel.cn/cn/guide/models/vlm/glm-5.3-flash)。
 
 GLM Chat 请求默认同时发送 `stream=true` 与 `tool_stream=true`，遵循
 [智谱工具流式输出协议](https://docs.bigmodel.cn/cn/guide/capabilities/stream-tool)。
@@ -615,8 +631,80 @@ Fail Closed。
 持久化内容包括 Runtime Projection、Event、CAS、Session Metadata、Usage 和 Journal。
 项目仍处于公开发布前，不应依赖旧开发提交产生的数据库兼容性。
 
+当前状态 schema 为 5，CAS 内容及引用归属保存在 SQLite；旧版本数据库直接拒绝，
+不自动迁移或删除。切换前应停止 Runtime，再自行移走旧数据或选择新的空数据目录。
+
+`state.deleted_event_retention` 控制已删除会话的审计日志保留时长，默认 `"0s"`，
+接受非负 Go duration（如 `"24h"`）。到期日志在启动、删除会话后的维护或显式
+`Store.Maintain` 时清理；活跃会话和仅归档的会话不受影响。
+`state.archive_deleted_events` 默认 `false`；设为 `true` 时，清理前将目标日志写入
+`<data-dir>/event-archives/<sha256>.jsonl.gz`，归档独立保留，不进入在线重放。
+对应环境变量为 `QCODE_STATE_DELETED_EVENT_RETENTION` 和
+`QCODE_STATE_ARCHIVE_DELETED_EVENTS`，来源进入配置 provenance。无效或负时长拒绝加载。
+清理不重排事件序号或降低高水位，旧游标会跳过已清理事件并继续读取保留记录。
+
 `execution.journal.durable=true` 会保留中断 Turn 恢复所需的编辑证据，真实仓库应保持
 开启。
+
+`[execution.environment]` 是 Sandbox 执行环境契约的公开开关，默认已切换为
+`v1` + `native`：
+
+| 字段 | 默认 | 说明 |
+| --- | --- | --- |
+| `contract` | `v1` | 唯一合同。启用准备器；没有适配器时仍接受精确资源声明。配置拒绝其它值 |
+| `profile` | `native` | `native` 保留宿主 HOME 变量但仍按资源授权；`isolated` 使用私有 `sandbox-home`。子 Agent 运行时仍 isolated |
+| `shared_user_temp` | `false` | 允许当前用户系统临时区。仅 `profile=native` 可开；打开后不再承诺 Agent/Workspace 临时文件隔离 |
+| `source` | 空 | 空表示使用启动 QCode 的进程环境；非空是用户显式绑定的来源 ID |
+| `resources` | 空 | 用户声明的精确环境资源（`host_config` / `host_toolchain` / `cache` / `network` / `credential`+`use` / `shared_user_temp`）。不经适配器即可准备。`namespace=network` 可被空 `network_targets` 继承到 Session Gate。最多 64 条。`workspace` 仍走命令 `write_paths`。仅可信配置可设；未信任仓库文件忽略。准备器还会合并平台 PATH 源并把这些目录列为 `host_toolchain`。`native` 下 Git 适配器还会加入已存在的用户 git 配置文件，不加入凭证文件 |
+| `auth_services` | 空 | 进程外制品源认证协议。当前只接受 `protocol = "goproxy"`。最多 8 条声明，实现只绑定 1 个 GOPROXY 服务。仅可信配置可设；未信任仓库文件忽略。第二种协议未开放。配置为空时，runtime 仍会绑定宿主 `go env GOPROXY` 已有的 userinfo 或宿主 `~/.netrc`；没有宿主凭证才保持未绑定。绑定后对同一上游主机的 CONNECT / 绝对形式请求会被拒绝，避免绕过认证服务 |
+
+对应环境变量为 `QCODE_ENVIRONMENT_CONTRACT`、`QCODE_ENVIRONMENT_PROFILE`、
+`QCODE_ENVIRONMENT_SHARED_USER_TEMP` 和 `QCODE_ENVIRONMENT_SOURCE`，来源进入
+configuration provenance。声明列表和认证服务没有环境变量入口，只能写在可信
+配置文件里。`isolated` 与 `shared_user_temp=true` 组合拒绝加载。声明了
+`shared_user_temp` 资源时必须同时打开该开关。GOPROXY 认证服务把长期凭证留在
+宿主解析器，执行进程只看到 loopback 本地 `GOPROXY`（指向 workspace
+级稳定通道端口，沙箱配置预授权，模块拉取不需要 `allow_loopback`）；
+`upstream` 禁止嵌入
+userinfo，`|direct` 不会随重写进入进程。单次上游获取上限为拨号 10s、
+TLS 握手 10s、客户端默认 30s；`upstream_timeout_ms`（0 保持默认，负值拒绝）
+可按仓库调高以覆盖大体积模块归档。认证服务按 30 分钟 TTL 缓存成功响应、
+按 5 分钟 TTL 缓存 404/410 负面响应（总预算 32 MiB），跨命令复用模块下载。
+Linux/Windows 在 Session 通道交付前拒绝绑定该服务。
+声明示例：
+
+```toml
+[execution.environment]
+contract = "v1"
+profile = "native"
+
+[[execution.environment.resources]]
+name = "tool-config"
+namespace = "host_config"
+access = "read"
+path = "/opt/tool/config.toml"
+
+[[execution.environment.resources]]
+name = "tool-cache"
+namespace = "cache"
+access = "write"
+path = "sandbox-home/cache/tool"
+env = "TOOL_CACHE"
+tree = true
+
+[[execution.environment.auth_services]]
+protocol = "goproxy"
+upstream = "https://goproxy.example"
+prefixes = ["example.com/qcode/"]
+upstream_timeout_ms = 120000
+credential = { kind = "env", name = "GOPROXY_TOKEN" }
+```
+
+探测超时和输出上限继续使用已有的 `ToolchainProbeTimeout` 与
+`ToolchainProbeMaxOutputBytes`，不另设隐藏阈值。进程失败的
+`error_category` / `required_action` 只来自 Gate 或后端事实，
+不从命令文本推断。完整设计见
+[Sandbox 执行环境重构方案](./sandbox-execution-environment-plan.md)。
 
 stdio MCP 配置示例：
 

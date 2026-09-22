@@ -7,12 +7,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 
 	"github.com/fwtllh-png/QCode/internal/runtime/agent/turnkernel"
 )
 
 const (
-	domainFactStorageVersion = 1
+	domainFactStorageVersion = 2
 	domainFactSnapshotEvery  = 16
 )
 
@@ -26,16 +27,22 @@ type factQueryer interface {
 }
 
 type storedDomainFact struct {
-	StorageVersion      uint32                                `json:"storage_version"`
-	TurnID              string                                `json:"turn_id"`
-	Sequence            uint64                                `json:"sequence"`
-	Command             string                                `json:"command"`
-	Event               turnkernel.Event                      `json:"event"`
-	Snapshot            json.RawMessage                       `json:"snapshot,omitempty"`
-	Delta               map[string]json.RawMessage            `json:"delta,omitempty"`
-	ObjectDelta         map[string]map[string]json.RawMessage `json:"object_delta,omitempty"`
-	PreviousStateDigest string                                `json:"previous_state_digest,omitempty"`
-	StateDigest         string                                `json:"state_digest"`
+	StorageVersion      uint32                     `json:"storage_version"`
+	TurnID              string                     `json:"turn_id"`
+	Sequence            uint64                     `json:"sequence"`
+	Command             string                     `json:"command"`
+	Event               turnkernel.Event           `json:"event"`
+	Snapshot            json.RawMessage            `json:"snapshot,omitempty"`
+	Delta               map[string]json.RawMessage `json:"delta,omitempty"`
+	ObjectDelta         map[string]objectPatch     `json:"object_delta,omitempty"`
+	PreviousStateDigest string                     `json:"previous_state_digest,omitempty"`
+	StateDigest         string                     `json:"state_digest"`
+}
+
+// Set and Remove are separate so a JSON null remains a value, not a deletion.
+type objectPatch struct {
+	Set    map[string]json.RawMessage `json:"set,omitempty"`
+	Remove []string                   `json:"remove,omitempty"`
 }
 
 func encodeDomainFact(
@@ -240,7 +247,7 @@ func restoreState(
 ) (turnkernel.State, error) {
 	var state turnkernel.State
 	if len(stored.Snapshot) != 0 {
-		if len(stored.Delta) != 0 {
+		if len(stored.Delta) != 0 || len(stored.ObjectDelta) != 0 {
 			return state, errors.New("snapshot and delta are mutually exclusive")
 		}
 		if err := json.Unmarshal(stored.Snapshot, &state); err != nil {
@@ -263,25 +270,24 @@ func restoreState(
 		}
 	}
 	for key, patch := range stored.ObjectDelta {
+		if _, replaced := stored.Delta[key]; replaced {
+			return state, fmt.Errorf("object delta %q also has a replacement", key)
+		}
 		var object map[string]json.RawMessage
-		if encoded := current[key]; len(encoded) != 0 {
-			if err := json.Unmarshal(encoded, &object); err != nil {
-				return state, fmt.Errorf(
-					"restore object delta %q: %w",
-					key,
-					err,
-				)
-			}
+		if !isJSONObject(current[key]) {
+			return state, fmt.Errorf("object delta %q has no object base", key)
 		}
-		if object == nil {
-			object = make(map[string]json.RawMessage)
+		if err := json.Unmarshal(current[key], &object); err != nil {
+			return state, fmt.Errorf("restore object delta %q: %w", key, err)
 		}
-		for member, value := range patch {
-			if bytes.Equal(value, []byte("null")) {
-				delete(object, member)
-			} else {
-				object[member] = value
+		for _, member := range patch.Remove {
+			if _, set := patch.Set[member]; set {
+				return state, fmt.Errorf("object delta %q both sets and removes %q", key, member)
 			}
+			delete(object, member)
+		}
+		for member, value := range patch.Set {
+			object[member] = value
 		}
 		encoded, err := json.Marshal(object)
 		if err != nil {
@@ -299,30 +305,30 @@ func restoreState(
 	return state, nil
 }
 
-// fieldDelta diffs two canonical state encodings at field granularity.
-// sample_ledger is diffed per sample so one new sample does not rewrite every
-// retained assembly.
+// fieldDelta compares every object by member, including effect/call ledgers
+// and nested state records. Scalar, array and object-type changes replace the
+// field. No state field name determines the storage algorithm.
 func fieldDelta(
 	left map[string]json.RawMessage,
 	right map[string]json.RawMessage,
 ) (
 	map[string]json.RawMessage,
-	map[string]map[string]json.RawMessage,
+	map[string]objectPatch,
 	error,
 ) {
 	delta := make(map[string]json.RawMessage)
-	objectDelta := make(map[string]map[string]json.RawMessage)
+	objectDelta := make(map[string]objectPatch)
 	for key, value := range right {
 		if bytes.Equal(left[key], value) {
 			delete(left, key)
 			continue
 		}
-		if key == "sample_ledger" {
+		if isJSONObject(left[key]) && isJSONObject(value) {
 			patch, patchErr := rawObjectDelta(left[key], value)
 			if patchErr != nil {
 				return nil, nil, patchErr
 			}
-			if len(patch) != 0 {
+			if len(patch.Set) != 0 || len(patch.Remove) != 0 {
 				objectDelta[key] = patch
 			}
 		} else {
@@ -339,27 +345,33 @@ func fieldDelta(
 func rawObjectDelta(
 	previous json.RawMessage,
 	current json.RawMessage,
-) (map[string]json.RawMessage, error) {
+) (objectPatch, error) {
 	var left, right map[string]json.RawMessage
 	if len(previous) != 0 {
 		if err := json.Unmarshal(previous, &left); err != nil {
-			return nil, err
+			return objectPatch{}, err
 		}
 	}
 	if err := json.Unmarshal(current, &right); err != nil {
-		return nil, err
+		return objectPatch{}, err
 	}
-	patch := make(map[string]json.RawMessage)
+	patch := objectPatch{Set: make(map[string]json.RawMessage)}
 	for key, value := range right {
 		if !bytes.Equal(left[key], value) {
-			patch[key] = value
+			patch.Set[key] = value
 		}
 		delete(left, key)
 	}
 	for key := range left {
-		patch[key] = json.RawMessage("null")
+		patch.Remove = append(patch.Remove, key)
 	}
+	sort.Strings(patch.Remove)
 	return patch, nil
+}
+
+func isJSONObject(raw json.RawMessage) bool {
+	raw = bytes.TrimSpace(raw)
+	return len(raw) != 0 && raw[0] == '{'
 }
 
 func stateObject(
@@ -485,5 +497,15 @@ func loadEncodedFactsFrom(
 			append([]byte(nil), encoded...),
 		)
 	}
-	return encodedFacts, rows.Err()
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return nil, err
+	}
+	for index, encoded := range encodedFacts {
+		hydrated, err := hydrateContent(ctx, queryer, encoded)
+		if err != nil {
+			return nil, err
+		}
+		encodedFacts[index] = hydrated
+	}
+	return encodedFacts, nil
 }

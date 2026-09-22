@@ -41,21 +41,25 @@ var (
 )
 
 type Options struct {
-	DataDir     string
-	BusyTimeout time.Duration
+	DataDir               string
+	BusyTimeout           time.Duration
+	DeletedEventRetention time.Duration
+	ArchiveDeletedEvents  bool
 }
 
 type Store struct {
 	// mu serializes durable writes and guards closed. Event readers hold it
 	// only to freeze committed cursors or identity, never during log I/O.
 	// readers keeps storage open for those reads without blocking appends.
-	readers sync.RWMutex
-	mu      sync.RWMutex
-	root    string
-	sqlite  *sqlitestate.Store
-	events  *eventlog.Log
-	content *cas.Store
-	closed  bool
+	readers               sync.RWMutex
+	mu                    sync.RWMutex
+	root                  string
+	sqlite                *sqlitestate.Store
+	events                *eventlog.Log
+	content               *cas.Store
+	closed                bool
+	deletedEventRetention time.Duration
+	archiveDeletedEvents  bool
 	// batchMu guards the group-commit queue: appends that arrive while a
 	// flush is active join its batch, sharing one reservation transaction,
 	// one eventlog fsync, and one projection transaction. Producers enqueue
@@ -71,12 +75,20 @@ type batchEntry struct {
 	done  chan error
 }
 
+type reservedBatchError struct{ err error }
+
+func (e *reservedBatchError) Error() string { return e.err.Error() }
+func (e *reservedBatchError) Unwrap() error { return e.err }
+
 func Open(ctx context.Context, options Options) (_ *Store, resultErr error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 	if options.DataDir == "" {
 		return nil, errors.New("state data directory is required")
+	}
+	if options.DeletedEventRetention < 0 {
+		return nil, errors.New("deleted event retention must be non-negative")
 	}
 	root, err := filepath.Abs(options.DataDir)
 	if err != nil {
@@ -111,8 +123,8 @@ func Open(ctx context.Context, options Options) (_ *Store, resultErr error) {
 			_ = log.Close(context.Background())
 		}
 	}()
-	content, err := cas.Open(filepath.Join(root, "cas-v1"))
-	if err != nil {
+	content := cas.NewRelational(database.DB())
+	if err := content.RecoverStages(ctx); err != nil {
 		return nil, err
 	}
 	defer func() {
@@ -123,12 +135,20 @@ func Open(ctx context.Context, options Options) (_ *Store, resultErr error) {
 
 	store := &Store{
 		root: root, sqlite: database, events: log, content: content,
+		deletedEventRetention: options.DeletedEventRetention,
+		archiveDeletedEvents:  options.ArchiveDeletedEvents,
 	}
 	if err := store.ensureSessionSearch(ctx); err != nil {
 		return nil, err
 	}
+	if err := store.finishEventPruning(ctx); err != nil {
+		return nil, err
+	}
 	if err := store.reconcile(ctx); err != nil {
 		return nil, err
+	}
+	if err := store.Maintain(ctx); err != nil {
+		return nil, fmt.Errorf("maintain state: %w", err)
 	}
 	return store, nil
 }
@@ -145,9 +165,8 @@ func (s *Store) Append(ctx context.Context, event protocol.Event) error {
 
 // AppendEvents persists protocol events to the durable eventlog and updates
 // event_index / reservations. It MUST NOT mutate relational thread metadata.
-// Streaming noise (see eventlog.ShouldPersist) still consumes a sequence slot
-// via an abandoned reservation so LastSequence / fork cursors stay monotonic,
-// but is not written to JSONL.
+// Streaming noise advances only event_watermark. It creates neither a
+// reservation row nor a JSONL record.
 func (s *Store) AppendEvents(ctx context.Context, events ...protocol.Event) error {
 	for _, event := range events {
 		if err := s.appendOne(ctx, event); err != nil {
@@ -228,6 +247,11 @@ func (s *Store) flushBatch(batch []batchEntry) {
 		return
 	}
 	for index := range batch {
+		var reserved *reservedBatchError
+		if errors.As(err, &reserved) && !eventlog.ShouldPersist(batch[index].event.Kind) {
+			batch[index].done <- nil
+			continue
+		}
 		batch[index].done <- s.appendWithSelfHealLocked(
 			context.Background(),
 			batch[index].event,
@@ -280,10 +304,10 @@ func (s *Store) appendBatchLocked(
 				_ = s.markReservation(context.Background(), event.Sequence, "abandoned")
 			}
 		}
-		return err
+		return &reservedBatchError{err: err}
 	}
 	if err := s.commitProjectionBatch(ctx, persisted, evidences); err != nil {
-		return errors.Join(ErrProjection, err)
+		return &reservedBatchError{err: errors.Join(ErrProjection, err)}
 	}
 	return nil
 }
@@ -297,7 +321,7 @@ func (s *Store) reserveBatch(
 	return s.sqlite.Transaction(ctx, func(tx *sql.Tx) error {
 		var last protocol.Cursor
 		if err := tx.QueryRowContext(
-			ctx, "SELECT COALESCE(MAX(sequence), 0) FROM event_reservations",
+			ctx, "SELECT sequence FROM event_watermark WHERE id = 1",
 		).Scan(&last); err != nil {
 			return fmt.Errorf("read event sequence high watermark: %w", err)
 		}
@@ -308,24 +332,20 @@ func (s *Store) reserveBatch(
 					ErrSequenceReserved, event.Sequence, last,
 				)
 			}
-			status := "reserved"
-			if !eventlog.ShouldPersist(event.Kind) {
-				// No log append follows streaming noise. Reserve its
-				// sequence in the final state atomically instead of
-				// committing a second UPDATE.
-				status = "abandoned"
-			}
-			if _, err := tx.ExecContext(
-				ctx,
-				`INSERT INTO event_reservations(sequence, event_id, status, created_at, updated_at)
+			if eventlog.ShouldPersist(event.Kind) {
+				if _, err := tx.ExecContext(
+					ctx,
+					`INSERT INTO event_reservations(sequence, event_id, status, created_at, updated_at)
 				 VALUES (?, ?, ?, ?, ?)`,
-				event.Sequence, event.ID, status, timestamp(event.CreatedAt), timestamp(time.Now()),
-			); err != nil {
-				return fmt.Errorf("reserve event sequence %d: %w", event.Sequence, err)
+					event.Sequence, event.ID, "reserved", timestamp(event.CreatedAt), timestamp(time.Now()),
+				); err != nil {
+					return fmt.Errorf("reserve event sequence %d: %w", event.Sequence, err)
+				}
 			}
 			last = event.Sequence
 		}
-		return nil
+		_, err := tx.ExecContext(ctx, "UPDATE event_watermark SET sequence = ? WHERE id = 1", last)
+		return err
 	})
 }
 
@@ -503,6 +523,112 @@ func (s *Store) EventByID(
 	return record.Event, true, nil
 }
 
+// ReplayTurn reads one Turn from event_index_turn_sequence, then verifies
+// each matching log record. An empty or unknown Turn returns no events and
+// does not scan the log prefix.
+func (s *Store) ReplayTurn(
+	ctx context.Context,
+	turnID protocol.TurnID,
+) ([]protocol.Event, error) {
+	if turnID == "" {
+		return nil, nil
+	}
+	events, err := s.replayIndexed(
+		ctx,
+		`SELECT sequence FROM event_index WHERE turn_id = ? ORDER BY sequence`,
+		turnID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	for _, event := range events {
+		if event.TurnID != turnID {
+			return nil, fmt.Errorf(
+				"event index turn %q sequence %d has no matching log event",
+				turnID,
+				event.Sequence,
+			)
+		}
+	}
+	return events, nil
+}
+
+// ReplayKind reads events of one kind from event_index, then verifies each
+// matching log record. An empty or unknown kind returns no events and does
+// not scan the log prefix.
+func (s *Store) ReplayKind(
+	ctx context.Context,
+	kind protocol.EventKind,
+) ([]protocol.Event, error) {
+	if kind == "" {
+		return nil, nil
+	}
+	events, err := s.replayIndexed(
+		ctx,
+		`SELECT sequence FROM event_index WHERE kind = ? ORDER BY sequence`,
+		kind,
+	)
+	if err != nil {
+		return nil, err
+	}
+	for _, event := range events {
+		if event.Kind != kind {
+			return nil, fmt.Errorf(
+				"event index kind %q sequence %d has no matching log event",
+				kind,
+				event.Sequence,
+			)
+		}
+	}
+	return events, nil
+}
+
+func (s *Store) replayIndexed(
+	ctx context.Context,
+	query string,
+	arg any,
+) ([]protocol.Event, error) {
+	s.readers.RLock()
+	defer s.readers.RUnlock()
+	s.mu.RLock()
+	if s.closed {
+		s.mu.RUnlock()
+		return nil, ErrClosed
+	}
+	rows, err := s.sqlite.DB().QueryContext(ctx, query, arg)
+	if err != nil {
+		s.mu.RUnlock()
+		return nil, err
+	}
+	var sequences []protocol.Cursor
+	for rows.Next() {
+		var sequence protocol.Cursor
+		if err := rows.Scan(&sequence); err != nil {
+			_ = rows.Close()
+			s.mu.RUnlock()
+			return nil, err
+		}
+		sequences = append(sequences, sequence)
+	}
+	err = errors.Join(rows.Err(), rows.Close())
+	s.mu.RUnlock()
+	if err != nil {
+		return nil, err
+	}
+	events := make([]protocol.Event, 0, len(sequences))
+	for _, sequence := range sequences {
+		record, found, err := s.events.ReadRecord(ctx, sequence)
+		if err != nil || !found {
+			return nil, fmt.Errorf(
+				"event index sequence %d has no matching log event",
+				sequence,
+			)
+		}
+		events = append(events, record.Event)
+	}
+	return events, nil
+}
+
 // ReplayLimit bounds durable replay at a frozen committed watermark.
 func (s *Store) ReplayLimit(
 	ctx context.Context,
@@ -584,36 +710,7 @@ func (s *Store) CloseAll(ctx context.Context) error {
 }
 
 func (s *Store) reserve(ctx context.Context, event protocol.Event) error {
-	status := "reserved"
-	if !eventlog.ShouldPersist(event.Kind) {
-		// No log append follows streaming noise. Reserve its sequence in the
-		// final state atomically instead of committing a second UPDATE.
-		status = "abandoned"
-	}
-	return s.sqlite.Transaction(ctx, func(tx *sql.Tx) error {
-		var last protocol.Cursor
-		if err := tx.QueryRowContext(
-			ctx, "SELECT COALESCE(MAX(sequence), 0) FROM event_reservations",
-		).Scan(&last); err != nil {
-			return fmt.Errorf("read event sequence high watermark: %w", err)
-		}
-		if event.Sequence <= last {
-			return fmt.Errorf(
-				"%w: sequence=%d high_watermark=%d",
-				ErrSequenceReserved, event.Sequence, last,
-			)
-		}
-		_, err := tx.ExecContext(
-			ctx,
-			`INSERT INTO event_reservations(sequence, event_id, status, created_at, updated_at)
-			 VALUES (?, ?, ?, ?, ?)`,
-			event.Sequence, event.ID, status, timestamp(event.CreatedAt), timestamp(time.Now()),
-		)
-		if err != nil {
-			return fmt.Errorf("reserve event sequence %d: %w", event.Sequence, err)
-		}
-		return nil
-	})
+	return s.reserveBatch(ctx, []protocol.Event{event})
 }
 
 func (s *Store) reservation(
@@ -725,7 +822,7 @@ func (s *Store) commitProjectionTx(
 func (s *Store) lastReserved(ctx context.Context) (protocol.Cursor, error) {
 	var last protocol.Cursor
 	if err := s.sqlite.DB().QueryRowContext(
-		ctx, "SELECT COALESCE(MAX(sequence), 0) FROM event_reservations",
+		ctx, "SELECT sequence FROM event_watermark WHERE id = 1",
 	).Scan(&last); err != nil {
 		return 0, fmt.Errorf("read last reserved event sequence: %w", err)
 	}
@@ -735,6 +832,12 @@ func (s *Store) lastReserved(ctx context.Context) (protocol.Cursor, error) {
 func (s *Store) reconcile(ctx context.Context) error {
 	records, err := s.events.ReplayRecords(ctx, 0)
 	if err != nil {
+		return err
+	}
+	if _, err := s.sqlite.DB().ExecContext(ctx, `
+		UPDATE event_watermark SET sequence = max(sequence,
+		(SELECT COALESCE(MAX(sequence), 0) FROM event_reservations), ?)
+		WHERE id = 1`, lastRecordSequence(records)); err != nil {
 		return err
 	}
 	projections, err := s.committedProjections(ctx)
@@ -816,6 +919,13 @@ func (s *Store) reconcile(ctx context.Context) error {
 		}
 	}
 	return s.reconcileSessionSearch(ctx, records)
+}
+
+func lastRecordSequence(records []eventlog.Record) protocol.Cursor {
+	if len(records) == 0 {
+		return 0
+	}
+	return records[len(records)-1].Event.Sequence
 }
 
 type committedEventProjection struct {

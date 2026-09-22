@@ -40,6 +40,11 @@ type approvalEntry struct {
 	once            bool
 	baseFingerprint string
 	sequence        uint64
+	// prefix and scope carry the reusable shell grant's static argv and
+	// scope fingerprint so later commands extending the approved argv
+	// match without a fresh approval.
+	prefix []string
+	scope  string
 }
 
 type ApprovalCache struct {
@@ -127,6 +132,7 @@ func (c *ApprovalCache) Add(request ApprovalRequest, scope ApprovalScope) error 
 		}
 		c.grantKeys[request.Grant.Key] = approvalEntry{
 			expiresAt: request.ExpiresAt, sequence: c.next,
+			prefix: request.Grant.Prefix, scope: request.Grant.scope,
 		}
 	}
 	pruneApprovalEntries(c.entries, c.limit)
@@ -168,14 +174,30 @@ func (c *ApprovalCache) matchGrant(invocation Invocation, now time.Time) bool {
 		return false
 	}
 	entry, exists := c.grantKeys[grant.Key]
-	if !exists {
-		return false
-	}
-	if approvalExpired(entry, now) {
+	if exists {
+		if !approvalExpired(entry, now) {
+			return true
+		}
 		delete(c.grantKeys, grant.Key)
+	}
+	if len(grant.Prefix) == 0 {
 		return false
 	}
-	return true
+	// Prefix matching: an approved single-segment command covers later
+	// commands that extend its argv in the same scope (cwd and resources).
+	// Composite candidates never carry a prefix, so an approved prefix can
+	// never absorb a piped or chained command.
+	for key, entry := range c.grantKeys {
+		if approvalExpired(entry, now) {
+			delete(c.grantKeys, key)
+			continue
+		}
+		if len(entry.prefix) != 0 && entry.scope == grant.scope &&
+			argvPrefix(grant.Prefix, entry.prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *ApprovalCache) matchInvocationExact(invocation Invocation, now time.Time) bool {

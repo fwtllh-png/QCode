@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/fwtllh-png/QCode/internal/persist/sqlkit"
+	"github.com/fwtllh-png/QCode/internal/persist/state/cas"
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
 )
 
@@ -462,8 +463,7 @@ func (r *Repository) PresentationReadFence(
 		&sql.TxOptions{ReadOnly: true},
 		func(tx *sql.Tx) error {
 			if err := tx.QueryRowContext(ctx, `
-				SELECT COALESCE(MAX(sequence), 0)
-				FROM event_reservations`,
+				SELECT sequence FROM event_watermark WHERE id = 1`,
 			).Scan(&fence.ThroughSequence); err != nil {
 				return fmt.Errorf("read presentation event watermark: %w", err)
 			}
@@ -774,7 +774,8 @@ func (r *Repository) deleteLifecycle(
 		if err := sqlkit.RequireAffected(result, 1); err != nil {
 			return ErrLifecycleRevisionConflict
 		}
-		return nil
+		_, err = cas.CollectTx(ctx, tx)
+		return err
 	})
 	if err != nil {
 		return protocol.SessionDeleteResult{}, err

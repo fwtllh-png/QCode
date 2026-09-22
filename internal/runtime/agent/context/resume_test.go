@@ -74,7 +74,7 @@ func TestFormatResumeHintIncludesLocatedSites(t *testing.T) {
 		[]string{"paxos_core.cpp:412", "types.h:88"},
 	)
 	if !strings.Contains(hint, "Located sites: paxos_core.cpp:412, types.h:88.") ||
-		!strings.Contains(hint, "file_read those paths only at a listed line") ||
+		!strings.Contains(hint, "Start file_read at a listed line") ||
 		!strings.Contains(hint, "Next open work: fix overflow in accept().") {
 		t.Fatalf("hint = %q", hint)
 	}

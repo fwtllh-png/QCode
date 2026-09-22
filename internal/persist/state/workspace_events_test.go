@@ -63,6 +63,14 @@ func TestWorkspaceEventStoreIsolatesReplayAndDoesNotOwnSharedStore(
 	}
 	assertWorkspaceReplay(eventsA, eventA.ID)
 	assertWorkspaceReplay(eventsB, eventB.ID)
+	turnA, err := eventsA.ReplayTurn(t.Context(), "turn-a")
+	if err != nil || len(turnA) != 1 || turnA[0].ID != eventA.ID {
+		t.Fatalf("ReplayTurn A = %+v err=%v", turnA, err)
+	}
+	foreignTurn, err := eventsA.ReplayTurn(t.Context(), "turn-b")
+	if err != nil || len(foreignTurn) != 0 {
+		t.Fatalf("ReplayTurn A leaked Workspace B: %+v err=%v", foreignTurn, err)
+	}
 	for name, eventStore := range map[string]*state.WorkspaceEventStore{
 		"session-a": eventsA, "session-b": eventsB,
 	} {

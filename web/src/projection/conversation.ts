@@ -639,11 +639,13 @@ export class ConversationProjection {
     const node = this.toolNode(event);
     if (!node) return;
     const output = stringValue(event.data.output) || node.output;
-    const failed = Boolean(event.data.is_error);
+    const failed = Boolean(event.data.is_error) || commandFailed(node.command);
     if (failed && isPlanGateRetry(event.data.recovery)) {
       this.remove(node.id);
       return;
     }
+    const execution = recordValue(event.data.execution);
+    const recovery = recordValue(event.data.recovery);
     const changes = Array.isArray(event.data.changes)
       ? event.data.changes.filter(isRecord)
       : [];
@@ -655,18 +657,18 @@ export class ConversationProjection {
     this.put({
       ...node,
       variant,
-      summary: failed
-        ? firstNonEmptyLine(output) || "Tool failed"
-        : changes.length > 0 && node.variant !== "shell"
-          ? changeSummary(changes)
-          : node.summary,
-      state: failed ? "failed" : "completed",
+      summary: !failed && changes.length > 0 && node.variant !== "shell"
+        ? changeSummary(changes)
+        : node.summary,
+      state: failed ? "failed" : node.command?.status === "started" ? "running" : "completed",
       output,
-      errorSummary: failed ? firstNonEmptyLine(output) || "Tool failed" : "",
-      execution: isRecord(event.data.execution) ? event.data.execution : undefined,
+      errorSummary: failed
+        ? toolFailureSummary(recovery, execution, node.command, output)
+        : "",
+      execution,
       truncated: Boolean(event.data.truncated),
       changes,
-      recovery: isRecord(event.data.recovery) ? event.data.recovery : undefined,
+      recovery,
       contextText: output || undefined
     });
   }
@@ -694,19 +696,22 @@ export class ConversationProjection {
     if (!node) return;
     const exitCode = numberValue(event.data.exit_code);
     const durationMS = numberValue(event.data.duration_ms);
-    const failed = stringValue(event.data.status) === "failed" ||
-      (exitCode !== undefined && exitCode !== 0);
+    const status = stringValue(event.data.status);
+    const command = {
+      command: stringValue(event.data.command),
+      status,
+      ...(exitCode === undefined ? {} : {exitCode}),
+      ...(durationMS === undefined ? {} : {durationMS})
+    };
+    const failed = commandFailed(command);
     this.put({
       ...node,
+      summary: firstNonEmptyLine(command.command) || node.summary,
+      state: status === "started" ? "running" : failed ? "failed" : "completed",
       errorSummary: failed
-        ? stringValue(event.data.command)
-        : node.errorSummary,
-      command: {
-        command: stringValue(event.data.command),
-        status: stringValue(event.data.status),
-        ...(exitCode === undefined ? {} : {exitCode}),
-        ...(durationMS === undefined ? {} : {durationMS})
-      }
+        ? toolFailureSummary(node.recovery, node.execution, command, node.output)
+        : "",
+      command
     });
   }
 
@@ -893,12 +898,13 @@ export class ConversationProjection {
         const id = `agent-tool-${callID}`;
         const previous = node.activities.find((item) => item.id === id);
         if (!previous) break;
-        const output = stringValue(data.output);
         const failed = Boolean(data.is_error);
         this.updateAgent(node, Object.freeze({
           ...previous,
           summary: failed
-            ? firstNonEmptyLine(output) || "Tool failed"
+            ? toolFailureSummary(
+              data.recovery, data.execution, undefined, stringValue(data.output) || undefined
+            )
             : previous.summary,
           state: failed ? "failed" : "completed",
           callID
@@ -1597,6 +1603,90 @@ function toolTitle(tool: string): string {
   return tool
     .replaceAll("_", " ")
     .replace(/\b\w/g, (value) => value.toUpperCase());
+}
+
+type ToolCommand = Extract<ConversationNode, {kind: "tool"}>["command"];
+
+function commandFailed(command: ToolCommand): boolean {
+  return command !== undefined && (
+    command.status === "failed" ||
+    command.status === "timed_out" ||
+    command.status === "canceled" ||
+    (command.exitCode !== undefined && command.exitCode !== 0)
+  );
+}
+
+function toolFailureSummary(
+  recoveryValue: unknown,
+  executionValue: unknown,
+  command?: ToolCommand,
+  output?: string
+): string {
+  const recovery = recordValue(recoveryValue);
+  const category = stringValue(recovery?.error_category);
+  if (category) {
+    const path = stringValue(recovery?.path);
+    const action = stringValue(recovery?.required_action);
+    return [
+      category.replaceAll("_", " "),
+      path,
+      action ? `Required action: ${action}` : ""
+    ].filter(Boolean).join(" · ");
+  }
+
+  const execution = recordValue(executionValue);
+  // Only the last attempt describes this result; an earlier denial may have
+  // been resolved by an approved retry.
+  const attempts = execution?.attempts;
+  const last = Array.isArray(attempts) ? recordValue(attempts.at(-1)) : undefined;
+  const attempt = last && ["failed", "rejected", "canceled"].includes(stringValue(last.status))
+    ? last
+    : undefined;
+  const denial = recordValue(attempt?.denial);
+  const denialReason = stringValue(denial?.reason_code);
+  if (denialReason) {
+    return [denialReason.replaceAll("_", " "), stringValue(denial?.resource)]
+      .filter(Boolean).join(" · ");
+  }
+  if (command?.status === "timed_out") return "Command timed out";
+  if (command?.status === "canceled") return "Command canceled";
+  if (execution?.terminal_status === "canceled") return "Tool canceled";
+
+  const label = execution?.terminal_status === "rejected" ? "Tool rejected" : "Tool failed";
+  const reason = stringValue(attempt?.reason);
+  // These guard codes only repeat that execution failed; they do not explain
+  // the cause and must not conceal an available process exit code.
+  if (reason && reason !== "tool_error" && reason !== "execute_error") {
+    return `${label}: ${reason.replaceAll("_", " ")}`;
+  }
+  // Surface the command's own output tail as labeled evidence, never as an
+  // inferred cause: probes and builds put the reason in their last line, and
+  // a bare "no structured error details" line hides it while the data is
+  // already on the node.
+  const detail = failureOutputLine(output);
+  if (command?.exitCode !== undefined && command.exitCode !== 0) {
+    return detail
+      ? `Command exited with code ${command.exitCode} · output: "${detail}"`
+      : `Command exited with code ${command.exitCode}; no structured error details were reported.`;
+  }
+  return detail
+    ? `${label} · output: "${detail}"`
+    : `${label}; no structured error details were reported.`;
+}
+
+// failureOutputLine returns the last non-empty line of a failed command's
+// output, bounded for a one-line summary. It is presentation of recorded
+// evidence, not classification.
+function failureOutputLine(output: unknown): string {
+  const lines = stringValue(output)
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line !== "");
+  const last = lines.at(-1) ?? "";
+  if (last.length > 160) {
+    return `${last.slice(0, 157)}…`;
+  }
+  return last;
 }
 
 function toolSummary(tool: string, value: unknown): string {

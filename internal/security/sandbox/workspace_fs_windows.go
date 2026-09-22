@@ -290,7 +290,7 @@ func (w *Workspace) validateHandle(handle windows.Handle, directory bool) error 
 		return errors.New("workspace object crosses a volume boundary")
 	}
 	if !directory && information.NumberOfLinks > 1 {
-		return errors.New("workspace file is multiply linked")
+		return ErrMultiplyLinked
 	}
 	return nil
 }

@@ -197,20 +197,28 @@ export function ToolDisclosure({
         role={expandable ? "button" : undefined}
         tabIndex={expandable ? 0 : undefined}
         aria-expanded={expandable ? open : undefined}
-        aria-label={`${entry.title} ${entry.errorSummary || entry.summary}`}
+        aria-label={`${entry.title} ${entry.summary}`}
         onClick={toggle}
         onKeyDown={toggleFromKeyboard}
       >
         <DisclosureLeading open={open} icon={toolIcon(entry.variant)} />
         <span className="disclosureTitle">{entry.title}</span>
         <span className="disclosureSeparator" aria-hidden="true" />
-        <small>{entry.errorSummary || entry.summary}</small>
+        <small>{entry.summary}</small>
         {entry.state !== "completed" && (
           <span className="srOnly">{entry.state}</span>
         )}
       </div>
       <Collapse open={open}>
         <div className="toolExpanded">
+          {entry.state === "failed" && entry.errorSummary && (
+            <div className="toolIOCard">
+              <section>
+                <span>ERROR</span>
+                <pre data-error>{entry.errorSummary}</pre>
+              </section>
+            </div>
+          )}
           {renderToolBody(presentation, entry)}
           {entry.state === "failed" &&
             entry.output &&
@@ -218,8 +226,8 @@ export function ToolDisclosure({
             presentation.kind !== "generic" && (
               <div className="toolIOCard">
                 <section>
-                  <span>ERROR</span>
-                  <pre data-error>{entry.output}</pre>
+                  <span>OUTPUT</span>
+                  <pre>{entry.output}</pre>
                 </section>
               </div>
             )}
@@ -271,6 +279,7 @@ type ShellPresentation = {
   cwd: string;
   output: string;
   running: boolean;
+  failed: boolean;
   exitCode?: number;
 };
 
@@ -341,6 +350,7 @@ function toolPresentation(entry: ToolNode): ToolPresentation {
       cwd: stringArgument(args, ["cwd", "workdir"]),
       output: stripTerminalEscapes(entry.output),
       running: entry.state === "running",
+      failed: entry.state === "failed",
       exitCode: entry.command?.exitCode
     };
   }
@@ -374,9 +384,7 @@ function renderToolBody(
           {entry.output && (
             <section>
               <span>OUT</span>
-              <pre data-error={entry.state === "failed" || undefined}>
-                {entry.output}
-              </pre>
+              <pre>{entry.output}</pre>
             </section>
           )}
         </div>
@@ -535,7 +543,7 @@ function TerminalCard({value}: {value: ShellPresentation}) {
   const [expanded, setExpanded] = useState(false);
   const lines = textLines(value.output);
   const window = previewWindow(lines, expanded);
-  const failed = value.exitCode !== undefined && value.exitCode !== 0;
+  const failed = value.failed;
   return (
     <div
       className="toolSurface terminalCard"
@@ -550,7 +558,9 @@ function TerminalCard({value}: {value: ShellPresentation}) {
         </span>
         <span className="terminalCwd">{terminalDirectory(value.cwd)}</span>
         <code>{value.command}</code>
-        {failed && <span className="terminalExit">exit {value.exitCode}</span>}
+        {failed && value.exitCode !== undefined && (
+          <span className="terminalExit">exit {value.exitCode}</span>
+        )}
         {!value.running && value.output && <CopyButton text={value.output} />}
       </div>
       {!value.running && (
