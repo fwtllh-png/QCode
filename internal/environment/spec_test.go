@@ -164,32 +164,24 @@ func TestPlatformMatrixCoversDeclaredPlatforms(t *testing.T) {
 			t.Fatalf("duplicate capability %q", row.ID)
 		}
 		seen[row.ID] = true
-		for _, goos := range []string{"darwin", "linux", "windows"} {
-			support, err := SupportFor(goos, row.ID)
-			if err != nil {
-				t.Fatal(err)
-			}
-			switch support {
-			case SupportAvailable, SupportUnsupported, SupportNotYet:
-			default:
-				t.Fatalf("%s/%s support %q is invalid", goos, row.ID, support)
-			}
+		support, err := SupportFor("darwin", row.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		switch support {
+		case SupportAvailable, SupportUnsupported, SupportNotYet:
+		default:
+			t.Fatalf("darwin/%s has no declared support: %q", row.ID, support)
 		}
 	}
 	if support, err := SupportFor("darwin", CapPrivateTmpView); err != nil ||
 		support != SupportUnsupported {
 		t.Fatalf("darwin private tmp = %q %v", support, err)
 	}
-	if support, err := SupportFor("linux", CapManagedProxy); err != nil ||
-		support != SupportUnsupported {
-		t.Fatalf("linux managed proxy = %q %v", support, err)
-	}
-	if support, err := SupportFor("windows", CapStrongSandboxReadRoots); err != nil ||
-		support != SupportUnsupported {
-		t.Fatalf("windows strong sandbox = %q %v", support, err)
-	}
-	if _, err := SupportFor("plan9", CapManagedProxy); err == nil {
-		t.Fatal("unknown GOOS must not invent support")
+	for _, goos := range []string{"linux", "windows", "plan9"} {
+		if _, err := SupportFor(goos, CapManagedProxy); err == nil {
+			t.Fatalf("unsupported platform %q was accepted", goos)
+		}
 	}
 	if _, err := SupportFor(runtime.GOOS, "not_a_capability"); err == nil {
 		t.Fatal("unknown capability must not invent support")

@@ -2,11 +2,14 @@ package shell
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
+	"github.com/fwtllh-png/QCode/internal/observability/verify"
+	"github.com/fwtllh-png/QCode/internal/platform/process"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
 )
 
@@ -20,18 +23,91 @@ type isolatedCommand struct {
 	shadow bool
 }
 
+// pendingExecution is what a still-running exec_command leaves behind: the
+// isolated workspace to settle on its final poll, and the verification
+// evidence that must reach a terminal status once the process exits. Both
+// are reclaimed when the session closes without a final poll (turn release,
+// timeout): the isolate is closed and the evidence is dropped.
+type pendingExecution struct {
+	isolated isolatedCommand
+	evidence *verify.Evidence
+}
+
+func (p *commandProtocol) storePendingExecution(
+	id string,
+	isolated isolatedCommand,
+	evidence *verify.Evidence,
+) {
+	if p == nil || id == "" || (isolated.session == nil && evidence == nil) {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.isolates == nil {
+		p.isolates = make(map[string]pendingExecution)
+	}
+	p.isolates[id] = pendingExecution{isolated: isolated, evidence: evidence}
+}
+
+func (p *commandProtocol) takePendingExecution(id string) (pendingExecution, bool) {
+	if p == nil || id == "" {
+		return pendingExecution{}, false
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	pending, ok := p.isolates[id]
+	if ok {
+		delete(p.isolates, id)
+	}
+	return pending, ok
+}
+
+// reclaimAbandonedExecution is the session OnClose hook: an exec_command
+// whose session closed without a final write_stdin poll (turn release,
+// timeout, capacity eviction) must not leak its isolated workspace — the
+// worktree and scratch copy are discarded. Abandoned verification evidence
+// is dropped; it never observed a final exit status.
+func (p *commandProtocol) reclaimAbandonedExecution(id string) {
+	pending, ok := p.takePendingExecution(id)
+	if !ok {
+		return
+	}
+	if pending.isolated.session != nil {
+		_ = pending.isolated.Close()
+	}
+}
+
+// beginIsolatedCommand prepares an isolated workspace for the command's
+// write trees. The returned degraded flag reports the apply-mode fallback
+// where write trees exist but no isolator is bound: the command then runs
+// in place under its exact write grants and the caller must say so in the
+// result metadata. Shadow (settle=discard) never degrades silently: without
+// an isolable tree there is no way to honor "writes are dropped", so it
+// fails closed instead of touching the real workspace.
 func (p *commandProtocol) beginIsolatedCommand(
 	ctx context.Context,
 	writePaths []string,
 	shadow bool,
-) (isolatedCommand, error) {
+) (isolatedCommand, bool, error) {
 	trees := existingWriteTrees(p.workspace, writePaths)
 	if len(trees) == 0 {
-		return isolatedCommand{}, nil
+		if shadow {
+			return isolatedCommand{}, false, errors.New(
+				"settle=discard requires write_paths to include an existing " +
+					"directory tree so the writes can be isolated and dropped; " +
+					"exact-file paths cannot be discarded",
+			)
+		}
+		return isolatedCommand{}, false, nil
 	}
 	isolator := tool.IsolatorFrom(ctx)
 	if isolator == nil {
-		return isolatedCommand{}, nil
+		if shadow {
+			return isolatedCommand{}, false, errors.New(
+				"settle=discard requires a workspace isolator and none is bound",
+			)
+		}
+		return isolatedCommand{}, true, nil
 	}
 	identity := tool.InvocationIdentityFrom(ctx)
 	id := identity.CallID
@@ -49,24 +125,24 @@ func (p *commandProtocol) beginIsolatedCommand(
 		session, err = isolator.Begin(ctx, id, trees)
 	}
 	if err != nil {
-		return isolatedCommand{}, fmt.Errorf("isolate write trees: %w", err)
+		return isolatedCommand{}, false, fmt.Errorf("isolate write trees: %w", err)
 	}
 	workspace, err := sandbox.NewWorkspace(session.Root())
 	if err != nil {
 		_ = session.Close()
-		return isolatedCommand{}, err
+		return isolatedCommand{}, false, err
 	}
 	backend, _, err := session.PrepareBackend(p.backend)
 	if err != nil {
 		_ = session.Close()
-		return isolatedCommand{}, err
+		return isolatedCommand{}, false, err
 	}
 	return isolatedCommand{
 		workspace: workspace,
 		backend:   backend,
 		session:   session,
 		shadow:    shadow,
-	}, nil
+	}, false, nil
 }
 
 func existingWriteTrees(workspace *sandbox.Workspace, paths []string) []string {
@@ -130,32 +206,7 @@ func attachIsolatedSettlement(
 	result.Metadata["observed_changes"] = len(facts.WorkspaceChanges)
 }
 
-func (p *commandProtocol) storeIsolate(id string, isolated isolatedCommand) {
-	if p == nil || id == "" || isolated.session == nil {
-		return
-	}
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if p.isolates == nil {
-		p.isolates = make(map[string]isolatedCommand)
-	}
-	p.isolates[id] = isolated
-}
-
-func (p *commandProtocol) takeIsolate(id string) (isolatedCommand, bool) {
-	if p == nil || id == "" {
-		return isolatedCommand{}, false
-	}
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	isolated, ok := p.isolates[id]
-	if ok {
-		delete(p.isolates, id)
-	}
-	return isolated, ok
-}
-
-func (p *commandProtocol) settleIsolated(
+func settleIsolated(
 	ctx context.Context,
 	isolated isolatedCommand,
 	result *tool.Result,
@@ -177,6 +228,44 @@ func (p *commandProtocol) settleIsolated(
 		attachIsolatedSettlement(result, isolated.session, changes)
 	}
 	return isolated.Close()
+}
+
+func (p *commandProtocol) settlePendingExecution(
+	ctx context.Context,
+	id string,
+	result *tool.Result,
+	wait process.SessionWait,
+) error {
+	pending, ok := p.takePendingExecution(id)
+	if !ok {
+		return nil
+	}
+	return settleTakenPending(ctx, p.workspace.Root(), pending, result, wait)
+}
+
+// settleTakenPending finalizes one taken pending execution: verification
+// evidence first reaches its terminal status from the final wait, then the
+// isolated workspace settles, then covered-path invalidation re-judges
+// passing evidence against settled writes. Callers that must take the
+// pending state before closing the session (the write_stdin close path,
+// where OnClose would otherwise reclaim it) use this directly.
+func settleTakenPending(
+	ctx context.Context,
+	workspaceRoot string,
+	pending pendingExecution,
+	result *tool.Result,
+	wait process.SessionWait,
+) error {
+	if pending.evidence != nil {
+		attachVerification(result, pending.evidence, wait)
+	}
+	if err := settleIsolated(ctx, pending.isolated, result); err != nil {
+		return err
+	}
+	if pending.evidence != nil {
+		invalidateVerificationOnCoveredWrites(result, pending.evidence, workspaceRoot)
+	}
+	return nil
 }
 
 // shadowSummaryMaxPaths bounds the discarded-change path list on the result:
@@ -204,16 +293,4 @@ func attachShadowDiscard(result *tool.Result, changes []tool.WorkspaceChange) {
 		paths = append(paths, change.Path)
 	}
 	result.Metadata["discarded_change_paths"] = paths
-}
-
-func (p *commandProtocol) settleStoredIsolate(
-	ctx context.Context,
-	id string,
-	result *tool.Result,
-) error {
-	isolated, ok := p.takeIsolate(id)
-	if !ok {
-		return nil
-	}
-	return p.settleIsolated(ctx, isolated, result)
 }

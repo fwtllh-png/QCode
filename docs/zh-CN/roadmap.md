@@ -62,7 +62,7 @@
 
 ## 中期：安全与治理
 
-- 更强的跨平台 Sandbox 动态证据；
+- 更强的 macOS Sandbox 动态证据；
 - 显式 Egress Policy 与 Endpoint Inventory；
 - 托管环境的 Signed Policy/Permission Distribution；
 - 具有脱敏保证的结构化 Audit Export；

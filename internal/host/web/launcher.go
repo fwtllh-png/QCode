@@ -1203,10 +1203,8 @@ func openWebBrowser(target string) error {
 	switch runtime.GOOS {
 	case "darwin":
 		command = exec.Command("open", target)
-	case "windows":
-		command = exec.Command("rundll32", "url.dll,FileProtocolHandler", target)
 	default:
-		command = exec.Command("xdg-open", target)
+		return fmt.Errorf("opening a browser is unsupported on %s", runtime.GOOS)
 	}
 	return command.Start()
 }

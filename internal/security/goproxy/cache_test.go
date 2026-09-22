@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -125,4 +126,59 @@ func newCountingUpstream(hits *int, status int, body string) *httptest.Server {
 			_, _ = writer.Write([]byte(body))
 		}
 	}))
+}
+
+func TestOversizeUpstreamBodyStreamsPastCacheBudget(t *testing.T) {
+	hits := 0
+	body := strings.Repeat("a", 4096)
+	upstream := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		hits++
+		writer.Header().Set("Content-Length", strconv.Itoa(len(body)))
+		_, _ = writer.Write([]byte(body))
+	}))
+	t.Cleanup(upstream.Close)
+	service := newTestService(t, upstream.URL, "user:secret-token")
+	// A tiny budget keeps the boundary test fast; production uses
+	// CacheBudgetBytes and the overflow path is identical.
+	service.cache = newResponseCache(64)
+	path := "/example.com/qcode/testmod/@v/v1.2.3.zip"
+	response := serve(service, path)
+	if response.StatusCode != http.StatusOK || response.Body != body {
+		t.Fatalf(
+			"oversize body truncated: status=%d got=%d want=%d",
+			response.StatusCode, len(response.Body), len(body),
+		)
+	}
+	// The entry did not fit the budget, so a second fetch must hit upstream.
+	replay := serve(service, path)
+	if replay.StatusCode != http.StatusOK || replay.Body != body {
+		t.Fatalf("replay status=%d len=%d", replay.StatusCode, len(replay.Body))
+	}
+	if hits != 2 {
+		t.Fatalf("upstream hits = %d, oversize body must not cache", hits)
+	}
+}
+
+func TestNegationReplayKeepsUpstreamBody(t *testing.T) {
+	hits := 0
+	upstream := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		hits++
+		writer.Header().Set("Content-Type", "text/plain")
+		writer.WriteHeader(http.StatusNotFound)
+		_, _ = writer.Write([]byte("module not found"))
+	}))
+	t.Cleanup(upstream.Close)
+	service := newTestService(t, upstream.URL, "user:secret-token")
+	path := "/example.com/qcode/testmod/@v/v9.9.9.info"
+	first := serve(service, path)
+	if first.StatusCode != http.StatusNotFound || first.Body != "module not found" {
+		t.Fatalf("first negation = %d %q", first.StatusCode, first.Body)
+	}
+	second := serve(service, path)
+	if second.StatusCode != http.StatusNotFound || second.Body != "module not found" {
+		t.Fatalf("negation replay lost the body: %d %q", second.StatusCode, second.Body)
+	}
+	if hits != 1 {
+		t.Fatalf("upstream hits = %d, negation must replay within the TTL", hits)
+	}
 }

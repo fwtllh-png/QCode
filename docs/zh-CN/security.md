@@ -189,7 +189,7 @@ Web Markdown 不执行原始 HTML 或危险 URL。同源图片可以直接显示
   Effect 被归类：`suggest` 必须经过人工 Network Approval，`auto` 才可以自动
   Review 精确的只读目标。Sandbox 只能连接代理端口，直连和未声明目标均 Fail
   Closed。该 Loopback Proxy 返回 CONNECT 403 表示目标未声明或未授权，并不表示
-  远端服务不可达。Linux 在 namespace proxy bridge 交付前保持进程全禁网。
+  远端服务不可达。
   macOS 的代理能力通过启动时的精确端口允许/拒绝探测单独确认，不从默认禁网状态
   推断。获批目标的 Effective Profile 保留代理端口，进程环境注入 Runtime 代理；
   没有声明目标且没有用户声明环境网络时，命令仍禁网，也不注入代理变量。
@@ -243,9 +243,6 @@ Web Markdown 不执行原始 HTML 或危险 URL。同源图片可以直接显示
   产生冲突或丢弃内容的操作要求单次审批。
 - 不提供绕出 OS Sandbox 的模型侧宿主进程冒烟入口。开发服务和 Fixture 使用
   `exec_command` 及显式 `allow_loopback`；观察到服务存活不能当作测试通过。
-- Linux Strong Sandbox 将 Landlock、`no_new_privs`、seccomp 与 `execve` 固定在
-  同一个 OS Thread。Seccomp 拒绝 Tracing、跨进程内存访问、Namespace 创建、
-  `clone3` 与 `io_uring`；Restricted Network Mode 只保留 AF_UNIX 进程内 IPC。
 - Command Policy 使用 Bash AST 与 Static argv Segment。Managed Authority 定义
   Ceiling，Repository 只能收紧，User Approval 不能覆盖高权 Deny/Ask。Policy Reload
   原子发布新 Revision，并绑定到 Profile Provenance。
@@ -259,7 +256,7 @@ Web Markdown 不执行原始 HTML 或危险 URL。同源图片可以直接显示
   行为。`exec_command` 是唯一通用 Command Start 路径；首次 Sample 只等到
   `yield_time_ms`，进程未退出则返回 `session_id`。`write_stdin` 在每次
   Session 交互前校验当前 Thread Lease；`timeout_ms` 只杀进程组。
-  macOS/Linux 下父 shell 正常退出后，Session 先终止同组残留后台进程，再发布
+  macOS 下父 shell 正常退出后，Session 先终止同组残留后台进程，再发布
   完成状态及释放 Session/Turn 记录；后台进程是否关闭输出不影响回收。终止与最终
   Reap 同步，父进程身份在组清理前保持有效，避免延迟按已复用的 PID/PGID 发信号。
 - Process Tool 通过有界 Fair Budget 与精确 Resource Claim Admission。不同 Session
@@ -314,8 +311,7 @@ make secret-leak-test
   私网 GET 仍拒绝。空 Method 授权表示所有方法，后续精确方法授权不能将其收窄；
   请求省略 Method 时则必须具有所有方法的授权。
   Darwin 上每个 Process Session 绑定独立 loopback 端口和 Session Gate；兄弟命令、
-  子 Agent 和 Workspace 共享端口不能消费该 Session 的目标。Linux/Windows 对需要
-  Session 通道的进程报告 `backend_capability_unsupported` 并保持禁网。
+  子 Agent 和 Workspace 共享端口不能消费该 Session 的目标。
   取消或关闭 Session 会停止 listen 并回收已 hijack 的 CONNECT。
 - Native/Web Search Result 仍是不可信内容。
 - 可记录 Endpoint Inventory，但不能记录 Credential。

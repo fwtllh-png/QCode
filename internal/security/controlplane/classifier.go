@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -113,4 +114,17 @@ func pathComponents(relative string) []string {
 func outside(relative string) bool {
 	return relative == ".." ||
 		strings.HasPrefix(relative, ".."+string(filepath.Separator))
+}
+
+// ProtectedNames returns the control-plane entry names rejected for
+// workload writes, sorted. The sandbox profile denies them inside approved
+// write trees so the OS-level grant is never broader than the settlement
+// classifier that approved the tree.
+func ProtectedNames() []string {
+	names := make([]string, 0, len(protectedNames))
+	for name := range protectedNames {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }

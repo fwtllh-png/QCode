@@ -1,4 +1,4 @@
-//go:build !windows
+//go:build darwin
 
 package process
 
@@ -7,6 +7,7 @@ import (
 	"errors"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -269,4 +270,118 @@ func parseChildPID(t *testing.T, output string) int {
 		t.Fatalf("child PID %q: %v", value, err)
 	}
 	return pid
+}
+
+type recordingCloser struct {
+	closed chan struct{}
+	once   sync.Once
+}
+
+func (r *recordingCloser) Close() error {
+	r.once.Do(func() { close(r.closed) })
+	return nil
+}
+
+func TestSessionNaturalExitClosesNetworkChannel(t *testing.T) {
+	network := &recordingCloser{closed: make(chan struct{})}
+	manager := NewSessionManager(4096)
+	defer manager.CloseAll()
+	id, err := manager.Create(t.Context(), SessionOptions{
+		Command: "printf done", Dir: t.TempDir(),
+		ThreadID: testSessionThread, Network: network,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		read, err := manager.Read(id, testSessionThread, 0)
+		if err == nil && !read.Running {
+			select {
+			case <-network.closed:
+				return
+			case <-time.After(time.Second):
+				t.Fatal("network channel outlived the exited process")
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("session never exited")
+}
+
+func TestSessionInterruptIsNotTerminationButKillIs(t *testing.T) {
+	manager := NewSessionManager(4096)
+	defer manager.CloseAll()
+
+	waitExited := func(id string, wantTerminated bool) {
+		t.Helper()
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			read, err := manager.Read(id, testSessionThread, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !read.Running {
+				if read.Terminated != wantTerminated {
+					t.Fatalf("terminated = %t, want %t", read.Terminated, wantTerminated)
+				}
+				return
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		t.Fatal("session never exited")
+	}
+
+	// An interrupt is ordinary signal delivery: the child may die from it,
+	// but the session is not flagged as terminated-by-us.
+	interrupted, err := manager.Create(t.Context(), SessionOptions{
+		Command: "sleep 30", Dir: t.TempDir(), ThreadID: testSessionThread,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Signal(interrupted, testSessionThread, syscall.SIGINT); err != nil {
+		t.Fatal(err)
+	}
+	waitExited(interrupted, false)
+
+	// An uncatchable kill is a termination and is reported as one.
+	killed, err := manager.Create(t.Context(), SessionOptions{
+		Command: "sleep 30", Dir: t.TempDir(), ThreadID: testSessionThread,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Signal(killed, testSessionThread, syscall.SIGKILL); err != nil {
+		t.Fatal(err)
+	}
+	waitExited(killed, true)
+}
+
+func TestPTYSessionFinalLineSurvivesExit(t *testing.T) {
+	manager := NewSessionManager(4096)
+	defer manager.CloseAll()
+	id, err := manager.Create(t.Context(), SessionOptions{
+		Command: "sleep 0.3; printf 'first-line\\n'; sleep 0.1; printf 'final-line\\n'",
+		Dir:     t.TempDir(), PTY: true,
+		ThreadID: testSessionThread,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		read, err := manager.Read(id, testSessionThread, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !read.Running {
+			if !strings.Contains(read.Data, "final-line") {
+				t.Fatalf("pty tail lost: %q", read.Data)
+			}
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("session never exited")
 }

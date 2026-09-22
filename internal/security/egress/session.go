@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/fwtllh-png/QCode/internal/environment"
@@ -19,6 +20,20 @@ import (
 // per-process Session channel. Callers must fail closed and keep the process
 // net-denied; they must not fall back to the workspace shared gate.
 var ErrProcessSessionUnsupported = errors.New("process session network channel is unsupported")
+
+// Channel lifecycle ceilings. ReadHeaderTimeout bounds a half-open request;
+// IdleTimeout reaps keep-alive connections whose session is long gone;
+// channelCloseTimeout bounds the graceful drain before hijacked CONNECT
+// tunnels are force-closed. maxChannelWrapperDepth bounds backend-wrapper
+// unwrapping (the managed/session-bound/close-binding chain is three deep).
+// Public contract constants; boundary tests pin the close timeout.
+const (
+	channelReadHeaderTimeout = 10 * time.Second
+	channelIdleTimeout       = 30 * time.Second
+	channelCloseTimeout      = 5 * time.Second
+
+	maxChannelWrapperDepth = 8
+)
 
 // ProcessSession is one Process Session's loopback port and Gate.
 type ProcessSession interface {
@@ -65,10 +80,13 @@ func (s *processSession) Close() error {
 
 type proxyChannel struct {
 	gate     *Gate
-	protocol http.Handler
 	listener net.Listener
 	server   *http.Server
 	done     chan struct{}
+	// protocol serves origin-form requests (the GOPROXY auth service). It
+	// is an atomic pointer because the workspace channel is already
+	// serving when the service is bound after startup.
+	protocol atomic.Pointer[http.Handler]
 	mu       sync.Mutex
 	conns    map[net.Conn]struct{}
 }
@@ -82,19 +100,37 @@ func listenProxyChannel(gate *Gate, protocol http.Handler) (*proxyChannel, error
 		return nil, fmt.Errorf("%w: %v", ErrProcessSessionUnsupported, err)
 	}
 	channel := &proxyChannel{
-		gate: gate, protocol: protocol, listener: listener, done: make(chan struct{}),
+		gate: gate, listener: listener, done: make(chan struct{}),
 		conns: make(map[net.Conn]struct{}),
 	}
+	channel.setProtocol(protocol)
 	channel.server = &http.Server{
 		Handler:           http.HandlerFunc(channel.serveHTTP),
-		ReadHeaderTimeout: 10 * time.Second,
-		IdleTimeout:       30 * time.Second,
+		ReadHeaderTimeout: channelReadHeaderTimeout,
+		IdleTimeout:       channelIdleTimeout,
 	}
 	go func() {
 		_ = channel.server.Serve(listener)
 		close(channel.done)
 	}()
 	return channel, nil
+}
+
+func (c *proxyChannel) setProtocol(handler http.Handler) {
+	if c == nil || handler == nil {
+		return
+	}
+	c.protocol.Store(&handler)
+}
+
+func (c *proxyChannel) protocolHandler() http.Handler {
+	if c == nil {
+		return nil
+	}
+	if handler := c.protocol.Load(); handler != nil {
+		return *handler
+	}
+	return nil
 }
 
 func (c *proxyChannel) port() uint16 {
@@ -130,7 +166,7 @@ func (c *proxyChannel) close() error {
 	if c == nil || c.server == nil {
 		return nil
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), channelCloseTimeout)
 	defer cancel()
 	err := c.server.Close()
 	c.mu.Lock()
@@ -155,8 +191,8 @@ func (c *proxyChannel) serveHTTP(
 		c.serveConnect(writer, request)
 		return
 	}
-	if c.protocol != nil && isOriginForm(request) {
-		c.protocol.ServeHTTP(writer, request)
+	if handler := c.protocolHandler(); handler != nil && isOriginForm(request) {
+		handler.ServeHTTP(writer, request)
 		return
 	}
 	c.serveForward(writer, request)
@@ -173,14 +209,23 @@ func boundProtocolHost(handler http.Handler) string {
 	return ""
 }
 
+// normalizeConnectHost applies the Gate's host normalization (case-fold,
+// trim, strip the FQDN trailing dot) so an authority spelling like
+// "proxy.example.:443" cannot sidestep the bound-origin denial.
+func normalizeConnectHost(host string) string {
+	return strings.ToLower(strings.TrimSuffix(strings.TrimSpace(host), "."))
+}
+
 func (c *proxyChannel) denyBoundOrigin(
 	writer http.ResponseWriter,
 	host, protocol string,
 	port uint16,
 	method string,
 ) bool {
-	bound := boundProtocolHost(c.protocol)
-	if bound == "" || host == "" || !strings.EqualFold(host, bound) {
+	handler := c.protocolHandler()
+	bound := normalizeConnectHost(boundProtocolHost(handler))
+	host = normalizeConnectHost(host)
+	if bound == "" || host == "" || host != bound {
 		return false
 	}
 	if protocol == "" {
@@ -362,7 +407,7 @@ func (b *sessionBoundBackend) InnerBackend() sandbox.Backend {
 
 func BindProtocolHandler(backend sandbox.Backend, handler http.Handler) {
 	current := backend
-	for range 8 {
+	for range maxChannelWrapperDepth {
 		if current == nil {
 			return
 		}
@@ -384,7 +429,7 @@ func BindProtocolHandler(backend sandbox.Backend, handler http.Handler) {
 
 func LookupProcessSessionOpener(backend sandbox.Backend) (ProcessSessionOpener, bool) {
 	current := backend
-	for range 8 {
+	for range maxChannelWrapperDepth {
 		if current == nil {
 			return nil, false
 		}

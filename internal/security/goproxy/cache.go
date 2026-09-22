@@ -9,10 +9,12 @@ import (
 
 // Public cache contract for one bound GOPROXY upstream. Module artifacts are
 // immutable per version, so a successful response replays for CacheEntryTTL.
-// A permanently negated response (404/410) replays without a body for the
-// shorter CacheNegativeTTL: retries stop hammering the upstream, and the
-// negation still clears when upstream state changes. CacheBudgetBytes bounds
-// the total in-memory body footprint of one service.
+// A permanently negated response (404/410) replays with its exact body —
+// headers included — for the shorter CacheNegativeTTL: retries stop hammering
+// the upstream, the replay stays byte-accurate against what upstream framed,
+// and the negation still clears when upstream state changes. CacheBudgetBytes
+// bounds the total in-memory body footprint of one service, negation bodies
+// included.
 const (
 	CacheBudgetBytes = 32 << 20
 	CacheEntryTTL    = 30 * time.Minute
@@ -90,23 +92,45 @@ func (c *responseCache) put(key string, entry cacheEntry) {
 	c.used += len(entry.body)
 }
 
+// upstreamBodyState tells the caller how to serve what was buffered.
+type upstreamBodyState int
+
+const (
+	// bodyPassthrough: nothing was buffered; stream the whole body.
+	bodyPassthrough upstreamBodyState = iota
+	// bodyCached: the whole body fit the budget and was stored; the prefix
+	// is the complete body.
+	bodyCached
+	// bodyOverflow: the body continues past the buffered prefix; write the
+	// prefix, then stream the remainder.
+	bodyOverflow
+	// bodyTruncated: the upstream read failed mid-body; the prefix is
+	// incomplete and must not be framed as a clean upstream answer.
+	bodyTruncated
+)
+
 // rememberUpstreamBody buffers the upstream response body up to the cache
 // budget and stores a cache entry when the status is cacheable and the whole
-// body fit. It returns the buffered prefix either way so the caller can
-// serve it and stream only the remainder.
+// body fit. It returns the buffered prefix and how the caller must serve it.
 func (s *Service) rememberUpstreamBody(
 	key string,
 	method string,
 	response *http.Response,
 	now time.Time,
-) []byte {
+) ([]byte, upstreamBodyState) {
 	if s == nil || s.cache == nil || method != http.MethodGet ||
 		!cacheableStatus(response.StatusCode) {
-		return nil
+		return nil, bodyPassthrough
 	}
-	buffer, err := io.ReadAll(io.LimitReader(response.Body, CacheBudgetBytes+1))
-	if err != nil || len(buffer) > CacheBudgetBytes {
-		return buffer
+	budget := s.cache.budget
+	// Read one byte past the budget: the probe byte is part of the body and
+	// stays in the prefix when overflowing, so nothing is dropped.
+	buffer, err := io.ReadAll(io.LimitReader(response.Body, int64(budget)+1))
+	if err != nil {
+		return buffer, bodyTruncated
+	}
+	if len(buffer) > budget {
+		return buffer, bodyOverflow
 	}
 	entry := cacheEntry{
 		status: response.StatusCode,
@@ -114,13 +138,12 @@ func (s *Service) rememberUpstreamBody(
 		body:   buffer,
 	}
 	if negationStatus(response.StatusCode) {
-		entry.body = nil
 		entry.expiresAt = now.Add(CacheNegativeTTL)
 	} else {
 		entry.expiresAt = now.Add(CacheEntryTTL)
 	}
 	s.cache.put(key, entry)
-	return buffer
+	return buffer, bodyCached
 }
 
 func cacheableStatus(status int) bool {

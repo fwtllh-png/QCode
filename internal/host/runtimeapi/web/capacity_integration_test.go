@@ -512,13 +512,11 @@ func decodeJSON(reader interface{ Read([]byte) (int, error) }, value any) error 
 }
 
 func openDescriptorCount() (int, bool) {
-	for _, directory := range []string{"/proc/self/fd", "/dev/fd"} {
-		entries, err := os.ReadDir(directory)
-		if err == nil {
-			return len(entries), true
-		}
+	entries, err := os.ReadDir("/dev/fd")
+	if err != nil {
+		return 0, false
 	}
-	return 0, false
+	return len(entries), true
 }
 
 type capacityLifecycleStore struct {

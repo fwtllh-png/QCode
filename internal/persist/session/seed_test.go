@@ -3,7 +3,6 @@ package session_test
 import (
 	"os"
 	"path/filepath"
-	"runtime"
 	"testing"
 
 	"github.com/fwtllh-png/QCode/internal/persist/session"
@@ -11,9 +10,6 @@ import (
 )
 
 func TestEnsureSeedUsesPhysicalWorkspaceIdentity(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("symlink fixture requires POSIX test permissions")
-	}
 	base := t.TempDir()
 	root := filepath.Join(base, "workspace")
 	if err := os.Mkdir(root, 0o700); err != nil {

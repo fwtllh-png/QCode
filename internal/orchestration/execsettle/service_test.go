@@ -339,3 +339,32 @@ func TestShadowSessionDiscardsWritesWithoutSettling(t *testing.T) {
 		t.Fatalf("keep.txt = %q err=%v", body, err)
 	}
 }
+
+func TestCopyWorkspaceRecreatesSymlinks(t *testing.T) {
+	source := t.TempDir()
+	if err := os.WriteFile(filepath.Join(source, "real.txt"), []byte("data"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("real.txt", filepath.Join(source, "link.txt")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(source, "real.txt"), filepath.Join(source, "absolute-link")); err != nil {
+		t.Fatal(err)
+	}
+	target := t.TempDir()
+	if err := copyWorkspace(source, target); err != nil {
+		t.Fatal(err)
+	}
+	if link, err := os.Readlink(filepath.Join(target, "link.txt")); err != nil ||
+		link != "real.txt" {
+		t.Fatalf("relative link = %q err=%v", link, err)
+	}
+	if link, err := os.Readlink(filepath.Join(target, "absolute-link")); err != nil ||
+		link != filepath.Join(source, "real.txt") {
+		t.Fatalf("absolute link = %q err=%v", link, err)
+	}
+	if body, err := os.ReadFile(filepath.Join(target, "link.txt")); err != nil ||
+		string(body) != "data" {
+		t.Fatalf("linked read = %q err=%v", body, err)
+	}
+}

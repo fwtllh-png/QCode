@@ -2,6 +2,7 @@ package shell
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -269,5 +270,205 @@ func TestAttachShadowDiscardCapsSummaryPaths(t *testing.T) {
 	paths, _ := result.Metadata["discarded_change_paths"].([]string)
 	if len(paths) != shadowSummaryMaxPaths {
 		t.Fatalf("summary paths = %d, cap = %d", len(paths), shadowSummaryMaxPaths)
+	}
+}
+
+func TestExecCommandDiscardWithoutTreeFailsClosed(t *testing.T) {
+	workspace := t.TempDir()
+	backend, err := sandbox.NewPlatformBackend(sandbox.Options{
+		WorkspaceRoot: workspace, PrivateTemp: t.TempDir(), SkipPATHReadRoots: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sandbox.CloseBackend(backend) })
+	manager := process.NewSessionManager(4096)
+	t.Cleanup(manager.CloseAll)
+	registry := tool.NewRegistry(nil, nil)
+	if err := RegisterWithManagerAndBackend(registry, workspace, manager, backend); err != nil {
+		t.Fatal(err)
+	}
+	isolator := newShellIsolator(t, workspace, backend)
+	ctx := tool.WithIsolator(
+		tool.WithInvocationIdentity(t.Context(), tool.InvocationIdentity{
+			SessionID: "session-discard",
+			ThreadID:  processTestThread,
+			TurnID:    "turn-discard",
+			CallID:    "call-discard",
+		}),
+		isolator,
+	)
+	raw, err := json.Marshal(map[string]any{
+		"command":     "printf leaked > discard-target.txt",
+		"write_paths": []string{"discard-target.txt"},
+		"settle":      "discard",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := tooltest.Execute(ctx, registry, tool.Call{
+		Name: "exec_command", Arguments: raw,
+	})
+	if err == nil || !errors.Is(err, tool.ErrPrecondition) {
+		t.Fatalf("discard without a tree must fail closed: result=%+v err=%v", result, err)
+	}
+	if _, statErr := os.Lstat(filepath.Join(workspace, "discard-target.txt")); statErr == nil {
+		t.Fatal("failed discard still created a workspace file")
+	}
+}
+
+func TestExecCommandDiscardWithoutIsolatorFailsClosed(t *testing.T) {
+	workspace := t.TempDir()
+	if err := os.Mkdir(filepath.Join(workspace, "generated"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	backend, err := sandbox.NewPlatformBackend(sandbox.Options{
+		WorkspaceRoot: workspace, PrivateTemp: t.TempDir(), SkipPATHReadRoots: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sandbox.CloseBackend(backend) })
+	manager := process.NewSessionManager(4096)
+	t.Cleanup(manager.CloseAll)
+	registry := tool.NewRegistry(nil, nil)
+	if err := RegisterWithManagerAndBackend(registry, workspace, manager, backend); err != nil {
+		t.Fatal(err)
+	}
+	ctx := tool.WithInvocationIdentity(t.Context(), tool.InvocationIdentity{
+		SessionID: "session-discard-noiso",
+		ThreadID:  processTestThread,
+		TurnID:    "turn-discard-noiso",
+		CallID:    "call-discard-noiso",
+	})
+	raw, err := json.Marshal(map[string]any{
+		"command":     "printf leaked > generated/out.txt",
+		"write_paths": []string{"generated"},
+		"settle":      "discard",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := tooltest.Execute(ctx, registry, tool.Call{
+		Name: "exec_command", Arguments: raw,
+	})
+	if err == nil || !errors.Is(err, tool.ErrPrecondition) {
+		t.Fatalf("discard without an isolator must fail closed: result=%+v err=%v", result, err)
+	}
+	if _, statErr := os.Lstat(filepath.Join(workspace, "generated", "out.txt")); statErr == nil {
+		t.Fatal("failed discard still wrote into the real workspace tree")
+	}
+}
+
+func TestExecCommandApplyDegradedWithoutIsolatorIsReported(t *testing.T) {
+	workspace := t.TempDir()
+	if err := os.Mkdir(filepath.Join(workspace, "generated"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	backend, err := sandbox.NewPlatformBackend(sandbox.Options{
+		WorkspaceRoot: workspace, PrivateTemp: t.TempDir(), SkipPATHReadRoots: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sandbox.CloseBackend(backend) })
+	manager := process.NewSessionManager(4096)
+	t.Cleanup(manager.CloseAll)
+	registry := tool.NewRegistry(nil, nil)
+	if err := RegisterWithManagerAndBackend(registry, workspace, manager, backend); err != nil {
+		t.Fatal(err)
+	}
+	ctx := tool.WithInvocationIdentity(t.Context(), tool.InvocationIdentity{
+		SessionID: "session-apply-degraded",
+		ThreadID:  processTestThread,
+		TurnID:    "turn-apply-degraded",
+		CallID:    "call-apply-degraded",
+	})
+	raw, err := json.Marshal(map[string]any{
+		"command":       "printf 'in place\\n' > generated/out.txt",
+		"write_paths":   []string{"generated"},
+		"yield_time_ms": 5000,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := tooltest.Execute(ctx, registry, tool.Call{
+		Name: "exec_command", Arguments: raw,
+	})
+	if err != nil || result.IsError {
+		t.Fatalf("degraded apply exec: result=%+v err=%v", result, err)
+	}
+	if result.Metadata["workspace_settlement"] != "in_place_degraded" {
+		t.Fatalf("settlement metadata = %#v", result.Metadata["workspace_settlement"])
+	}
+	if result.Metadata["degradation_reason"] != "workspace_isolator_unavailable" {
+		t.Fatalf("degradation reason = %#v", result.Metadata["degradation_reason"])
+	}
+	if body, readErr := os.ReadFile(filepath.Join(workspace, "generated", "out.txt")); readErr != nil ||
+		string(body) != "in place\n" {
+		t.Fatalf("in-place write missing: %q err=%v", body, readErr)
+	}
+}
+
+func TestAbandonedIsolatedSessionIsReclaimedOnThreadClose(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is unavailable")
+	}
+	workspace := t.TempDir()
+	if err := os.Mkdir(filepath.Join(workspace, "generated"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	backend, err := sandbox.NewPlatformBackend(sandbox.Options{
+		WorkspaceRoot: workspace, PrivateTemp: t.TempDir(), SkipPATHReadRoots: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sandbox.CloseBackend(backend) })
+	manager := process.NewSessionManager(4096)
+	t.Cleanup(manager.CloseAll)
+	registry := tool.NewRegistry(nil, nil)
+	if err := RegisterWithManagerAndBackend(registry, workspace, manager, backend); err != nil {
+		t.Fatal(err)
+	}
+	isolator := newShellIsolator(t, workspace, backend)
+	ctx := tool.WithIsolator(
+		tool.WithInvocationIdentity(t.Context(), tool.InvocationIdentity{
+			SessionID: "session-abandon",
+			ThreadID:  processTestThread,
+			TurnID:    "turn-abandon",
+			CallID:    "call-abandon",
+		}),
+		isolator,
+	)
+	raw, err := json.Marshal(map[string]any{
+		"command":       "sleep 30",
+		"write_paths":   []string{"generated"},
+		"yield_time_ms": 200,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := tooltest.Execute(ctx, registry, tool.Call{
+		Name: "exec_command", Arguments: raw,
+	})
+	if err != nil || result.IsError {
+		t.Fatalf("exec: result=%+v err=%v", result, err)
+	}
+	sessionID, _ := result.Metadata["session_id"].(string)
+	cwd, _ := result.Metadata["isolated_cwd"].(string)
+	if sessionID == "" || cwd == "" {
+		t.Fatalf("session=%q isolated_cwd=%q", sessionID, cwd)
+	}
+	if _, err := os.Stat(cwd); err != nil {
+		t.Fatalf("isolate root missing while running: %v", err)
+	}
+	// The turn ends without a final poll: the session's OnClose hook must
+	// reclaim the isolated workspace instead of leaking the worktree.
+	if _, err := manager.CloseByThread(processTestThread); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(cwd); !os.IsNotExist(err) {
+		t.Fatalf("abandoned isolate was not reclaimed: %v", err)
 	}
 }

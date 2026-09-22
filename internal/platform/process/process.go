@@ -201,11 +201,15 @@ func NewCommand(ctx context.Context, options Options) (*exec.Cmd, error) {
 				environment = setEnvironmentValue(environment, "TEMP", policy.PrivateTemp)
 			}
 		}
+		// Toolchain bins resolve before the platform git directory; the
+		// sandboxed child and preflight (ToolchainSearchPath) share this
+		// order so verdicts name the file the child runs.
+		environment = ensureGitToolchain(environment)
 		environment = prependPATH(environment, policy.Toolchains.BinDirs...)
 	} else {
 		environment = ensurePlatformToolchainPATH(environment)
+		environment = ensureGitToolchain(environment)
 	}
-	environment = ensureGitToolchain(environment)
 	if options.WorkspaceReadOnly {
 		environment = setEnvironmentValue(environment, "GIT_OPTIONAL_LOCKS", "0")
 		environment = setEnvironmentValue(environment, "PYTHONDONTWRITEBYTECODE", "1")
@@ -534,15 +538,56 @@ func ensurePlatformToolchainPATH(environment []string) []string {
 	return prependPATH(environment, sandbox.PlatformPATHDirectories()...)
 }
 
-func prependPATH(environment []string, directories ...string) []string {
-	if len(directories) == 0 {
-		return environment
+// ToolchainSearchPath returns the ordered directories a sandboxed child's
+// PATH resolves through: toolchain bin directories first, then the platform
+// git directory, then the inherited host PATH. Empty entries are dropped
+// (an empty PATH entry means the current directory) and alias-resolved
+// duplicates (/var vs /private/var) collapse, so a verdict about an
+// executable names the same file the child will run. The child PATH is
+// built from the same order; preflight must use this, not its own guess.
+func ToolchainSearchPath(binDirs []string) []string {
+	ordered := make([]string, 0, len(binDirs)+8)
+	ordered = append(ordered, binDirs...)
+	if dir := gitToolchainDirectory(); dir != "" {
+		ordered = append(ordered, dir)
 	}
+	ordered = append(ordered, filepath.SplitList(os.Getenv("PATH"))...)
+	return dedupePathEntries(ordered)
+}
+
+// pathEntryKey resolves symlink aliases so the same directory cannot appear
+// under two spellings; unresolvable entries keep their cleaned form.
+func pathEntryKey(directory string) string {
+	cleaned := filepath.Clean(directory)
+	if resolved, err := filepath.EvalSymlinks(cleaned); err == nil {
+		return resolved
+	}
+	return cleaned
+}
+
+func dedupePathEntries(entries []string) []string {
+	seen := make(map[string]bool, len(entries))
+	out := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if entry == "" {
+			continue
+		}
+		key := pathEntryKey(entry)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, filepath.Clean(entry))
+	}
+	return out
+}
+
+func prependPATH(environment []string, directories ...string) []string {
 	pathValue := environmentValue(environment, "PATH")
-	parts := filepath.SplitList(pathValue)
+	parts := dedupePathEntries(filepath.SplitList(pathValue))
 	seen := make(map[string]bool, len(parts)+len(directories))
 	for _, part := range parts {
-		seen[filepath.Clean(part)] = true
+		seen[pathEntryKey(part)] = true
 	}
 	var prefix []string
 	for _, directory := range directories {
@@ -550,16 +595,20 @@ func prependPATH(environment []string, directories ...string) []string {
 			continue
 		}
 		clean := filepath.Clean(directory)
-		if seen[clean] {
+		key := pathEntryKey(clean)
+		if seen[key] {
 			continue
 		}
-		seen[clean] = true
+		seen[key] = true
 		prefix = append(prefix, clean)
 	}
-	if len(prefix) == 0 {
+	// Rebuilding from deduped parts also drops the implicit empty entry a
+	// missing PATH would otherwise leave behind (an empty entry resolves
+	// through the current directory).
+	newPath := strings.Join(append(prefix, parts...), string(os.PathListSeparator))
+	if newPath == pathValue {
 		return environment
 	}
-	newPath := strings.Join(append(prefix, parts...), string(os.PathListSeparator))
 	result := make([]string, 0, len(environment)+1)
 	replaced := false
 	for _, entry := range environment {
@@ -673,8 +722,19 @@ func runPTY(
 	if teardown > 0 && observeTeardown != nil {
 		observeTeardown(teardown)
 	}
-	_ = terminal.Close()
-	copyErr := <-copyDone
+	// Drain the reader before closing the master: the kernel pty buffer
+	// still holds the child's final writes, and closing the master first
+	// discards them. A descendant that inherited the slave side can hold the
+	// read open, so the drain is bounded and the master is force-closed
+	// afterwards (which unblocks the pollable read with ErrClosed).
+	var copyErr error
+	select {
+	case copyErr = <-copyDone:
+		_ = terminal.Close()
+	case <-time.After(ptyDrainTimeout):
+		_ = terminal.Close()
+		copyErr = <-copyDone
+	}
 	if copyErr != nil &&
 		!errors.Is(copyErr, syscall.EIO) &&
 		!errors.Is(copyErr, os.ErrClosed) &&

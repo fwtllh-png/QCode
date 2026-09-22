@@ -112,6 +112,10 @@ type Receipt struct {
 	ResolvedIPs    []string  `json:"resolved_ips,omitempty"`
 }
 
+// maxReceipts bounds the per-gate receipt log: receipts are diagnostic
+// evidence for receipts()/egress receipts, and an unbounded log would grow
+// with every authorized request for the workspace's lifetime. Older entries
+// are dropped. Public contract constant.
 const maxReceipts = 256
 
 func key(target Target) string {
@@ -268,10 +272,30 @@ func (g *Gate) authorize(
 		allowed, allowPrivate = grant.permissions(request.Methods)
 		g.mu.RUnlock()
 	}
+	var resolved []net.IP
 	if !allowed && discover {
 		if err := g.discover(ctx, request); err == nil {
+			// The approval covers the target as it resolves right here, and
+			// this one resolution also serves the request: private dialing
+			// joins the grant only when the approved target actually
+			// resolved to a private address, so a later DNS rebinding of a
+			// public-approved origin to a private address stays denied by
+			// the per-request resolution check below.
 			granted := request
-			granted.AllowPrivate = true
+			granted.AllowPrivate = false
+			ips, resolveErr := g.resolve(ctx, request.Host)
+			if resolveErr != nil {
+				denied := deniedTarget(request, reasonDNSFailed)
+				g.recordDenied(source, request, denied)
+				return nil, denied
+			}
+			for _, ip := range ips {
+				if nonPublicIP(ip) {
+					granted.AllowPrivate = true
+					break
+				}
+			}
+			resolved = ips
 			if g.UseCallScope {
 				AllowInScope(ctx, granted)
 				scoped, allowed, allowPrivate = scopedPermissions(ctx, request)
@@ -293,11 +317,14 @@ func (g *Gate) authorize(
 		g.recordDenied(source, request, err)
 		return nil, err
 	}
-	ips, err := g.resolve(ctx, request.Host)
-	if err != nil {
-		denied := deniedTarget(request, reasonDNSFailed)
-		g.recordDenied(source, request, denied)
-		return nil, denied
+	ips := resolved
+	if ips == nil {
+		ips, err = g.resolve(ctx, request.Host)
+		if err != nil {
+			denied := deniedTarget(request, reasonDNSFailed)
+			g.recordDenied(source, request, denied)
+			return nil, denied
+		}
 	}
 	for _, ip := range ips {
 		if nonPublicIP(ip) && !allowPrivate {
@@ -437,7 +464,13 @@ func requestPort(value *url.URL) (uint16, error) {
 	}
 	if raw := value.Port(); raw != "" {
 		port, err := strconv.ParseUint(raw, 10, 16)
-		return uint16(port), err
+		if err != nil || port == 0 {
+			// An explicit :0 is not a defaultable port; silently mapping it
+			// to the scheme default would authorize a different endpoint
+			// than the URL spelled.
+			return 0, errors.New("request port is invalid")
+		}
+		return uint16(port), nil
 	}
 	switch strings.ToLower(value.Scheme) {
 	case "http":
@@ -490,7 +523,31 @@ func (g *Gate) resolve(ctx context.Context, host string) ([]net.IP, error) {
 func nonPublicIP(ip net.IP) bool {
 	return ip == nil || ip.IsUnspecified() || ip.IsLoopback() ||
 		ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() ||
-		ip.IsMulticast()
+		ip.IsMulticast() || inCGNATRange(ip) || inBenchmarkRange(ip) ||
+		inReservedRange(ip)
+}
+
+// inCGNATRange covers 100.64.0.0/10 (RFC 6598 carrier-grade NAT): shared
+// address space an approved public origin must not be able to rebind into.
+func inCGNATRange(ip net.IP) bool {
+	address := ip.To4()
+	return address != nil && address[0] == 100 &&
+		address[1] >= 64 && address[1] <= 127
+}
+
+// inBenchmarkRange covers 198.18.0.0/15 (RFC 2544 benchmarking): never a
+// legitimate egress destination from a build.
+func inBenchmarkRange(ip net.IP) bool {
+	address := ip.To4()
+	return address != nil && address[0] == 198 &&
+		(address[1] == 18 || address[1] == 19)
+}
+
+// inReservedRange covers 240.0.0.0/4 (reserved, incl. broadcast): Go's IP
+// helpers have no predicate for it.
+func inReservedRange(ip net.IP) bool {
+	address := ip.To4()
+	return address != nil && address[0] >= 240
 }
 
 func ipStrings(ips []net.IP) []string {

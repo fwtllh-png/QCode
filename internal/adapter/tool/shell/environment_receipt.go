@@ -67,11 +67,28 @@ func authServiceFactsSince(ctx context.Context, prior []environment.Fact) []envi
 		facts = append(facts, report.Facts()...)
 	}
 	if service := goproxy.ServiceFrom(ctx); service != nil {
-		if current := service.Facts(); len(current) > len(prior) {
-			facts = append(facts, current[len(prior):]...)
-		}
+		facts = append(facts, serviceFactsSinceCursor(prior, service.Facts())...)
 	}
 	return facts
+}
+
+// serviceFactsSinceCursor reports the facts that postdate a prior snapshot.
+// Length alone lies when the service's list is ever truncated or reset: the
+// prefix is compared, and a rotated list re-reports everything rather than
+// silently dropping facts the model has not seen.
+func serviceFactsSinceCursor(prior, current []environment.Fact) []environment.Fact {
+	if len(current) <= len(prior) {
+		if len(current) == 0 {
+			return nil
+		}
+		return current
+	}
+	for index := range prior {
+		if prior[index] != current[index] {
+			return current
+		}
+	}
+	return current[len(prior):]
 }
 
 func inheritedEnvironmentNetwork(backend sandbox.Backend) []egress.Target {

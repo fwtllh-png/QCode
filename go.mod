@@ -10,7 +10,6 @@ require (
 require (
 	github.com/coder/websocket v1.8.14
 	github.com/creack/pty v1.1.24
-	github.com/landlock-lsm/go-landlock v0.9.0
 	github.com/ledongthuc/pdf v0.0.0-20250511090121-5959a4027728
 	github.com/odvcencio/gotreesitter v0.52.0
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2
@@ -18,6 +17,7 @@ require (
 	github.com/zalando/go-keyring v0.2.6
 	golang.org/x/net v0.57.0
 	golang.org/x/sys v0.47.0
+	golang.org/x/text v0.40.0
 	modernc.org/sqlite v1.54.0
 	mvdan.cc/sh/v3 v3.13.1
 )
@@ -33,8 +33,6 @@ require (
 	github.com/ncruces/go-strftime v1.0.0 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	github.com/stretchr/testify v1.11.1 // indirect
-	golang.org/x/text v0.40.0 // indirect
-	kernel.org/pub/linux/libs/security/libcap/psx v1.2.77 // indirect
 	modernc.org/libc v1.74.1 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect

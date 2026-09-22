@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -21,9 +20,6 @@ import (
 )
 
 func TestBrokerConsumesLeaseRunsSnapshotAndReaps(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("fixture uses a POSIX shell script")
-	}
 	fixture := newFixture(t)
 	result, err := fixture.broker.RunSmoke(
 		t.Context(),
@@ -53,9 +49,6 @@ func TestBrokerConsumesLeaseRunsSnapshotAndReaps(t *testing.T) {
 }
 
 func TestBrokerRejectsMutatedSnapshotBeforeLeaseConsumption(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("fixture uses a POSIX shell script")
-	}
 	fixture := newFixture(t)
 	if err := os.Chmod(fixture.snapshot.ExecutablePath, 0o700); err != nil {
 		t.Fatal(err)
@@ -83,9 +76,6 @@ func TestBrokerRejectsMutatedSnapshotBeforeLeaseConsumption(t *testing.T) {
 }
 
 func TestRunCommandSettlesNonZeroExitAsFailure(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("fixture uses /bin/sh")
-	}
 	manager := authority.NewLeaseAuthority(authority.LeaseAuthorityOptions{})
 	broker, err := New(manager)
 	if err != nil {

@@ -88,11 +88,7 @@ func (platformModule) Build(_ context.Context, state *buildState) error {
 	state.platform.processes = processes
 	state.platform.processEgress = &egress.Gate{Enforce: true}
 	state.platform.leaseAuthority = newLeaseAuthority()
-	helperPath, err := os.Executable()
-	if err != nil {
-		return fmt.Errorf("resolve sandbox helper executable: %w", err)
-	}
-	backend, prepareFacts, err := newWorkspaceSandbox(state, helperPath)
+	backend, prepareFacts, err := newWorkspaceSandbox(state)
 	if err != nil {
 		return fmt.Errorf("create sandbox: %w", err)
 	}
@@ -126,7 +122,6 @@ func (platformModule) Build(_ context.Context, state *buildState) error {
 	)
 	session.repositoryIndex = index
 	session.metrics.SetRepositoryIndexState(status)
-	state.platform.helperPath = helperPath
 	state.platform.backend = backend
 	state.platform.repositoryIndex = index
 	if !execution.Tools {

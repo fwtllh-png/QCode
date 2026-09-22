@@ -12,7 +12,6 @@ import (
 	"net/url"
 	"path"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"unicode/utf8"
 
@@ -362,19 +361,11 @@ func validateEditorURI(
 	if err != nil {
 		return errors.New("editor context URI path is invalid")
 	}
-	if runtime.GOOS == "windows" && len(uriPath) >= 3 &&
-		uriPath[0] == '/' && uriPath[2] == ':' {
-		uriPath = uriPath[1:]
-	}
 	runtimeURIPath := filepath.Clean(filepath.FromSlash(uriPath))
 	if identity.RemoteName != "" {
 		rootURIPath, unescapeErr := url.PathUnescape(root.EscapedPath())
 		if unescapeErr != nil {
 			return errors.New("workspace identity URI path is invalid")
-		}
-		if runtime.GOOS == "windows" && len(rootURIPath) >= 3 &&
-			rootURIPath[0] == '/' && rootURIPath[2] == ':' {
-			rootURIPath = rootURIPath[1:]
 		}
 		rootURIPath = filepath.Clean(filepath.FromSlash(rootURIPath))
 		relative, relErr := filepath.Rel(rootURIPath, runtimeURIPath)
@@ -398,11 +389,7 @@ func validateEditorURI(
 }
 
 func equalFilesystemPath(left, right string) bool {
-	left, right = filepath.Clean(left), filepath.Clean(right)
-	if runtime.GOOS == "windows" {
-		return strings.EqualFold(left, right)
-	}
-	return left == right
+	return filepath.Clean(left) == filepath.Clean(right)
 }
 
 func editorSelection(data []byte, selection protocol.EditorRange) ([]byte, error) {

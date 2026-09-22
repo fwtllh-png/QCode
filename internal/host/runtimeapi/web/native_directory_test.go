@@ -1,8 +1,6 @@
 package web
 
 import (
-	"context"
-	"os/exec"
 	"reflect"
 	"testing"
 )
@@ -34,20 +32,6 @@ end run`,
 				},
 			},
 		},
-		{
-			name: "Windows uses FolderBrowserDialog",
-			goos: "windows",
-			want: directoryPickerCommand{
-				name: "powershell.exe",
-				args: []string{
-					"-NoProfile",
-					"-NonInteractive",
-					"-Command",
-					`Add-Type -AssemblyName System.Windows.Forms; $dialog = New-Object System.Windows.Forms.FolderBrowserDialog; $dialog.Description = 'Choose a workspace folder'; $dialog.SelectedPath = $args[0]; if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $dialog.SelectedPath }`,
-					initial,
-				},
-			},
-		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -63,20 +47,9 @@ end run`,
 }
 
 func TestNativeDirectoryPickerCommandRejectsUnsupportedPlatform(t *testing.T) {
-	if _, err := nativeDirectoryPickerCommand("unsupported", "/workspace"); err == nil {
-		t.Fatal("unsupported platform was accepted")
-	}
-}
-
-func TestDirectoryPickerCancellation(t *testing.T) {
-	err := exec.CommandContext(t.Context(), "sh", "-c", "exit 1").Run()
-	if err == nil {
-		t.Fatal("fixture command unexpectedly succeeded")
-	}
-	if !directoryPickerCancelled("linux", err, "") {
-		t.Fatal("Linux picker cancellation was not recognized")
-	}
-	if directoryPickerCancelled("linux", context.Canceled, "") {
-		t.Fatal("context cancellation was treated as picker cancellation")
+	for _, goos := range []string{"linux", "windows", "unsupported"} {
+		if _, err := nativeDirectoryPickerCommand(goos, "/workspace"); err == nil {
+			t.Fatalf("unsupported platform %q was accepted", goos)
+		}
 	}
 }

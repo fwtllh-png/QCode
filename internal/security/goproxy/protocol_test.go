@@ -31,3 +31,26 @@ func TestMatchPrefix(t *testing.T) {
 		t.Fatal("host GOPROXY star prefix must match every module")
 	}
 }
+
+func TestMatchPrefixRequiresPathBoundary(t *testing.T) {
+	prefixes := []string{"corp.io/team"}
+	if MatchPrefix("corp.io/team-secrets", prefixes) {
+		t.Fatal("sibling module sharing leading characters was authorized")
+	}
+	if MatchPrefix("corp.io/teamulous/mod", prefixes) {
+		t.Fatal("sibling subtree was authorized")
+	}
+	if !MatchPrefix("corp.io/team", prefixes) {
+		t.Fatal("exact prefix module was refused")
+	}
+	if !MatchPrefix("corp.io/team/mod", prefixes) {
+		t.Fatal("prefix subtree was refused")
+	}
+	slash := []string{"corp.io/team/"}
+	if MatchPrefix("corp.io/team-secrets", slash) {
+		t.Fatal("trailing-slash prefix authorized a sibling")
+	}
+	if !MatchPrefix("corp.io/team/mod", slash) {
+		t.Fatal("trailing-slash prefix refused its subtree")
+	}
+}

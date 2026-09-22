@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"strconv"
 	"testing"
@@ -21,9 +20,6 @@ func TestToolchainProbeOutputBoundaries(t *testing.T) {
 }
 
 func TestCertificateDiscoveryUsesToolchainReportedDirectory(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("fixture uses a POSIX executable")
-	}
 	root, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)

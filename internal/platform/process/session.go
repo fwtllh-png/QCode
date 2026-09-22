@@ -19,7 +19,12 @@ import (
 )
 
 const defaultSessionOutputLimit = 1 << 20
-const defaultSessionLimit = 128
+
+// DefaultSessionLimit caps live process sessions per manager. It bounds
+// concurrent sandboxed subprocesses per workspace; sessions are also closed
+// by turn release and timeout, so the cap is a backstop against leaks, not a
+// throughput knob. Public contract constant.
+const DefaultSessionLimit = 128
 
 type SessionManager struct {
 	mu             sync.RWMutex
@@ -73,6 +78,13 @@ type SessionOptions struct {
 	SessionProxyPort     uint16
 	Network              io.Closer
 	TrustedRuntimeHelper bool
+	// OnClose runs exactly once when the session closes, on every close path
+	// (explicit Close, turn release, timeout, capacity eviction, CloseAll),
+	// after the process is gone and the network channel is shut down. It is
+	// the ownership hook for resources keyed to the session's lifetime (for
+	// example the isolated workspace an exec_command stored for it). It must
+	// not call back into the manager.
+	OnClose func(sessionID string)
 	// DetachFromCaller keeps the process alive after Create's ctx ends (background/PTY).
 	DetachFromCaller bool
 }
@@ -120,22 +132,25 @@ type Session struct {
 	terminal       *os.File
 	tty            bool
 
-	archive    Archive
-	mu         sync.RWMutex
-	deliveryMu sync.Mutex
-	delivered  uint64
-	output     []byte
-	baseCursor uint64
-	running    bool
-	exitCode   int
-	terminated bool
-	timedOut   bool
-	waitDone   chan struct{}
-	readDone   chan struct{}
-	notify     chan struct{}
-	closeOnce  sync.Once
-	maxOutput  int
-	network    io.Closer
+	archive     Archive
+	mu          sync.RWMutex
+	deliveryMu  sync.Mutex
+	delivered   uint64
+	output      []byte
+	baseCursor  uint64
+	running     bool
+	exitCode    int
+	terminated  bool
+	timedOut    bool
+	waitDone    chan struct{}
+	readDone    chan struct{}
+	notify      chan struct{}
+	closeOnce   sync.Once
+	networkOnce sync.Once
+	maxOutput   int
+	network     io.Closer
+	readErr     error
+	onClose     func(sessionID string)
 }
 
 func NewSessionManager(maxOutputBytes int) *SessionManager {
@@ -145,7 +160,7 @@ func NewSessionManager(maxOutputBytes int) *SessionManager {
 	return &SessionManager{
 		sessions: make(map[string]*Session), starting: make(map[string]journalEntry),
 		stale:          make(map[string]journalEntry),
-		maxOutputBytes: maxOutputBytes, maxSessions: defaultSessionLimit,
+		maxOutputBytes: maxOutputBytes, maxSessions: DefaultSessionLimit,
 	}
 }
 
@@ -273,7 +288,7 @@ func (m *SessionManager) Create(
 		running: true, exitCode: -1,
 		waitDone: make(chan struct{}), readDone: make(chan struct{}),
 		notify: make(chan struct{}, 1), maxOutput: m.maxOutputBytes,
-		network: network,
+		network: network, onClose: options.OnClose,
 	}
 	if session.displayCommand == "" {
 		session.displayCommand = commandText
@@ -531,9 +546,15 @@ func (m *SessionManager) Signal(id, threadID string, signal syscall.Signal) erro
 	if !running {
 		return errors.New("terminal session is not running")
 	}
-	session.mu.Lock()
-	session.terminated = true
-	session.mu.Unlock()
+	// Only an uncatchable kill marks the session terminated. INT, TERM,
+	// HUP, and WINCH are ordinary signals the child may trap (ctrl-c on a
+	// test binary, resize); flagging them as termination reports a clean
+	// exit as canceled and flips passing verification evidence.
+	if signal == syscall.SIGKILL {
+		session.mu.Lock()
+		session.terminated = true
+		session.mu.Unlock()
+	}
 	return session.process.signal(signal)
 }
 
@@ -565,6 +586,14 @@ func (m *SessionManager) CloseWithResult(id, threadID string) (SessionRead, erro
 func (m *SessionManager) closeSession(id string, session *Session) error {
 	session.close()
 	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.closeSessionLocked(id, session)
+}
+
+// closeSessionLocked is closeSession for callers already holding m.mu.
+// session.close() may block on waitDone, so callers must only invoke it for
+// sessions whose process already exited.
+func (m *SessionManager) closeSessionLocked(id string, session *Session) error {
 	if m.sessions[id] == session {
 		delete(m.sessions, id)
 	}
@@ -576,7 +605,6 @@ func (m *SessionManager) closeSession(id string, session *Session) error {
 		}
 		m.journalErr = errors.Join(m.journalErr, journalErr)
 	}
-	m.mu.Unlock()
 	if journalErr != nil {
 		return fmt.Errorf(
 			"remove terminal session from process journal: %w",
@@ -737,20 +765,53 @@ func (s *Session) readLoop() {
 			s.signalChange()
 		}
 		if err != nil {
-			if errors.Is(err, io.EOF) || errors.Is(err, syscall.EIO) || errors.Is(err, os.ErrClosed) {
-				return
+			// EOF, EIO (pty master after child exit), and ErrClosed are the
+			// normal ends. Anything else means the captured output may be
+			// incomplete: keep the error observable instead of silently
+			// treating it like a clean end.
+			if !errors.Is(err, io.EOF) && !errors.Is(err, syscall.EIO) &&
+				!errors.Is(err, os.ErrClosed) {
+				s.mu.Lock()
+				s.readErr = err
+				s.mu.Unlock()
 			}
 			return
 		}
 	}
 }
 
+// ReadError reports a non-normal failure that ended output collection early,
+// meaning the captured output may be truncated. nil means the reader ended
+// cleanly (EOF, pty EIO, or orderly close).
+func (s *Session) ReadError() error {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.readErr
+}
+
+// ptyDrainTimeout bounds how long waitLoop waits for the PTY reader to drain
+// after the leader exits before the master is force-closed. The kernel pty
+// buffer still holds the child's final writes and closing the master first
+// discards them; a descendant that inherited the slave side can hold the
+// read open, so the wait must be bounded. Public contract constant; boundary
+// tests pin it.
+const ptyDrainTimeout = 2 * time.Second
+
 func (s *Session) waitLoop() {
 	err := s.process.wait()
 	if s.terminal != nil {
+		// Drain before closing the master so the child's final output lines
+		// are not dropped (they surface as EIO on the drained read).
+		select {
+		case <-s.readDone:
+		case <-time.After(ptyDrainTimeout):
+		}
 		_ = s.terminal.Close()
 	}
 	<-s.readDone
+	// The process is gone: its session-scoped network channel (listener,
+	// gate grants, approved origins) must not outlive it.
+	s.closeNetwork()
 	s.mu.Lock()
 	s.running = false
 	s.exitCode = ExitCode(err)
@@ -777,6 +838,15 @@ func (s *Session) closeWithReason(timedOut bool) {
 		s.mu.Unlock()
 		_ = s.input.Close()
 		<-s.waitDone
+		s.closeNetwork()
+		if s.onClose != nil {
+			s.onClose(s.id)
+		}
+	})
+}
+
+func (s *Session) closeNetwork() {
+	s.networkOnce.Do(func() {
 		if s.network != nil {
 			_ = s.network.Close()
 		}

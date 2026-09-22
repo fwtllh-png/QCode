@@ -1,4 +1,4 @@
-//go:build capability && (darwin || linux)
+//go:build capability && darwin
 
 package process
 
@@ -6,7 +6,6 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -24,13 +23,9 @@ func TestGoModuleCacheWritableInSandbox(t *testing.T) {
 	), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	helper, err := os.Executable()
-	if err != nil {
-		t.Fatal(err)
-	}
 	// Empty PrivateTemp matches production: auto-created under the system temp.
 	backend, err := sandbox.NewPlatformBackend(sandbox.Options{
-		WorkspaceRoot: root, HelperPath: helper, AllowNetwork: false,
+		WorkspaceRoot: root, AllowNetwork: false,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -67,12 +62,10 @@ func TestGoModuleCacheWritableInSandbox(t *testing.T) {
 		strings.Contains(out, "could not create module cache") {
 		t.Fatalf("module cache still broken: %s", out)
 	}
-	if runtime.GOOS == "darwin" {
-		for _, line := range strings.Split(result.Stdout, "\n") {
-			line = strings.TrimSpace(line)
-			if strings.HasPrefix(line, "/var/") {
-				t.Fatalf("cache path still /var symlink form: %q\nfull:\n%s", line, result.Stdout)
-			}
+	for _, line := range strings.Split(result.Stdout, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "/var/") {
+			t.Fatalf("cache path still /var symlink form: %q\nfull:\n%s", line, result.Stdout)
 		}
 	}
 }
@@ -80,14 +73,9 @@ func TestGoModuleCacheWritableInSandbox(t *testing.T) {
 func TestInstalledHostToolchainIsReusableInSandbox(t *testing.T) {
 	root := t.TempDir()
 	privateHome := t.TempDir()
-	helper, err := os.Executable()
-	if err != nil {
-		t.Fatal(err)
-	}
 	backend, err := sandbox.NewPlatformBackend(sandbox.Options{
 		WorkspaceRoot: root,
 		PrivateTemp:   privateHome,
-		HelperPath:    helper,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -133,14 +121,9 @@ func TestInstalledHostToolchainIsReusableInSandbox(t *testing.T) {
 func TestInstalledHostNodeRuntimeIsReusableInSandbox(t *testing.T) {
 	root := t.TempDir()
 	privateHome := t.TempDir()
-	helper, err := os.Executable()
-	if err != nil {
-		t.Fatal(err)
-	}
 	backend, err := sandbox.NewPlatformBackend(sandbox.Options{
 		WorkspaceRoot: root,
 		PrivateTemp:   privateHome,
-		HelperPath:    helper,
 	})
 	if err != nil {
 		t.Fatal(err)

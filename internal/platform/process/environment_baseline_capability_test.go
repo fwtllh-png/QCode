@@ -1,29 +1,24 @@
 //go:build capability && darwin
 
-package process
+package process_test
 
 import (
 	"context"
-	"os"
 	"os/exec"
 	"strings"
 	"testing"
 	"time"
 
 	platformenv "github.com/fwtllh-png/QCode/internal/platform/environment"
+	"github.com/fwtllh-png/QCode/internal/platform/process"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
 )
 
 func TestIsolatedSandboxEnvironmentBaseline(t *testing.T) {
 	root := t.TempDir()
-	helper, err := os.Executable()
-	if err != nil {
-		t.Fatalf("unavailable: resolve test helper: %v", err)
-	}
 	backend, err := sandbox.NewPlatformBackend(sandbox.Options{
 		WorkspaceRoot:       root,
 		PrivateTemp:         t.TempDir(),
-		HelperPath:          helper,
 		AllowNetwork:        false,
 		EnvironmentContract: "v1",
 		EnvironmentProfile:  "isolated",
@@ -51,7 +46,7 @@ func TestIsolatedSandboxEnvironmentBaseline(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	temp, err := Run(ctx, Options{
+	temp, err := process.Run(ctx, process.Options{
 		Dir: workspace.Root(), DirFile: directory,
 		Command: `printf '%s\n' "$HOME" "$TMPDIR"; mktemp -d`,
 		Sandbox: backend, RequireSandbox: true, WorkspaceReadOnly: true,
@@ -82,7 +77,7 @@ func TestIsolatedSandboxEnvironmentBaseline(t *testing.T) {
 	if _, err := exec.LookPath("go"); err != nil {
 		t.Fatalf("unavailable: go toolchain: %v", err)
 	}
-	sandboxed, err := Run(ctx, Options{
+	sandboxed, err := process.Run(ctx, process.Options{
 		Dir: workspace.Root(), DirFile: directory,
 		Command: `go env HOME GOENV`,
 		Sandbox: backend, RequireSandbox: true, WorkspaceReadOnly: true,
@@ -108,14 +103,9 @@ func TestV1NativeSharedUserTempAllowsMktemp(t *testing.T) {
 		t.Fatalf("unavailable: resolve Darwin user temp: %v", err)
 	}
 	root := t.TempDir()
-	helper, err := os.Executable()
-	if err != nil {
-		t.Fatalf("unavailable: resolve test helper: %v", err)
-	}
 	backend, err := sandbox.NewPlatformBackend(sandbox.Options{
 		WorkspaceRoot:       root,
 		PrivateTemp:         t.TempDir(),
-		HelperPath:          helper,
 		AllowNetwork:        false,
 		EnvironmentContract: "v1",
 		EnvironmentProfile:  "native",
@@ -140,9 +130,9 @@ func TestV1NativeSharedUserTempAllowsMktemp(t *testing.T) {
 	t.Cleanup(func() { _ = directory.Close() })
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	result, err := Run(ctx, Options{
+	result, err := process.Run(ctx, process.Options{
 		Dir: workspace.Root(), DirFile: directory,
-		Command: `printf '%s\n' "$TMPDIR"; created=$(mktemp -d) || exit 1; printf '%s\n' "$created"`,
+		Command: `printf '%s\n' "$TMPDIR"; created=$(mktemp -d) || exit 1; trap 'rmdir "$created"' EXIT; printf '%s\n' "$created"`,
 		Env: []string{
 			"HOME=/host/home",
 			"TMPDIR=" + userTemp,

@@ -1,4 +1,4 @@
-//go:build capability && (darwin || linux)
+//go:build capability && darwin
 
 package process
 

@@ -8,6 +8,7 @@ import (
 
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
 	"github.com/fwtllh-png/QCode/internal/environment"
+	"github.com/fwtllh-png/QCode/internal/platform/process"
 	securitypolicy "github.com/fwtllh-png/QCode/internal/security/policy"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
 )
@@ -39,10 +40,10 @@ func (p *commandProtocol) preflightExecutables(
 		}
 		additional = append(additional, resolved)
 	}
-	search := append(
-		append([]string(nil), policyValue.Toolchains.BinDirs...),
-		filepath.SplitList(os.Getenv("PATH"))...,
-	)
+	// The same ordered construction the child's PATH uses: preflight
+	// verdicts must name the same file the child resolves, not a different
+	// inode from a differently ordered search.
+	search := process.ToolchainSearchPath(policyValue.Toolchains.BinDirs)
 	for _, segment := range analysis.Segments {
 		if segment.Dynamic || len(segment.Argv) == 0 {
 			continue

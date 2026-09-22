@@ -130,9 +130,6 @@ func buildMCPFixture(t *testing.T) string {
 	}
 	root := filepath.Clean(filepath.Join(filepath.Dir(file), "..", "..", ".."))
 	name := "mcp-fixture"
-	if runtime.GOOS == "windows" {
-		name += ".exe"
-	}
 	binary := filepath.Join(t.TempDir(), name)
 	command := exec.Command("go", "build", "-trimpath", "-o", binary, "./internal/adapter/mcp/testdata/fixture")
 	command.Dir = root

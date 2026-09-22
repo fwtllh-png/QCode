@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"runtime"
 	"slices"
 	"sort"
 	"strings"
@@ -73,7 +72,7 @@ type commandProtocol struct {
 	manager   *process.SessionManager
 	mu        sync.Mutex
 	networks  map[string]egress.ProcessSession
-	isolates  map[string]isolatedCommand
+	isolates  map[string]pendingExecution
 }
 
 type protocolExecutor struct {
@@ -291,8 +290,7 @@ func execCommandDescriptor() tool.Descriptor {
 		},
 		ParallelPolicy:     tool.ParallelConcurrent,
 		SandboxRequirement: tool.SandboxStrong,
-		Availability:       processProtocolAvailability(),
-		UnavailableReason:  processProtocolUnavailableReason(),
+		Availability:       tool.AvailabilityAvailable,
 		RepeatPolicy:       tool.RepeatExecute,
 		InputSchema: map[string]any{
 			"type": "object",
@@ -303,7 +301,7 @@ func execCommandDescriptor() tool.Descriptor {
 				"env": map[string]any{
 					"type":                 "object",
 					"additionalProperties": map[string]any{"type": "string"},
-					"description":          "Extra environment entries for this command only. Only allow-listed names are accepted (PATH, HOME, TMPDIR, LANG/LC_*, TERM, Go toolchain and proxy variables); secret-named variables are rejected.",
+					"description":          "Extra environment entries for this command only. Any well-formed NAME=value is accepted except three refusals: secret-named variables (API key/token/secret/password/credential markers or a _KEY suffix), interpreter-preload names that change how the command text is read (LD_PRELOAD, DYLD_*, BASH_ENV, ENV, NODE_OPTIONS, PYTHONSTARTUP, PERL5OPT, RUBYOPT), and policy-owned names (HOME, TMPDIR, TMP, TEMP — the sandbox decides them in every posture). Declared names are journaled in declared_env; proxy variables are also policy-owned. The command text can export variables itself.",
 				},
 				"yield_time_ms": map[string]any{
 					"type":        "integer",
@@ -392,8 +390,7 @@ func writeStdinDescriptor() tool.Descriptor {
 		}}},
 		ParallelPolicy:     tool.ParallelConcurrent,
 		SandboxRequirement: tool.SandboxStrong,
-		Availability:       processProtocolAvailability(),
-		UnavailableReason:  processProtocolUnavailableReason(),
+		Availability:       tool.AvailabilityAvailable,
 		RepeatPolicy:       tool.RepeatExecute,
 		InputSchema: map[string]any{
 			"type": "object",
@@ -419,20 +416,6 @@ func writeStdinDescriptor() tool.Descriptor {
 			"additionalProperties": false,
 		},
 	}
-}
-
-func processProtocolAvailability() tool.Availability {
-	if runtime.GOOS == "windows" {
-		return tool.AvailabilityUnavailable
-	}
-	return tool.AvailabilityAvailable
-}
-
-func processProtocolUnavailableReason() string {
-	if runtime.GOOS == "windows" {
-		return "local process sessions are unavailable on this platform"
-	}
-	return ""
 }
 
 func (e *protocolExecutor) Descriptor() tool.Descriptor {
@@ -511,13 +494,19 @@ func (p *commandProtocol) execCommand(
 	defer directoryFile.Close()
 	workspace := p.workspace
 	sandboxBackend := p.backend
-	isolated, err := p.beginIsolatedCommand(
+	isolated, inPlaceDegraded, err := p.beginIsolatedCommand(
 		ctx, input.WritePaths, input.Settle == "discard",
 	)
 	if err != nil {
+		// discard cannot silently degrade: without an isolable tree there
+		// is no way to drop writes, so the caller must change shape.
+		requiredAction := "use_exact_write_paths"
+		if input.Settle == "discard" {
+			requiredAction = "declare_write_tree_or_apply"
+		}
 		return tool.Result{}, tool.Precondition(tool.WithRecoveryHint(err, tool.RecoveryHint{
 			ErrorCategory:  "workspace_isolation_unavailable",
-			RequiredAction: "use_exact_write_paths",
+			RequiredAction: requiredAction,
 			RetryOriginal:  false,
 		}))
 	}
@@ -539,7 +528,9 @@ func (p *commandProtocol) execCommand(
 	if err != nil {
 		return tool.Result{}, fmt.Errorf("open isolated cwd %q: %w", input.CWD, err)
 	}
-	defer directoryFile.Close()
+	// The outer defer closes directoryFile at exit; after the reassignment
+	// above it refers to this isolated handle, so no second defer here (the
+	// parent handle was closed explicitly).
 	writePaths, err := (&Tool{workspace: workspace}).resolveWritePaths(
 		input.WritePaths,
 	)
@@ -547,6 +538,9 @@ func (p *commandProtocol) execCommand(
 		return tool.Result{}, fmt.Errorf("resolve command write paths: %w", err)
 	}
 	sandboxBackend, requireStrong := processSandbox(ctx, sandboxBackend)
+	// Apply the covered_paths default before the set -e decision: a defaulted
+	// check is a declared verification and must stop mid-statement on failure.
+	applyVerificationDefaults(&input)
 	command := input.Command
 	if input.Verification != "" {
 		command = "set -e\n" + command
@@ -664,6 +658,7 @@ func (p *commandProtocol) execCommand(
 			SessionProxyPort:    sessionPort,
 			Network:             network,
 			DetachFromCaller:    true,
+			OnClose:             p.reclaimAbandonedExecution,
 		},
 	)
 	if err != nil {
@@ -687,14 +682,14 @@ func (p *commandProtocol) execCommand(
 		return tool.Result{}, errors.Join(err, closeErr)
 	}
 	wait.Data = output.String()
-	result := sessionResult(id, wait, outputTokens)
+	result := sessionResult(id, wait)
 	attachVerification(&result, evidence, wait)
 	if wait.Running {
 		result.Metadata["error_category"] = "process_still_running"
 		result.Metadata["required_action"] = "write_stdin"
 		result.Metadata["retry_original"] = false
 	}
-	attachCommandExecution(&result, id, wait.SessionRead)
+	attachCommandExecution(&result, id, wait.SessionRead, time.Since(wait.CreatedAt))
 	if omitted := output.Omitted(); omitted > 0 {
 		result.Metadata["omitted_bytes"] = omitted
 	}
@@ -725,20 +720,41 @@ func (p *commandProtocol) execCommand(
 	if isolated.session != nil {
 		attachIsolatedCWD(&result, isolated.session)
 	}
+	if inPlaceDegraded {
+		// Apply-mode fallback: write trees exist but no isolator is bound,
+		// so the command ran in place under its exact write grants. The
+		// result must say so instead of implying isolated settlement.
+		if result.Metadata == nil {
+			result.Metadata = make(map[string]any)
+		}
+		result.Metadata["workspace_settlement"] = "in_place_degraded"
+		result.Metadata["degradation_reason"] = "workspace_isolator_unavailable"
+	}
 	if !wait.Running {
-		_ = p.manager.Close(id, threadID)
-		p.forgetNetwork(id)
-		delete(result.Metadata, "session_id")
-		settleErr := p.settleIsolated(ctx, isolated, &result)
+		settleErr := settleIsolated(ctx, isolated, &result)
 		isolated.session = nil
 		if settleErr != nil {
+			_ = p.manager.Close(id, threadID)
+			p.forgetNetwork(id)
 			return result, settleErr
 		}
 		// Judge verification after settlement so isolated writes that land
 		// on covered paths are visible to the digest comparison.
 		invalidateVerificationOnCoveredWrites(&result, evidence, p.workspace.Root())
-	} else if isolated.session != nil {
-		p.storeIsolate(id, isolated)
+		if closeErr := p.manager.Close(id, threadID); closeErr != nil {
+			if result.Metadata == nil {
+				result.Metadata = make(map[string]any)
+			}
+			result.Metadata["session_close_error"] = closeErr.Error()
+		}
+		p.forgetNetwork(id)
+		delete(result.Metadata, "session_id")
+	} else {
+		// The session outlived the yield window: the isolate and the
+		// verification evidence settle on the final write_stdin poll, and
+		// the session's OnClose hook reclaims them if that poll never
+		// comes (turn release, timeout).
+		p.storePendingExecution(id, isolated, evidence)
 		isolated.session = nil
 	}
 	return result, nil
@@ -932,6 +948,11 @@ func (p *commandProtocol) writeStdin(
 	identity := tool.InvocationIdentityFrom(ctx)
 	threadID := identity.ThreadID
 	if input.Close {
+		// Take the pending state before closing: the session's OnClose hook
+		// reclaims whatever is still stored, and the normal close path owns
+		// settlement.
+		pending, hasPending := p.takePendingExecution(input.SessionID)
+		closeStarted := time.Now()
 		read, err := p.manager.CloseWithResult(input.SessionID, threadID)
 		p.forgetNetwork(input.SessionID)
 		if err := sessionLookupHint(err); err != nil {
@@ -947,9 +968,15 @@ func (p *commandProtocol) writeStdin(
 				"closed":            true,
 			},
 		}
-		attachCommandExecution(&result, input.SessionID, read)
-		if settleErr := p.settleStoredIsolate(ctx, input.SessionID, &result); settleErr != nil {
-			return result, settleErr
+		attachCommandExecution(&result, input.SessionID, read, time.Since(closeStarted))
+		if hasPending {
+			settleErr := settleTakenPending(
+				ctx, p.workspace.Root(), pending, &result,
+				process.SessionWait{SessionRead: read},
+			)
+			if settleErr != nil {
+				return result, settleErr
+			}
 		}
 		return result, nil
 	}
@@ -988,14 +1015,19 @@ func (p *commandProtocol) writeStdin(
 			return tool.Result{}, err
 		}
 	}
+	pollStarted := time.Now()
 	var wait process.SessionWait
 	var collected *processOutputAccumulator
+	windowOmitted := 0
 	if input.YieldTimeMS > 0 {
 		wait, err = p.manager.WaitNext(
 			ctx,
 			input.SessionID,
 			threadID,
 			yield,
+		)
+		wait.Data, windowOmitted = limitProcessOutput(
+			wait.Data, int(tokenestimate.BytesForTokens(uint64(outputTokens))),
 		)
 	} else {
 		wait, collected, err = p.waitSessionOutput(
@@ -1006,12 +1038,14 @@ func (p *commandProtocol) writeStdin(
 	if err != nil {
 		return tool.Result{}, sessionLookupHint(err)
 	}
-	result := sessionResult(input.SessionID, wait, outputTokens)
-	attachCommandExecution(&result, input.SessionID, wait.SessionRead)
+	result := sessionResult(input.SessionID, wait)
+	attachCommandExecution(&result, input.SessionID, wait.SessionRead, time.Since(pollStarted))
 	if collected != nil {
 		if omitted := collected.Omitted(); omitted > 0 {
 			result.Metadata["omitted_bytes"] = omitted
 		}
+	} else if windowOmitted > 0 {
+		result.Metadata["omitted_bytes"] = windowOmitted
 	}
 	if wait.TimedOut && wait.Running {
 		result.Metadata["error_category"] = "process_still_running"
@@ -1023,19 +1057,25 @@ func (p *commandProtocol) writeStdin(
 		p.sessionEnvironmentFacts(ctx, input.SessionID, priorAuth),
 	)
 	if !wait.Running {
+		// Settle before closing: the process already exited, and the
+		// session's OnClose hook must find the store empty so it does not
+		// reclaim what this poll is settling.
+		settleErr := p.settlePendingExecution(ctx, input.SessionID, &result, wait)
 		teardownStarted := time.Now()
 		closeErr := p.manager.Close(input.SessionID, threadID)
 		p.forgetNetwork(input.SessionID)
 		tool.ReportTeardown(ctx, tool.TeardownReport{
 			Duration: time.Since(teardownStarted),
 		})
-		if closeErr != nil {
-			_ = p.settleStoredIsolate(ctx, input.SessionID, &result)
-			return result, closeErr
-		}
 		delete(result.Metadata, "session_id")
-		if err := p.settleStoredIsolate(ctx, input.SessionID, &result); err != nil {
-			return result, err
+		if closeErr != nil {
+			if result.Metadata == nil {
+				result.Metadata = make(map[string]any)
+			}
+			result.Metadata["session_close_error"] = closeErr.Error()
+		}
+		if settleErr != nil {
+			return result, settleErr
 		}
 	}
 	return result, nil
@@ -1102,12 +1142,11 @@ func processOutputTokens(value int) (int, error) {
 	return value, nil
 }
 
-func sessionResult(
-	id string,
-	wait process.SessionWait,
-	outputTokens int,
-) tool.Result {
-	content, omitted := limitProcessOutput(wait.Data, outputTokens*4)
+// sessionResult shapes the result around data that is already bounded: the
+// accumulator paths truncate once (with their own marker), and the WaitNext
+// path truncates at its call site. Truncating again here would nest markers
+// and double-count omitted bytes.
+func sessionResult(id string, wait process.SessionWait) tool.Result {
 	metadata := map[string]any{
 		"session_id":        id,
 		"source_session_id": id,
@@ -1118,21 +1157,23 @@ func sessionResult(
 		"timed_out":         wait.TimedOut,
 		"tty":               wait.TTY,
 	}
-	if omitted > 0 {
-		metadata["omitted_bytes"] = omitted
-	}
 	if wait.Archived {
 		metadata["archived"] = true
 		metadata["pending_bytes"] = wait.Pending
 	}
 	return tool.Result{
-		Content:  content,
+		Content:  wait.Data,
 		IsError:  !wait.Running && (wait.ExitCode != 0 || wait.Terminated),
 		Metadata: metadata,
 	}
 }
 
-func attachCommandExecution(result *tool.Result, id string, read process.SessionRead) {
+// attachCommandExecution reports the command window covered by THIS result:
+// for the first exec result that is the command so far, for a write_stdin
+// poll it is the poll window, not the whole session age.
+func attachCommandExecution(
+	result *tool.Result, id string, read process.SessionRead, window time.Duration,
+) {
 	status := "started"
 	if !read.Running {
 		switch {
@@ -1149,7 +1190,7 @@ func attachCommandExecution(result *tool.Result, id string, read process.Session
 	execution := map[string]any{
 		"command": read.Command, "call_id": read.CallID, "session_id": id,
 		"status": status, "output_tail": result.Content,
-		"duration_ms": time.Since(read.CreatedAt).Milliseconds(),
+		"duration_ms": window.Milliseconds(),
 	}
 	if !read.Running {
 		execution["exit_code"] = read.ExitCode

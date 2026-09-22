@@ -35,7 +35,7 @@ def parse_args() -> argparse.Namespace:
         "--available-on",
         action="append",
         default=[],
-        help="Supported operating system (darwin, linux, or windows). Repeatable.",
+        help="Operating system required by the lane (darwin for macOS). Repeatable.",
     )
     parser.add_argument(
         "--require-available",
@@ -54,10 +54,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def operating_system() -> str:
-    name = platform.system().lower()
-    return {"darwin": "darwin", "linux": "linux", "windows": "windows"}.get(
-        name, name
-    )
+    return platform.system().lower()
 
 
 def write_report(path: Path, result: dict[str, object]) -> None:

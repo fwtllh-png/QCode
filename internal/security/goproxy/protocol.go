@@ -145,16 +145,17 @@ func unescapeModule(escaped string) (string, error) {
 
 func MatchPrefix(module string, prefixes []string) bool {
 	for _, prefix := range prefixes {
-		prefix = strings.TrimSpace(prefix)
+		prefix = strings.TrimSuffix(strings.TrimSpace(prefix), "/")
 		if prefix == "" {
 			continue
 		}
 		if prefix == "*" {
 			return true
 		}
-		if module == strings.TrimSuffix(prefix, "/") ||
-			strings.HasPrefix(module, prefix) ||
-			strings.HasPrefix(module+"/", prefix) {
+		// Boundary match only: a prefix covers the module itself and its
+		// subtree, never a sibling that merely shares leading characters
+		// ("corp.io/team" must not authorize "corp.io/team-secrets").
+		if module == prefix || strings.HasPrefix(module, prefix+"/") {
 			return true
 		}
 	}

@@ -38,13 +38,11 @@ QCode 将仓库理解、模型调用、受治理工具、审批、验证、持�
 - Git
 - Node.js 和 npm（`make build` 会先生成并嵌入 Web 前端）
 
-支持平台边界：
+目前仅支持 macOS（amd64/arm64）；Linux 和 Windows 不再提供构建、发布与运行支持。
 
 | 平台 | Runtime | 沙箱边界 |
 | --- | --- | --- |
 | macOS | 支持 | Seatbelt Backend 可用时为 Strong |
-| Linux | 支持 | 满足 Bubblewrap 和 Landlock 要求时为 Strong |
-| Windows | 支持，但存在平台特定限制 | Partial；需要 Strong Sandbox 的操作会拒绝执行 |
 
 ```bash
 git clone https://github.com/fwtllh-png/QCode.git

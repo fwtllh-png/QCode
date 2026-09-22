@@ -8,7 +8,9 @@
 | Git | 仓库工作流和 Worktree 隔离必需 |
 | Make | 推荐的统一构建入口 |
 | Node.js + npm | 仅重新构建 Web 前端时需要 |
-| macOS/Linux | 推荐；Windows 的沙箱能力边界不同 |
+| macOS | 唯一支持的运行平台 |
+
+Linux 和 Windows 不再提供构建、发布与运行支持。发布产物仅为 macOS amd64/arm64。
 
 ## 2. 安装并启动
 

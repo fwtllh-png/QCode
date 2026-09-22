@@ -10,7 +10,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
-	"runtime"
 	"testing"
 	"time"
 
@@ -566,9 +565,6 @@ func mcpFixtureConfig(t *testing.T, workspace string) []byte {
 		t.Fatal(err)
 	}
 	name := "mcp-fixture"
-	if runtime.GOOS == "windows" {
-		name += ".exe"
-	}
 	binary := filepath.Join(workspace, name)
 	command := exec.Command(
 		"go", "build", "-trimpath", "-o", binary,

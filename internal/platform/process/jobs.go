@@ -139,7 +139,10 @@ func (m *SessionManager) prepareSession(
 			running := session.running
 			session.mu.RUnlock()
 			if !running {
-				delete(m.sessions, existingID)
+				// Evict through closeSession semantics so the on-disk journal
+				// stays consistent with the in-memory map; a bare delete
+				// leaves a stale journal row behind until the next rewrite.
+				_ = m.closeSessionLocked(existingID, session)
 				break
 			}
 		}
@@ -299,7 +302,7 @@ func (m *SessionManager) Poll(ctx context.Context, id string, wait bool) (JobInf
 			id,
 			threadID,
 			cursor,
-			30*time.Second,
+			jobsListWait,
 		)
 		if waitErr != nil {
 			return JobInfo{}, waitErr
@@ -366,7 +369,7 @@ func (s *Session) jobInfo() JobInfo {
 		status = JobStatusRunning
 	}
 	tail := string(s.output)
-	const maxTail = 4 << 10
+	const maxTail = jobsOutputTailBytes // package const; see declaration
 	if len(tail) > maxTail {
 		tail = "…" + tail[len(tail)-maxTail:]
 	}
@@ -377,3 +380,11 @@ func (s *Session) jobInfo() JobInfo {
 		Cursor: s.baseCursor + uint64(len(s.output)),
 	}
 }
+
+// jobsListWait bounds one Session listing wait when results stream. Public
+// contract constant.
+const jobsListWait = 30 * time.Second
+
+// jobsOutputTailBytes bounds the output tail each job entry carries. Public
+// contract constant.
+const jobsOutputTailBytes = 4 << 10

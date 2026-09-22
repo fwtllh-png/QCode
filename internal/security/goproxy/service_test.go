@@ -2,6 +2,7 @@ package goproxy
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -179,4 +180,99 @@ func serve(service *Service, path string) recordedResponse {
 	defer result.Body.Close()
 	body, _ := io.ReadAll(result.Body)
 	return recordedResponse{StatusCode: result.StatusCode, Body: string(body)}
+}
+
+func TestSumdbScopeRejectsUndeclaredDatabases(t *testing.T) {
+	hits := 0
+	upstream := newCountingUpstream(&hits, http.StatusOK, "data")
+	t.Cleanup(upstream.Close)
+	service := newTestService(t, upstream.URL, "user:secret-token")
+	response := serve(service, "/sumdb/evil.example/lookup")
+	if response.StatusCode != http.StatusForbidden {
+		t.Fatalf("undeclared sumdb status = %d body=%s", response.StatusCode, response.Body)
+	}
+	if hits != 0 {
+		t.Fatalf("undeclared sumdb reached the authenticated upstream: hits=%d", hits)
+	}
+	facts := service.TakeFacts()
+	if len(facts) != 1 || facts[0].Category != environment.CategoryTrustValidationFailed {
+		t.Fatalf("facts = %+v", facts)
+	}
+}
+
+func TestSameHostSchemeDowngradeRedirectIsRejected(t *testing.T) {
+	var sinkAuth string
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path == "/example.com/qcode/testmod/@v/v1.2.3.info" {
+			// Same host and port, downgraded to plaintext http.
+			http.Redirect(writer, request, "http://"+request.Host+"/sink", http.StatusFound)
+			return
+		}
+		sinkAuth = request.Header.Get("Authorization")
+		writer.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(upstream.Close)
+	service, err := New(Binding{
+		Upstream:   upstream.URL,
+		Prefixes:   []string{"example.com/qcode/"},
+		Credential: CredentialRef{Kind: "env", Name: "TEST_GOPROXY_TOKEN"},
+	}, func(context.Context, string, string) (string, error) {
+		return "user:secret-token", nil
+	}, &http.Transport{TLSClientConfig: &tls.Config{
+		InsecureSkipVerify: true, // test upstream certificate
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := serve(service, "/example.com/qcode/testmod/@v/v1.2.3.info")
+	if response.StatusCode != http.StatusBadGateway {
+		t.Fatalf("downgrade redirect status = %d body=%s", response.StatusCode, response.Body)
+	}
+	if sinkAuth != "" {
+		t.Fatal("credential was re-sent on a plaintext hop")
+	}
+	facts := service.TakeFacts()
+	if len(facts) != 1 || facts[0].Category != environment.CategoryTrustValidationFailed {
+		t.Fatalf("facts = %+v", facts)
+	}
+}
+
+func TestSameEndpointRedirectFollowsWithCredential(t *testing.T) {
+	var followAuth string
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/example.com/qcode/testmod/@v/v1.2.3.info":
+			// Path-only redirect stays inside the bound endpoint.
+			http.Redirect(
+				writer, request,
+				"https://"+request.Host+"/example.com/qcode/testmod/@v/v1.2.3.info-follow",
+				http.StatusFound,
+			)
+		case "/example.com/qcode/testmod/@v/v1.2.3.info-follow":
+			followAuth = request.Header.Get("Authorization")
+			_, _ = writer.Write([]byte(`{"Version":"v1.2.3"}`))
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	t.Cleanup(upstream.Close)
+	service, err := New(Binding{
+		Upstream:   upstream.URL,
+		Prefixes:   []string{"example.com/qcode/"},
+		Credential: CredentialRef{Kind: "env", Name: "TEST_GOPROXY_TOKEN"},
+	}, func(context.Context, string, string) (string, error) {
+		return "user:secret-token", nil
+	}, &http.Transport{TLSClientConfig: &tls.Config{
+		InsecureSkipVerify: true, // test upstream certificate
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := serve(service, "/example.com/qcode/testmod/@v/v1.2.3.info")
+	if response.StatusCode != http.StatusOK || !strings.Contains(response.Body, "v1.2.3") {
+		t.Fatalf("same-endpoint redirect status = %d body=%s", response.StatusCode, response.Body)
+	}
+	if followAuth == "" {
+		t.Fatal("credential was dropped on a same-endpoint redirect")
+	}
 }

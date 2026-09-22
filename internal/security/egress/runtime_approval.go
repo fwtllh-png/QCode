@@ -3,6 +3,7 @@ package egress
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 )
 
@@ -60,11 +61,26 @@ type askState struct {
 	decided map[string]error
 }
 
+// askKey scopes a cached approval decision to the exact authorized shape:
+// origin plus the requested methods (normalized by normalizeTarget). A GET
+// approval must never answer a CONNECT on the same origin, and vice versa.
+func askKey(request Target) string {
+	return key(request) + "|" + strings.Join(request.Methods, ",")
+}
+
+// transientAskError reports whether an approver outcome was caused by a
+// cancelled or expired wait rather than a settled decision. Transient
+// outcomes must not poison the origin for the rest of the execution: the
+// next request asks again.
+func transientAskError(err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
+}
+
 func (s *askState) ask(ctx context.Context, request Target, approver RuntimeApprover) error {
 	if s == nil {
 		return deniedTarget(request, reasonTargetNotGranted)
 	}
-	origin := key(request)
+	origin := askKey(request)
 	s.mu.Lock()
 	if err, ok := s.decided[origin]; ok {
 		s.mu.Unlock()
@@ -92,7 +108,12 @@ func (s *askState) ask(ctx context.Context, request Target, approver RuntimeAppr
 	if s.decided == nil {
 		s.decided = map[string]error{}
 	}
-	s.decided[origin] = err
+	// Concurrent waiters still observe this attempt's outcome once, but a
+	// transient failure (caller cancellation, timeout) is not a settled
+	// decision and must not be cached.
+	if err == nil || !transientAskError(err) {
+		s.decided[origin] = err
+	}
 	delete(s.pending, origin)
 	wait.err = err
 	close(wait.done)

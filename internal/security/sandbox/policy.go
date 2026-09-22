@@ -40,7 +40,6 @@ type Options struct {
 	HostReadRoots []string
 	HostReadFiles []string
 	PrivateTemp   string
-	HelperPath    string
 	// AllowNetwork permits outbound/inbound sockets inside the OS sandbox.
 	// qcode enables it for the interactive tool session so host processes like
 	// ubomcli can reach their APIs.
@@ -162,6 +161,9 @@ func BuildPolicy(options Options) (Policy, error) {
 			return Policy{}, fmt.Errorf("host read root %q: %w", root, err)
 		}
 		for _, candidate := range []string{lexical, canonical} {
+			if err := validateSensitivePath(candidate); err != nil {
+				return Policy{}, fmt.Errorf("host read root %q: %w", root, err)
+			}
 			if !slices.Contains(runtimeRoots, candidate) &&
 				!slices.Contains(hostRoots, candidate) {
 				hostRoots = append(hostRoots, candidate)
@@ -178,6 +180,9 @@ func BuildPolicy(options Options) (Policy, error) {
 			return Policy{}, fmt.Errorf("host read file %q: %w", path, err)
 		}
 		for _, candidate := range []string{lexical, canonical} {
+			if err := validateSensitivePath(candidate); err != nil {
+				return Policy{}, fmt.Errorf("host read file %q: %w", path, err)
+			}
 			if !slices.Contains(hostFiles, candidate) {
 				hostFiles = append(hostFiles, candidate)
 			}
@@ -240,12 +245,27 @@ func BuildPolicy(options Options) (Policy, error) {
 			return Policy{}, fmt.Errorf("host write root %q: %w", root, err)
 		}
 		for _, candidate := range []string{lexical, canonical} {
+			if err := validateSensitivePath(candidate); err != nil {
+				return Policy{}, fmt.Errorf("host write root %q: %w", root, err)
+			}
 			if !slices.Contains(writeRoots, candidate) {
 				writeRoots = append(writeRoots, candidate)
 			}
 		}
 	}
 	slices.Sort(writeRoots)
+	// The private temp is same-UID: any injected root that equals, contains,
+	// or sits inside it would read or tamper with every other live sandbox
+	// session's temp area. Check centrally here — every source (declared
+	// roots, PATH-derived, toolchain, certificate) flows through these
+	// slices.
+	if violating := injectedRootOverlappingTemp(
+		privateTemp, hostRoots, hostFiles, writeRoots,
+	); violating != "" {
+		return Policy{}, fmt.Errorf(
+			"injected %q overlaps the private sandbox temp", violating,
+		)
+	}
 	policy := Policy{
 		Version: policyVersion, WorkspaceRoot: workspace, PrivateTemp: privateTemp,
 		RuntimeReadRoots: runtimeRoots, HostReadRoots: hostRoots,
@@ -354,8 +374,7 @@ func normalizeEnvironmentValues(values []string) []string {
 }
 
 // refuseUndeliveredManagedNetwork reports honestly when a v1 environment
-// network grant or proxy port cannot be delivered. Linux helpers enforce
-// filesystem rules only and must not start as if the grant landed. The
+// network grant or proxy port cannot be delivered. The
 // stable workspace channel delivers the declared environment network (the
 // bound auth service answers origin-form requests on it), so a managed
 // port satisfies delivery without a per-command session.
@@ -506,12 +525,14 @@ func CommandControls(
 }
 
 func (b *policyBinding) Close() error {
+	// Join both: an inner-backend failure must not strand the owned private
+	// temp (0700 session scratch) on disk.
+	var errs []error
 	if closer, ok := b.Backend.(interface{ Close() error }); ok {
-		if err := closer.Close(); err != nil {
-			return err
-		}
+		errs = append(errs, closer.Close())
 	}
-	return closePolicyTemp(b.policy)
+	errs = append(errs, closePolicyTemp(b.policy))
+	return errors.Join(errs...)
 }
 
 func closePolicyTemp(policy Policy) error {
@@ -623,7 +644,12 @@ func validateInjectedRoot(root, workspace string) error {
 	}
 	home, _ := os.UserHomeDir()
 	if home != "" {
-		home, _ = filepath.EvalSymlinks(home)
+		// Keep the lexical home when resolution fails (mirroring
+		// validateInjectedHostFile): swallowing the error to "" would
+		// silently disable every home-below protection.
+		if resolved, err := filepath.EvalSymlinks(home); err == nil {
+			home = resolved
+		}
 		if root == filepath.Clean(home) ||
 			pathContains(root, filepath.Join(home, ".ssh")) ||
 			pathContains(root, filepath.Join(home, ".aws")) ||
@@ -639,19 +665,59 @@ func validateInjectedRoot(root, workspace string) error {
 	return validateSensitivePath(root)
 }
 
+// sensitiveCredentialFiles and sensitiveCredentialSegments are the denylist
+// for injected host paths. They are deliberately a denylist (unknown files
+// stay declarable as host_config): these are the well-known credential
+// stores a sandboxed command must never read through an accidental grant.
+var sensitiveCredentialFiles = []string{
+	".git-credentials", ".netrc", ".netrc.gpg", ".npmrc", ".wgetrc",
+	"id_rsa", "id_ed25519", "id_ecdsa", "id_dsa",
+}
+
+var sensitiveCredentialSegments = []string{
+	"/.ssh", "/.gnupg", "/keychains", "/credentials", "/secrets",
+	"/.kube", "/.docker", "/.azure", "/.gcloud", "/.config/gh",
+}
+
 func validateSensitivePath(path string) error {
 	cleanLower := strings.ToLower(filepath.ToSlash(path))
 	base := strings.ToLower(filepath.Base(path))
-	switch base {
-	case ".git-credentials", ".netrc", ".netrc.gpg", "id_rsa", "id_ed25519", "id_ecdsa", "id_dsa":
-		return errors.New("sensitive credential file is forbidden")
+	for _, name := range sensitiveCredentialFiles {
+		if base == name {
+			return errors.New("sensitive credential file is forbidden")
+		}
 	}
-	for _, sensitive := range []string{"/.ssh", "/.gnupg", "/keychains", "/credentials", "/secrets"} {
+	for _, sensitive := range sensitiveCredentialSegments {
 		if strings.Contains(cleanLower, sensitive) {
 			return errors.New("sensitive credential root is forbidden")
 		}
 	}
 	return nil
+}
+
+// injectedRootOverlappingTemp returns the first injected path that equals,
+// contains, or sits inside the private sandbox temp, or "" when disjoint.
+func injectedRootOverlappingTemp(
+	privateTemp string,
+	hostRoots, hostFiles, writeRoots []string,
+) string {
+	if privateTemp == "" {
+		return ""
+	}
+	check := func(paths []string) string {
+		for _, path := range paths {
+			if pathContains(path, privateTemp) || pathContains(privateTemp, path) {
+				return path
+			}
+		}
+		return ""
+	}
+	for _, group := range [][]string{hostRoots, hostFiles, writeRoots} {
+		if violating := check(group); violating != "" {
+			return violating
+		}
+	}
+	return ""
 }
 
 func isFilesystemRoot(path string) bool {
@@ -683,12 +749,6 @@ func platformRuntimeRoots(goos string) []string {
 			"/private/var/db/timezone", "/private/etc", "/etc",
 			"/private/var/select",
 			"/dev/null", "/dev/zero", "/dev/random", "/dev/urandom", "/dev/fd",
-		}
-	case "linux":
-		return []string{
-			"/usr", "/bin", "/sbin", "/lib", "/lib64",
-			"/etc/ld.so.cache", "/etc/nsswitch.conf", "/etc/passwd", "/etc/group",
-			"/dev/null", "/dev/urandom",
 		}
 	default:
 		return nil

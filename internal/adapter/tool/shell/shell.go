@@ -212,7 +212,11 @@ func (t *Tool) execute(ctx context.Context, input foregroundInput) (tool.Result,
 		return tool.Result{}, fmt.Errorf("resolve shell write paths: %w", err)
 	}
 	var cancel context.CancelFunc
-	ctx, cancel = context.WithTimeout(ctx, foregroundTimeout(input))
+	timeout, err := foregroundTimeout(input)
+	if err != nil {
+		return tool.Result{}, err
+	}
+	ctx, cancel = context.WithTimeout(ctx, timeout)
 	defer cancel()
 	sandboxBackend, requireStrong := processSandbox(ctx, t.backend)
 	started := time.Now()
@@ -307,12 +311,21 @@ func (t *Tool) execute(ctx context.Context, input foregroundInput) (tool.Result,
 
 // foregroundTimeout resolves the effective deadline for one foreground read:
 // an explicit timeout_ms wins; otherwise the documented default bounds the
-// inspection so a hung command cannot occupy the turn indefinitely.
-func foregroundTimeout(input foregroundInput) time.Duration {
-	if input.TimeoutMS > 0 {
-		return time.Duration(input.TimeoutMS) * time.Millisecond
+// inspection so a hung command cannot occupy the turn indefinitely. Explicit
+// values share exec_command's public ceiling (maxProcessTimeout): a read is
+// a bounded inspection, not a place to park a 24-hour-plus command.
+func foregroundTimeout(input foregroundInput) (time.Duration, error) {
+	if input.TimeoutMS <= 0 {
+		return DefaultForegroundTimeout, nil
 	}
-	return DefaultForegroundTimeout
+	timeout := time.Duration(input.TimeoutMS) * time.Millisecond
+	if timeout > maxProcessTimeout {
+		return 0, fmt.Errorf(
+			"timeout_ms exceeds the %s ceiling shared with exec_command",
+			maxProcessTimeout,
+		)
+	}
+	return timeout, nil
 }
 
 func newForegroundExecutor(implementation *Tool) (tool.Executor, error) {

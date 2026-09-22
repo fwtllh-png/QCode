@@ -1,11 +1,10 @@
-//go:build capability && (darwin || linux)
+//go:build capability && darwin
 
 package process
 
 import (
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 
@@ -26,12 +25,8 @@ func TestRealSandboxAttackCorpus(t *testing.T) {
 	if err := os.WriteFile(secret, []byte(secretValue), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	helperPath, err := os.Executable()
-	if err != nil {
-		t.Fatal(err)
-	}
 	backend, err := sandbox.NewPlatformBackend(sandbox.Options{
-		WorkspaceRoot: root, HelperPath: helperPath,
+		WorkspaceRoot: root,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -65,11 +60,7 @@ func TestRealSandboxAttackCorpus(t *testing.T) {
 		}
 		return result
 	}
-	activationCheck := "true"
-	if runtime.GOOS == "linux" {
-		activationCheck = `test "$QCODE_LANDLOCK_ACTIVE" = 1`
-	}
-	if result := run(t, activationCheck+`; cat workspace; test "$(cat <<'EOF'
+	if result := run(t, `cat workspace; test "$(cat <<'EOF'
 heredoc
 EOF
 )" = heredoc; printf written > created; sh -c 'cat workspace'`); result.ExitCode != 0 {

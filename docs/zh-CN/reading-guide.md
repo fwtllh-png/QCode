@@ -522,8 +522,8 @@ Model Tool Call
 - [Sandbox 执行环境重构方案](./sandbox-execution-environment-plan.md)：把现行过滤模型
   换成环境契约的实现合同，含与 Authority / Control Matrix 的编译表和 EDS/Go 开工实例；
   P1a 已把缺失能力回执接到 `error_category` / `required_action`；P1b 已把 Darwin
-  进程出网改成每 Session 端口和 Session Gate，Linux/Windows 保持禁网并报告
-  `unsupported`；P2a 已落地通用资源、声明接入、`v1` 准备链和显式
+  进程出网改成每 Session 端口和 Session Gate；
+  P2a 已落地通用资源、声明接入、`v1` 准备链和显式
   `native` / `shared_user_temp`；可信配置可声明精确资源，Go 适配器只是可选翻译器，
   证书发现迁入准备器，`write_paths` 可对已存在子目录做有界树写，
   带写树的 `exec_command` 在隔离工作区运行并经 Journal 三方结算，

@@ -28,7 +28,6 @@ func buildExecIsolator(
 	return execsettle.New(execsettle.Options{
 		Repository: state.config.execution.Workspace,
 		Scratch:    scratch,
-		HelperPath: state.platform.helperPath,
 		Parent:     state.orchestration.parentFiles,
 		Journal:    state.security.journal,
 		Gate:       gate,

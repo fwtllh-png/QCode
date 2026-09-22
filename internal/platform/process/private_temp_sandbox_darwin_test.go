@@ -30,14 +30,9 @@ func TestSandboxCompilerUsesPrivateTempAndHostTmpRemainsDenied(t *testing.T) {
 	); err != nil {
 		t.Fatal(err)
 	}
-	helper, err := os.Executable()
-	if err != nil {
-		t.Fatal(err)
-	}
 	backend, err := sandbox.NewPlatformBackend(sandbox.Options{
 		WorkspaceRoot:       root,
 		PrivateTemp:         t.TempDir(),
-		HelperPath:          helper,
 		AllowNetwork:        false,
 		EnvironmentContract: "v1",
 		EnvironmentProfile:  "isolated",

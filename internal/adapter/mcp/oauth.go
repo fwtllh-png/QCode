@@ -407,10 +407,8 @@ func openBrowser(ctx context.Context, target string) error {
 	switch runtime.GOOS {
 	case "darwin":
 		command = exec.CommandContext(ctx, "open", target)
-	case "windows":
-		command = exec.CommandContext(ctx, "rundll32", "url.dll,FileProtocolHandler", target)
 	default:
-		command = exec.CommandContext(ctx, "xdg-open", target)
+		return fmt.Errorf("opening a browser is unsupported on %s", runtime.GOOS)
 	}
 	if err := command.Start(); err != nil {
 		return err

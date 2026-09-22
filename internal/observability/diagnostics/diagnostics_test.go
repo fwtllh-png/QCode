@@ -90,9 +90,6 @@ func (passthroughBackend) Prepare(
 }
 
 func TestCommandRunnerReportsSignaledProcessAsUnavailableReceipt(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("signal fixture requires a POSIX shell")
-	}
 	root := t.TempDir()
 	command := filepath.Join(root, "abort-check")
 	if err := os.WriteFile(command, []byte("#!/bin/sh\nkill -ABRT $$\n"), 0o700); err != nil {

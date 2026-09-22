@@ -43,7 +43,6 @@ type providerBuildState struct {
 }
 
 type platformBuildState struct {
-	helperPath       string
 	backend          sandbox.Backend
 	web              webtool.Options
 	webEgress        *egress.Gate

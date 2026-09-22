@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# package-release.sh builds hermetic multi-platform release artifacts.
+# package-release.sh builds hermetic macOS release artifacts.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -30,11 +30,8 @@ MODULE="github.com/fwtllh-png/QCode"
 LDFLAGS="-s -w -X ${MODULE}/internal/buildinfo.Version=${VERSION} -X ${MODULE}/internal/buildinfo.Commit=${COMMIT} -X ${MODULE}/internal/buildinfo.Date=${BUILD_DATE}"
 
 targets=(
-  "linux amd64"
-  "linux arm64"
   "darwin amd64"
   "darwin arm64"
-  "windows amd64"
 )
 
 for pair in "${targets[@]}"; do
@@ -42,9 +39,6 @@ for pair in "${targets[@]}"; do
   goos="$1"
   goarch="$2"
   name="qcode-${VERSION}-${goos}-${goarch}"
-  if [[ "$goos" == "windows" ]]; then
-    name="${name}.exe"
-  fi
   echo "building ${name}"
   CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" go build -tags webbundle -trimpath -ldflags "$LDFLAGS" -o "$OUT/bin/$name" ./cmd/qcode
 done
@@ -145,7 +139,7 @@ cat > "$OUT/notes/RELEASE_NOTES.md" <<EOF
 - Commit: ${COMMIT}
 - Built: ${BUILD_DATE}
 - Stage: ${STAGE}
-- Artifacts: multi-platform binaries, SHA256SUMS, CycloneDX SBOM
+- Artifacts: macOS amd64/arm64 binaries, SHA256SUMS, CycloneDX SBOM
 
 ## Install smoke
 

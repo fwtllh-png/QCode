@@ -943,8 +943,7 @@ Go 适配器只是可选翻译器。`exec_command` 的 `write_paths` 还可指�
 不从命令输出中的 `401` 或 `permission denied` 改判。
 Darwin 进程出网走 Workspace 代理进程上的 Session 端口与 Session Gate，
 Seatbelt 只放行该端口；`contract=v1` 时空 `network_targets` 继承用户声明
-的环境网络资源，不继承适配器发现的 GOPROXY 主机。Linux/Windows 在命名空间
-助手交付前对需要 Session 通道的进程报告 `backend_capability_unsupported`。
+的环境网络资源，不继承适配器发现的 GOPROXY 主机。
 主/子 Agent、PTY 与后台共用该契约；子 Agent 固定 `isolated`，Skill 仍在
 `sandbox-home`。
 GOPROXY 认证服务挂在同一 Session loopback 上处理 origin-form 模块请求，

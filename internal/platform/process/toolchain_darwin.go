@@ -18,11 +18,22 @@ var darwinDeveloperToolsGit = []string{
 }
 
 func ensureGitToolchain(environment []string) []string {
+	if dir := gitToolchainDirectory(); dir != "" {
+		return prependPATH(environment, dir)
+	}
+	return environment
+}
+
+// gitToolchainDirectory reports the developer-tools directory holding the
+// platform git, or "". It sits after the toolchain bin directories in the
+// child's PATH (see ToolchainSearchPath) so preflight verdicts and the
+// child resolve the same binaries.
+func gitToolchainDirectory() string {
 	for _, candidate := range darwinDeveloperToolsGit {
 		info, err := os.Stat(candidate)
 		if err == nil && info.Mode().IsRegular() && info.Mode().Perm()&0o111 != 0 {
-			return prependPATH(environment, filepath.Dir(candidate))
+			return filepath.Dir(candidate)
 		}
 	}
-	return environment
+	return ""
 }

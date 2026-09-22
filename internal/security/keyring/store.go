@@ -11,8 +11,7 @@ const defaultService = "qcode"
 
 var ErrNotFound = oskeyring.ErrNotFound
 
-// Store is the OS credential store (macOS Keychain, Linux Secret Service,
-// Windows Credential Manager) via zalando/go-keyring.
+// Store is the macOS Keychain credential store via zalando/go-keyring.
 type Store struct {
 	Service string
 }

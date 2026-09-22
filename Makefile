@@ -73,13 +73,7 @@ TEST_GOMODCACHE ?= $(shell $(GO) env GOMODCACHE)
 TEST_GOCACHE ?= $(shell $(GO) env GOCACHE)
 TEST_HOME_ENV := HOME='$(TEST_HOME)' GOPATH='$(TEST_GOPATH)' \
 	GOMODCACHE='$(TEST_GOMODCACHE)' GOCACHE='$(TEST_GOCACHE)'
-PLATFORM_CAPABILITY_ARGS := --available-on darwin --available-on linux
-
-ifeq ($(shell uname -s 2>/dev/null),Darwin)
-PLATFORM_CAPABILITY_ARGS += --requires-command sandbox-exec
-else ifeq ($(shell uname -s 2>/dev/null),Linux)
-PLATFORM_CAPABILITY_ARGS += --requires-command bwrap
-endif
+PLATFORM_CAPABILITY_ARGS := --available-on darwin --requires-command sandbox-exec
 
 fmt:
 	$(GO) fmt ./...
@@ -303,11 +297,10 @@ web-streaming-soak:
 		./internal/host/runtimeapi/web
 
 cross-build: web-build
-	@tmp=$$(mktemp -d); \
+	@set -e; tmp=$$(mktemp -d); \
 	trap 'rm -rf "$$tmp"' EXIT; \
-	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 $(GO) build -tags '$(WEB_BUILD_TAG)' -trimpath -o "$$tmp/qcode-linux-amd64" ./cmd/qcode; \
-	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 $(GO) build -tags '$(WEB_BUILD_TAG)' -trimpath -o "$$tmp/qcode-linux-arm64" ./cmd/qcode; \
-	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 $(GO) build -tags '$(WEB_BUILD_TAG)' -trimpath -o "$$tmp/qcode-windows-amd64.exe" ./cmd/qcode
+	CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 $(GO) build -tags '$(WEB_BUILD_TAG)' -trimpath -o "$$tmp/qcode-darwin-amd64" ./cmd/qcode; \
+	CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 $(GO) build -tags '$(WEB_BUILD_TAG)' -trimpath -o "$$tmp/qcode-darwin-arm64" ./cmd/qcode
 
 smoke: build
 	./$(BINARY) --help >/dev/null

@@ -17,7 +17,6 @@ import (
 
 func newWorkspaceSandbox(
 	state *buildState,
-	helperPath string,
 ) (sandbox.Backend, []envcontract.Fact, error) {
 	privateHome := ""
 	if state.config.workspaceStateRoot != "" {
@@ -30,7 +29,6 @@ func newWorkspaceSandbox(
 	options, prepareFacts, err := bindEnvironmentSandbox(
 		sandbox.Options{
 			WorkspaceRoot:       state.config.execution.Workspace,
-			HelperPath:          helperPath,
 			PrivateTemp:         privateHome,
 			HostReadRoots:       append([]string(nil), state.config.diagnosticReadRoots...),
 			HostReadFiles:       append([]string(nil), state.config.diagnosticReadFiles...),

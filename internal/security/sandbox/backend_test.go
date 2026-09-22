@@ -98,15 +98,16 @@ func TestExactWorkspaceWritePathsAllowMissingLeafWithExistingParent(t *testing.T
 		t.Fatal(err)
 	}
 	if len(resolved) != 1 ||
-		resolved[0] != filepath.Join(workspace.Root(), path) {
+		resolved[0].path != filepath.Join(workspace.Root(), path) ||
+		resolved[0].kind != writePathFile {
 		t.Fatalf("resolved paths = %+v", resolved)
 	}
-	if _, err := validateExactWorkspaceWritePaths(
+	if trees, err := validateExactWorkspaceWritePaths(
 		workspace,
 		true,
 		[]string{"generated"},
-	); err != nil {
-		t.Fatalf("existing write tree was rejected: %v", err)
+	); err != nil || len(trees) != 1 || trees[0].kind != writePathTree {
+		t.Fatalf("existing write tree = %+v err=%v", trees, err)
 	}
 	if _, err := validateExactWorkspaceWritePaths(
 		workspace,
@@ -141,14 +142,15 @@ func TestMaterializeMissingExactWritePathsCreatesOnlyDeclaredFiles(t *testing.T)
 		t.Fatal(err)
 	}
 	path := filepath.Join(workspace.Root(), "new.txt")
-	if err := materializeMissingExactWritePaths(workspace, []string{path}); err != nil {
+	pinned := []workspaceWritePath{{path: path, kind: writePathFile}}
+	if err := materializeMissingExactWritePaths(workspace, pinned); err != nil {
 		t.Fatal(err)
 	}
 	info, err := os.Lstat(path)
 	if err != nil || !info.Mode().IsRegular() || info.Size() != 0 {
 		t.Fatalf("materialized path info=%+v error=%v", info, err)
 	}
-	if err := materializeMissingExactWritePaths(workspace, []string{path}); err != nil {
+	if err := materializeMissingExactWritePaths(workspace, pinned); err != nil {
 		t.Fatalf("idempotent materialization failed: %v", err)
 	}
 	link := filepath.Join(workspace.Root(), "replaced.txt")
@@ -157,7 +159,7 @@ func TestMaterializeMissingExactWritePathsCreatesOnlyDeclaredFiles(t *testing.T)
 	}
 	if err := materializeMissingExactWritePaths(
 		workspace,
-		[]string{link},
+		[]workspaceWritePath{{path: link, kind: writePathFile}},
 	); err == nil || !strings.Contains(err.Error(), "changed type") {
 		t.Fatalf("symlink replacement error = %v", err)
 	}
@@ -226,11 +228,6 @@ func TestBackendProfilesNeverAdmitHostRoot(t *testing.T) {
 		if err := seatbeltSystemProfileAudit.run(); err != nil {
 			t.Fatal(err)
 		}
-	}
-	args := appendMount([]string{"bwrap"}, map[string]bool{"/": true}, root, root, false)
-	joined := strings.Join(args, " ")
-	if strings.Contains(joined, "--ro-bind / /") {
-		t.Fatalf("bubblewrap arguments bind host root: %s", joined)
 	}
 }
 
@@ -710,7 +707,8 @@ func TestSeatbeltCommandAllowsOnlyDeclaredWorkspaceFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 	profile := seatbeltProfileForCommand(
-		policy, "/bin/sh", true, nil, []string{declared}, nil, true, false,
+		policy, "/bin/sh", true, nil,
+		[]workspaceWritePath{{path: declared, kind: writePathFile}}, nil, true, false,
 	)
 	declaredWrite := "(allow file-write* (literal " + seatbeltQuote(declared) + "))"
 	if !strings.Contains(profile, declaredWrite) {
@@ -801,41 +799,6 @@ func TestSeatbeltShellHereDocumentGrantIsNarrow(t *testing.T) {
 	}
 }
 
-func TestBubblewrapPreservesCanonicalRuntimeSymlinkAliases(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("bubblewrap runtime aliases are Linux-specific")
-	}
-	policy, err := BuildPolicy(Options{
-		WorkspaceRoot: t.TempDir(),
-		PrivateTemp:   t.TempDir(),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	created := map[string]bool{"/": true}
-	args := appendRuntimeSymlinks([]string{"bwrap"}, created, policy.RuntimeReadRoots)
-	for _, alias := range []string{"/bin", "/sbin", "/lib", "/lib64"} {
-		resolved, resolveErr := filepath.EvalSymlinks(alias)
-		if resolveErr != nil || filepath.Clean(resolved) == alias ||
-			!coveredByRoots(resolved, policy.RuntimeReadRoots) {
-			continue
-		}
-		target := strings.TrimPrefix(filepath.Clean(resolved), "/")
-		found := false
-		for index := 1; index+2 < len(args); index++ {
-			if args[index] == "--symlink" &&
-				args[index+1] == target &&
-				args[index+2] == alias {
-				found = true
-				break
-			}
-		}
-		if !found || !created[alias] {
-			t.Fatalf("runtime alias %s -> %s is missing from %q", alias, target, args)
-		}
-	}
-}
-
 func TestBackendsPreserveDescriptorRelativeWorkingDirectory(t *testing.T) {
 	workspace, err := NewWorkspace(t.TempDir())
 	if err != nil {
@@ -862,25 +825,6 @@ func TestBackendsPreserveDescriptorRelativeWorkingDirectory(t *testing.T) {
 		}
 		if seatbelt.DirectoryFD != 3 || !seatbelt.PreparedLoopbackAllowed {
 			t.Fatalf("seatbelt command = %+v", seatbelt)
-		}
-	}
-	if runtime.GOOS == "linux" {
-		if _, err := resolveExecutableLiteral("bwrap", input.Env); err != nil {
-			t.Skip("bubblewrap is not installed in this hermetic environment")
-		}
-		bubblewrap, err := (&bubblewrapBackend{
-			workspace: workspace, policy: policy,
-			capability: Capability{},
-		}).Prepare(t.Context(), input)
-		if err != nil {
-			t.Fatal(err)
-		}
-		index := slices.Index(bubblewrap.Args, "--chdir")
-		if bubblewrap.DirectoryFD != 3 || index < 0 ||
-			index+1 >= len(bubblewrap.Args) ||
-			bubblewrap.Args[index+1] != "/proc/self/fd/3" ||
-			bubblewrap.PreparedLoopbackAllowed {
-			t.Fatalf("bubblewrap command = %+v", bubblewrap)
 		}
 	}
 }
@@ -1201,5 +1145,203 @@ func TestRefuseUndeliveredManagedNetworkAcceptsWorkspaceChannel(t *testing.T) {
 		}},
 	}, Command{}); err == nil {
 		t.Fatal("delivery without a managed channel must fail closed")
+	}
+}
+
+func TestWritePathTypeSwapFailsClosed(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "generated"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	workspace, err := NewWorkspace(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Validation approves a missing leaf as a FILE.
+	pinned, err := validateExactWorkspaceWritePaths(
+		workspace, true, []string{filepath.Join("generated", "new.txt")},
+	)
+	if err != nil || len(pinned) != 1 || pinned[0].kind != writePathFile {
+		t.Fatalf("pinned = %+v err = %v", pinned, err)
+	}
+	// The profile must render the pinned literal grant even though the path
+	// is now a directory: no fresh Stat may widen the grant. pinned paths are
+	// workspace-canonical (/private/var on macOS), so derive from pinned.
+	swapped := pinned[0].path
+	if err := os.Mkdir(swapped, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	profile := seatbeltProfileForCommand(
+		Policy{WorkspaceRoot: workspace.Root(), PrivateTemp: filepath.Join(root, "..", "absent")},
+		"/bin/sh", true, nil, pinned, nil, true, false,
+	)
+	literalGrant := "(allow file-write* (literal " + seatbeltQuote(swapped) + "))"
+	subpathGrant := "(allow file-write* (subpath " + seatbeltQuote(swapped) + "))"
+	if !strings.Contains(profile, literalGrant) || strings.Contains(profile, subpathGrant) {
+		t.Fatalf("pinned file grant widened to a subtree:\n%s", profile)
+	}
+	// Materialization must fail closed on the type swap.
+	if err := materializeMissingExactWritePaths(workspace, pinned); err == nil ||
+		!strings.Contains(err.Error(), "no longer a directory") &&
+			!strings.Contains(err.Error(), "changed type") {
+		t.Fatalf("type swap error = %v", err)
+	}
+}
+
+func TestWriteTreeDriftFailsClosedAndStaysClassified(t *testing.T) {
+	root := t.TempDir()
+	tree := filepath.Join(root, "generated")
+	if err := os.Mkdir(tree, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	workspace, err := NewWorkspace(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pinned, err := validateExactWorkspaceWritePaths(workspace, true, []string{"generated"})
+	if err != nil || len(pinned) != 1 || pinned[0].kind != writePathTree {
+		t.Fatalf("pinned = %+v err = %v", pinned, err)
+	}
+	// The OS-level guarantee for protected entries inside the tree is the
+	// profile deny (see TestWriteTreeProfileDeniesProtectedSubpaths); the
+	// materialization guarantee is type fail-closed: the tree turning into
+	// a file or a symlink must never execute with subtree grants.
+	canonicalTree := pinned[0].path
+	if err := os.Remove(canonicalTree); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(canonicalTree, []byte("swapped"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := materializeMissingExactWritePaths(workspace, pinned); err == nil ||
+		!strings.Contains(err.Error(), "no longer a directory") {
+		t.Fatalf("tree-to-file swap error = %v", err)
+	}
+	if err := os.Remove(canonicalTree); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(root, canonicalTree); err != nil {
+		t.Fatal(err)
+	}
+	if err := materializeMissingExactWritePaths(workspace, pinned); err == nil ||
+		!strings.Contains(err.Error(), "changed type") {
+		t.Fatalf("tree-to-symlink swap error = %v", err)
+	}
+}
+
+func TestWriteTreeProfileDeniesProtectedSubpaths(t *testing.T) {
+	root := t.TempDir()
+	tree := filepath.Join(root, "generated")
+	if err := os.Mkdir(tree, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	profile := seatbeltProfileForCommand(
+		Policy{WorkspaceRoot: root, PrivateTemp: filepath.Join(root, "..", "absent")},
+		"/bin/sh", true, nil,
+		[]workspaceWritePath{{path: tree, kind: writePathTree}},
+		nil, true, false,
+	)
+	deny := "(deny file-write* (subpath " + seatbeltQuote(filepath.Join(tree, ".git")) + "))"
+	if !strings.Contains(profile, deny) {
+		t.Fatalf("protected subpath deny missing:\n%s", profile)
+	}
+	// Exact-file grants must not carry subpath denies.
+	fileProfile := seatbeltProfileForCommand(
+		Policy{WorkspaceRoot: root, PrivateTemp: filepath.Join(root, "..", "absent")},
+		"/bin/sh", true, nil,
+		[]workspaceWritePath{{path: filepath.Join(root, "out.txt"), kind: writePathFile}},
+		nil, true, false,
+	)
+	if strings.Contains(fileProfile, "subpath "+seatbeltQuote(filepath.Join(root, "out.txt", ".git"))) {
+		t.Fatalf("file grant carries a tree deny:\n%s", fileProfile)
+	}
+}
+
+func TestAllowNetworkWithLoopbackChoosesLoopbackBranch(t *testing.T) {
+	// Documented precedence: when both a managed proxy port / loopback and a
+	// broad network policy exist, the narrower loopback branch wins and
+	// external egress is dropped for that command.
+	root := t.TempDir()
+	profile := seatbeltProfileForCommand(
+		Policy{
+			WorkspaceRoot: root, PrivateTemp: filepath.Join(root, "..", "absent"),
+			AllowNetwork: true,
+		},
+		"/bin/sh", true, nil, nil, nil, false, true,
+	)
+	if strings.Contains(profile, "\n(allow network-outbound)\n") {
+		t.Fatalf("broad network grant leaked into a loopback command:\n%s", profile)
+	}
+	if !strings.Contains(profile, `remote ip "localhost:*"`) {
+		t.Fatalf("loopback grant missing:\n%s", profile)
+	}
+}
+
+func TestInjectedRootsMayNotTouchPrivateTemp(t *testing.T) {
+	workspace := t.TempDir()
+	privateTemp := t.TempDir()
+	inside := filepath.Join(privateTemp, "session")
+	if err := os.Mkdir(inside, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	netrcFile := filepath.Join(privateTemp, "netrc")
+	if err := os.WriteFile(netrcFile, []byte("fixture"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for name, options := range map[string]Options{
+		"read root inside temp": {
+			WorkspaceRoot: workspace, PrivateTemp: privateTemp,
+			HostReadRoots: []string{inside},
+		},
+		"read root containing temp": {
+			WorkspaceRoot: workspace, PrivateTemp: privateTemp,
+			HostReadRoots: []string{privateTemp},
+		},
+		"write root inside temp": {
+			WorkspaceRoot: workspace, PrivateTemp: privateTemp,
+			HostWriteRoots: []string{inside},
+		},
+		"read file inside temp": {
+			WorkspaceRoot: workspace, PrivateTemp: privateTemp,
+			HostReadFiles: []string{netrcFile},
+		},
+	} {
+		if _, err := BuildPolicy(options); err == nil ||
+			!strings.Contains(err.Error(), "private sandbox temp") {
+			t.Fatalf("%s: error = %v", name, err)
+		}
+	}
+}
+
+func TestSensitiveCredentialDenylistCoversCommonStores(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		t.Skip("home is unavailable")
+	}
+	for _, path := range []string{
+		filepath.Join(home, ".npmrc"),
+		filepath.Join(home, ".kube", "config"),
+		filepath.Join(home, ".docker", "config.json"),
+		filepath.Join(home, ".config", "gh", "hosts.yml"),
+	} {
+		if err := validateSensitivePath(path); err == nil {
+			t.Fatalf("sensitive path %q was accepted", path)
+		}
+	}
+	if err := validateSensitivePath(filepath.Join(home, "ordinary.conf")); err != nil {
+		t.Fatalf("ordinary config rejected: %v", err)
+	}
+}
+
+func TestSystemProfileAuditRejectsOversizedProfile(t *testing.T) {
+	oversized := filepath.Join(t.TempDir(), "system.sb")
+	if err := os.WriteFile(
+		oversized, make([]byte, maxSystemProfileBytes+1), 0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := auditSeatbeltSystemProfileAt(oversized); err == nil ||
+		!strings.Contains(err.Error(), "audit limit") {
+		t.Fatalf("oversized profile error = %v", err)
 	}
 }

@@ -340,9 +340,6 @@ func buildFixture(t *testing.T) string {
 	t.Helper()
 	root := repositoryRoot(t)
 	name := "mcp-fixture"
-	if runtime.GOOS == "windows" {
-		name += ".exe"
-	}
 	binary := filepath.Join(t.TempDir(), name)
 	command := exec.Command(
 		"go",

@@ -292,7 +292,7 @@ func childSkillBuilder(t *testing.T, paths SkillPaths, workspace, parentHome str
 	if err != nil {
 		t.Fatal(err)
 	}
-	toolsets := newChildToolsets("", contentstore.NewMemory(contentstore.Options{}),
+	toolsets := newChildToolsets(contentstore.NewMemory(contentstore.Options{}),
 		webtool.Options{}, config.Verify{}, config.Journal{}, nil, nil, nil,
 		"", 0, t.TempDir(), paths)
 	toolsets.bindInteractions(nil, nil)

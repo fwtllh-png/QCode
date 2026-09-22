@@ -22,43 +22,35 @@ const (
 )
 
 type PlatformCapability struct {
-	ID      CapabilityID `json:"id"`
-	Darwin  Support      `json:"darwin"`
-	Linux   Support      `json:"linux"`
-	Windows Support      `json:"windows"`
+	ID     CapabilityID `json:"id"`
+	Darwin Support      `json:"darwin"`
 }
 
 func PlatformMatrix() []PlatformCapability {
 	return []PlatformCapability{
 		{
 			ID:     CapStrongSandboxReadRoots,
-			Darwin: SupportAvailable, Linux: SupportAvailable,
-			Windows: SupportUnsupported,
+			Darwin: SupportAvailable,
 		},
 		{
 			ID:     CapManagedProxy,
-			Darwin: SupportAvailable, Linux: SupportUnsupported,
-			Windows: SupportUnsupported,
+			Darwin: SupportAvailable,
 		},
 		{
 			ID:     CapResolveUserTemp,
-			Darwin: SupportAvailable, Linux: SupportAvailable,
-			Windows: SupportAvailable,
+			Darwin: SupportAvailable,
 		},
 		{
 			ID:     CapPrivateTmpView,
-			Darwin: SupportUnsupported, Linux: SupportNotYet,
-			Windows: SupportUnsupported,
+			Darwin: SupportUnsupported,
 		},
 		{
 			ID:     CapIndependentIdentity,
-			Darwin: SupportNotYet, Linux: SupportNotYet,
-			Windows: SupportNotYet,
+			Darwin: SupportNotYet,
 		},
 		{
 			ID:     CapCertificateFiles,
-			Darwin: SupportAvailable, Linux: SupportAvailable,
-			Windows: SupportAvailable,
+			Darwin: SupportAvailable,
 		},
 	}
 }
@@ -71,10 +63,6 @@ func SupportFor(goos string, id CapabilityID) (Support, error) {
 		switch goos {
 		case "darwin":
 			return capability.Darwin, nil
-		case "linux":
-			return capability.Linux, nil
-		case "windows":
-			return capability.Windows, nil
 		default:
 			return "", fmt.Errorf("platform %q is not in the capability matrix", goos)
 		}

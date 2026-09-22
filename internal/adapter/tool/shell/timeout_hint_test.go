@@ -64,7 +64,12 @@ func TestForegroundTimeoutResolution(t *testing.T) {
 		},
 	}
 	for name, test := range cases {
-		if got := foregroundTimeout(test.input); got != test.want {
+		got, err := foregroundTimeout(test.input)
+		if err != nil {
+			t.Errorf("%s: foregroundTimeout error = %v", name, err)
+			continue
+		}
+		if got != test.want {
 			t.Errorf("%s: foregroundTimeout = %s, want %s", name, got, test.want)
 		}
 	}

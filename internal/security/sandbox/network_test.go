@@ -17,8 +17,7 @@ func TestManagedNetworkControlsRequireProbedSupport(t *testing.T) {
 		{"probed seatbelt", "darwin", true, true, controlmatrix.NetworkProxyTargets},
 		{"unprobed seatbelt", "darwin", true, false, controlmatrix.NetworkDenied},
 		{"unavailable", "darwin", false, true, controlmatrix.NetworkDenied},
-		{"linux without proxy", "linux", true, false, controlmatrix.NetworkDenied},
-		{"partial backend", "windows", true, false, controlmatrix.NetworkDirect},
+		{"unsupported backend", "unsupported", true, false, controlmatrix.NetworkDirect},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			capability := Capability{
@@ -30,7 +29,8 @@ func TestManagedNetworkControlsRequireProbedSupport(t *testing.T) {
 				t.Fatalf("network = %q, want %q", got, test.want)
 			}
 			denied := CommandControls(capability, policy, Command{DenyNetwork: true})
-			if test.platform != "windows" && denied.Network != controlmatrix.NetworkDenied {
+			if capability.Effective.Network == controlmatrix.NetworkDenied &&
+				denied.Network != controlmatrix.NetworkDenied {
 				t.Fatalf("local command was granted network: %+v", denied)
 			}
 		})
@@ -97,7 +97,7 @@ func TestCommandNetworkPolicySeparatesLoopbackFromManagedEgress(t *testing.T) {
 
 func TestLoopbackCommandCannotInventNetworkIsolation(t *testing.T) {
 	capability := Capability{
-		Available: true, Effective: platformControls("windows"),
+		Available: true, Effective: platformControls("unsupported"),
 	}
 	command := Command{AllowLoopback: true, LoopbackOnly: true}
 	controls := CommandControls(capability, Policy{AllowNetwork: true}, command)

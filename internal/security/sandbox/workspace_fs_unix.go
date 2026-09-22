@@ -1,4 +1,4 @@
-//go:build !windows
+//go:build darwin
 
 package sandbox
 
@@ -14,6 +14,11 @@ import (
 
 	"golang.org/x/sys/unix"
 )
+
+// maxTempNameAttempts bounds the random-suffix retry loop for new sandbox
+// files: beyond it the destination name is treated as taken for good.
+// Public contract constant.
+const maxTempNameAttempts = 32
 
 func (w *Workspace) OpenFile(name string) (*os.File, error) {
 	parent, base, err := w.openParent(name, false)
@@ -90,7 +95,7 @@ func (w *Workspace) AtomicWrite(name string, data []byte, mode fs.FileMode) erro
 
 	var temporary string
 	var file *os.File
-	for range 32 {
+	for range maxTempNameAttempts {
 		suffix := make([]byte, 12)
 		if _, err := rand.Read(suffix); err != nil {
 			return err

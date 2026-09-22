@@ -79,9 +79,15 @@ type PolicyBackend interface {
 	Policy() Policy
 }
 
+// maxBackendWrapperDepth bounds how many backend wrapper layers
+// BackendPolicy unwraps. The construction chain (managed, session-bound,
+// close-binding, policy-binding) is four deep today; the bound stops a
+// self-referential wrapper from looping forever. Public contract constant.
+const maxBackendWrapperDepth = 8
+
 func BackendPolicy(backend Backend) (Policy, bool) {
 	current := backend
-	for range 8 {
+	for range maxBackendWrapperDepth {
 		if current == nil {
 			return Policy{}, false
 		}
@@ -153,8 +159,7 @@ func RequireControls(
 
 func Probe() Capability {
 	probeOnce.Do(func() {
-		helper, _ := os.Executable()
-		probedCapability = runAttackProbe(helper)
+		probedCapability = runAttackProbe()
 	})
 	return probedCapability
 }
@@ -179,19 +184,6 @@ func platformControls(platform string) controlmatrix.Matrix {
 		controls.Network = controlmatrix.NetworkDenied
 		controls.ProcessTree = controlmatrix.ProcessTreeGroupKill
 		controls.PathIdentity = controlmatrix.PathIdentityDescriptorRelative
-	case "linux":
-		controls.FilesystemRead = controlmatrix.FilesystemReadDeclaredRoots
-		controls.FilesystemWrite = controlmatrix.FilesystemWriteExactPaths
-		controls.Network = controlmatrix.NetworkDenied
-		controls.ProcessTree = controlmatrix.ProcessTreePIDNamespace
-		controls.CrossProcess = controlmatrix.CrossProcessIsolated
-		controls.Syscall = controlmatrix.SyscallDenyDangerous
-		controls.IPC = controlmatrix.IPCPrivateNamespace
-		controls.PathIdentity = controlmatrix.PathIdentityDescriptorRelative
-	case "windows":
-		controls.ProcessTree = controlmatrix.ProcessTreeJobObject
-		controls.CrossProcess = controlmatrix.CrossProcessRestricted
-		controls.PathIdentity = controlmatrix.PathIdentityCanonical
 	}
 	return controls
 }
@@ -202,45 +194,23 @@ var (
 )
 
 func NewPlatformBackend(options Options) (Backend, error) {
-	helperPath := options.HelperPath
-	if runtime.GOOS == "linux" && helperPath == "" {
-		helperPath, _ = os.Executable()
-	}
 	policy, err := BuildPolicy(options)
 	if err != nil {
 		return nil, err
 	}
 	workspace, err := NewWorkspace(policy.WorkspaceRoot)
 	if err != nil {
+		// BuildPolicy may have created (and now owns) the private temp.
+		_ = closePolicyTemp(policy)
 		return nil, err
 	}
-	var capability Capability
-	if runtime.GOOS == "linux" {
-		capability = runAttackProbe(helperPath)
-	} else {
-		capability = Probe()
-	}
+	capability := Probe()
 	if !capability.Available {
 		return &unavailableBackend{capability: capability, policy: policy}, nil
 	}
 	switch capability.Backend {
 	case "seatbelt":
 		return &seatbeltBackend{workspace: workspace, policy: policy, capability: capability}, nil
-	case "bwrap+landlock":
-		requestRoot, requestErr := createLandlockRequestRoot()
-		if requestErr != nil {
-			_ = closePolicyTemp(policy)
-			return nil, fmt.Errorf("create Landlock request root: %w", requestErr)
-		}
-		return &bubblewrapBackend{
-			workspace: workspace, policy: policy, capability: capability,
-			helperPath: helperPath, requestRoot: requestRoot, useLandlock: true,
-		}, nil
-	case "bwrap":
-		return &bubblewrapBackend{
-			workspace: workspace, policy: policy, capability: capability,
-			helperPath: helperPath,
-		}, nil
 	default:
 		return &unavailableBackend{capability: capability, policy: policy}, nil
 	}
@@ -340,174 +310,16 @@ func (b *seatbeltBackend) Prepare(ctx context.Context, command Command) (Command
 		PreparedControls:        CommandControls(b.capability, b.policy, command),
 		WorkspaceReadOnly:       command.WorkspaceReadOnly,
 		AdditionalReadPaths:     append([]string(nil), readPaths...),
-		WorkspaceWritePaths:     append([]string(nil), writePaths...),
+		WorkspaceWritePaths:     writePathsString(writePaths),
 		WorkspaceHiddenPaths:    append([]string(nil), hiddenPaths...),
 		DenyNetwork:             command.DenyNetwork,
 		PreparedReadOnly:        command.WorkspaceReadOnly,
 		PreparedReadPaths:       append([]string(nil), readPaths...),
-		PreparedWritePaths:      append([]string(nil), writePaths...),
+		PreparedWritePaths:      writePathsString(writePaths),
 		PreparedHiddenPaths:     append([]string(nil), hiddenPaths...),
 		PreparedNetworkDenied:   command.DenyNetwork,
 		PreparedLoopbackAllowed: command.AllowLoopback && !command.DenyNetwork,
 		PreparedProxyPort:       preparedProxyPort,
-	}, nil
-}
-
-type bubblewrapBackend struct {
-	workspace   *Workspace
-	policy      Policy
-	capability  Capability
-	helperPath  string
-	requestRoot string
-	probeReads  []string
-	useLandlock bool
-}
-
-func (b *bubblewrapBackend) Capability() Capability {
-	return b.capability
-}
-
-func (b *bubblewrapBackend) Policy() Policy { return b.policy }
-
-func (b *bubblewrapBackend) Close() error {
-	var requestErr error
-	if b.requestRoot != "" {
-		requestErr = os.RemoveAll(b.requestRoot)
-	}
-	return errors.Join(closePolicyTemp(b.policy), requestErr)
-}
-
-func (b *bubblewrapBackend) Prepare(ctx context.Context, command Command) (Command, error) {
-	if _, err := b.workspace.ResolveDirectory(command.Dir); err != nil {
-		return Command{}, err
-	}
-	if err := validateWorkspaceLinks(ctx, b.workspace); err != nil {
-		return Command{}, err
-	}
-	executable, err := resolveExecutableLiteral(command.Path, command.Env)
-	if err != nil {
-		return Command{}, err
-	}
-	bwrap, err := resolveExecutableLiteral("bwrap", command.Env)
-	if err != nil {
-		return Command{}, err
-	}
-	writePaths, err := validateExactWorkspaceWritePaths(
-		b.workspace, command.WorkspaceReadOnly, command.WorkspaceWritePaths,
-	)
-	if err != nil {
-		return Command{}, err
-	}
-	readPaths, err := validateAdditionalReadPaths(b.policy, command.AdditionalReadPaths)
-	if err != nil {
-		return Command{}, err
-	}
-	hiddenPaths, err := validateWorkspaceHiddenPaths(
-		b.workspace,
-		command.WorkspaceHiddenPaths,
-	)
-	if err != nil {
-		return Command{}, err
-	}
-	if err := refuseUndeliveredManagedNetwork(b.policy, command); err != nil {
-		return Command{}, err
-	}
-	var helper, requestPath string
-	if b.useLandlock {
-		helper, requestPath, err = prepareLandlockInvocation(
-			b.policy, b.helperPath, b.requestRoot,
-			executable, command.Args[1:], command.Env, command.WorkspaceReadOnly,
-			readPaths, writePaths,
-		)
-		if err != nil {
-			return Command{}, err
-		}
-	}
-	if err := materializeMissingExactWritePaths(b.workspace, writePaths); err != nil {
-		return Command{}, err
-	}
-	args := []string{
-		bwrap, "--die-with-parent", "--new-session", "--unshare-all",
-	}
-	if b.policy.AllowNetwork && !command.DenyNetwork {
-		args = append(args, "--share-net")
-	}
-	args = append(args, "--tmpfs", "/", "--proc", "/proc", "--dev", "/dev")
-	created := map[string]bool{"/": true, "/proc": true, "/dev": true}
-	args = appendRuntimeSymlinks(args, created, b.policy.RuntimeReadRoots)
-	for _, root := range append(append([]string{}, b.policy.RuntimeReadRoots...), b.policy.HostReadRoots...) {
-		args = appendMount(args, created, root, root, true)
-	}
-	for _, root := range b.probeReads {
-		args = appendMount(args, created, root, root, true)
-	}
-	for _, root := range readPaths {
-		args = appendMount(args, created, root, root, true)
-	}
-	args = appendMount(
-		args,
-		created,
-		b.policy.WorkspaceRoot,
-		b.policy.WorkspaceRoot,
-		command.WorkspaceReadOnly,
-	)
-	for _, path := range writePaths {
-		args = appendMount(args, created, path, path, false)
-	}
-	for _, path := range hiddenPaths {
-		info, statErr := os.Stat(path)
-		if statErr != nil {
-			return Command{}, statErr
-		}
-		if info.IsDir() {
-			args = append(args, "--tmpfs", path)
-		} else {
-			args = append(args, "--ro-bind", "/dev/null", path)
-		}
-	}
-	args = appendMount(args, created, b.policy.PrivateTemp, b.policy.PrivateTemp, false)
-	executableMountedLiteral := !coveredByRoots(
-		executable, append(b.policy.RuntimeReadRoots, b.policy.HostReadRoots...),
-	)
-	if executableMountedLiteral {
-		args = appendMount(args, created, executable, executable, true)
-	}
-	if b.useLandlock {
-		args = appendMount(args, created, filepath.Dir(requestPath), filepath.Dir(requestPath), false)
-		if helper != executable || !executableMountedLiteral {
-			args = appendMount(args, created, helper, helper, true)
-		}
-	}
-	args = append(args, "--setenv", "TMPDIR", b.policy.PrivateTemp)
-	directory := command.Dir
-	if command.DirectoryFD > 0 {
-		directory = fmt.Sprintf("/proc/self/fd/%d", command.DirectoryFD)
-	}
-	args = append(args, "--chdir", directory, "--")
-	if b.useLandlock {
-		args = append(args, landlockHelperArgs(helper, requestPath, b.policy.ID)...)
-	} else {
-		args = append(args, executable)
-		args = append(args, command.Args[1:]...)
-	}
-	return Command{
-		Path: bwrap, Args: args, Dir: command.Dir, Env: command.Env,
-		DirectoryFD: command.DirectoryFD, PreparedPolicyID: b.policy.ID,
-		AuthorityDigest:         command.AuthorityDigest,
-		PreparedAuthorityDigest: command.AuthorityDigest,
-		PreparedControls:        CommandControls(b.capability, b.policy, command),
-		WorkspaceReadOnly:       command.WorkspaceReadOnly,
-		AdditionalReadPaths:     append([]string(nil), readPaths...),
-		WorkspaceWritePaths:     append([]string(nil), writePaths...),
-		WorkspaceHiddenPaths:    append([]string(nil), hiddenPaths...),
-		DenyNetwork:             command.DenyNetwork,
-		PreparedReadOnly:        command.WorkspaceReadOnly,
-		PreparedReadPaths:       append([]string(nil), readPaths...),
-		PreparedWritePaths:      append([]string(nil), writePaths...),
-		PreparedHiddenPaths:     append([]string(nil), hiddenPaths...),
-		PreparedNetworkDenied:   command.DenyNetwork,
-		PreparedLoopbackAllowed: false,
-		PreparedProxyPort:       0,
 	}, nil
 }
 
@@ -561,7 +373,7 @@ func seatbeltProfileForCommand(
 	executable string,
 	workspaceReadOnly bool,
 	additionalReadPaths []string,
-	workspaceWritePaths []string,
+	workspaceWritePaths []workspaceWritePath,
 	workspaceHiddenPaths []string,
 	denyNetwork bool,
 	allowLoopback bool,
@@ -569,6 +381,11 @@ func seatbeltProfileForCommand(
 	var profile strings.Builder
 	profile.WriteString("(version 1)\n(deny default)\n")
 	profile.WriteString("(import \"system.sb\")\n")
+	// signal stays unscoped: Seatbelt offers no self+descendants target
+	// (empirically verified — (target self) denies killing the process's
+	// own children), and unscoped signal is already the macOS same-UID
+	// default. Same-UID process signaling is a documented platform
+	// boundary, not a grant this profile widens.
 	profile.WriteString("(allow process-exec process-fork process-info* signal)\n")
 	profile.WriteString("(allow sysctl-read)\n")
 	readRoots := append(append([]string{}, policy.RuntimeReadRoots...), policy.HostReadRoots...)
@@ -590,8 +407,8 @@ func seatbeltProfileForCommand(
 			seatbeltQuote(policy.WorkspaceRoot),
 		)
 	}
-	for _, path := range workspaceWritePaths {
-		profile.WriteString(seatbeltWriteGrant(path))
+	for _, pinned := range workspaceWritePaths {
+		profile.WriteString(seatbeltWriteGrantFor(pinned))
 	}
 	for _, root := range policy.HostWriteRoots {
 		profile.WriteString(seatbeltWriteGrant(root))
@@ -637,6 +454,22 @@ func seatbeltProfileForCommand(
 	// grants preserve read isolation while allowing a permitted root to be
 	// resolved.
 	writeSeatbeltAncestorMetadata(&profile, readRoots...)
+	// Write trees may contain control-plane entries (.git inside a generated
+	// tree): the classifier protects them at settlement, so the OS grant
+	// must not be broader than the approval model. Denies come after the
+	// allows so last-match-wins rejects the write.
+	for _, pinned := range workspaceWritePaths {
+		if pinned.kind != writePathTree {
+			continue
+		}
+		for _, name := range controlplane.ProtectedNames() {
+			fmt.Fprintf(
+				&profile,
+				"(deny file-write* (subpath %s))\n",
+				seatbeltQuote(filepath.Join(pinned.path, name)),
+			)
+		}
+	}
 	for _, path := range workspaceHiddenPaths {
 		info, err := os.Stat(path)
 		if err == nil && info.IsDir() {
@@ -687,12 +520,53 @@ func seatbeltProfileForCommand(
 	return profile.String()
 }
 
+type writePathKind int
+
+const (
+	writePathFile writePathKind = iota
+	writePathTree
+)
+
+// workspaceWritePath pins the approved shape of one exact write path. The
+// kind is observed once at validation and every later stage (profile
+// generation, materialization) must fail closed when the filesystem then
+// disagrees: a path swapped to a directory between validation and exec can
+// never widen a literal-file grant into a subtree grant, and a tree that
+// turned into a file or symlink never executes with stale grants.
+type workspaceWritePath struct {
+	path string
+	kind writePathKind
+}
+
+func (p workspaceWritePath) String() string { return p.path }
+
+// writePathsString flattens pinned grants back to plain paths for the
+// prepared Command and settlement layers.
+func writePathsString(pinned []workspaceWritePath) []string {
+	paths := make([]string, len(pinned))
+	for index, entry := range pinned {
+		paths[index] = entry.path
+	}
+	return paths
+}
+
 func seatbeltWriteGrant(path string) string {
 	info, err := os.Stat(path)
 	if err == nil && info.IsDir() {
 		return fmt.Sprintf("(allow file-write* (subpath %s))\n", seatbeltQuote(path))
 	}
 	return fmt.Sprintf("(allow file-write* (literal %s))\n", seatbeltQuote(path))
+}
+
+// seatbeltWriteGrantFor renders a workspace write grant from the pinned
+// kind. It deliberately does not observe the filesystem again: the pinned
+// decision is the authorization, and any drift is caught by
+// materializeMissingExactWritePaths failing closed.
+func seatbeltWriteGrantFor(pinned workspaceWritePath) string {
+	if pinned.kind == writePathTree {
+		return fmt.Sprintf("(allow file-write* (subpath %s))\n", seatbeltQuote(pinned.path))
+	}
+	return fmt.Sprintf("(allow file-write* (literal %s))\n", seatbeltQuote(pinned.path))
 }
 
 func validateWorkspaceHiddenPaths(
@@ -723,7 +597,7 @@ func validateExactWorkspaceWritePaths(
 	workspace *Workspace,
 	workspaceReadOnly bool,
 	paths []string,
-) ([]string, error) {
+) ([]workspaceWritePath, error) {
 	if len(paths) == 0 {
 		return nil, nil
 	}
@@ -741,6 +615,7 @@ func validateExactWorkspaceWritePaths(
 		return nil, err
 	}
 	canonical := make([]string, 0, len(paths))
+	pinned := make([]workspaceWritePath, 0, len(paths))
 	for _, path := range paths {
 		resolved, err := workspace.Resolve(path, AllowMissing)
 		if err != nil {
@@ -762,6 +637,12 @@ func validateExactWorkspaceWritePaths(
 					path,
 				)
 			}
+			if err := classifier.CheckWrite(resolved, false); err != nil {
+				return nil, err
+			}
+			canonical = append(canonical, resolved)
+			pinned = append(pinned, workspaceWritePath{path: resolved, kind: writePathFile})
+			continue
 		} else if err != nil {
 			return nil, err
 		} else if info.Mode()&os.ModeSymlink != 0 {
@@ -774,6 +655,7 @@ func validateExactWorkspaceWritePaths(
 				return nil, err
 			}
 			canonical = append(canonical, resolved)
+			pinned = append(pinned, workspaceWritePath{path: resolved, kind: writePathTree})
 			continue
 		} else if !info.Mode().IsRegular() {
 			return nil, fmt.Errorf("exact write path %q is not a regular file", path)
@@ -782,6 +664,7 @@ func validateExactWorkspaceWritePaths(
 			return nil, err
 		}
 		canonical = append(canonical, resolved)
+		pinned = append(pinned, workspaceWritePath{path: resolved, kind: writePathFile})
 	}
 	sort.Strings(canonical)
 	for index := 1; index < len(canonical); index++ {
@@ -789,44 +672,66 @@ func validateExactWorkspaceWritePaths(
 			return nil, fmt.Errorf("duplicate exact write path %q", canonical[index])
 		}
 	}
-	return canonical, nil
+	sort.Slice(pinned, func(i, j int) bool { return pinned[i].path < pinned[j].path })
+	return pinned, nil
 }
 
 func materializeMissingExactWritePaths(
 	workspace *Workspace,
-	paths []string,
+	pinned []workspaceWritePath,
 ) error {
+	classifier, err := controlplane.New(workspace.Root())
+	if err != nil {
+		return err
+	}
 	var created []string
 	cleanup := func() {
 		for _, path := range created {
 			_ = os.Remove(path)
 		}
 	}
-	for _, path := range paths {
+	for _, entry := range pinned {
+		path, kind := entry.path, entry.kind
 		if info, err := os.Lstat(path); err == nil {
-			if info.IsDir() {
-				if info.Mode()&os.ModeSymlink != 0 {
-					cleanup()
-					return fmt.Errorf("exact write path %q changed type", path)
-				}
-				continue
-			}
-			if !info.Mode().IsRegular() {
+			if info.Mode()&os.ModeSymlink != 0 {
 				cleanup()
 				return fmt.Errorf("exact write path %q changed type", path)
 			}
-			resolved, resolveErr := workspace.Resolve(path, MustExist)
-			if resolveErr != nil || resolved != path {
-				cleanup()
-				if resolveErr != nil {
-					return resolveErr
+			switch kind {
+			case writePathTree:
+				// The tree was classified at validation; re-run the
+				// control-plane check so drift (a protected entry created
+				// under it, path reshuffling) fails closed before exec.
+				if !info.IsDir() {
+					cleanup()
+					return fmt.Errorf("exact write tree %q is no longer a directory", path)
 				}
-				return fmt.Errorf("exact write path %q changed identity", path)
+				if err := classifier.CheckWrite(path, true); err != nil {
+					cleanup()
+					return err
+				}
+			default:
+				if !info.Mode().IsRegular() {
+					cleanup()
+					return fmt.Errorf("exact write path %q changed type", path)
+				}
+				resolved, resolveErr := workspace.Resolve(path, MustExist)
+				if resolveErr != nil || resolved != path {
+					cleanup()
+					if resolveErr != nil {
+						return resolveErr
+					}
+					return fmt.Errorf("exact write path %q changed identity", path)
+				}
 			}
 			continue
 		} else if !errors.Is(err, os.ErrNotExist) {
 			cleanup()
 			return err
+		}
+		if kind == writePathTree {
+			cleanup()
+			return fmt.Errorf("exact write tree %q disappeared before execution", path)
 		}
 		file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 		if err != nil {
@@ -890,6 +795,12 @@ func writeSeatbeltAncestorMetadata(profile *strings.Builder, roots ...string) {
 	}
 }
 
+// maxSystemProfileBytes bounds the Seatbelt system profile the runtime will
+// read and audit. /System/Library/Sandbox/Profiles/system.sb is a few KiB;
+// 1 MiB is the safety ceiling so a replaced profile cannot stream unbounded
+// data through the audit. Public contract constant; boundary tests pin it.
+const maxSystemProfileBytes = 1 << 20
+
 // auditSeatbeltSystemProfileAt audits a Seatbelt system profile file.
 func auditSeatbeltSystemProfileAt(systemProfile string) error {
 	file, err := os.Open(systemProfile)
@@ -897,11 +808,11 @@ func auditSeatbeltSystemProfileAt(systemProfile string) error {
 		return fmt.Errorf("open Seatbelt system profile: %w", err)
 	}
 	defer file.Close()
-	data, err := io.ReadAll(io.LimitReader(file, (1<<20)+1))
+	data, err := io.ReadAll(io.LimitReader(file, int64(maxSystemProfileBytes)+1))
 	if err != nil {
 		return err
 	}
-	if len(data) > 1<<20 {
+	if len(data) > maxSystemProfileBytes {
 		return errors.New("Seatbelt system profile exceeds audit limit")
 	}
 	normalized := strings.Join(strings.Fields(string(data)), " ")
@@ -1049,89 +960,18 @@ func environmentValue(environment []string, name string) string {
 	return ""
 }
 
-func coveredByRoots(path string, roots []string) bool {
-	for _, root := range roots {
-		if pathContains(root, path) {
-			return true
-		}
-	}
-	return false
-}
-
-func appendMount(args []string, created map[string]bool, source, destination string, readOnly bool) []string {
-	info, err := os.Stat(source)
-	if err != nil {
-		return args
-	}
-	parent := filepath.Dir(destination)
-	var parents []string
-	for current := parent; !isFilesystemRoot(current) && !created[current]; {
-		parents = append(parents, current)
-		next := filepath.Dir(current)
-		if next == current {
-			break
-		}
-		current = next
-	}
-	for index := len(parents) - 1; index >= 0; index-- {
-		args = append(args, "--dir", parents[index])
-		created[parents[index]] = true
-	}
-	if info.IsDir() {
-		if !created[destination] {
-			args = append(args, "--dir", destination)
-			created[destination] = true
-		}
-	}
-	flag := "--bind"
-	if readOnly {
-		flag = "--ro-bind"
-	}
-	return append(args, flag, source, destination)
-}
-
-func appendRuntimeSymlinks(args []string, created map[string]bool, runtimeRoots []string) []string {
-	for _, alias := range []string{"/bin", "/sbin", "/lib", "/lib64"} {
-		resolved, err := filepath.EvalSymlinks(alias)
-		if err != nil {
-			continue
-		}
-		resolved = filepath.Clean(resolved)
-		if resolved == alias || !coveredByRoots(resolved, runtimeRoots) {
-			continue
-		}
-		target := strings.TrimPrefix(resolved, string(filepath.Separator))
-		if target == "" || target == resolved {
-			continue
-		}
-		args = append(args, "--symlink", target, alias)
-		created[alias] = true
-	}
-	return args
-}
-
-func runAttackProbe(helperPath string) Capability {
+func runAttackProbe() Capability {
 	base := Capability{Platform: runtime.GOOS, Backend: "none"}
 	switch runtime.GOOS {
 	case "darwin":
 		base.Backend = "seatbelt"
-	case "linux":
-		base.Backend = "bwrap"
-		base.Reason = "bwrap is available but the Landlock helper has not passed its strict ABI probe"
-	case "windows":
-		base.Backend = "restricted-token"
-		base.Reason = "strong restricted-token filesystem and network controls are unavailable"
-		return base
 	default:
 		base.Reason = "no supported platform sandbox backend"
 		return base
 	}
-	if _, err := exec.LookPath(map[string]string{"darwin": "sandbox-exec", "linux": "bwrap"}[runtime.GOOS]); err != nil {
+	if _, err := exec.LookPath("sandbox-exec"); err != nil {
 		base.Reason = err.Error()
 		return base
-	}
-	if runtime.GOOS == "linux" {
-		base.Available = true
 	}
 	workspace, err := os.MkdirTemp("", "qcode-probe-workspace-")
 	if err != nil {
@@ -1174,24 +1014,7 @@ func runAttackProbe(helperPath string) Capability {
 	candidate := base
 	candidate.Available = true
 	candidate.Effective = platformControls(runtime.GOOS)
-	var backend Backend
-	if runtime.GOOS == "darwin" {
-		backend = &seatbeltBackend{workspace: ws, policy: policy, capability: candidate}
-	} else {
-		requestRoot, requestErr := createLandlockRequestRoot()
-		if requestErr != nil {
-			base.Reason = "create Landlock request root: " + requestErr.Error()
-			return base
-		}
-		defer os.RemoveAll(requestRoot)
-		candidate.Backend = "bwrap+landlock"
-		candidate.Reason = ""
-		backend = &bubblewrapBackend{
-			workspace: ws, policy: policy, capability: candidate,
-			helperPath: helperPath, requestRoot: requestRoot,
-			probeReads: []string{external}, useLandlock: true,
-		}
-	}
+	backend := &seatbeltBackend{workspace: ws, policy: policy, capability: candidate}
 	listener, _ := net.Listen("tcp", "127.0.0.1:0")
 	if listener != nil {
 		defer listener.Close()
@@ -1201,52 +1024,45 @@ func runAttackProbe(helperPath string) Capability {
 		port := listener.Addr().(*net.TCPAddr).Port
 		networkTest = fmt.Sprintf("! /usr/bin/nc -w 1 127.0.0.1 %d", port)
 	}
-	if runtime.GOOS == "darwin" {
-		if _, err := os.Stat("/private/var/run/syslog"); err == nil {
-			networkTest += "; ! /usr/bin/nc -U /private/var/run/syslog </dev/null"
-		}
+	if _, err := os.Stat("/private/var/run/syslog"); err == nil {
+		networkTest += "; ! /usr/bin/nc -U /private/var/run/syslog </dev/null"
 	}
+	// The profile never grants file-link, so hard-link creation must be
+	// denied everywhere: inside the workspace, and — the escape shape —
+	// linking a readable host file into the writable workspace to write
+	// through it. These assertions keep a future file-link grant (e.g. for
+	// cache partitions) from silently opening the inode-identity escape.
+	linkTest := "! ln input input-link 2>/dev/null; ! ln /etc/hosts hosts-escape 2>/dev/null"
 	script := fmt.Sprintf(
 		`set -eu; test "$(cat input)" = workspace; test "$(cat <<'EOF'
 heredoc
 EOF
-)" = heredoc; printf ok > output; sh -c 'test "$(cat input)" = workspace'; ! cat %q >/dev/null 2>&1; ! printf bad > %q; ! printf bad > /private/tmp/qcode-sandbox-probe; ! printf bad > /var/tmp/qcode-sandbox-probe; ! printf bad > /private/var/tmp/qcode-sandbox-probe; %s`,
-		secret, outsideWrite, networkTest,
+)" = heredoc; printf ok > output; sh -c 'test "$(cat input)" = workspace'; ! cat %q >/dev/null 2>&1; ! printf bad > %q; ! printf bad > /private/tmp/qcode-sandbox-probe; ! printf bad > /var/tmp/qcode-sandbox-probe; ! printf bad > /private/var/tmp/qcode-sandbox-probe; %s; %s`,
+		secret, outsideWrite, linkTest, networkTest,
 	)
-	if runtime.GOOS == "linux" {
-		script = `test "$QCODE_LANDLOCK_ACTIVE" = 1; ` +
-			`test "$QCODE_NO_NEW_PRIVS_ACTIVE" = 1; ` +
-			`test "$QCODE_SECCOMP_ACTIVE" = restricted; ` + script
-	}
 	prepared, err := backend.Prepare(context.Background(), Command{
 		Path: "/bin/sh", Args: []string{"/bin/sh", "-c", script},
 		Dir: policy.WorkspaceRoot, Env: []string{"PATH=/usr/bin:/bin:/usr/sbin:/sbin"},
 		WorkspaceReadOnly: true, WorkspaceWritePaths: []string{"output"},
 	})
 	if err != nil {
-		if runtime.GOOS == "linux" {
-			base.Reason = "Landlock helper prepare failed: " + err.Error()
-			return base
-		}
 		candidate.Available = false
 		candidate.Reason = err.Error()
 		return candidate
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// The probe command shares the public toolchain probe timeout: one
+	// bounded sandboxed exec, same ceiling as any other probe.
+	ctx, cancel := context.WithTimeout(context.Background(), ToolchainProbeTimeout)
 	defer cancel()
 	command := exec.CommandContext(ctx, prepared.Path, prepared.Args[1:]...)
 	command.Dir, command.Env = prepared.Dir, prepared.Env
 	if output, err := command.CombinedOutput(); err != nil {
 		reason := fmt.Sprintf("attack probe failed: %v: %s", err, strings.TrimSpace(string(output)))
-		if runtime.GOOS == "linux" {
-			base.Reason = "Landlock helper " + reason
-			return base
-		}
 		candidate.Available = false
 		candidate.Reason = reason
 		return candidate
 	}
-	if runtime.GOOS == "darwin" && listener != nil {
+	if listener != nil {
 		candidate.ManagedProxy = probeManagedProxy(ctx, ws, policy, candidate, listener)
 	}
 	return candidate

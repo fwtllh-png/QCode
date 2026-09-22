@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/fwtllh-png/QCode/internal/security/egress"
+	"github.com/fwtllh-png/QCode/internal/security/goproxy"
 )
 
 func TestProcessSessionsIsolateGrantedTargets(t *testing.T) {
@@ -225,13 +226,17 @@ func TestProcessSessionDeniesAbsoluteFormToBoundGoproxyHost(t *testing.T) {
 	}
 }
 
-func TestProcessSessionOriginFormUsesBoundProtocolNotSharedGate(t *testing.T) {
+func TestProtocolHandlerServesOriginFormOnWorkspaceAndSessionChannels(t *testing.T) {
 	workspace := &egress.Gate{Enforce: true}
 	proxy, err := egress.StartManagedNetworkProxy(workspace)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = proxy.Close(context.Background()) })
+	// Binding after startup is the production order: the wire binds the
+	// GOPROXY auth service once the workspace channel is already serving.
+	// The stable channel must serve it from that moment on, or every
+	// origin-form module fetch through GOPROXY dies at the workspace port.
 	proxy.BindProtocolHandler(http.HandlerFunc(func(
 		writer http.ResponseWriter,
 		request *http.Request,
@@ -263,16 +268,18 @@ func TestProcessSessionOriginFormUsesBoundProtocolNotSharedGate(t *testing.T) {
 		t.Fatalf("origin-form status=%d body=%s err=%v", direct.StatusCode, body, err)
 	}
 
-	shared, err := http.Get(fmt.Sprintf(
+	stable, err := http.Get(fmt.Sprintf(
 		"http://127.0.0.1:%d/example.com/qcode/testmod/@v/v1.2.3.info",
 		proxy.Port(),
 	))
 	if err != nil {
 		t.Fatal(err)
 	}
-	shared.Body.Close()
-	if shared.StatusCode == http.StatusOK {
-		t.Fatal("workspace shared port served the protocol handler")
+	stableBody, err := io.ReadAll(stable.Body)
+	stable.Body.Close()
+	if err != nil || stable.StatusCode != http.StatusOK ||
+		!strings.Contains(string(stableBody), "v1.2.3") {
+		t.Fatalf("stable channel status=%d body=%s err=%v", stable.StatusCode, stableBody, err)
 	}
 
 	assertProxyStatus(t, session.Port(), "http://goproxy.example/", http.StatusForbidden)
@@ -338,5 +345,99 @@ func assertProxyStatus(t *testing.T, port uint16, endpoint string, want int) {
 	response.Body.Close()
 	if response.StatusCode != want {
 		t.Fatalf("port %d %s: status=%d, want %d", port, endpoint, response.StatusCode, want)
+	}
+}
+
+func TestProcessSessionDeniesTrailingDotConnectToBoundHost(t *testing.T) {
+	workspace := &egress.Gate{Enforce: true}
+	proxy, err := egress.StartManagedNetworkProxy(workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = proxy.Close(context.Background()) })
+	proxy.BindProtocolHandler(boundOriginHandler{host: "goproxy.example"})
+	session, err := proxy.OpenSession([]egress.Target{{
+		Host: "goproxy.example", Protocol: "https", Port: 443,
+		Methods: []string{http.MethodConnect}, AllowPrivate: true,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = session.Close() })
+
+	client, err := net.Dial("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(int(session.Port()))))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+	// FQDN trailing dot: same origin after normalization, spelling chosen to
+	// sidestep a naive equality check.
+	if _, err = fmt.Fprintf(
+		client,
+		"CONNECT goproxy.example.:443 HTTP/1.1\r\nHost: goproxy.example.:443\r\n\r\n",
+	); err != nil {
+		t.Fatal(err)
+	}
+	reader := bufio.NewReader(client)
+	status, err := reader.ReadString('\n')
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(status, "403") {
+		t.Fatalf("trailing-dot CONNECT status = %q", status)
+	}
+	receipts := session.Gate().Receipts()
+	if len(receipts) == 0 || receipts[0].Category != "trust_validation_failed" {
+		t.Fatalf("receipts = %+v", receipts)
+	}
+}
+
+func TestGoproxyServiceServesStableWorkspaceChannel(t *testing.T) {
+	// End-to-end A1 reproduction: a real GOPROXY auth service bound after
+	// startup, fetched in origin form through the stable workspace channel —
+	// the exact shape `GOPROXY=http://127.0.0.1:<managed port>` produces.
+	var seenAuth string
+	upstream := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		seenAuth = request.Header.Get("Authorization")
+		if request.URL.Path != "/example.com/qcode/testmod/@v/v1.2.3.info" {
+			http.NotFound(writer, request)
+			return
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"Version":"v1.2.3"}`))
+	}))
+	t.Cleanup(upstream.Close)
+	service, err := goproxy.New(goproxy.Binding{
+		Upstream:   upstream.URL,
+		Prefixes:   []string{"example.com/qcode/"},
+		Credential: goproxy.CredentialRef{Kind: "env", Name: "TEST_GOPROXY_TOKEN"},
+	}, func(context.Context, string, string) (string, error) {
+		return "user:secret-token", nil
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxy, err := egress.StartManagedNetworkProxy(&egress.Gate{Enforce: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = proxy.Close(context.Background()) })
+	proxy.BindProtocolHandler(service)
+
+	response, err := http.Get(fmt.Sprintf(
+		"http://127.0.0.1:%d/example.com/qcode/testmod/@v/v1.2.3.info",
+		proxy.Port(),
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := io.ReadAll(response.Body)
+	response.Body.Close()
+	if err != nil || response.StatusCode != http.StatusOK ||
+		!strings.Contains(string(body), "v1.2.3") {
+		t.Fatalf("stable channel status=%d body=%s err=%v", response.StatusCode, body, err)
+	}
+	if seenAuth == "" {
+		t.Fatal("auth service did not reach the upstream")
 	}
 }

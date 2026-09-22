@@ -43,7 +43,7 @@ func buildChildOrchestration(
 		return fmt.Errorf("resolve repository Git metadata: %w", err)
 	}
 	output.childToolsets = newChildToolsets(
-		state.platform.helperPath, session.content, state.platform.web,
+		session.content, state.platform.web,
 		execution.Verify, execution.Journal, state.config.diagnosticCommands,
 		state.config.diagnosticReadRoots, state.config.diagnosticReadFiles,
 		gitCommonDir, sandbox.BackendManagedProxyPort(state.platform.backend),

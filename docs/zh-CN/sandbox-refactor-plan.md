@@ -63,7 +63,7 @@ L4 审批与 UX        前缀 grant · 风险分层放行 · plan 漂移闸门 �
 L3 凭据代理         协议无关 loopback broker（git helper / netrc 类 / goproxy adapter）
 L2 生态准备器       manifest 驱动的 Discover（探测→ResourceRequest/Fact→env 投影）
 L1 事实仲裁         exec-time(工具链可用性) · connect-time(RuntimeApprover) · settle-time(evidence)
-L0 进程边界         seatbelt / landlock / seccomp：只管 fs / 进程 / 网络 / 资源
+L0 进程边界         Seatbelt：只管 fs / 进程 / 网络 / 资源
 ```
 
 设计原则：

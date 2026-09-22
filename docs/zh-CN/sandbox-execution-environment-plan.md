@@ -46,7 +46,7 @@ P0 关闭前不得改写这些决策来“先做一个能跑的版本”。能�
 | D4 | P6 后主 Agent 默认 `native`。`shared_user_temp` 必须用户或显式配置打开。子 Agent 仍 `isolated`（D5）。 |
 | D5 | 子 Agent 默认 `isolated`，只继承父授权与子需求的交集；不能因父级原生 Home 或共享临时区而自动同权。 |
 | D6 | 首次登记只询问已绑定环境来源、用户声明的精确资源和已注册适配器的公开接口，禁止扫描整个 Home，禁止按变量名猜测敏感性。 |
-| D7 | Darwin 单执行网络通道：一个 Workspace 代理进程，每个 Process Session 一个 loopback 端口和一份 Session Gate；Seatbelt 只放行该端口。Linux 在命名空间助手交付前保持进程禁网，不得 `--share-net`。 |
+| D7 | Darwin 单执行网络通道：一个 Workspace 代理进程，每个 Process Session 一个 loopback 端口和一份 Session Gate；Seatbelt 只放行该端口。 |
 | D8 | 第一种需要进程外认证的**协议**闭环必须是已复现的 GOPROXY，而不是通用 HTTP 反代。第二种认证协议在 GOPROXY 闭环之后单独验收。认证服务按协议加，不按语言加。 |
 | D9 | 隔离执行工作区与三方结算是独立阶段（P2b），不阻塞 P2a / P3。 |
 | D10 | 每个 Workspace 只有一套环境权威：准备器。`contract` 只接受 `v1`。 |
@@ -71,7 +71,7 @@ Go 是已复现的授权闭环样本，用来证明通用资源表够用，不�
 | `internal/security/egress/proxy.go` | CONNECT 回收、连接前审批、origin-form 协议分发 | TLS 内部语义仍不可见 |
 | `internal/adapter/tool/shell/protocol.go` | `v1` 继承用户声明网络；PTY/后台共用 Session | 适配器 GOPROXY 主机不自动 CONNECT |
 | `internal/adapter/tool/shell` | 有界树写 + P2b 隔离结算 | `dependency_resolve` / `shell_read` 未放宽 |
-| `internal/security/sandbox/backend.go` | Darwin 广告受控代理；Linux 保持禁网并报告 unsupported | 跨平台 Session 通道仍未交付 |
+| `internal/security/sandbox/backend.go` | Darwin 声明受控代理能力 | 仅支持 macOS；能力声明仍须通过探测 |
 
 这不是已完成的漏洞审查。P1b 已覆盖共享进程 Gate：进程目标不再写入 Workspace
 Gate，改由 Session Gate 持有；
@@ -221,14 +221,16 @@ Posture 拆开：`isolated` 继续拒绝宿主临时区；`native`+`shared_user_
 P0 必须把下表写成可查询的 Backend Capability，测试不具备前提时报告 `unavailable`，
 不能把 skip 算通过。
 
-| 能力 | Darwin | Linux | Windows |
-| --- | --- | --- | --- |
-| Strong Sandbox 文件只读根 | Seatbelt，已有 | Landlock，已有 | 报告 `unsupported`，fail closed |
-| 受控代理出网 | P1b：每 Session 端口 + Session Gate | 禁网；声明目标时报 `unsupported` | `unsupported` |
-| 解析系统用户临时区 | `confstr(_CS_DARWIN_USER_TEMP_DIR)` | 公开的 `TMPDIR` / `/tmp` 语义 | 公开的 `GetTempPath` 语义 |
-| 私有 `/tmp` 视图 | 现 Seatbelt **不能**承诺 | 挂载命名空间，后续后端 | `unsupported` |
-| 独立执行身份 / VM | 未支持 | 未支持 | 未支持 |
-| 证书文件只读暴露 | 已有 `certificates.go` | 同源 | 同源，若无 OpenSSL 则仅显式文件 |
+当前仅支持 macOS。
+
+| 能力 | Darwin |
+| --- | --- |
+| Strong Sandbox 文件只读根 | Seatbelt，已有 |
+| 受控代理出网 | P1b：每 Session 端口 + Session Gate |
+| 解析系统用户临时区 | `confstr(_CS_DARWIN_USER_TEMP_DIR)` |
+| 私有 `/tmp` 视图 | 现 Seatbelt **不能**承诺 |
+| 独立执行身份 / VM | 未支持 |
+| 证书文件只读暴露 | 已有 `certificates.go` |
 
 单次 OS 探测通过只证明该项控制可用，不证明业务构建成功。
 
@@ -399,8 +401,7 @@ QCode 控制文件、代理、凭证和 Journal 不放入共享区。
 清理只删除 QCode 私有执行目录，不扫描用户整个临时区。
 共享区中的任意原生命令输出不承诺按进程精确归属或全部自动清理。
 
-不接受该边界的环境使用 `isolated`。Linux 私有 `/tmp` 是后续后端，
-不能宣称 macOS Seatbelt 已支持等价视图。
+不接受该边界的环境使用 `isolated`。macOS Seatbelt 不支持私有 `/tmp` 视图。
 
 ### 9.4 动态目录写：P2a 与 P2b 拆开
 
@@ -494,17 +495,13 @@ Web Gate 已有 `UseCallScope`。
 8. 端口在 Session Close 后归还；耗尽时失败为 `backend_capability_unsupported`，
    不回退到 Workspace 共享 Gate。
 
-Linux：继续全禁网，直到受限 socketpair + 命名空间内助手落地。
-声明了 `network_targets` 的进程报告 `backend_capability_unsupported`，
-不回退到 Workspace 共享 Gate 或宿主网络。
 忽略代理的客户端不具备该出网能力，不能自动切到不受控网络。
 
 P3 已把 GOPROXY 认证接到 **Session loopback**，不写 Workspace 共享 Gate。
 绑定 `[[execution.environment.auth_services]]` 时即使 `network_targets` 为空
 也会开 Session 端口；进程只看到 `GOPROXY=http://127.0.0.1:<session-port>`。
-CONNECT 到真实制品源仍须单独声明，默认拒绝。Linux/Windows 在命名空间助手
-交付前对绑定了认证服务的进程报告 `backend_capability_unsupported`，
-不回退到共享 Gate 或把凭证写入进程环境。
+CONNECT 到真实制品源仍须单独声明，默认拒绝。
+Session 通道不可用时不回退到共享 Gate 或把凭证写入进程环境。
 
 ### 11.3 运行中发现新目标
 
@@ -619,11 +616,9 @@ macOS 拿不到精确 errno 时保留退出状态和原始输出，标记 `unkno
 ### P1b 单执行网络通道
 
 状态：已落地（2026-09-21）。Darwin 每 Process Session 一个端口和 Session Gate；
-Linux/Windows 对声明了 `network_targets` 的进程报告
-`backend_capability_unsupported` 并保持禁网。Workspace 共享进程 Gate 不再写入。
+Workspace 共享进程 Gate 不再写入。
 
-工作：Darwin Session 端口 + Session Gate + CONNECT 回收。Linux/Windows 报告
-`unsupported` 并保持禁网。
+工作：Darwin Session 端口 + Session Gate + CONNECT 回收。
 
 完成：两并行进程授权互不影响；长命令保持权限；取消和撤销关闭已有连接；
 攻击测试证明不能打兄弟端口。
@@ -740,8 +735,7 @@ GOPROXY 认证。
 
 状态：已落地（2026-09-21）。后续默认切换见 P6。
 
-工作：主/子 Agent、Skill、PTY、后台进程共用契约；Linux 助手若未交付则如实报告；
-删除第 13.1 节旧路径。
+工作：主/子 Agent、Skill、PTY、后台进程共用契约；删除第 13.1 节旧路径。
 
 实现要点：
 
@@ -753,8 +747,6 @@ GOPROXY 认证。
 3. 不再从宿主继承 `GO*` 语言变量；准备器物化值与模型 extra 才进入进程。
    `SecretEnvironmentName` 仍拦截 extra。HOME/缓存重写与 login shell 已删除。
 4. 工具审批不再接收进程 Gate。Workspace `processEgress` 只做代理 listen/enforce。
-5. Linux Landlock 助手只编码文件系统规则；无法交付 Session 通道时报告
-   `backend_capability_unsupported`，不 `--share-net`。
 
 完成：无共享动态进程授权，无隐式环境路径，无双权威。默认切换见 P6。
 
@@ -778,7 +770,6 @@ GOPROXY 认证。
    子 Agent 仍 `ChildProfile=isolated`。
 3. 仓库内标准库样本模块在默认合同下执行 `go test`，并与宿主同输入对照。
    这是验收样本，不是“已支持语言”清单，也不把原 EDS 业务任务标成完成。
-4. Linux/Windows 网络通道能力不足时仍报告 `backend_capability_unsupported`。
 
 完成：默认合同可真实编译并跑指定测试；文档区分已交付默认与原 EDS 业务证据。
 

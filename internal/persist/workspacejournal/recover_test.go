@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -757,9 +756,6 @@ func appendRaw(t *testing.T, path, line string) {
 // what a killed host looks like to the next one.
 func deadPID(t *testing.T) int {
 	t.Helper()
-	if runtime.GOOS == "windows" {
-		t.Skip("process liveness has no portable answer on windows")
-	}
 	command := exec.Command("/bin/sh", "-c", "exit 0")
 	if err := command.Run(); err != nil {
 		t.Fatal(err)

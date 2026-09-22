@@ -33,6 +33,11 @@ func StartManagedNetworkProxy(gate *Gate) (*ManagedNetworkProxy, error) {
 	}, nil
 }
 
+// BindProtocolHandler binds the protocol service on every channel the proxy
+// will serve: the stable workspace channel and each session channel opened
+// afterwards. The workspace gate stays empty (deny-all) for CONNECT — the
+// service enforces its own scope on origin-form requests, and external
+// CONNECT keeps going through per-command session gates.
 func (p *ManagedNetworkProxy) BindProtocolHandler(handler http.Handler) {
 	if p == nil {
 		return
@@ -40,6 +45,9 @@ func (p *ManagedNetworkProxy) BindProtocolHandler(handler http.Handler) {
 	p.mu.Lock()
 	p.protocol = handler
 	p.mu.Unlock()
+	if p.workspace != nil {
+		p.workspace.setProtocol(handler)
+	}
 }
 
 type managedBackend struct {

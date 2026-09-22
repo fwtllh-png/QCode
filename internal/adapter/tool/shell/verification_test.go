@@ -184,3 +184,43 @@ func TestVerificationWritingCoveredPathsIsInvalidatedAfterExecution(t *testing.T
 		t.Fatalf("input.txt = %q err=%v", body, err)
 	}
 }
+
+func TestDefaultedCheckRunsUnderSetE(t *testing.T) {
+	registry, _ := verificationRegistry(t)
+	// covered_paths alone defaults to check; the defaulted kind must run
+	// under set -e like an explicit declaration: the failing middle step
+	// aborts instead of being masked by the trailing success.
+	result := executeProcessTool(t, registry, processTestThread, "exec_command", map[string]any{
+		"command":       "false; printf masked",
+		"covered_paths": []string{"input.txt"},
+	})
+	evidence := result.Outcome.Facts.Verification
+	if evidence == nil || evidence.Kind != "check" || evidence.Status != verify.StatusFailed ||
+		evidence.ExitCode != 1 {
+		t.Fatalf("defaulted check evidence = %+v", evidence)
+	}
+}
+
+func TestVerificationEvidenceFinalizesOnFinalPoll(t *testing.T) {
+	registry, _ := verificationRegistry(t)
+	result := executeProcessTool(t, registry, processTestThread, "exec_command", map[string]any{
+		"command":       "sleep 0.4; test -f input.txt",
+		"covered_paths": []string{"input.txt"},
+		"yield_time_ms": 100,
+	})
+	sessionID, _ := result.Metadata["session_id"].(string)
+	if sessionID == "" {
+		t.Fatalf("session did not outlive the yield window: %+v", result.Metadata)
+	}
+	first := result.Outcome.Facts.Verification
+	if first == nil || first.Status != verify.StatusRunning {
+		t.Fatalf("yield-window evidence = %+v", first)
+	}
+	final := executeProcessTool(t, registry, processTestThread, "write_stdin", map[string]any{
+		"session_id": sessionID, "yield_time_ms": 5000,
+	})
+	evidence := final.Outcome.Facts.Verification
+	if evidence == nil || evidence.Status != verify.StatusPassed || evidence.ExitCode != 0 {
+		t.Fatalf("final-poll evidence = %+v result=%+v", evidence, final.Metadata)
+	}
+}

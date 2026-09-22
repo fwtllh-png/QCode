@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -170,5 +171,92 @@ func TestProcessSessionApprovesConnectBeforeDial(t *testing.T) {
 		"test",
 	); err == nil {
 		t.Fatal("runtime grant leaked onto the workspace gate")
+	}
+}
+
+func TestApprovalDecisionIsMethodScoped(t *testing.T) {
+	var asked atomic.Int32
+	gate := &egress.Gate{
+		Enforce: true,
+		LookupIP: func(context.Context, string) ([]net.IP, error) {
+			return []net.IP{net.ParseIP("203.0.113.10")}, nil
+		},
+	}
+	gate.SetRuntimeApprover(func(_ context.Context, target egress.Target) error {
+		asked.Add(1)
+		return nil
+	})
+	get := egress.Target{
+		Host: "cdn.example", Protocol: "https", Port: 443,
+		Methods: []string{http.MethodGet},
+	}
+	connect := get
+	connect.Methods = []string{http.MethodConnect}
+	if _, err := gate.AuthorizeBeforeConnect(t.Context(), get, "test"); err != nil {
+		t.Fatal(err)
+	}
+	// Same method replays from the settled decision without re-asking.
+	if _, err := gate.AuthorizeBeforeConnect(t.Context(), get, "test"); err != nil {
+		t.Fatal(err)
+	}
+	if asked.Load() != 1 {
+		t.Fatalf("GET asked %d times, settled decisions must replay", asked.Load())
+	}
+	// A GET approval must never answer a CONNECT on the same origin.
+	if _, err := gate.AuthorizeBeforeConnect(t.Context(), connect, "test"); err != nil {
+		t.Fatalf("CONNECT re-ask failed: %v", err)
+	}
+	if asked.Load() != 2 {
+		t.Fatalf("CONNECT reused the GET approval: asked=%d", asked.Load())
+	}
+}
+
+func TestApprovedPublicOriginCannotRebindToPrivate(t *testing.T) {
+	var lookups atomic.Int32
+	gate := &egress.Gate{
+		Enforce: true,
+		LookupIP: func(context.Context, string) ([]net.IP, error) {
+			// Public at approval time, private afterwards: a DNS rebinding.
+			if lookups.Add(1) == 1 {
+				return []net.IP{net.ParseIP("203.0.113.10")}, nil
+			}
+			return []net.IP{net.ParseIP("10.0.0.5")}, nil
+		},
+	}
+	gate.SetRuntimeApprover(func(context.Context, egress.Target) error { return nil })
+	target := egress.Target{
+		Host: "cdn.example", Protocol: "https", Port: 443,
+		Methods: []string{http.MethodGet},
+	}
+	if ips, err := gate.AuthorizeBeforeConnect(t.Context(), target, "test"); err != nil || len(ips) != 1 {
+		t.Fatalf("first authorize ips=%v err=%v", ips, err)
+	}
+	_, err := gate.AuthorizeBeforeConnect(t.Context(), target, "test")
+	if !errors.Is(err, egress.ErrDenied) {
+		t.Fatalf("rebound private resolution was allowed: %v", err)
+	}
+	denied, ok := egress.DeniedTarget(err)
+	if !ok || !strings.Contains(denied.Reason, "private") {
+		t.Fatalf("denied = %+v ok=%t", denied, ok)
+	}
+}
+
+func TestApprovedPrivateTargetGrantsPrivateDialing(t *testing.T) {
+	gate := &egress.Gate{
+		Enforce: true,
+		LookupIP: func(context.Context, string) ([]net.IP, error) {
+			return []net.IP{net.ParseIP("10.0.0.5")}, nil
+		},
+	}
+	gate.SetRuntimeApprover(func(context.Context, egress.Target) error { return nil })
+	target := egress.Target{
+		Host: "goproxy.corp.example", Protocol: "https", Port: 443,
+		Methods: []string{http.MethodGet},
+	}
+	for attempt := 0; attempt < 2; attempt++ {
+		ips, err := gate.AuthorizeBeforeConnect(t.Context(), target, "test")
+		if err != nil || len(ips) != 1 {
+			t.Fatalf("attempt %d ips=%v err=%v", attempt, ips, err)
+		}
 	}
 }

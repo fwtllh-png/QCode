@@ -146,7 +146,6 @@ func TestDefaultContractCompilesSpecifiedPackageAgainstHost(t *testing.T) {
 	options, _, err := bindEnvironmentSandbox(sandbox.Options{
 		WorkspaceRoot:       workspace,
 		PrivateTemp:         sandboxHome,
-		HelperPath:          helperExecutable(t),
 		EnvironmentContract: defaults.Contract,
 		EnvironmentProfile:  defaults.Profile,
 		SharedUserTemp:      defaults.SharedUserTemp,
@@ -231,13 +230,4 @@ func TestAnswer(t *testing.T) {
 		}
 	}
 	return root
-}
-
-func helperExecutable(t *testing.T) string {
-	t.Helper()
-	path, err := os.Executable()
-	if err != nil {
-		t.Fatal(err)
-	}
-	return path
 }

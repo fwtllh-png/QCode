@@ -37,7 +37,6 @@ type Workspace = tool.IsolatedWorkspace
 type Options struct {
 	Repository string
 	Scratch    string
-	HelperPath string
 	Parent     *filetool.Tools
 	Journal    *workspacejournal.Manager
 	Gate       *agentengine.WorkspaceTurnGate
@@ -49,7 +48,6 @@ type Options struct {
 type Service struct {
 	repository string
 	scratch    string
-	helperPath string
 	merger     *chatmerge.Service
 	brokers    chatmerge.WorkspaceBroker
 	newBackend func(sandbox.Options) (sandbox.Backend, error)
@@ -91,7 +89,6 @@ func New(options Options) *Service {
 	return &Service{
 		repository: repository,
 		scratch:    options.Scratch,
-		helperPath: options.HelperPath,
 		merger:     merger,
 		brokers:    options.Brokers,
 		newBackend: options.NewBackend,
@@ -174,7 +171,6 @@ func (s *session) PrepareBackend(
 	}
 	backend, err := s.service.newBackend(sandbox.Options{
 		WorkspaceRoot:       s.root,
-		HelperPath:          s.service.helperPath,
 		PrivateTemp:         policy.PrivateTemp,
 		HostReadRoots:       isolateHostReadRoots(s, policy.HostReadRoots),
 		HostReadFiles:       append([]string(nil), policy.HostReadFiles...),
@@ -251,7 +247,12 @@ func (s *session) Close() error {
 			ctx, s.service.repository, s.root,
 		); err != nil {
 			_ = os.RemoveAll(s.root)
-			return errors.Join(backendErr, err)
+			return errors.Join(backendErr, fmt.Errorf(
+				"remove isolated worktree %s: %w (scratch copy removed; "+
+					"stale worktree metadata may remain in the parent "+
+					"repository and can be cleaned with git worktree prune)",
+				s.root, err,
+			))
 		}
 		return backendErr
 	}
@@ -325,13 +326,22 @@ func copyWorkspace(source, target string) error {
 			}
 			return nil
 		}
-		if entry.Type()&fs.ModeSymlink != 0 {
-			if entry.IsDir() {
-				return filepath.SkipDir
-			}
-			return nil
-		}
 		destination := filepath.Join(target, relative)
+		if entry.Type()&fs.ModeSymlink != 0 {
+			// Recreate symlinks as-is (absolute targets stay absolute):
+			// builds that rely on them (include shims, .bin links) must see
+			// the same shape in the isolate. WalkDir never descends into a
+			// symlink, so a dangling target copies as a dangling link —
+			// matching the parent's behavior.
+			link, err := os.Readlink(path)
+			if err != nil {
+				return err
+			}
+			if err := os.MkdirAll(filepath.Dir(destination), 0o700); err != nil {
+				return err
+			}
+			return os.Symlink(link, destination)
+		}
 		if entry.IsDir() {
 			return os.MkdirAll(destination, 0o700)
 		}
@@ -448,4 +458,8 @@ func normalizeTrees(trees []string) []string {
 	return result
 }
 
+// gitCommandTimeout bounds every git invocation the isolator runs (worktree
+// add/list/prune, baseline commits, settlement diffs). Two minutes covers a
+// large monorepo worktree checkout on a cold cache; beyond it the isolate
+// fails closed instead of hanging the turn. Public contract constant.
 const gitCommandTimeout = 2 * time.Minute

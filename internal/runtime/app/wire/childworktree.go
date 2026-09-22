@@ -338,7 +338,6 @@ func (t *childToolset) close() {
 
 // childToolsets builds and owns one toolset per isolated child root.
 type childToolsets struct {
-	helperPath          string
 	content             contentstore.Store
 	web                 webtool.Options
 	verify              config.Verify
@@ -393,7 +392,7 @@ func (c *childToolsets) bindInteractions(
 }
 
 func newChildToolsets(
-	helperPath string, content contentstore.Store, web webtool.Options,
+	content contentstore.Store, web webtool.Options,
 	verifyConfig config.Verify, journals config.Journal,
 	diagnosticCommands map[string]diagnostics.Command,
 	diagnosticReadRoots []string,
@@ -403,7 +402,7 @@ func newChildToolsets(
 	skillPaths SkillPaths,
 ) *childToolsets {
 	return &childToolsets{
-		helperPath: helperPath, content: content, web: web, verify: verifyConfig,
+		content: content, web: web, verify: verifyConfig,
 		journals: journals, diagnosticCommands: diagnosticCommands,
 		diagnosticReadRoots: append([]string(nil), diagnosticReadRoots...),
 		diagnosticReadFiles: append([]string(nil), diagnosticReadFiles...),
@@ -452,7 +451,6 @@ func (c *childToolsets) open(
 	}
 	options, _, err := bindEnvironmentSandbox(sandbox.Options{
 		WorkspaceRoot:       root,
-		HelperPath:          c.helperPath,
 		PrivateTemp:         stateLayout.SandboxHome,
 		ManagedProxyPort:    c.managedProxyPort,
 		HostReadRoots:       hostReadRoots,

@@ -2,7 +2,6 @@ package mcp
 
 import (
 	"context"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -30,9 +29,6 @@ func TestRuntimeAuthorityRequiresLeaseAuthority(t *testing.T) {
 }
 
 func TestStdioLifecycleBindsConfigGenerationAndTerminates(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("fixture uses POSIX shell")
-	}
 	runtimeAuthority, err := NewRuntimeAuthority(
 		t.TempDir(), "", 1, nil, authority.NewLeaseAuthority(authority.LeaseAuthorityOptions{}),
 	)

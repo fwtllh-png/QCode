@@ -4,7 +4,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -70,9 +69,6 @@ func TestWorkspaceRequiresExactCaseAndSafeExistingParent(t *testing.T) {
 }
 
 func TestWorkspaceDetectsRootReplacement(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("renaming an open temporary directory is not reliable on Windows")
-	}
 	parent := t.TempDir()
 	root := filepath.Join(parent, "workspace")
 	if err := os.Mkdir(root, 0o700); err != nil {
@@ -121,9 +117,6 @@ func TestWorkspaceRevalidationDetectsDirectoryReplacement(t *testing.T) {
 }
 
 func TestDescriptorRelativeIOResistsConcurrentSymlinkSwap(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("descriptor-relative workspace I/O fails closed on Windows")
-	}
 	root := t.TempDir()
 	outside := t.TempDir()
 	directory := filepath.Join(root, "dir")

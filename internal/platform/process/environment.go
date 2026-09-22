@@ -2,9 +2,12 @@ package process
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"sort"
 	"strings"
+
+	"golang.org/x/text/unicode/norm"
 )
 
 // allowedEnvironment is the host pass-through set: process-neutral
@@ -26,8 +29,12 @@ var allowedEnvironment = map[string]bool{
 // SanitizedEnvironment filters host inheritance to the pass-through set and
 // applies model-declared entries. Model entries are explicit input from the
 // agent, which can already set any variable inside the command text, so the
-// only hard rules are the NAME shape and the secret-name refusal; the
-// declaration itself is journaled by the calling tool for audit.
+// hard rules are the NAME shape, the secret-name refusal, the
+// interpreter-preload refusal (those names change the meaning of the
+// reviewed command text rather than the program's runtime data), and the
+// policy-owned refusal (HOME and the temp variables are decided by the
+// sandbox in every posture, never by a declaration). The declaration itself
+// is journaled by the calling tool for audit.
 func SanitizedEnvironment(extra []string) ([]string, error) {
 	values := make(map[string]string)
 	for _, entry := range os.Environ() {
@@ -45,6 +52,18 @@ func SanitizedEnvironment(extra []string) ([]string, error) {
 		if SecretEnvironmentName(name) {
 			return nil, errors.New("secret environment variables cannot be passed to child processes")
 		}
+		if interpreterPreloadEnvironmentName(name) {
+			return nil, fmt.Errorf(
+				"%s changes how the command text is interpreted and cannot be declared; set it inside the command if the task truly needs it",
+				name,
+			)
+		}
+		if policyOwnedEnvironmentName(name) {
+			return nil, fmt.Errorf(
+				"%s is policy-owned: the sandbox decides it in every posture and a declaration cannot move it",
+				name,
+			)
+		}
 		values[name] = value
 	}
 	names := make([]string, 0, len(values))
@@ -57,6 +76,34 @@ func SanitizedEnvironment(extra []string) ([]string, error) {
 		result = append(result, name+"="+values[name])
 	}
 	return result, nil
+}
+
+// interpreterPreloadEnvironmentNames are refused as model declarations
+// because they change how the reviewed command text is interpreted (injected
+// libraries, startup scripts, interpreter flags) instead of carrying data.
+// The command text can still export them when a task genuinely needs to.
+var interpreterPreloadEnvironmentNames = map[string]bool{
+	"LD_PRELOAD": true, "LD_LIBRARY_PATH": true,
+	"DYLD_INSERT_LIBRARIES": true, "DYLD_LIBRARY_PATH": true,
+	"BASH_ENV": true, "ENV": true,
+	"NODE_OPTIONS": true, "PYTHONSTARTUP": true,
+	"PERL5OPT": true, "RUBYOPT": true,
+}
+
+func interpreterPreloadEnvironmentName(name string) bool {
+	return interpreterPreloadEnvironmentNames[name]
+}
+
+// policyOwnedEnvironmentNames are written only by the sandbox policy or the
+// environment preparer: HOME follows the posture (private sandbox home or
+// the host home) and TMPDIR/TMP/TEMP follow the temp posture (private temp
+// or the resolved shared user temp). One rule in every posture.
+var policyOwnedEnvironmentNames = map[string]bool{
+	"HOME": true, "TMPDIR": true, "TMP": true, "TEMP": true,
+}
+
+func policyOwnedEnvironmentName(name string) bool {
+	return policyOwnedEnvironmentNames[name]
 }
 
 // validEnvironmentName accepts portable environment variable names: a
@@ -78,17 +125,25 @@ func validEnvironmentName(name string) bool {
 	return true
 }
 
+// secretMarkers are substring markers for well-known secret-bearing names.
+// A bare _KEY suffix (OPENAI_KEY, SIGNING_KEY, GCP_KEY) is also treated as
+// secret: none of the well-known markers appear in those names, yet handing
+// them to a child process is handing over a credential.
+var secretMarkers = []string{
+	"API_KEY", "APIKEY", "TOKEN", "SECRET", "PASSWORD", "PASSWD",
+	"CREDENTIAL", "AUTHORIZATION", "PRIVATE_KEY", "ACCESS_KEY", "COOKIE",
+}
+
 func SecretEnvironmentName(name string) bool {
-	upper := strings.ToUpper(name)
-	for _, marker := range []string{
-		"API_KEY", "APIKEY", "TOKEN", "SECRET", "PASSWORD", "PASSWD",
-		"CREDENTIAL", "AUTHORIZATION", "PRIVATE_KEY", "ACCESS_KEY", "COOKIE",
-	} {
+	// Unicode normalization first: fullwidth lookalikes (ＡＰＩ＿ＫＥＹ)
+	// must fold to their ASCII counterparts before matching.
+	upper := strings.ToUpper(norm.NFKC.String(name))
+	for _, marker := range secretMarkers {
 		if strings.Contains(upper, marker) {
 			return true
 		}
 	}
-	return false
+	return strings.HasSuffix(upper, "_KEY")
 }
 
 func environmentAllowed(name string) bool {

@@ -163,9 +163,24 @@ func (s *Service) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		return
 	}
 	// Sumdb payloads are self-verifying (the go client checks them against
-	// its own sumdb keys), so the trust boundary is the fixed upstream host;
-	// the module-prefix scope does not apply to /sumdb/ paths.
-	if parsed.Kind != KindSumdb && !MatchPrefix(parsed.Module, s.binding.Prefixes) {
+	// its own sumdb keys), so the trust boundary is the fixed upstream host.
+	// The proxied database is still scoped: only the toolchain's default
+	// checksum database and the bound upstream's own database name are
+	// served. Anything else would turn the authenticated upstream into an
+	// existence oracle for databases the binding never declared.
+	if parsed.Kind == KindSumdb {
+		if !allowedSumdbName(parsed.Module, s.upstream.Hostname()) {
+			s.record(environment.Fact{
+				Source:   Source,
+				Category: environment.CategoryTrustValidationFailed,
+				Resource: parsed.Module,
+				Detail: "sumdb is outside the bound upstream and the " +
+					"toolchain default checksum database",
+			})
+			http.Error(writer, "sumdb is outside the bound scope", http.StatusForbidden)
+			return
+		}
+	} else if !MatchPrefix(parsed.Module, s.binding.Prefixes) {
 		s.record(environment.Fact{
 			Source:         Source,
 			Category:       environment.CategoryTrustValidationFailed,
@@ -198,12 +213,12 @@ func (s *Service) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	}
 	target := strings.TrimRight(s.upstream.String(), "/") + "/" + parsed.Escaped
 	upstream, err := url.Parse(target)
-	if err != nil || upstream.Hostname() != s.upstream.Hostname() {
+	if err != nil || !sameUpstreamEndpoint(upstream, s.upstream) {
 		s.record(environment.Fact{
 			Source:   Source,
 			Category: environment.CategoryTrustValidationFailed,
 			Resource: s.upstream.Host,
-			Detail:   "goproxy request would leave the bound upstream host",
+			Detail:   "goproxy request would leave the bound upstream endpoint",
 		})
 		http.Error(writer, "goproxy upstream host is fixed", http.StatusForbidden)
 		return
@@ -237,17 +252,44 @@ func (s *Service) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	}
 	defer response.Body.Close()
 	s.recordUpstreamStatus(response.StatusCode, parsed)
-	buffered := s.rememberUpstreamBody(cacheKey, request.Method, response, time.Now())
+	prefix, state := s.rememberUpstreamBody(cacheKey, request.Method, response, time.Now())
+	if state == bodyTruncated {
+		s.record(environment.Fact{
+			Source:   Source,
+			Category: environment.CategoryUpstreamUnavailable,
+			Resource: s.upstream.Host,
+			Detail:   "goproxy upstream body ended mid-read",
+		})
+		// Nothing is on the wire yet: answer as an upstream failure
+		// instead of framing a truncated body as a clean response.
+		http.Error(writer, "goproxy upstream body is incomplete", http.StatusBadGateway)
+		return
+	}
 	writeFilteredHeader(writer, response.Header)
 	writer.WriteHeader(response.StatusCode)
 	if request.Method == http.MethodHead {
 		return
 	}
-	if buffered != nil {
-		_, _ = writer.Write(buffered)
-		return
+	switch state {
+	case bodyOverflow:
+		if len(prefix) > 0 {
+			_, _ = writer.Write(prefix)
+		}
+		if _, err := io.Copy(writer, response.Body); err != nil {
+			// Headers carrying the upstream Content-Length are already on
+			// the wire; a silently short body would masquerade as a
+			// complete answer. Abort the connection so the client sees a
+			// transport failure instead.
+			panic(http.ErrAbortHandler)
+		}
+	default:
+		if len(prefix) > 0 {
+			_, _ = writer.Write(prefix)
+		}
+		if state == bodyPassthrough {
+			_, _ = io.Copy(writer, response.Body)
+		}
 	}
-	_, _ = io.Copy(writer, response.Body)
 }
 
 // recordUpstreamStatus explains non-2xx upstream answers as Facts so the
@@ -357,7 +399,53 @@ func (s *Service) record(fact environment.Fact) {
 	s.mu.Unlock()
 }
 
-var errRedirectHost = errors.New("goproxy redirect left the bound upstream host")
+var errRedirectHost = errors.New("goproxy redirect left the bound upstream endpoint")
+
+// sameUpstreamEndpoint reports whether candidate is the same origin as the
+// bound upstream: same host, same effective port, same TLS class. The
+// credential scope never crosses a scheme or port change — an https origin
+// may not redirect the secret onto an http hop or a moved port, even on the
+// same hostname.
+func sameUpstreamEndpoint(candidate, upstream *url.URL) bool {
+	if candidate == nil || upstream == nil {
+		return false
+	}
+	if !strings.EqualFold(candidate.Hostname(), upstream.Hostname()) {
+		return false
+	}
+	if effectivePort(candidate) != effectivePort(upstream) {
+		return false
+	}
+	return isTLS(candidate) == isTLS(upstream)
+}
+
+func isTLS(value *url.URL) bool {
+	return strings.EqualFold(value.Scheme, "https")
+}
+
+func effectivePort(value *url.URL) string {
+	if port := value.Port(); port != "" {
+		return port
+	}
+	if strings.EqualFold(value.Scheme, "http") {
+		return "80"
+	}
+	return "443"
+}
+
+// defaultSumdbName is the Go toolchain's documented public checksum
+// database. Sumdb proxying is limited to it and to the bound upstream's own
+// database name until a configuration field declares private databases.
+const defaultSumdbName = "sum.golang.org"
+
+func allowedSumdbName(name, upstreamHost string) bool {
+	name = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(name), "."))
+	if name == defaultSumdbName {
+		return true
+	}
+	return upstreamHost != "" &&
+		name == strings.ToLower(strings.TrimSuffix(strings.TrimSpace(upstreamHost), "."))
+}
 
 func (s *Service) roundTrip(request *http.Request, secret string) (*http.Response, error) {
 	client := *s.client
@@ -365,7 +453,7 @@ func (s *Service) roundTrip(request *http.Request, secret string) (*http.Respons
 		if len(via) == 0 {
 			return nil
 		}
-		if req.URL.Hostname() != s.upstream.Hostname() {
+		if !sameUpstreamEndpoint(req.URL, s.upstream) {
 			return errRedirectHost
 		}
 		req.Header.Del("Authorization")
