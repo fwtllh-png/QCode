@@ -612,6 +612,29 @@ describe("ConversationProjection", () => {
     ]);
   });
 
+  it("tracks the newest main-thread turn past settlement for plan recency", () => {
+    const snapshot = projectConversation([
+      event(1, "turn.started", {display_prompt: "first"}),
+      event(2, "turn.completed", {text: "first answer"}),
+      turnEvent(3, "turn2", "turn.started", {display_prompt: "second"}),
+      turnEvent(4, "turn2", "turn.completed", {text: "second answer"}),
+      // Child-agent turns replay on their own thread and must not advance the
+      // main thread's latest turn.
+      event(5, "agent.spawned", {agent_id: "child", detail: {thread_id: "child-thread"}}),
+      {
+        ...turnEvent(6, "child-turn", "turn.started", {display_prompt: "child work"}),
+        thread_id: "child-thread"
+      },
+      {
+        ...turnEvent(7, "child-turn", "turn.completed", {text: "child answer"}),
+        thread_id: "child-thread"
+      }
+    ]);
+
+    expect(snapshot.activeTurnID).toBe("");
+    expect(snapshot.latestTurnID).toBe("turn2");
+  });
+
   it("ignores retraction for an unknown sample or turn", () => {
     const projection = new ConversationProjection();
     projection.apply(event(1, "turn.started", {display_prompt: "Answer"}));

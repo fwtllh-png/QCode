@@ -17,14 +17,22 @@ export function SessionProgress({
   plan,
   agents,
   activeTurnID,
+  latestTurnID,
   onOpenTrajectory
 }: {
   plan?: SessionPlanArtifact;
   agents: readonly AgentSummary[];
   activeTurnID: string;
+  latestTurnID: string;
   onOpenTrajectory: () => void;
 }) {
   const [planExpanded, setPlanExpanded] = useState(true);
+  // A plan belongs to the turn that produced it. Keep it on screen while that
+  // turn is the newest one — including after it settles, so a proposal can be
+  // reviewed — but retire it once a later turn starts.
+  const planSuperseded = Boolean(
+    plan?.turn_id && latestTurnID && plan.turn_id !== latestTurnID
+  );
   const isDeliverable = plan?.purpose === "deliverable" ||
     plan?.document?.purpose === "deliverable";
   const planSteps = plan?.document?.steps ?? [];
@@ -33,7 +41,7 @@ export function SessionProgress({
     (step) => step.status === "in_progress"
   ).length : 0;
   const planPending = planSteps.length - planDone - planActive;
-  const hasPlanContent = Boolean(plan?.document?.steps.length);
+  const hasPlanContent = !planSuperseded && Boolean(plan?.document?.steps.length);
   const activeAgents = agents.filter(isActiveAgent);
   const [agentsExpanded, setAgentsExpanded] = useState(true);
   if (!hasPlanContent && activeAgents.length === 0) return null;

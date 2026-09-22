@@ -179,6 +179,7 @@ export interface ConversationSnapshot {
   readonly order: readonly string[];
   readonly nodes: ReadonlyMap<string, ConversationNode>;
   readonly activeTurnID: string;
+  readonly latestTurnID: string;
   readonly activeStatus?: string;
   readonly pendingApproval?: RuntimeEvent;
   readonly pendingInput?: RuntimeEvent;
@@ -189,6 +190,7 @@ const emptyConversation: ConversationSnapshot = Object.freeze({
   order: Object.freeze([]),
   nodes: new Map(),
   activeTurnID: "",
+  latestTurnID: "",
   revision: 0
 });
 
@@ -215,6 +217,7 @@ export class ConversationProjection {
   private readonly outputSegments = new Map<string, {sampleID: string; text: string}[]>();
   private readonly ids = new Map<string, string>();
   private readonly activeTurns = new Set<string>();
+  private latestTurnID = "";
   private readonly activities = new Map<string, string>();
   private readonly runningTools = new Map<string, Set<string>>();
   private readonly approvals = new Map<string, RuntimeEvent>();
@@ -241,6 +244,7 @@ export class ConversationProjection {
       case "turn.started":
         this.ids.set(event.turn_id, event.operation_id);
         this.activeTurns.add(event.turn_id);
+        this.latestTurnID = event.turn_id;
         this.setActivity(event.turn_id, "Thinking...");
         this.put({
           id: event.id,
@@ -469,6 +473,7 @@ export class ConversationProjection {
       order: Object.freeze([...this.order]),
       nodes: new Map(this.nodes),
       activeTurnID,
+      latestTurnID: this.latestTurnID,
       activeStatus: this.activities.get(activeTurnID),
       pendingApproval: [...this.approvals.values()].at(-1),
       pendingInput: [...this.inputs.values()].at(-1),

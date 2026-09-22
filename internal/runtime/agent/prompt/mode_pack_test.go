@@ -35,6 +35,8 @@ func TestModeInstructionPackDiffersByMode(t *testing.T) {
 			!strings.Contains(pack, "Resolve facts available through tools") ||
 			!strings.Contains(pack, "already loaded facts") ||
 			!strings.Contains(pack, "git_status or git_diff on Continue") ||
+			!strings.Contains(pack, "authoritative facts about closed turns") ||
+			!strings.Contains(pack, "rely on it instead of re-verifying") ||
 			!strings.Contains(pack, "After search_text returns line hits") ||
 			!strings.Contains(pack, "confirmed continuity or Located sites") ||
 			!strings.Contains(pack, "error_category and required_action") ||

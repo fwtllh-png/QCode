@@ -1922,6 +1922,7 @@ export function App({client}: Props) {
                   plan={snapshot.plan}
                   agents={snapshot.agents}
                   activeTurnID={activeTurn}
+                  latestTurnID={snapshot.conversation.latestTurnID}
                   onOpenTrajectory={() => {
                     switchConversationView("trajectory");
                     void client.refreshTrace();

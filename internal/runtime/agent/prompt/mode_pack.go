@@ -21,8 +21,10 @@ session-local origin. Do not probe that upstream host, write credential files,
 or ask the user for those credentials.
 Plan, Session State, working_set, and recovery_evidence are already loaded facts;
 do not call git_status or git_diff on Continue to reconstruct them.
-Canceled or failed turns without edits are already in checkpoints; do not
-re-verify that. Reuse prior read text when it covers the current question,
+Turn checkpoints are authoritative facts about closed turns. A canceled or
+failed turn without edits leaves the workspace unchanged, and its checkpoint
+already records that outcome; rely on it instead of re-verifying.
+Reuse prior read text when it covers the current question,
 requested window, and file version. Read uncovered windows, changed content,
 or unavailable prior text as needed for read-only analysis or edits.
 After search_text returns line hits, start with that window and expand only

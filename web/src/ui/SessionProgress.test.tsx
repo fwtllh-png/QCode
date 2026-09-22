@@ -52,6 +52,7 @@ describe("SessionProgress", () => {
           }
         ]}
         activeTurnID="turn"
+        latestTurnID="turn"
         onOpenTrajectory={onOpenTrajectory}
       />
     );
@@ -100,6 +101,7 @@ describe("SessionProgress", () => {
         }}
         agents={[]}
         activeTurnID=""
+        latestTurnID="turn"
         onOpenTrajectory={vi.fn()}
       />
     );
@@ -136,12 +138,90 @@ describe("SessionProgress", () => {
         }}
         agents={[]}
         activeTurnID=""
+        latestTurnID="finished-turn"
         onOpenTrajectory={vi.fn()}
       />
     );
 
     expect(screen.getByText("1 completed · 0 active · 1 pending")).toBeTruthy();
     expect(document.querySelector(".spin")).toBeNull();
+  });
+
+  it("retires the plan once a later turn starts", () => {
+    render(
+      <SessionProgress
+        plan={{
+          version: 1,
+          id: "plan",
+          session_id: "session",
+          thread_id: "thread",
+          turn_id: "plan-turn",
+          cursor: 1,
+          status: "ready",
+          body: `{"version":1,"revision":1,"steps":[` +
+            `{"id":"one","title":"Outdated step","status":"pending"}]}`,
+          document: {
+            version: 1,
+            revision: 1,
+            steps: [{id: "one", title: "Outdated step", status: "pending"}]
+          },
+          profile_revision: 1,
+          can_implement: true,
+          can_autopilot: false,
+          created_at: "2026-01-01T00:00:00Z"
+        }}
+        agents={[]}
+        activeTurnID="next-turn"
+        latestTurnID="next-turn"
+        onOpenTrajectory={vi.fn()}
+      />
+    );
+
+    expect(screen.queryByRole("region", {name: "Session progress"})).toBeNull();
+    expect(screen.queryByText("Outdated step")).toBeNull();
+    expect(screen.queryByText("Proposed plan")).toBeNull();
+  });
+
+  it("keeps active subagents visible while retiring a superseded plan", () => {
+    render(
+      <SessionProgress
+        plan={{
+          version: 1,
+          id: "plan",
+          session_id: "session",
+          thread_id: "thread",
+          turn_id: "plan-turn",
+          cursor: 1,
+          status: "ready",
+          body: `{"version":1,"revision":1,"steps":[` +
+            `{"id":"one","title":"Outdated step","status":"pending"}]}`,
+          document: {
+            version: 1,
+            revision: 1,
+            steps: [{id: "one", title: "Outdated step", status: "pending"}]
+          },
+          profile_revision: 1,
+          can_implement: false,
+          can_autopilot: false,
+          created_at: "2026-01-01T00:00:00Z"
+        }}
+        agents={[
+          {
+            id: "agent",
+            role: "reviewer",
+            status: "running",
+            last_message: "Still reviewing"
+          }
+        ]}
+        activeTurnID="next-turn"
+        latestTurnID="next-turn"
+        onOpenTrajectory={vi.fn()}
+      />
+    );
+
+    expect(screen.queryByText("Outdated step")).toBeNull();
+    expect(screen.queryByText("Tasks")).toBeNull();
+    expect(screen.getByText("Still reviewing")).toBeTruthy();
   });
 
   it("removes settled subagents from progress after a failed turn is retried", () => {
@@ -162,6 +242,7 @@ describe("SessionProgress", () => {
           }
         ]}
         activeTurnID="retried-turn"
+        latestTurnID="retried-turn"
         onOpenTrajectory={vi.fn()}
       />
     );

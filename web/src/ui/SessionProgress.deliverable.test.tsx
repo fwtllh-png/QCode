@@ -32,6 +32,7 @@ it("shows a deliverable as a proposal rather than running tasks", () => {
       }}
       agents={[]}
       activeTurnID="turn"
+      latestTurnID="turn"
       onOpenTrajectory={vi.fn()}
     />
   );
