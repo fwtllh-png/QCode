@@ -2,10 +2,12 @@ package file
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -26,6 +28,17 @@ import (
 const (
 	defaultReadLines = 200
 	maxReadLines     = 2000
+	// maxReadLineRunes bounds how much of one very long line (a minified
+	// bundle, a data blob) enters the model-visible window. The kept prefix
+	// is capped in code points so a surrogate pair is never split, and every
+	// truncated line number is reported in metadata. Lines longer than the
+	// old 1 MiB scanner ceiling previously failed the whole read; they now
+	// stream through and truncate like any other long line.
+	maxReadLineRunes = 2000
+	// readLineTruncationNote is appended to each truncated line so the cut is
+	// visible inline, not only in metadata.
+	readLineTruncationNote = "…(line truncated)"
+
 	defaultListLimit = 200
 	maxListLimit     = 2000
 )
@@ -248,22 +261,18 @@ func (o *operation) Descriptor() tool.Descriptor {
 		properties["limit"] = map[string]any{"type": "integer"}
 	case "file_read":
 		description = "Read a bounded UTF-8 line range or extract selected PDF pages. " +
-			"path is workspace-relative (absolute paths inside workspace are rewritten). " +
-			"Use an exact path returned by file_list or another tool; never infer a " +
-			"filename from a title or topic. Reuse prior read text when it covers " +
-			"the current question, requested window, and file version. Read uncovered " +
-			"windows, changed content, or unavailable prior text as needed for " +
-			"read-only analysis or edits. A dirty " +
-			"git status or git_diff is not a reason to file_read. Absence from the " +
-			"visible tail is not a reason to file_read; use turn_history or " +
-			"result_get for prior read text. If turn_history is truncated, call " +
-			"result_get before file_read. Locate a known defect with search_text " +
-			"or search_definition. After search_text returns line hits for a path, " +
-			"start with that window and expand only as needed to answer the task. " +
-			"Line reads report pagination in metadata: has_more says whether lines " +
-			"remain, next_start_line is the start_line of the next window, and " +
+			"path is workspace-relative (absolute paths inside workspace are rewritten); " +
+			"use exact paths returned by tools, never a filename inferred from a " +
+			"title or topic. Prior read text is recoverable through turn_history " +
+			"and result_get — check there before re-reading. Line reads report " +
+			"pagination in metadata: has_more says whether lines remain, " +
+			"next_start_line is the start_line of the next window, and " +
 			"returned_lines is this window's line count. Continue with " +
-			"start_line=next_start_line; never count returned lines yourself."
+			"start_line=next_start_line; never count returned lines yourself. " +
+			"Lines longer than the public per-line rune cap are truncated in " +
+			"place and listed in metadata truncated_lines — do not assume a " +
+			"truncated line is complete; narrow the window instead of " +
+			"re-reading the same lines."
 		properties["path"] = map[string]any{
 			"type":        "string",
 			"minLength":   float64(1),
@@ -291,9 +300,15 @@ func (o *operation) Descriptor() tool.Descriptor {
 		description = "Atomically replace exact text occurrences. path is workspace-relative. " +
 			"The exact old text is a compare-and-swap precondition; call file_read first " +
 			"when the current text is not already known. occurrences declares how many " +
-			"times old must appear (default 1): set it to the count search_text or " +
-			"file_read showed to rename every occurrence in one call; a mismatching " +
-			"count fails without changing the file and reports the actual match lines."
+			"times old must appear (default 1); a mismatching count fails without " +
+			"changing the file and reports the actual match lines. Copy old verbatim " +
+			"from file_read. On a miss, two bounded recoveries run before failure: " +
+			"a numbered-output prefix on every non-empty line of old is stripped " +
+			"once, then surrounding-whitespace or confusable-punctuation drift is " +
+			"matched by folding and only the matched original span is replaced. " +
+			"Recovery is reported in metadata (normalized_match, " +
+			"line_prefixes_stripped); a remaining miss means the file truly " +
+			"differs — re-read the reported window."
 		properties["old"] = map[string]any{"type": "string"}
 		properties["new"] = map[string]any{"type": "string"}
 		properties["occurrences"] = map[string]any{
@@ -308,11 +323,9 @@ func (o *operation) Descriptor() tool.Descriptor {
 			"Write operations safely create missing parent directories, so do not " +
 			"create placeholder files first. " +
 			"Later changes see earlier ones, so the same file can be edited twice in " +
-			"one call. Exact edits may use old as their read precondition. Before calling, " +
-			"use file_read on every other existing source or destination path; new paths " +
-			"need no prior read. " +
-			"For every edit, copy old as one contiguous exact substring from file_read; " +
-			"preserve whitespace and order, and never reconstruct or reorder it. " +
+			"one call. Read every other existing source or destination path first " +
+			"(new paths need no prior read); exact edits take old as their read " +
+			"precondition and share file_edit's bounded recovery on a miss. " +
 			"Set dry_run to get the unified diff without writing."
 		delete(properties, "path")
 		properties["changes"] = map[string]any{
@@ -600,9 +613,20 @@ func (o *operation) mutationResult(prepared preparedFileMutation) tool.Result {
 			Content: "written", Metadata: map[string]any{"bytes": bytes},
 		}
 	case "file_edit":
-		return tool.Result{
-			Content: "edited", Metadata: map[string]any{"replacements": 1},
+		metadata := map[string]any{"replacements": 1}
+		content := "edited"
+		if len(prepared.changes) > 0 {
+			if prepared.changes[0].EditNormalizedMatch {
+				metadata["normalized_match"] = true
+				content = "edited via folded-match recovery: old text did not " +
+					"match byte-for-byte (whitespace or punctuation differed); " +
+					"review the diff"
+			}
+			if prepared.changes[0].EditPrefixStripped {
+				metadata["line_prefixes_stripped"] = true
+			}
 		}
+		return tool.Result{Content: content, Metadata: metadata}
 	case "file_patch":
 		return tool.Result{
 			Content:  "patched",
@@ -671,6 +695,11 @@ func (t *Tools) siblingCandidates(path string, limit int) []string {
 	return candidates
 }
 
+// readTextRange streams a bounded UTF-8 line window. Lines longer than
+// maxReadLineRunes code points are truncated in place and their line numbers
+// reported in metadata; the discarded tail is still checked for NUL bytes and
+// UTF-8 validity so binary content keeps failing the read instead of hiding
+// behind a truncation.
 func readTextRange(file *os.File, startLine, maxLines int) (tool.Result, error) {
 	if startLine < 0 || maxLines < 0 {
 		return tool.Result{}, errors.New("start_line and max_lines must not be negative")
@@ -687,14 +716,21 @@ func readTextRange(file *os.File, startLine, maxLines int) (tool.Result, error) 
 	if err != nil {
 		return tool.Result{}, err
 	}
-	scanner := bufio.NewScanner(file)
-	scanner.Buffer(make([]byte, 64<<10), 1<<20)
+	reader := bufio.NewReaderSize(file, 64<<10)
 	var lines []string
+	var truncatedLines []int
 	lineNumber := 0
 	hasMore := false
-	for scanner.Scan() {
+	for {
+		line, tainted, truncated, err := readTextLine(reader, maxReadLineRunes)
+		if err == io.EOF && line == "" && !tainted {
+			break
+		}
+		if err != nil && err != io.EOF {
+			return tool.Result{}, fmt.Errorf("read text lines: %w", err)
+		}
 		lineNumber++
-		if strings.IndexByte(scanner.Text(), 0) >= 0 || !utf8.Valid(scanner.Bytes()) {
+		if tainted {
 			return tool.Result{}, errors.New("binary or non-UTF-8 file cannot be read as text")
 		}
 		if lineNumber < startLine {
@@ -704,10 +740,14 @@ func readTextRange(file *os.File, startLine, maxLines int) (tool.Result, error) 
 			hasMore = true
 			break
 		}
-		lines = append(lines, scanner.Text())
-	}
-	if err := scanner.Err(); err != nil {
-		return tool.Result{}, fmt.Errorf("read text lines: %w", err)
+		if truncated {
+			truncatedLines = append(truncatedLines, lineNumber)
+			line += readLineTruncationNote
+		}
+		lines = append(lines, line)
+		if err == io.EOF {
+			break
+		}
 	}
 	metadata := map[string]any{
 		"bytes": info.Size(), "start_line": startLine, "returned_lines": len(lines),
@@ -716,9 +756,149 @@ func readTextRange(file *os.File, startLine, maxLines int) (tool.Result, error) 
 	if hasMore {
 		metadata["next_start_line"] = startLine + len(lines)
 	}
+	if len(truncatedLines) != 0 {
+		metadata["truncated_lines"] = truncatedLines
+		metadata["max_line_runes"] = maxReadLineRunes
+	}
 	return tool.Result{
 		Content: strings.Join(lines, "\n"), Truncated: hasMore, Metadata: metadata,
 	}, nil
+}
+
+// readTextLine consumes one line (up to and excluding '\n') from reader,
+// keeping at most limit code points of it. It reports whether the line —
+// including any discarded tail — contained a NUL byte or invalid UTF-8, and
+// whether content was cut at the limit. A trailing '\r' is dropped to match
+// bufio.Scanner's ScanLines behavior.
+func readTextLine(
+	reader *bufio.Reader, limit int,
+) (line string, tainted, truncated bool, err error) {
+	var kept []byte
+	var pending []byte // partial rune carried across chunk boundaries
+	runes := 0
+	extraContent := false
+	validator := utf8LineValidator{}
+	for {
+		chunk, readErr := reader.ReadSlice('\n')
+		if len(chunk) > 0 {
+			terminated := chunk[len(chunk)-1] == '\n'
+			body := chunk
+			if terminated {
+				body = chunk[:len(chunk)-1]
+			}
+			if bytes.IndexByte(body, 0) >= 0 {
+				tainted = true
+			}
+			if validator.feed(body, terminated || readErr == io.EOF) {
+				tainted = true
+			}
+			stream := body
+			if len(pending) > 0 {
+				stream = append(pending, body...)
+				pending = pending[:0]
+			}
+			for len(stream) > 0 {
+				width := runeSequenceWidth(stream[0])
+				if width < 0 {
+					stream = stream[1:] // validator already flagged the line
+					continue
+				}
+				if len(stream) < width {
+					if terminated || readErr == io.EOF {
+						break // invalid partial tail, validator flagged it
+					}
+					pending = append(pending, stream...)
+					break
+				}
+				if runes < limit {
+					kept = append(kept, stream[:width]...)
+					runes++
+				} else {
+					extraContent = true
+				}
+				stream = stream[width:]
+			}
+		}
+		if readErr == bufio.ErrBufferFull {
+			continue
+		}
+		line = strings.TrimSuffix(string(kept), "\r")
+		return line, tainted, extraContent, readErr
+	}
+}
+
+// utf8LineValidator checks UTF-8 validity across chunk boundaries by carrying
+// a partial trailing sequence from one chunk to the next.
+type utf8LineValidator struct {
+	carry  [utf8.UTFMax]byte
+	length int
+}
+
+// feed validates body (continuing any carried partial sequence). final marks
+// the end of the line: leftover partial bytes then mean invalid UTF-8.
+func (v *utf8LineValidator) feed(body []byte, final bool) bool {
+	invalid := false
+	if v.length > 0 {
+		need := runeSequenceWidth(v.carry[0])
+		if need < 0 {
+			invalid = true
+			v.length = 0
+		} else {
+			take := min(len(body), need-v.length)
+			copy(v.carry[v.length:], body[:take])
+			v.length += take
+			body = body[take:]
+			if v.length < need {
+				if final && len(body) == 0 {
+					invalid = true
+					v.length = 0
+				}
+				return invalid
+			}
+			if _, size := utf8.DecodeRune(v.carry[:need]); size != need {
+				invalid = true
+			}
+			v.length = 0
+		}
+	}
+	for len(body) > 0 {
+		need := runeSequenceWidth(body[0])
+		if need < 0 {
+			invalid = true
+			body = body[1:]
+			continue
+		}
+		if len(body) < need {
+			if final {
+				invalid = true
+				return invalid
+			}
+			v.length = copy(v.carry[:], body)
+			return invalid
+		}
+		if _, size := utf8.DecodeRune(body[:need]); size != need {
+			invalid = true
+		}
+		body = body[need:]
+	}
+	return invalid
+}
+
+// runeSequenceWidth returns the expected UTF-8 length of a sequence led by b,
+// or -1 when b cannot start a valid sequence.
+func runeSequenceWidth(b byte) int {
+	switch {
+	case b < 0x80:
+		return 1
+	case b >= 0xC2 && b <= 0xDF:
+		return 2
+	case b >= 0xE0 && b <= 0xEF:
+		return 3
+	case b >= 0xF0 && b <= 0xF4:
+		return 4
+	default:
+		return -1
+	}
 }
 
 func readPDF(file *os.File, pagesExpression string) (tool.Result, error) {

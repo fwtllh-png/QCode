@@ -17,8 +17,15 @@ const codingPolicy = `Coding method:
 - Sort what you find: what declares a symbol, what uses it, what tests it, what
   configures it. search_definition, search_references and search_related_tests
   answer those directly.
+- For a broad query, take the file-level rollup first (output=files or
+  output=count) and only page line matches after narrowing; a broad
+  content dump costs results for nothing.
 - Read a file before editing it. Enforced: an unread or stale file fails the
   write, and the error says what to re-read.
+- Copy edit old text verbatim from what you read; never reconstruct it. The
+  runtime already recovers numbered-paste prefixes and whitespace or
+  punctuation drift on its own, so a mismatch means the file truly differs —
+  re-read the reported window instead of paraphrasing old text.
 - After editing, verify the affected scope first and widen only if it passes. An
   unverified change is reported back to you as an open risk.
 - Do not repeat a search or a read you already have; a repeated call is reported

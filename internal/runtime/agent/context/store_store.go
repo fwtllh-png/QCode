@@ -58,30 +58,54 @@ type LedgerProjection struct {
 
 // MessageLedger is the sole owner of model-sample assembly within one turn.
 type MessageLedger struct {
-	revision    uint64
-	partitions  map[MessageKind][]provider.Message
-	definitions []provider.ToolDefinition
+	revision     uint64
+	partitions   map[MessageKind][]provider.Message
+	ids          map[MessageKind][]string
+	definitions  []provider.ToolDefinition
+	lastSnapshot *MessageSnapshot
 }
 
 // MessageSnapshot is an immutable model-sample projection.
 type MessageSnapshot struct {
 	revision    uint64
 	partitions  map[MessageKind][]provider.Message
+	ids         map[MessageKind][]string
 	definitions []provider.ToolDefinition
 	items       []MessageItem
 }
 
 func NewMessageLedger(input LedgerInput) *MessageLedger {
+	partitions := map[MessageKind][]provider.Message{
+		KindStable:       CloneMessages(input.Stable),
+		KindHistory:      CloneMessages(input.History),
+		KindDynamic:      CloneMessages(input.Dynamic),
+		KindContinuation: CloneMessages(input.Continuation),
+	}
 	return &MessageLedger{
-		revision: 1,
-		partitions: map[MessageKind][]provider.Message{
-			KindStable:       CloneMessages(input.Stable),
-			KindHistory:      CloneMessages(input.History),
-			KindDynamic:      CloneMessages(input.Dynamic),
-			KindContinuation: CloneMessages(input.Continuation),
-		},
+		revision:    1,
+		ids:         messageIDs(partitions),
+		partitions:  partitions,
 		definitions: cloneDefinitions(input.Definitions),
 	}
+}
+
+// messageIDs computes the per-message item identity for every partition.
+// Identities are derived from content alone, so they can be cached at replace
+// time and reused by every later snapshot instead of being re-marshalled on
+// each projection.
+func messageIDs(
+	partitions map[MessageKind][]provider.Message,
+) map[MessageKind][]string {
+	ids := make(map[MessageKind][]string, len(orderedKinds))
+	for _, kind := range orderedKinds {
+		messages := partitions[kind]
+		partitionIDs := make([]string, len(messages))
+		for index, message := range messages {
+			partitionIDs[index] = itemID(kind, message)
+		}
+		ids[kind] = partitionIDs
+	}
+	return ids
 }
 
 // Project replaces all mutable partitions as one revision.
@@ -90,9 +114,7 @@ func (l *MessageLedger) Project(value LedgerProjection) MessageSnapshot {
 	changed = l.replace(KindHistory, value.History) || changed
 	changed = l.replace(KindDynamic, value.Dynamic) || changed
 	changed = l.replace(KindContinuation, value.Continuation) || changed
-	projectedDefinitions := cloneDefinitions(value.Definitions)
-	if !reflect.DeepEqual(l.definitions, projectedDefinitions) {
-		l.definitions = projectedDefinitions
+	if l.replaceDefinitions(value.Definitions) {
 		changed = true
 	}
 	if changed {
@@ -101,16 +123,44 @@ func (l *MessageLedger) Project(value LedgerProjection) MessageSnapshot {
 	return l.Snapshot()
 }
 
+// replaceDefinitions keeps the canonical definition slice. The direct compare
+// fast path serves the common case where the caller resubmits the slice a
+// previous snapshot handed back: settling it without cloning skips the sort
+// that canonicalizes schema JSON per comparison. A caller-supplied order that
+// differs still reaches the canonical clone, exactly as before.
+func (l *MessageLedger) replaceDefinitions(
+	definitions []provider.ToolDefinition,
+) bool {
+	if reflect.DeepEqual(l.definitions, definitions) {
+		return false
+	}
+	projected := cloneDefinitions(definitions)
+	if reflect.DeepEqual(l.definitions, projected) {
+		return false
+	}
+	l.definitions = projected
+	return true
+}
+
 func (l *MessageLedger) Snapshot() MessageSnapshot {
+	// Snapshots are immutable and the revision only advances when stored
+	// content changed, so an unchanged revision hands back the memoized
+	// projection instead of recloning every partition and recomputing item
+	// identities.
+	if l.lastSnapshot != nil && l.lastSnapshot.revision == l.revision {
+		return *l.lastSnapshot
+	}
 	partitions := make(map[MessageKind][]provider.Message, len(orderedKinds))
+	ids := make(map[MessageKind][]string, len(orderedKinds))
 	var items []MessageItem
 	for _, kind := range orderedKinds {
 		partitions[kind] = CloneMessages(l.partitions[kind])
+		ids[kind] = append([]string(nil), l.ids[kind]...)
 		occurrences := make(map[string]int)
 		// Items reference the partition copies — the snapshot is immutable,
 		// so cloning each message twice would only double the allocation.
-		for _, message := range partitions[kind] {
-			id := itemID(kind, message)
+		for index, message := range partitions[kind] {
+			id := ids[kind][index]
 			occurrence := occurrences[id]
 			occurrences[id]++
 			if occurrence != 0 {
@@ -122,10 +172,24 @@ func (l *MessageLedger) Snapshot() MessageSnapshot {
 			})
 		}
 	}
-	return MessageSnapshot{
-		revision: l.revision, partitions: partitions,
+	snapshot := MessageSnapshot{
+		revision: l.revision, partitions: partitions, ids: ids,
 		definitions: cloneDefinitions(l.definitions), items: items,
 	}
+	l.lastSnapshot = &snapshot
+	return snapshot
+}
+
+// countPriorIDs reports how many earlier messages in the partition share the
+// id, for the occurrence suffix on duplicate identities.
+func countPriorIDs(ids []string, index int) int {
+	occurrence := 0
+	for prior := 0; prior < index; prior++ {
+		if ids[prior] == ids[index] {
+			occurrence++
+		}
+	}
+	return occurrence
 }
 
 func (s MessageSnapshot) Revision() uint64 {
@@ -200,16 +264,54 @@ func (s MessageSnapshot) WithHistory(history []provider.Message) MessageSnapshot
 	if reflect.DeepEqual(s.partitions[KindHistory], history) {
 		return s
 	}
+	clonedHistory := CloneMessages(history)
 	partitions := make(map[MessageKind][]provider.Message, len(s.partitions))
+	ids := make(map[MessageKind][]string, len(s.partitions))
+	var items []MessageItem
 	for _, kind := range orderedKinds {
-		partitions[kind] = CloneMessages(s.partitions[kind])
+		if kind == KindHistory {
+			partitions[kind] = clonedHistory
+			ids[kind] = make([]string, len(clonedHistory))
+			for index, message := range clonedHistory {
+				ids[kind][index] = itemID(kind, message)
+			}
+			continue
+		}
+		// Snapshots are immutable, so the untouched partitions, their cached
+		// identities and the definitions alias the source instead of being
+		// rebuilt — a compaction pass rewrites history far more often than
+		// the other partitions change.
+		partitions[kind] = s.partitions[kind]
+		ids[kind] = s.ids[kind]
+		if len(ids[kind]) != len(partitions[kind]) {
+			// Snapshots built outside the ledger (for example Normalize
+			// output) carry no cached identities; recompute from content.
+			partitionIDs := make([]string, len(partitions[kind]))
+			for index, message := range partitions[kind] {
+				partitionIDs[index] = itemID(kind, message)
+			}
+			ids[kind] = partitionIDs
+		}
 	}
-	partitions[KindHistory] = CloneMessages(history)
-	ledger := &MessageLedger{
-		revision: s.revision + 1, partitions: partitions,
-		definitions: cloneDefinitions(s.definitions),
+	for _, kind := range orderedKinds {
+		occurrences := make(map[string]int)
+		for index, message := range partitions[kind] {
+			id := ids[kind][index]
+			occurrence := occurrences[id]
+			occurrences[id]++
+			if occurrence != 0 {
+				id = fmt.Sprintf("%s_%d", id, occurrence)
+			}
+			items = append(items, MessageItem{
+				ID: id, Kind: kind,
+				Role: message.Role, Message: message,
+			})
+		}
 	}
-	return ledger.Snapshot()
+	return MessageSnapshot{
+		revision: s.revision + 1, partitions: partitions, ids: ids,
+		definitions: s.definitions, items: items,
+	}
 }
 
 func (l *MessageLedger) ReplaceHistory(history []provider.Message) {
@@ -222,7 +324,12 @@ func (l *MessageLedger) replace(kind MessageKind, messages []provider.Message) b
 	if reflect.DeepEqual(l.partitions[kind], messages) {
 		return false
 	}
-	l.partitions[kind] = CloneMessages(messages)
+	stored := CloneMessages(messages)
+	l.partitions[kind] = stored
+	l.ids[kind] = make([]string, len(stored))
+	for index, message := range stored {
+		l.ids[kind][index] = itemID(kind, message)
+	}
 	return true
 }
 

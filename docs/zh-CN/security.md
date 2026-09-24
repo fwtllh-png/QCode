@@ -118,6 +118,16 @@ Web Markdown 不执行原始 HTML 或危险 URL。同源图片可以直接显示
 - `file_edit` 以及 `file_apply` 中首个落盘操作为精确替换的路径，可由受信文件工具
   提交绑定当前内容摘要的 Exact Edit Proof，等价满足该路径的 Read-before-write。
   全量覆盖、删除、移动或先覆盖后编辑仍要求显式 `file_read`。
+  精确替换的字节匹配仍是首要前置条件；当字节匹配未命中时，工具先做两次有界
+  恢复再判失败：`old` 的每个非空行都带编号输出前缀（如 `12:`）时剥离前缀重试
+  一次；随后按行内空白与易混标点（智能引号、连字符、NBSP 等一对一折叠）在
+  折叠视图中定位，并把命中投影回原始字节区间后只替换该区间——折叠文本本身
+  永不写回，span 与 `old` 差距失衡或回投影校验失败时按原失配错误 Fail Closed。
+  出现次数语义在恢复路径下不变，工具结果以 `normalized_match` /
+  `line_prefixes_stripped` 元数据如实标注恢复来源。
+- `file_read` 的文本窗口按行流式读取：单行超过公开的按 rune 上限时在返回内容中
+  原地截断并以 `truncated_lines` 元数据列出被截断行号，丢弃的尾部仍参与二进制
+  与 UTF-8 校验；超过旧 1 MiB 扫描器上限的超长行不再使整个读取失败。
 - File Broker 拒绝 Symlink、Hardlink、Device Boundary、Root/Parent Replacement，
   并在自身边界拒绝 `.git`、`.qcode`、`.qcode-worktree`、`.agents` 和
   `.codex`。Unified Diff 先解析为 File Plan，不调用 `git apply` 修改 Workspace。

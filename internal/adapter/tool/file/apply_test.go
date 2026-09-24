@@ -300,7 +300,7 @@ func TestFileApplyRejectsReconstructedNonContiguousOldText(t *testing.T) {
 	old := "或异步请求 Host。Replacement Argument 必须重新 Prepare/Evaluate。\n\n" +
 		"Policy 合并 Repository Rule"
 
-	_, err := replaceExact([]byte(content), old, "replacement", 1)
+	_, _, err := replaceExact([]byte(content), old, "replacement", 1)
 	if err == nil || !strings.Contains(err.Error(), "matched 0 times") {
 		t.Fatalf("replaceExact error = %v", err)
 	}

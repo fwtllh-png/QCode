@@ -111,6 +111,9 @@ type plannedFile struct {
 
 	exists bool
 	after  []byte
+
+	editNormalized    bool
+	editPrefixStripped bool
 }
 
 // kind classifies the net effect on the path, empty when the transaction leaves
@@ -154,6 +157,12 @@ type AppliedChange struct {
 	Kind    string `json:"kind"`
 	Added   int    `json:"added"`
 	Removed int    `json:"removed"`
+	// EditNormalizedMatch marks edits the folded fallback recovered after the
+	// byte-for-byte compare-and-swap missed; the replacement still only covers
+	// the projected original span. EditPrefixStripped marks edits whose old
+	// text carried numbered-output prefixes on every non-empty line.
+	EditNormalizedMatch bool `json:"edit_normalized_match,omitempty"`
+	EditPrefixStripped  bool `json:"edit_prefix_stripped,omitempty"`
 }
 
 type PreparedApply struct {
@@ -447,11 +456,13 @@ func (x *transaction) compose(request changeRequest) error {
 		if !planned.exists {
 			return errors.New("file does not exist")
 		}
-		next, err := replaceExact(planned.after, request.Old, request.New, request.Occurrences)
+		next, recovery, err := replaceExact(planned.after, request.Old, request.New, request.Occurrences)
 		if err != nil {
 			return err
 		}
 		planned.after = next
+		planned.editNormalized = planned.editNormalized || recovery.normalized
+		planned.editPrefixStripped = planned.editPrefixStripped || recovery.prefixStripped
 	case opDelete:
 		if !planned.exists {
 			return errors.New("file does not exist")
@@ -510,6 +521,8 @@ func (x *transaction) summarize() ([]AppliedChange, string, error) {
 		changes = append(changes, AppliedChange{
 			Path: planned.relative, Kind: planned.kind(),
 			Added: stats.Added, Removed: stats.Removed,
+			EditNormalizedMatch: planned.editNormalized,
+			EditPrefixStripped:  planned.editPrefixStripped,
 		})
 	}
 	return changes, diff.String(), nil
@@ -564,26 +577,69 @@ func (e *editMatchError) Error() string {
 	return fmt.Sprintf("old text matched %d times, want exactly %s", e.count, want)
 }
 
+// editRecovery records which fallback, if any, recovered a missed exact match
+// so the tool result can tell the model the edit was not byte-for-byte.
+type editRecovery struct {
+	normalized     bool
+	prefixStripped bool
+}
+
 // replaceExact replaces exactly occurrences copies of old. Anything else is a
 // failed precondition: zero matches means the model is editing text it never
 // read, and a different count means the file drifted from what was declared.
-func replaceExact(data []byte, old, new string, occurrences int) ([]byte, error) {
+//
+// Before failing, two bounded fallbacks run: old text whose every non-empty
+// line carries a numbered-output prefix is retried once with the prefixes
+// stripped, and a folded view (confusable punctuation, trailing whitespace)
+// may locate the span while the replacement still only covers the projected
+// original bytes. Both keep the occurrence-count precondition: if neither
+// recovers with the declared count, the original miss error is returned.
+func replaceExact(
+	data []byte, old, new string, occurrences int,
+) ([]byte, editRecovery, error) {
 	if isBinary(data) {
-		return nil, errors.New("binary file cannot be edited")
+		return nil, editRecovery{}, errors.New("binary file cannot be edited")
 	}
 	if occurrences <= 1 {
 		occurrences = 1
 	}
 	content := string(data)
-	if count := strings.Count(content, old); count != occurrences {
-		excerpt, startLine, endLine, matchLines := closestEditExcerpt(content, old)
-		return nil, &editMatchError{
-			count: count, declared: occurrences,
-			startLine: startLine, endLine: endLine,
-			excerpt: excerpt, matchLines: matchLines,
+	count := strings.Count(content, old)
+	if count == occurrences {
+		return []byte(strings.Replace(content, old, new, occurrences)), editRecovery{}, nil
+	}
+
+	type candidate struct {
+		old            string
+		prefixStripped bool
+	}
+	candidates := []candidate{{old: old}}
+	if stripped, ok := stripLineNumberPrefixes(old); ok && stripped != old {
+		candidates = append(candidates, candidate{old: stripped, prefixStripped: true})
+	}
+	for _, current := range candidates {
+		if current.prefixStripped {
+			// The stripped text can match byte-for-byte; try exact first so a
+			// plain paste artifact never depends on folding.
+			if strings.Count(content, current.old) == occurrences {
+				return []byte(strings.Replace(content, current.old, new, occurrences)),
+					editRecovery{prefixStripped: true}, nil
+			}
+		}
+		if next, ok := replaceNormalized(content, current.old, new, occurrences); ok {
+			return next, editRecovery{
+				normalized:     true,
+				prefixStripped: current.prefixStripped,
+			}, nil
 		}
 	}
-	return []byte(strings.Replace(content, old, new, occurrences)), nil
+
+	excerpt, startLine, endLine, matchLines := closestEditExcerpt(content, old)
+	return nil, editRecovery{}, &editMatchError{
+		count: count, declared: occurrences,
+		startLine: startLine, endLine: endLine,
+		excerpt: excerpt, matchLines: matchLines,
+	}
 }
 
 // closestEditExcerpt locates the failing edit for the recovery hint: a
@@ -670,10 +726,19 @@ func formatApplied(changes []AppliedChange) string {
 		return "no changes"
 	}
 	var builder strings.Builder
+	recovered := false
 	for _, change := range changes {
 		fmt.Fprintf(
 			&builder, "%s %s +%d -%d\n",
 			change.Kind, change.Path, change.Added, change.Removed,
+		)
+		recovered = recovered || change.EditNormalizedMatch || change.EditPrefixStripped
+	}
+	if recovered {
+		builder.WriteString(
+			"note: old text did not match byte-for-byte; applied via recovery " +
+				"(numbered-prefix strip and/or punctuation/whitespace-folded span). " +
+				"Review the diff.\n",
 		)
 	}
 	return strings.TrimRight(builder.String(), "\n")

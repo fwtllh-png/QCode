@@ -8,8 +8,11 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strings"
+	"sync"
+	"sync/atomic"
 
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
 	"github.com/fwtllh-png/QCode/internal/adapter/tool/typed"
@@ -121,6 +124,15 @@ func (t *Tool) Descriptor() tool.Descriptor {
 		"max_results":      map[string]any{"type": "integer"},
 		"limit":            map[string]any{"type": "integer"}, // alias of max_results
 		"description":      map[string]any{"type": "string"},
+		"output": map[string]any{
+			"type": "string",
+			"enum": []any{"content", "files", "count"},
+			"description": "Result shape for content searches. content (default) " +
+				"returns per-line matches; files returns one entry per file with " +
+				"its match count; count returns totals only. Use files or count " +
+				"first when a query may hit broadly — they cost far fewer result " +
+				"tokens — then narrow with a scoped query or output=content.",
+		},
 	}
 	if t.kind == "search_text" || t.kind == "search_project" {
 		properties["before"] = map[string]any{"type": "integer"}
@@ -167,16 +179,16 @@ func searchDescription(kind string) string {
 	case "search_project":
 		return "Search file contents and paths in the workspace. Supports regex and context lines. " +
 			"Pattern is regex by default; query is literal unless regex=true. " +
-			"Aliases: glob/file_pattern→include, path/cwd/root→scope, limit→max_results, context→before/after."
+			"Aliases: glob/file_pattern→include, path/cwd/root→scope, limit→max_results, context→before/after. " +
+			"output=files/count return cheaper file-level rollups for broad queries."
 	default:
 		return "Search file contents in the workspace. Supports regex and context lines. " +
 			"Pattern is regex by default; query is literal unless regex=true. " +
-			"Aliases: glob/file_pattern→include, path/cwd/root→scope, limit→max_results, context→before/after. " +
+			"Aliases: glob/file_pattern→include, path/cwd/root→scope, limit→max_results, context→before/after, " +
+			"output→content|files|count (rollups cost far fewer tokens for broad queries). " +
 			"A path that names one file is scanned up to the public walk byte ceiling " +
 			"even when the result-token budget would otherwise skip it as large. " +
-			"Empty matches include skipped counts; skipped.large does not mean the symbol is absent. " +
-			"When a scoped file has line hits, start file_read with that window; " +
-			"expand only as needed for read-only analysis or edits."
+			"Empty matches include skipped counts; skipped.large does not mean the symbol is absent."
 	}
 }
 
@@ -191,6 +203,7 @@ type searchInput struct {
 	Before          int
 	After           int
 	Scope           string
+	Output          string
 }
 
 func parseSearchInput(raw json.RawMessage) (searchInput, error) {
@@ -249,6 +262,7 @@ func parseSearchInput(raw json.RawMessage) (searchInput, error) {
 		Include: include, Exclude: stringListField(loose, "exclude"),
 		MaxFileBytes: int64(intField(loose, "max_file_bytes")), MaxResults: maxResults,
 		CaseInsensitive: caseInsensitive, Before: before, After: after, Scope: scope,
+		Output: stringField(loose, "output"),
 	}, nil
 }
 
@@ -391,6 +405,15 @@ func (t *Tool) run(ctx context.Context, input searchInput) (tool.Result, error) 
 	}
 	input.Before = min(input.Before, 20)
 	input.After = min(input.After, 20)
+	if input.Output == "" {
+		input.Output = "content"
+	}
+	if t.kind != "search_files" && input.Output != "content" &&
+		input.Output != "files" && input.Output != "count" {
+		return tool.Result{}, fmt.Errorf(
+			"output must be content, files or count, got %q", input.Output,
+		)
+	}
 	if budget := tool.ResultTokenBudget(ctx); budget != 0 {
 		maxResults := int(min(budget, uint64(math.MaxInt)))
 		maxFileBytes := int64(min(budget, uint64(math.MaxInt64/4)) * 4)
@@ -406,7 +429,6 @@ func (t *Tool) run(ctx context.Context, input searchInput) (tool.Result, error) 
 			"search requires runtime result budget or explicit max_file_bytes and max_results",
 		)
 	}
-	textMatches := make([]textMatch, 0)
 	fileMatches := make([]fileMatch, 0)
 	listing, err := t.walker.List(ctx)
 	if err != nil {
@@ -415,10 +437,8 @@ func (t *Tool) run(ctx context.Context, input searchInput) (tool.Result, error) 
 	skips := listing.Skips
 	var scopedSkip string
 	var scopedSize int64
+	var work []repowalk.Entry
 	for _, entry := range listing.Files {
-		if err := ctx.Err(); err != nil {
-			return tool.Result{}, err
-		}
 		if input.Scope != "" && !pathInScope(entry.Path, input.Scope) {
 			continue
 		}
@@ -439,29 +459,79 @@ func (t *Tool) run(ctx context.Context, input searchInput) (tool.Result, error) 
 			}
 			continue
 		}
-		content, reason, err := t.walker.Read(
-			entry,
-			readLimitForEntry(entry, input.Scope, input.MaxFileBytes),
-		)
-		if err != nil {
-			return tool.Result{}, err
+		work = append(work, entry)
+	}
+
+	textMatches := make([]textMatch, 0)
+	if t.kind != "search_files" && len(work) > 0 {
+		// Content scans read every candidate file, so they run on a worker
+		// pool sized from the observed parallelism of the process. Per-entry
+		// slots keep the collected order deterministic; the final sort below
+		// is by file and line either way.
+		results := make([][]textMatch, len(work))
+		skipMu := sync.Mutex{}
+		var failureMu sync.Mutex
+		var failure error
+		workers := min(runtime.GOMAXPROCS(0), len(work))
+		if workers < 1 {
+			workers = 1
 		}
-		if reason != repowalk.SkipNone {
-			skips.Add(reason)
-			if input.Scope != "" && entry.Path == input.Scope {
-				scopedSkip = string(reason)
-				scopedSize = entry.Size
-			}
-			continue
+		var cursor atomic.Int64
+		var group sync.WaitGroup
+		for worker := 0; worker < workers; worker++ {
+			group.Add(1)
+			go func() {
+				defer group.Done()
+				for {
+					index := int(cursor.Add(1)) - 1
+					if index >= len(work) {
+						return
+					}
+					if err := ctx.Err(); err != nil {
+						failureMu.Lock()
+						if failure == nil {
+							failure = err
+						}
+						failureMu.Unlock()
+						return
+					}
+					entry := work[index]
+					content, reason, err := t.walker.Read(
+						entry,
+						readLimitForEntry(entry, input.Scope, input.MaxFileBytes),
+					)
+					if err != nil {
+						failureMu.Lock()
+						if failure == nil {
+							failure = err
+						}
+						failureMu.Unlock()
+						return
+					}
+					if reason != repowalk.SkipNone {
+						skipMu.Lock()
+						skips.Add(reason)
+						if input.Scope != "" && entry.Path == input.Scope {
+							scopedSkip = string(reason)
+							scopedSize = entry.Size
+						}
+						skipMu.Unlock()
+						continue
+					}
+					results[index] = scanTextMatches(
+						string(content.Data), entry.Path,
+						t.kind == "search_project" && matcher(entry.Path),
+						matcher, input.Before, input.After,
+					)
+				}
+			}()
 		}
-		lines := strings.Split(string(content.Data), "\n")
-		for index, text := range lines {
-			if matcher(text) || (t.kind == "search_project" && matcher(entry.Path)) {
-				textMatches = append(textMatches, textMatch{
-					File: entry.Path, Line: index + 1, Text: text,
-					Context: buildContext(lines, index, input.Before, input.After),
-				})
-			}
+		group.Wait()
+		if failure != nil {
+			return tool.Result{}, failure
+		}
+		for _, matches := range results {
+			textMatches = append(textMatches, matches...)
 		}
 	}
 	var payload map[string]any
@@ -483,18 +553,54 @@ func (t *Tool) run(ctx context.Context, input searchInput) (tool.Result, error) 
 		})
 		total = len(textMatches)
 	}
-	truncated := total > input.MaxResults
-	if truncated {
-		if t.kind == "search_files" {
-			fileMatches = fileMatches[:input.MaxResults]
-		} else {
-			textMatches = textMatches[:input.MaxResults]
-		}
-	}
+	truncated := false
 	if t.kind == "search_files" {
+		truncated = total > input.MaxResults
+		if truncated {
+			fileMatches = fileMatches[:input.MaxResults]
+		}
 		payload = map[string]any{"matches": fileMatches, "total": total, "truncated": truncated}
 	} else {
-		payload = map[string]any{"matches": textMatches, "total": total, "truncated": truncated}
+		switch input.Output {
+		case "files":
+			type fileRollup struct {
+				File    string `json:"file"`
+				Matches int    `json:"matches"`
+			}
+			var rollups []fileRollup
+			for _, match := range textMatches {
+				if len(rollups) == 0 || rollups[len(rollups)-1].File != match.File {
+					rollups = append(rollups, fileRollup{File: match.File})
+				}
+				rollups[len(rollups)-1].Matches++
+			}
+			truncated = len(rollups) > input.MaxResults
+			if truncated {
+				rollups = rollups[:input.MaxResults]
+			}
+			payload = map[string]any{
+				"files": rollups, "total_matches": total,
+				"total_files": len(rollups), "truncated": truncated,
+			}
+		case "count":
+			filesMatched := 0
+			previous := ""
+			for index, match := range textMatches {
+				if index == 0 || match.File != previous {
+					filesMatched++
+					previous = match.File
+				}
+			}
+			payload = map[string]any{
+				"total_matches": total, "files_matched": filesMatched, "truncated": false,
+			}
+		default:
+			truncated = total > input.MaxResults
+			if truncated {
+				textMatches = textMatches[:input.MaxResults]
+			}
+			payload = map[string]any{"matches": textMatches, "total": total, "truncated": truncated}
+		}
 	}
 	if skipped := visibleSkipCounts(skips); skipped != nil {
 		payload["skipped"] = skipped
@@ -506,7 +612,7 @@ func (t *Tool) run(ctx context.Context, input searchInput) (tool.Result, error) 
 				"or file_read a window.",
 			input.Scope, scopedSkip, scopedSize, input.MaxFileBytes,
 		)
-	} else if input.Scope != "" && t.kind != "search_files" && total > 0 {
+	} else if input.Scope != "" && t.kind != "search_files" && total > 0 && input.Output == "content" {
 		payload["note"] = "These are line hits in the scoped file. " +
 			"Start file_read with the relevant window; " +
 			"expand only as needed for read-only analysis or edits."
@@ -533,10 +639,13 @@ func (t *Tool) run(ctx context.Context, input searchInput) (tool.Result, error) 
 			// enumeration says which rules produced the file set. Under "git" the
 			// ignored files never reach the walk, so skipped_ignored counts only the
 			// directories left out by name — vendor and its peers.
-			"enumeration":     listing.Source,
-			"skipped_ignored": skips.Ignored, "skipped_binary": skips.Binary,
-			"skipped_large": skips.Large, "skipped_encoding": skips.Encoding,
-			"skipped_symlink": skips.Symlink,
+			"enumeration":      listing.Source,
+			"skipped_ignored":  skips.Ignored,
+			"skipped_binary":   skips.Binary,
+			"skipped_large":    skips.Large,
+			"skipped_encoding": skips.Encoding,
+			"skipped_symlink":  skips.Symlink,
+			"output":           input.Output,
 		}, hits),
 	}, nil
 }
@@ -563,18 +672,68 @@ type fileMatch struct {
 	Score int    `json:"score"`
 }
 
-func buildContext(lines []string, index, before, after int) matchContext {
-	context := matchContext{
-		Before: make([]contextLine, 0, before),
-		After:  make([]contextLine, 0, after),
+// lineOffsets returns the byte offset of every line start in data, including
+// the phantom empty line a trailing newline produces — the same line set
+// strings.Split(data, "\n") would yield, without copying every line.
+func lineOffsets(data string) []int {
+	offsets := make([]int, 1, 64)
+	offsets[0] = 0
+	for index := strings.IndexByte(data, '\n'); index >= 0; {
+		offsets = append(offsets, index+1)
+		next := strings.IndexByte(data[index+1:], '\n')
+		if next < 0 {
+			break
+		}
+		index = index + 1 + next
 	}
-	for line := max(0, index-before); line < index; line++ {
-		context.Before = append(context.Before, contextLine{Line: line + 1, Text: lines[line]})
+	return offsets
+}
+
+// lineAt returns the text of line index (0-based) using the lineOffsets view.
+func lineAt(data string, offsets []int, index int) string {
+	start := offsets[index]
+	end := len(data)
+	if index+1 < len(offsets) {
+		end = offsets[index+1] - 1 // exclude the '\n'
 	}
-	for line := index + 1; line < min(len(lines), index+after+1); line++ {
-		context.After = append(context.After, contextLine{Line: line + 1, Text: lines[line]})
+	return data[start:end]
+}
+
+// scanTextMatches walks one file's content as a line-offset view and returns
+// the per-line matches with their surrounding context. pathMatched reports a
+// search_project path-level match that marks every line of the file.
+func scanTextMatches(
+	data, file string,
+	pathMatched bool,
+	matcher func(string) bool,
+	before, after int,
+) []textMatch {
+	offsets := lineOffsets(data)
+	var matches []textMatch
+	for index := 0; index < len(offsets); index++ {
+		text := lineAt(data, offsets, index)
+		if !pathMatched && !matcher(text) {
+			continue
+		}
+		context := matchContext{
+			Before: make([]contextLine, 0, before),
+			After:  make([]contextLine, 0, after),
+		}
+		for line := max(0, index-before); line < index; line++ {
+			context.Before = append(context.Before, contextLine{
+				Line: line + 1, Text: lineAt(data, offsets, line),
+			})
+		}
+		for line := index + 1; line < min(len(offsets), index+after+1); line++ {
+			context.After = append(context.After, contextLine{
+				Line: line + 1, Text: lineAt(data, offsets, line),
+			})
+		}
+		matches = append(matches, textMatch{
+			File: file, Line: index + 1, Text: text, Context: context,
+		})
 	}
-	return context
+	return matches
 }
 
 func fuzzyScore(candidate, query string) (int, bool) {

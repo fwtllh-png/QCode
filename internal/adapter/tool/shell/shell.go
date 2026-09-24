@@ -99,24 +99,19 @@ func registerWithBackend(
 	return registerProcessProtocol(registry, workspace, backend, manager)
 }
 
-const explorationInstructions = " For repository exploration, prefer file_list " +
-	"for directories and file_read for files, using paths discovered by tools. " +
-	"Run independent probes as separate calls. Preserve stderr and real exit " +
-	"status; do not hide diagnostics with 2>/dev/null or mask failures with " +
-	"|| true. Report confirmed absence of an optional path explicitly; do not " +
-	"treat permission, sandbox, or I/O failures as absence."
+// shell usage facts shared by the read-only tool and the session protocol:
+// environment and quoting are contracts of the sandbox, not style advice.
+const shellUsageContract = "POSIX sh, not Bash: no process substitution (<(...)). " +
+	"Quote shell metacharacters with single quotes. Use cwd instead of " +
+	"prepending cd, and $TMPDIR for outputs and caches; absolute /tmp " +
+	"remains denied. Do not pipe checks through head or tail — POSIX " +
+	"pipelines report the last command's status."
 
 func (t *Tool) Descriptor() tool.Descriptor {
-	description := "Run a read-only, network-isolated POSIX sh command. " +
-		"The sandbox permits workspace reads and private temporary files, " +
-		"but rejects workspace writes and network access. Quote shell " +
-		"metacharacters with single quotes. Use $TMPDIR for compiler outputs " +
-		"and caches; absolute /tmp remains denied. Use cwd instead of prepending cd. " +
-		"Do not pipe verification commands through head or tail because POSIX " +
-		"pipelines report the last command's status."
-	description += " Commands run under POSIX sh, not Bash. Do not use Bash-only " +
-		"syntax such as process substitution (<(...))."
-	description += explorationInstructions
+	description := "Run a read-only, network-isolated command: workspace reads " +
+		"and private temporary files only; writes and network are rejected. " +
+		"Prefer this over exec_command whenever the command only inspects " +
+		"local data. " + shellUsageContract
 	properties := map[string]any{
 		"command": map[string]any{"type": "string", "minLength": float64(1)},
 		"cwd":     map[string]any{"type": "string"},

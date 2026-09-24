@@ -98,6 +98,9 @@
   时不要用 `turn_history` 或搜索做开场恢复。`working_set` 只列路径；
   不要再次 `file_read`，除非即将编辑具体窗口。`search_text` /
   `search_definition` 命中后优先读该窗口。
+  预期命中面很广的 `search_text` / `search_project` 先用 `output=files` 或
+  `output=count` 拿文件级汇总（省结果 token），再收窄查询或回到
+  `output=content` 取行级命中；两档汇总仍向 Evidence 提供 `Located sites`。
   已知缺陷用 `search_text` / `search_definition` 定位。单文件 `path` 仍按公开
   walk 字节上限搜索；空命中带 `skipped.large` 不表示符号不存在。已有行号命中
   后只读将编辑的窗口并立刻改，不要整文件翻页。取消或失败且未改文件的 Turn

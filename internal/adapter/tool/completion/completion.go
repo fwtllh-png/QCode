@@ -32,16 +32,16 @@ func Register(registry *tool.Registry) error {
 func (*Tool) Descriptor() tool.Descriptor {
 	return tool.Descriptor{
 		Name: Name,
-		Description: "Choose the terminal state of the current Turn. Use status=complete " +
-			"only after every requested action, the last mutation, and all required quality " +
-			"checks. For complete, summary is the exact user-facing final response and " +
-			"pending_actions must be empty; the runtime publishes summary without another " +
-			"model sample. When captured narration is available (for example after " +
-			"declaration repair or during convergence finalization), output_mode=" +
-			"preserve_provisional keeps the captured response and appends summary " +
-			"instead of rewriting it. If work " +
-			"remains, use status=incomplete with a progress summary and concrete pending " +
-			"actions so the runtime records a resumable blocked outcome.",
+		Description: "Choose the terminal state of the current Turn. With " +
+			"status=complete, summary is the exact user-facing final response " +
+			"(pending_actions must be empty) and the runtime publishes it " +
+			"without another model sample. When captured narration is " +
+			"available (for example after declaration repair or during " +
+			"convergence finalization), output_mode=preserve_provisional " +
+			"keeps the captured response and appends summary instead of " +
+			"rewriting it. With status=incomplete, summary is a progress " +
+			"summary and pending_actions records the concrete resumable " +
+			"remainder as a blocked outcome.",
 		Visibility:         tool.VisibleModel,
 		Capability:         tool.CapabilityRead,
 		AccessMode:         tool.AccessRead,

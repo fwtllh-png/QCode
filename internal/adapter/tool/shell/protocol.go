@@ -231,46 +231,36 @@ func uint64Metadata(metadata map[string]any, key string) uint64 {
 func execCommandDescriptor() tool.Descriptor {
 	return tool.Descriptor{
 		Name: "exec_command",
-		Description: "Run a local POSIX sh command. Returns output when it exits " +
-			"within yield-time, otherwise a session_id for write_stdin. This " +
-			"applies to TTY and non-TTY commands; the first sample never waits " +
-			"for a process that outlives yield-time. yield-time_ms defaults to " +
-			"10000 and must not exceed 30000. timeout_ms, when set, kills the " +
-			"process group; it does not keep the first sample blocked. " +
-			"If the command starts a server or daemon it never exits: verify " +
-			"its startup output and close the session instead of polling for exit. " +
-			"The workspace is read-only by default. write_paths permits exact " +
-			"regular files whose parent directories already exist, or one existing " +
-			"workspace directory as a bounded write tree. It does not permit the " +
-			"workspace root, a missing directory, or mkdir of the declared path. " +
-			"Creating or deleting files inside an approved tree does not require " +
-			"listing each new file. To create files in missing directories that are " +
-			"not inside an approved tree, use file_write or file_apply because they " +
-			"safely create parent directories. " +
-			"Use $TMPDIR for compiler outputs and caches; absolute /tmp remains denied. " +
-			"Use cwd instead of prepending cd. Do not pipe verification commands " +
-			"through head or tail because POSIX pipelines report the last command's " +
-			"status; use output_tokens to bound output. To record validation evidence, " +
-			"declare verification (test, build, lint, or check) and exact workspace-relative " +
-			"covered_paths; a verification command may declare write_paths for its " +
-			"artifacts, but any write to its own covered_paths invalidates the " +
-			"evidence after execution. Use settle=discard with write_paths for " +
-			"shadow verification: the command runs in a copy, writes are " +
-			"summarized and dropped, and the workspace stays untouched. " +
-			"Declared verification uses POSIX set -e; use && to chain checks. " +
-			"Only a natural exit on unchanged inputs can pass; running " +
-			"or terminated processes never count as passed verification. Git metadata " +
-			"is protected: use the dedicated git_add, git_commit, git_switch, " +
-			"git_fetch, git_pull, and git_push tools for Git mutations. " +
-			"Commands that access the network must declare every destination in " +
-			"network_targets. HTTPS control is at the CONNECT tunnel endpoint " +
-			"only; declared methods are enforced per method for plaintext HTTP. " +
-			"Undeclared " +
-			"egress is denied by the local managed proxy. Set allow_loopback only " +
-			"when the command binds or connects to a local development server; do " +
-			"not put localhost or port 0 in network_targets for an ephemeral local " +
-			"listener. Batch related probes into one chained command: a chain " +
-			"shares a single approval." + explorationInstructions,
+		Description: "Run a local command under the governed sandbox. Returns " +
+			"output when it exits within yield_time_ms (defaults to 10000 " +
+			"and must not exceed 30000); otherwise it returns a session_id — " +
+			"continue with write_stdin instead of waiting. timeout_ms kills " +
+			"the process group without extending the first wait; a started " +
+			"server or daemon never exits, so verify its startup output and " +
+			"close the session rather than polling. The workspace is " +
+			"read-only unless write_paths declares exact regular files in " +
+			"existing directories, or one existing directory as a bounded " +
+			"write tree; write_paths does not permit the workspace root or a " +
+			"missing directory. Creating or deleting files inside an " +
+			"approved tree needs no per-file listing; paths in missing " +
+			"directories belong to file_write or file_apply, which create " +
+			"parent directories safely. " +
+			"Verification evidence: declare verification (test, build, lint, " +
+			"or check) with exact workspace-relative covered_paths; any write " +
+			"to a command's own covered_paths invalidates its evidence. " +
+			"settle=discard with write_paths runs the command in a copy and " +
+			"drops its writes (shadow verification). Declared verification " +
+			"runs under POSIX set -e; chain checks with &&. Only a natural " +
+			"exit on unchanged inputs passes; running or terminated " +
+			"processes never count as passed. Network access requires every " +
+			"destination in network_targets. HTTPS control is at the CONNECT " +
+			"tunnel endpoint only; declared methods are enforced per method " +
+			"for plaintext HTTP. Undeclared egress is denied by the managed " +
+			"proxy. Set allow_loopback only for binding or connecting to a " +
+			"local development server; do not put localhost or port 0 in " +
+			"network_targets. Git metadata is protected: use the dedicated " +
+			"git_* tools for mutations. Related probes chained into one " +
+			"command share a single approval. " + shellUsageContract,
 		DiscoveryTerms: []string{
 			"run command", "terminal", "build", "执行命令", "终端", "编译", "运行测试",
 		},
