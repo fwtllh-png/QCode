@@ -76,18 +76,19 @@ type Usage struct {
 }
 
 type UsageRollup struct {
-	Turns           uint64  `json:"turns"`
-	Calls           uint64  `json:"calls"`
-	InputTokens     uint64  `json:"input_tokens"`
-	OutputTokens    uint64  `json:"output_tokens"`
-	ReasoningTokens uint64  `json:"reasoning_tokens"`
-	CachedTokens    uint64  `json:"cached_tokens"`
-	TotalTokens     uint64  `json:"total_tokens"`
-	CachedShare     float64 `json:"cached_share"`
-	CostMicrounits  uint64  `json:"cost_microunits"`
-	PricedCalls     uint64  `json:"priced_calls"`
-	UnpricedCalls   uint64  `json:"unpriced_calls"`
-	CostKnown       bool    `json:"cost_known"`
+	Activity        *usagestate.Activity `json:"activity,omitempty"`
+	Turns           uint64               `json:"turns"`
+	Calls           uint64               `json:"calls"`
+	InputTokens     uint64               `json:"input_tokens"`
+	OutputTokens    uint64               `json:"output_tokens"`
+	ReasoningTokens uint64               `json:"reasoning_tokens"`
+	CachedTokens    uint64               `json:"cached_tokens"`
+	TotalTokens     uint64               `json:"total_tokens"`
+	CachedShare     float64              `json:"cached_share"`
+	CostMicrounits  uint64               `json:"cost_microunits"`
+	PricedCalls     uint64               `json:"priced_calls"`
+	UnpricedCalls   uint64               `json:"unpriced_calls"`
+	CostKnown       bool                 `json:"cost_known"`
 }
 
 func ThreadFrom(value threadstate.Thread, turns []threadstate.Turn) Thread {
@@ -142,7 +143,8 @@ func UsageFrom(value usagestate.Aggregate) Usage {
 
 func UsageRollupFrom(value usagestate.Rollup) UsageRollup {
 	return UsageRollup{
-		Turns: value.Turns, Calls: value.Calls,
+		Activity: value.Activity,
+		Turns:    value.Turns, Calls: value.Calls,
 		InputTokens: value.InputTokens, OutputTokens: value.OutputTokens,
 		ReasoningTokens: value.ReasoningTokens, CachedTokens: value.CachedTokens,
 		TotalTokens: value.TotalTokens(), CachedShare: value.CachedShare(),

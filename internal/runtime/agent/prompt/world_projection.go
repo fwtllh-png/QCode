@@ -62,7 +62,6 @@ type WorldProjectionInput struct {
 	Advertised   map[string]bool
 	Baseline     agentcontext.WorldBaseline
 	Turn         uint64
-	Mode         string
 	ImageInput   bool
 	Policy       *policy.Runtime
 	CodingPolicy bool
@@ -122,7 +121,7 @@ func ProjectWorldState(
 	appendSection(
 		PartitionMode,
 		"session://profile.mode",
-		ModeInstructionPack(input.Mode, input.ImageInput),
+		ActInstructionPack(input.ImageInput),
 		"",
 	)
 	policySection := NewPolicySection(input.Policy)

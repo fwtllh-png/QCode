@@ -1056,7 +1056,7 @@ func (e *egressRetryExecutor) Execute(ctx context.Context, _ json.RawMessage) (t
 func TestNetworkHostApprovalSessionReuseAndCancel(t *testing.T) {
 	executor := testExecutor{descriptor: networkFetchDescriptor()}
 	registry := newTestRegistry(t, nil, &executor)
-	runtime := policy.DefaultRuntime(policy.ModeOperate, policy.PermissionAuto)
+	runtime := policy.DefaultRuntime(policy.ModeAct, policy.PermissionAuto)
 	runtime.DisableAutoReview = true
 	requests := make(chan ApprovalRequest, 4)
 	guard := newTestGuard(t, registry, runtime, func(_ context.Context, request ApprovalRequest) error {

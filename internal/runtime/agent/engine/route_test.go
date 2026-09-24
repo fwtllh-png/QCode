@@ -74,21 +74,20 @@ func TestATurnWithoutARouteTableSamplesOnTheOnlyRouteItHas(t *testing.T) {
 	}
 }
 
-func TestPlanModeSamplesOnThePlanRouteAndSaysSo(t *testing.T) {
-	act := testRoute(t)
-	plan := namedRoute(t, "planner")
+func TestTurnSamplesOnActAndUsesItsOutputLimit(t *testing.T) {
+	act := namedRoute(t, "coder")
 	routes, err := model.NewRouteSet(act, map[model.Purpose]model.ReadyRoute{
-		model.PurposePlan: plan,
+		model.PurposeSummary: testRoute(t),
 	}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	scripted := &scriptedProvider{streams: []provider.Stream{textStream("a plan")}}
+	scripted := &scriptedProvider{streams: []provider.Stream{textStream("done")}}
 	engine, err := newTestEngine(Options{ProviderConfig: ProviderConfig{Provider: scripted, Routes: routes,
 
-		// Above the plan model's own ceiling, so the clamp is observable.
+		// Above the act model's own ceiling, so the clamp is observable.
 		MaxOutputTokens: 512, MaxSteps: 2}, SecurityConfig: SecurityConfig{Workspace: t.TempDir(),
-		Security: policy.DefaultRuntime(policy.ModePlan, policy.PermissionBypass)},
+		Security: policy.DefaultRuntime(policy.ModeAct, policy.PermissionBypass)},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -104,22 +103,22 @@ func TestPlanModeSamplesOnThePlanRouteAndSaysSo(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if got := scripted.requests[0].Route.Model().ID; got != "planner" {
-		t.Fatalf("sampled model = %q, want planner", got)
+	if got := scripted.requests[0].Route.Model().ID; got != "coder" {
+		t.Fatalf("sampled model = %q, want coder", got)
 	}
-	if prepared.Purpose != string(model.PurposePlan) || prepared.Model != "planner" {
+	if prepared.Purpose != string(model.PurposeAct) || prepared.Model != "coder" {
 		t.Fatalf("prepared = purpose %q model %q", prepared.Purpose, prepared.Model)
 	}
-	// The plan model's ceiling is lower than the session's, and asking for more
+	// The act model's ceiling is lower than the session's, and asking for more
 	// than a model allows is a provider error rather than a routing story.
 	if got := scripted.requests[0].MaxOutputTokens; got != 256 {
-		t.Fatalf("max output = %d, want the plan model's 256", got)
+		t.Fatalf("max output = %d, want the act model's 256", got)
 	}
 }
 
-func TestActModeIgnoresThePlanSlot(t *testing.T) {
+func TestActIgnoresTheSummarySlot(t *testing.T) {
 	routes, err := model.NewRouteSet(testRoute(t), map[model.Purpose]model.ReadyRoute{
-		model.PurposePlan: namedRoute(t, "planner"),
+		model.PurposeSummary: namedRoute(t, "summarizer"),
 	}, false)
 	if err != nil {
 		t.Fatal(err)
@@ -143,7 +142,7 @@ func TestActModeIgnoresThePlanSlot(t *testing.T) {
 	}
 }
 
-func TestALockedTurnWithoutItsSlotFailsBeforeReachingTheProvider(t *testing.T) {
+func TestRemovedModeFailsBeforeReachingTheProvider(t *testing.T) {
 	routes, err := model.NewRouteSet(testRoute(t), nil, true)
 	if err != nil {
 		t.Fatal(err)
@@ -152,20 +151,21 @@ func TestALockedTurnWithoutItsSlotFailsBeforeReachingTheProvider(t *testing.T) {
 	engine, err := newTestEngine(Options{ProviderConfig: ProviderConfig{Provider: scripted, Routes: routes,
 
 		MaxOutputTokens: 128, MaxSteps: 2}, SecurityConfig: SecurityConfig{Workspace: t.TempDir(),
-		Security: policy.DefaultRuntime(policy.ModePlan, policy.PermissionBypass)},
+		Security: policy.DefaultRuntime(policy.ModeAct, policy.PermissionBypass)},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 
+	engine.options.Security.Mode = "plan"
 	var states []State
 	_, err = engine.Run(t.Context(), "how would you do it", func(event Event) error {
 		states = append(states, event.State)
 		return nil
 	})
 
-	if err == nil || !strings.Contains(err.Error(), "route lock") {
-		t.Fatalf("Run() error = %v, want a lock refusal", err)
+	if err == nil || !strings.Contains(err.Error(), "only act") {
+		t.Fatalf("Run() error = %v, want a mode refusal", err)
 	}
 	if len(scripted.requests) != 0 {
 		t.Fatalf("provider was called %d times; the refusal must precede sampling", len(scripted.requests))
@@ -180,8 +180,8 @@ func TestALockedTurnWithoutItsSlotFailsBeforeReachingTheProvider(t *testing.T) {
 }
 
 func TestCostFollowsTheRouteTheTurnActuallyUsed(t *testing.T) {
-	routes, err := model.NewRouteSet(testRoute(t), map[model.Purpose]model.ReadyRoute{
-		model.PurposePlan: namedRoute(t, "planner"),
+	routes, err := model.NewRouteSet(namedRoute(t, "coder"), map[model.Purpose]model.ReadyRoute{
+		model.PurposeSummary: testRoute(t),
 	}, false)
 	if err != nil {
 		t.Fatal(err)
@@ -198,7 +198,7 @@ func TestCostFollowsTheRouteTheTurnActuallyUsed(t *testing.T) {
 	engine, err := newTestEngine(Options{ProviderConfig: ProviderConfig{Provider: scripted, Routes: routes,
 
 		MaxOutputTokens: 128, MaxSteps: 2}, SecurityConfig: SecurityConfig{Workspace: t.TempDir(),
-		Security: policy.DefaultRuntime(policy.ModePlan, policy.PermissionBypass)},
+		Security: policy.DefaultRuntime(policy.ModeAct, policy.PermissionBypass)},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -209,20 +209,8 @@ func TestCostFollowsTheRouteTheTurnActuallyUsed(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// A million input tokens at the plan model's ten dollars per million. Billing
-	// it at the act model's price would understate it tenfold.
+	// A million input tokens at the act model's ten dollars per million.
 	if result.CostUSD != 10 {
-		t.Fatalf("cost = %v, want the plan model's price", result.CostUSD)
-	}
-}
-
-func TestPurposeFollowsModeAndOperateIsNotItsOwnPurpose(t *testing.T) {
-	if got := PurposeForMode(policy.ModePlan); got != model.PurposePlan {
-		t.Fatalf("plan mode purpose = %q", got)
-	}
-	for _, mode := range []policy.Mode{policy.ModeAct, policy.ModeOperate} {
-		if got := PurposeForMode(mode); got != model.PurposeAct {
-			t.Fatalf("%s mode purpose = %q, want act", mode, got)
-		}
+		t.Fatalf("cost = %v, want the act model's price", result.CostUSD)
 	}
 }

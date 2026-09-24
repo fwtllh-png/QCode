@@ -296,10 +296,8 @@ func (s Snapshot) Validate() error {
 			return fieldError(fieldBaseURL, s.Provenance, "must be an absolute http(s) URL")
 		}
 	}
-	switch execution.Mode {
-	case "plan", "act", "operate":
-	default:
-		return fieldError(fieldMode, s.Provenance, "must be plan, act, or operate")
+	if execution.Mode != "act" {
+		return fieldError(fieldMode, s.Provenance, "must be act")
 	}
 	if execution.Workspace == "" {
 		return fieldError(fieldWorkspace, s.Provenance, "must not be empty")
@@ -584,12 +582,17 @@ func (s Snapshot) validateVision() error {
 
 // routeSlotPurposes are the wired purposes a slot may be configured for, in the
 // order they are reported. It matches routeFileConfig.
-var routeSlotPurposes = []string{"plan", "vision", "summary"}
+var routeSlotPurposes = []string{"vision", "summary"}
 
 // validateRoute checks the slots configuration named. A half-named slot is the
 // error worth catching here: a provider without a model resolves to nothing, and
 // falling back to act silently would look like the slot had been honored.
 func (s Snapshot) validateRoute() error {
+	for purpose := range s.Config.Route.Slots {
+		if !slices.Contains(routeSlotPurposes, purpose) {
+			return fieldError("route."+purpose, s.Provenance, "unsupported route purpose")
+		}
+	}
 	for _, purpose := range routeSlotPurposes {
 		slot, configured := s.Config.Route.Slots[purpose]
 		if !configured {

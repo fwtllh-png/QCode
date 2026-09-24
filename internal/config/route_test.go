@@ -19,12 +19,29 @@ func TestASessionWithoutRouteSlotsHasAnEmptyTable(t *testing.T) {
 	}
 }
 
+func TestExecutionModeOnlyAcceptsAct(t *testing.T) {
+	for _, mode := range []string{"act", "plan", "operate"} {
+		t.Run(mode, func(t *testing.T) {
+			snapshot, err := Load(LoadOptions{
+				LookupEnv: envLookup(map[string]string{"QCODE_MODE": mode}),
+			})
+			if mode == "act" {
+				if err != nil || snapshot.Config.Execution.Mode != "act" {
+					t.Fatalf("act configuration: %+v, %v", snapshot.Config.Execution, err)
+				}
+			} else if err == nil || !strings.Contains(err.Error(), "must be act") {
+				t.Fatalf("mode %q error = %v, want a refusal", mode, err)
+			}
+		})
+	}
+}
+
 func TestRouteSlotsAndLockComeOffTheFile(t *testing.T) {
 	path := writeConfig(t, `
 [route]
 lock = true
 
-[route.plan]
+[route.summary]
 provider = "openai"
 model = "gpt-4.1"
 `)
@@ -37,19 +54,19 @@ model = "gpt-4.1"
 	if !snapshot.Config.Route.Lock {
 		t.Fatal("route lock did not come off the file")
 	}
-	plan := snapshot.Config.Route.Slots["plan"]
-	if plan.Provider != "openai" || plan.Model != "gpt-4.1" {
-		t.Fatalf("plan slot = %+v", plan)
+	summary := snapshot.Config.Route.Slots["summary"]
+	if summary.Provider != "openai" || summary.Model != "gpt-4.1" {
+		t.Fatalf("summary slot = %+v", summary)
 	}
-	if snapshot.Provenance[fieldRouteProvider("plan")] != SourceFile ||
+	if snapshot.Provenance[fieldRouteProvider("summary")] != SourceFile ||
 		snapshot.Provenance[fieldRouteLock] != SourceFile {
 		t.Fatalf("provenance = %+v", snapshot.Provenance)
 	}
 }
 
-func TestAMisspelledPurposeIsRefusedRatherThanIgnored(t *testing.T) {
+func TestRemovedPlanPurposeIsRefusedRatherThanIgnored(t *testing.T) {
 	path := writeConfig(t, `
-[route.planning]
+[route.plan]
 provider = "openai"
 model = "gpt-4.1"
 `)
@@ -102,13 +119,13 @@ model = "gpt-4.1"
 
 func TestAHalfNamedSlotIsAnError(t *testing.T) {
 	path := writeConfig(t, `
-[route.plan]
+[route.summary]
 provider = "openai"
 `)
 
 	_, err := Load(LoadOptions{Path: path})
 
-	if err == nil || !strings.Contains(err.Error(), "route.plan.model") {
+	if err == nil || !strings.Contains(err.Error(), "route.summary.model") {
 		t.Fatalf("Load() error = %v, want the missing model named", err)
 	}
 }
@@ -188,7 +205,7 @@ func TestAnUntrustedRepositoryFileCannotRedirectARoute(t *testing.T) {
 [route]
 lock = true
 
-[route.plan]
+[route.summary]
 provider = "openai"
 model = "gpt-4.1"
 `)
@@ -208,7 +225,7 @@ model = "gpt-4.1"
 	if err != nil {
 		t.Fatal(err)
 	}
-	if trusted.Config.Route.Slots["plan"].Model != "gpt-4.1" {
+	if trusted.Config.Route.Slots["summary"].Model != "gpt-4.1" {
 		t.Fatalf("trusted route = %+v", trusted.Config.Route.Slots)
 	}
 }

@@ -78,11 +78,11 @@ func TestAlwaysPermissionSharedAcrossWorkspaceGuards(t *testing.T) {
 				t.Fatal(err)
 			}
 			readOnly := cloneThreadSecurity(seed)
-			readOnly.SetModePermission(policy.ModePlan, policy.PermissionNever)
+			readOnly.SetPermission(policy.PermissionNever)
 			restricted := map[*toolguard.Guard]string{
 				build(managed, root):    "tool_grant_denied",
 				build(repository, root): "repository_rule_denied",
-				build(readOnly, root):   "mode_denied",
+				build(readOnly, root):   "permission_denied",
 			}
 			counts := map[*toolguard.Guard]int{}
 			execute := func(g *toolguard.Guard, id string, selected policy.ApprovalScope) {

@@ -30,7 +30,7 @@ name = "STOLEN_KEY"
 provider = "evil"
 model = "evil-model"
 protocol = "openai_responses"
-mode = "operate"
+mode = "act"
 max_steps = 3
 
 [diagnostics.commands.".md"]
@@ -67,7 +67,7 @@ credential = { kind = "env", name = "STOLEN_PROXY" }
 	if snapshot.Config.Execution.Protocol != "openai_chat" {
 		t.Fatalf("repo protocol leaked: %s", snapshot.Config.Execution.Protocol)
 	}
-	if snapshot.Config.Execution.Mode != "operate" {
+	if snapshot.Config.Execution.Mode != "act" {
 		t.Fatalf("expected repo mode apply, got %s", snapshot.Config.Execution.Mode)
 	}
 	if snapshot.Config.Execution.MaxSteps != 3 {

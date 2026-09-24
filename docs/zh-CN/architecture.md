@@ -665,9 +665,9 @@ Workspace 对账同时重写 History 中已压缩的 Truth Capsule，不能让�
 `verified/current` 声明继续进入下一次采样。Fork 血缘、子 Thread Context 基线与当前
 Active Session Thread 属于关系型 Lifecycle State，而不是 Host-local State。
 
-Plan Mode 的 Workspace 只读性由 Policy Effect 强制：普通 Write、写入型 Process
-与 Network 继续拒绝；Strong Sandbox 中最终归类为 `process.read_only` 的命令可执行，
-Resource 为 Session Plan 的低风险状态更新也可通过。`submit_plan`
+只读子角色和 `never` 审批姿态由 Policy Effect 强制：普通 Write、写入型 Process
+与 Network 继续拒绝；Strong Sandbox 中最终归类为 `process.read_only` 的命令可执行。
+Act 使用 `submit_plan`
 生成版本化 JSON Artifact，并在 Artifact Body 内记录 Revision、Supersedes Identity、
 步骤依赖、验证证据、用途与文件摘要。执行计划（`purpose=execution`）提交后自动批准
 并继续当前 Turn，不经过独立的用户审批或执行按钮。交付计划
@@ -680,7 +680,7 @@ Plan Artifact 同时保存执行配置摘要；摘要覆盖 Mode、模型、工�
 和步骤预算，但不包含 Planning Policy。Planning Policy 变化不会让已提交计划失效，
 执行能力发生变化时仍会 Fail Closed 并要求重新规划。
 
-产品只暴露 `plan`、`act`、`operate` 三种 Mode。`act` 与 `operate` 固定采用
+产品固定使用 `act`，模式字段仅接受该值且不可通过 Profile Patch 修改。Act 固定采用
 `adaptive` Planning Policy；Guard 在 Capability、Resource、Effect 和 Risk 已规范化后，
 拦截高风险、不可逆、网络写、外部写和 Agent Lifecycle 操作；非高风险且非不可逆的
 批量 Workspace 操作不因资源数量单独升级。成功的
@@ -691,8 +691,8 @@ Profile Revision 共同证明，不能仅凭恢复 Prompt 中的 Plan 文本重�
 交付计划不进入 Context Checkpoint 的执行清单，Continue/Retry 不会自动绑定其执行权限；
 同一 Turn 后提交的交付计划也不能替换先前执行计划的恢复绑定。
 
-Turn 的 Model Route 继续在 Scope 创建时冻结。独立 Plan Mode 选择 `PurposePlan`；
-Act 内规划选择 `PurposeAct`，因此 Auto 流程可以在同一 Turn 中从规划继续执行，而不会
+Turn 的 Model Route 继续在 Scope 创建时冻结，统一选择 `PurposeAct`。
+因此 Auto 流程可以在同一 Turn 中从规划继续执行，而不会
 发生中途换模型或重建 Context 的隐式状态变化。
 
 Workspace Git 状态由 `internal/platform/workspacequery` 在已绑定沙箱中查询。Web Host

@@ -219,7 +219,7 @@
     ".sessionRow",
     ".composerSeat",
     ".composer",
-    ".composerMeta",
+    ".contextMeter",
     ".pendingComposer",
     ".settingsDialog",
     ".contextDialog",

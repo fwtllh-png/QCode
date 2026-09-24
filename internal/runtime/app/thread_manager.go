@@ -425,12 +425,6 @@ func (m *ThreadManager) ApplySessionProfile(
 	return adapter.ApplySessionProfile(profile)
 }
 
-func (m *ThreadManager) SetPolicyMode(mode policy.Mode) {
-	for _, adapter := range m.adapters() {
-		adapter.SetPolicyMode(mode)
-	}
-}
-
 func (m *ThreadManager) SetPermission(permission policy.Permission) {
 	for _, adapter := range m.adapters() {
 		adapter.SetPermission(permission)

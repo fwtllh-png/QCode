@@ -144,10 +144,6 @@ func TestRecoverableToolFailureClassification(t *testing.T) {
 			err:             &policy.DecisionError{Code: "permission_denied", Reason: "write is denied"},
 			wantRecoverable: true, wantContains: "choose_read_only_alternative",
 		},
-		"mode denied": {
-			err:             &policy.DecisionError{Code: "mode_denied", Reason: "plan mode"},
-			wantRecoverable: true, wantContains: "required_action=submit_plan",
-		},
 		"tool grant missing": {
 			err: &policy.DecisionError{
 				Code: "tool_grant_missing", Reason: "no matching managed tool grant",

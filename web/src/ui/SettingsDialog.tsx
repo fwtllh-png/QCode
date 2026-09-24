@@ -74,7 +74,6 @@ export type SettingsSection =
   | "agent";
 
 interface ProfileDraft {
-  mode: SessionProfile["mode"];
   provider: string;
   model: string;
   reasoningEffort: string;
@@ -1607,17 +1606,6 @@ function AgentSettings({
           </div>
         )}
       </div>
-      <SettingRow title="Mode" description="Plan before acting or execute the requested task.">
-        <SelectControl
-          label="Agent mode"
-          value={draft.mode}
-          values={["plan", "act", "operate"]}
-          disabled={!mutable(snapshot, "mode")}
-          onChange={(mode) => onDraftChange({
-            mode: mode as ProfileDraft["mode"]
-          })}
-        />
-      </SettingRow>
       <SettingRow title="Approval" description="Control when consequential actions ask first.">
         <SelectControl
           label="Approval posture"
@@ -1984,7 +1972,6 @@ function settingsProfileDraftFromProfile(
     ? [...profile.enabled_tool_ids]
     : tools.filter((tool) => tool.enabled).map((tool) => tool.id);
   return {
-    mode: profile.mode,
     provider: profile.provider,
     model: profile.model,
     reasoningEffort: profile.reasoning_effort ?? "",
@@ -1999,8 +1986,7 @@ function equalProfileDraft(
   left: ProfileDraft,
   right: ProfileDraft
 ): boolean {
-  return left.mode === right.mode &&
-    left.provider === right.provider &&
+  return left.provider === right.provider &&
     left.model === right.model &&
     left.reasoningEffort === right.reasoningEffort &&
     left.approvalPosture === right.approvalPosture &&
@@ -2022,9 +2008,6 @@ function changedProfileFields(
   draft: ProfileDraft
 ): Record<string, unknown> {
   const patch: Record<string, unknown> = {};
-  if (draft.mode !== baseline.mode) {
-    patch.mode = draft.mode;
-  }
   if (draft.provider !== baseline.provider) patch.provider = draft.provider;
   if (draft.model !== baseline.model) patch.model = draft.model;
   if (draft.reasoningEffort !== baseline.reasoningEffort) {
@@ -2048,7 +2031,7 @@ function changedProfileFields(
 
 function agentPresetProfile(draft: ProfileDraft): AgentPresetProfile {
   return {
-    mode: draft.mode,
+    mode: "act",
     planning_policy: "adaptive",
     provider: draft.provider,
     model: draft.model,
@@ -2065,7 +2048,6 @@ function profileDraftFromPreset(
   tools: RuntimeSnapshot["tools"]
 ): ProfileDraft {
   return {
-    mode: profile.mode,
     provider: profile.provider,
     model: profile.model,
     reasoningEffort: profile.reasoning_effort ?? "",
@@ -2085,7 +2067,6 @@ function profileApplyNotice(
 ): ApplyNotice {
   const changes = before && after ? [
     before.model !== after.model && `Model ${before.model} → ${after.model}`,
-    before.mode !== after.mode && `Mode ${before.mode} → ${after.mode}`,
     before.reasoningEffort !== after.reasoningEffort &&
       `Reasoning ${before.reasoningEffort || "default"} → ${
         after.reasoningEffort || "default"

@@ -8,13 +8,11 @@ import (
 func TestAgentPresetProfileBuildsOnlyChangedPatchFields(t *testing.T) {
 	current := testSessionProfile()
 	preset := NewAgentPresetProfile(current)
-	preset.Mode = "plan"
 	preset.PlanningPolicy = "required"
 	preset.EnabledToolIDs = []string{"builtin:read", "builtin:search"}
 
 	patch := preset.Patch(current)
-	if patch.Mode == nil || *patch.Mode != "plan" ||
-		patch.EnabledToolIDs == nil || len(*patch.EnabledToolIDs) != 2 {
+	if patch.EnabledToolIDs == nil || len(*patch.EnabledToolIDs) != 2 {
 		t.Fatalf("patch = %+v", patch)
 	}
 	if patch.PlanningPolicy != nil || patch.Model != nil || patch.ApprovalPosture != nil ||
@@ -43,5 +41,12 @@ func TestAgentPresetValidationRejectsInvalidIdentityAndScope(t *testing.T) {
 	invalid.Scope = "browser"
 	if err := invalid.Validate(); err == nil {
 		t.Fatal("browser-owned preset scope was accepted")
+	}
+	for _, mode := range []string{"plan", "operate"} {
+		invalid = valid
+		invalid.Profile.Mode = mode
+		if err := invalid.Validate(); err == nil {
+			t.Fatalf("preset mode %q was accepted", mode)
+		}
 	}
 }

@@ -82,9 +82,6 @@ func policyDecisionHint(code string) (
 	action string, retryOriginal bool, guidance string, ok bool,
 ) {
 	switch code {
-	case "mode_denied":
-		return "submit_plan", false,
-			"plan mode rejects mutations; deliver the work as a plan via submit_plan", true
 	case "permission_denied", "permission_unknown", "mode_unknown":
 		return "choose_read_only_alternative", false,
 			"the approval posture denies this side effect; use a read-only " +

@@ -669,10 +669,10 @@ test("persists and applies a workspace Agent preset", async ({page}) => {
   await page.getByRole("button", {name: "Settings"}).click();
   await page.getByRole("button", {name: "Agent preset"}).click();
 
-  await page.getByLabel("Agent mode").selectOption("plan");
+  await expect(page.getByLabel("Agent mode")).toHaveCount(0);
   await page.getByLabel("Maximum steps").fill("16");
   await page.getByLabel("Agent preset name").fill("Focused review");
-  await page.getByLabel("Agent preset description").fill("Plan with bounded steps");
+  await page.getByLabel("Agent preset description").fill("Review with bounded steps");
   await page.getByRole("button", {name: "Save new"}).click();
   const presetStatus = page.locator(".presetWorkbench").getByRole("status");
   await expect(presetStatus).toContainText("Preset created");
@@ -685,7 +685,7 @@ test("persists and applies a workspace Agent preset", async ({page}) => {
   await page.getByRole("button", {name: "Discard"}).click();
   await page.getByRole("button", {name: "Apply to session"}).click();
   await expect(presetStatus).toContainText("Preset applied");
-  await expect(page.getByLabel("Agent mode")).toHaveValue("plan");
+  await expect(page.getByLabel("Agent mode")).toHaveCount(0);
   await expect(page.getByLabel("Maximum steps")).toHaveValue("16");
 
   await page.getByRole("button", {name: "Close settings"}).click();

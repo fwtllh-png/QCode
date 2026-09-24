@@ -43,7 +43,7 @@ func TestTruthMaxBytesForCapacityUsesRouteAndSummaryLimits(t *testing.T) {
 }
 
 func TestSnapshotTurnSpecFreezesSessionInputs(t *testing.T) {
-	security := policy.DefaultRuntime(policy.ModeOperate, policy.PermissionAuto)
+	security := policy.DefaultRuntime(policy.ModeAct, policy.PermissionAuto)
 	security.Repository = []policy.Rule{{
 		Tool: "exec_command", Resource: "*", Action: policy.ActionAsk,
 	}}
@@ -81,11 +81,10 @@ func TestSnapshotTurnSpecFreezesSessionInputs(t *testing.T) {
 		snapshot.Catalog.Generation == 0 {
 		t.Fatalf("identity/request/catalog not frozen: %+v", snapshot)
 	}
-	// Operate is act with wider permissions, not a purpose of its own.
 	if snapshot.Purpose != model.PurposeAct {
 		t.Fatalf("purpose = %q, want act", snapshot.Purpose)
 	}
-	if snapshot.Mode != policy.ModeOperate || snapshot.Posture != policy.PermissionAuto {
+	if snapshot.Mode != policy.ModeAct || snapshot.Posture != policy.PermissionAuto {
 		t.Fatalf("mode/posture = %s/%s", snapshot.Mode, snapshot.Posture)
 	}
 	wantSandbox := "test/test/" + turnContextBackend{}.Capability().Effective.Identity()
@@ -95,9 +94,8 @@ func TestSnapshotTurnSpecFreezesSessionInputs(t *testing.T) {
 	if snapshot.Policy == nil || snapshot.Policy == security {
 		t.Fatal("snapshot must allocate a distinct sampling policy")
 	}
-	security.Mode = policy.ModePlan
 	security.Permission = policy.PermissionNever
-	if snapshot.Policy.Mode != policy.ModeOperate || snapshot.Policy.Permission != policy.PermissionAuto {
+	if snapshot.Policy.Mode != policy.ModeAct || snapshot.Policy.Permission != policy.PermissionAuto {
 		t.Fatalf("clone mutated with session: %+v", snapshot.Policy)
 	}
 	if len(snapshot.Policy.Repository) != 1 {
@@ -309,7 +307,6 @@ func TestRunForTurnIgnoresMidTurnPolicyMutation(t *testing.T) {
 				approvals++
 				// Mid-turn host mutation: session would flip to bypass.
 				security.Permission = policy.PermissionBypass
-				security.Mode = policy.ModeOperate
 				go func(requestID string) {
 					time.Sleep(10 * time.Millisecond)
 					_ = mustControl(t, engine).ResolveApproval(toolguard.ApprovalDecision{

@@ -7,11 +7,10 @@ import (
 
 func TestSessionProfilePatchRevisionAndPromptCacheReset(t *testing.T) {
 	current := testSessionProfile()
-	mode := "plan"
 	planning := "required"
 	posture := "never"
 	updated, err := ApplySessionProfilePatch(current, SessionProfilePatch{
-		Mode: &mode, PlanningPolicy: &planning,
+		PlanningPolicy:  &planning,
 		ApprovalPosture: &posture,
 	})
 	if err != nil {
@@ -20,7 +19,7 @@ func TestSessionProfilePatchRevisionAndPromptCacheReset(t *testing.T) {
 	if updated.Profile.Revision != 2 ||
 		updated.Profile.PromptCacheRevision != 2 ||
 		!updated.PromptCacheReset ||
-		updated.ResetReason != "mode,planning_policy" ||
+		updated.ResetReason != "planning_policy" ||
 		updated.Profile.PlanningPolicy != planning ||
 		updated.Profile.ApprovalPosture != posture {
 		t.Fatalf("updated profile = %+v", updated)
@@ -29,10 +28,10 @@ func TestSessionProfilePatchRevisionAndPromptCacheReset(t *testing.T) {
 
 func TestSessionProfilePatchNoopDoesNotAdvanceRevision(t *testing.T) {
 	current := testSessionProfile()
-	mode := current.Mode
+	model := current.Model
 	updated, err := ApplySessionProfilePatch(
 		current,
-		SessionProfilePatch{Mode: &mode},
+		SessionProfilePatch{Model: &model},
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -45,6 +44,13 @@ func TestSessionProfilePatchNoopDoesNotAdvanceRevision(t *testing.T) {
 
 func TestSessionProfileValidationRejectsUnsafeOrUnsupportedValues(t *testing.T) {
 	current := testSessionProfile()
+	for _, mode := range []string{"plan", "operate", ""} {
+		invalid := current
+		invalid.Mode = mode
+		if err := invalid.Validate(); err == nil {
+			t.Fatalf("unsupported mode %q was accepted", mode)
+		}
+	}
 	invalid := "turbo"
 	if _, err := ApplySessionProfilePatch(
 		current,

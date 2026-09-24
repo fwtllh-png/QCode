@@ -33,10 +33,8 @@ import {
   Search,
   Send,
   Settings2,
-  TextSelect,
   Trash2,
   Zap,
-  Wrench,
   X
 } from "lucide-react";
 import {
@@ -53,6 +51,7 @@ import {
   type ReactNode
 } from "react";
 import {ExecutionStages} from "./ExecutionStages";
+import {ComposerStats} from "./ComposerStats";
 import {Collapse} from "./primitives/Collapse";
 import {IconButton} from "./primitives/IconButton";
 import {Skeleton} from "./primitives/Skeleton";
@@ -78,7 +77,6 @@ import {CapybaraMark} from "./brand/CapybaraMark";
 import {QCodeWordmark} from "./brand/QCodeWordmark";
 import {
   compactSelectWidth,
-  ContextMeter,
   MessageActions,
   type ContextAttribution,
   type MessageChrome,
@@ -357,7 +355,7 @@ export function App({client}: Props) {
         ? "Finish active work before changing Git state."
         : selected?.status === "blocked" || selected?.status === "interrupted"
           ? "Resume or resolve the interrupted turn first."
-          : snapshot.profile?.profile.mode === "plan" || snapshot.profile?.profile.approval_posture === "never"
+          : snapshot.profile?.profile.approval_posture === "never"
             ? "Git changes are unavailable in read-only mode."
             : selected?.archived ? "This session is archived." : "";
   const workspaceRemoval = snapshot.workspaces.find(
@@ -385,12 +383,60 @@ export function App({client}: Props) {
       (selected?.status === "blocked" || selected?.status === "interrupted")
     ? selected.latest_turn_id
     : "";
+  // Window the visible history surface. A collapsed execution is one row;
+  // its children must not push the question and answer into different windows.
+  const transcriptWindow = useMemo(() => {
+    const rows: ConversationNode[] = [];
+    const rowIDs = new Map<string, string>();
+    const turns = new Map<string, TranscriptTurn>();
+    for (const turn of groupTranscriptTurns(entries)) {
+      const terminalKind = terminalTurns.get(turn.turnID);
+      if (!terminalKind) {
+        for (const entry of turn.entries) {
+          rows.push(entry);
+          rowIDs.set(entry.id, entry.id);
+        }
+        continue;
+      }
+      const conclusion = terminalConclusion(turn.entries, terminalKind);
+      const withdrawn = turn.entries.some((entry) => entry.kind === "user" && entry.withdrawn);
+      let executionRowID: string | undefined;
+      for (const entry of turn.entries) {
+        if (!withdrawn && (entry.kind === "user" || entry.id === conclusion?.id)) {
+          rows.push(entry);
+          rowIDs.set(entry.id, entry.id);
+        } else {
+          if (!executionRowID) {
+            executionRowID = entry.id;
+            rows.push(entry);
+          }
+          rowIDs.set(entry.id, executionRowID);
+        }
+        turns.set(entry.id, turn);
+      }
+    }
+    const rowIndexes = new Map(rows.map((entry, index) => [entry.id, index]));
+    return {rows, rowIDs, rowIndexes, turns};
+  }, [entries, terminalTurns]);
+  const windowEntries = transcriptWindow.rows;
   const windowEndIndex = !atBottom && transcriptWindowEndID
-    ? entries.findIndex((entry) => entry.id === transcriptWindowEndID)
+    ? transcriptWindow.rowIndexes.get(transcriptWindow.rowIDs.get(transcriptWindowEndID) ?? "") ?? -1
     : -1;
-  const transcriptEnd = windowEndIndex >= 0 ? windowEndIndex + 1 : entries.length;
+  const transcriptEnd = windowEndIndex >= 0 ? windowEndIndex + 1 : windowEntries.length;
   const transcriptStart = Math.max(0, transcriptEnd - transcriptPageSize);
-  const visibleEntries = entries.slice(transcriptStart, transcriptEnd);
+  const visibleEntries = useMemo(
+    () => windowEntries.slice(transcriptStart, transcriptEnd),
+    [windowEntries, transcriptStart, transcriptEnd]
+  );
+  const visibleTurns = useMemo(() => {
+    const included = new Set<string>();
+    return groupTranscriptTurns(visibleEntries).flatMap((turn) => {
+      const complete = transcriptWindow.turns.get(turn.entries[0]!.id) ?? turn;
+      if (included.has(complete.id)) return [];
+      included.add(complete.id);
+      return [complete];
+    });
+  }, [visibleEntries, transcriptWindow]);
   const conversationNavigation = useMemo(
     () => projectConversationNavigation(entries),
     [entries]
@@ -463,6 +509,10 @@ export function App({client}: Props) {
     (entry): entry is Extract<ConversationNode, {kind: "receipt"}> =>
       entry.kind === "receipt"
   );
+  const latestReceiptTerminal = useMemo(() => presentationEvents.find((event) =>
+    event.turn_id === latestReceipt?.turnID &&
+    (event.kind === "turn.completed" || event.kind === "turn.failed" || event.kind === "turn.canceled")
+  )?.kind, [presentationEvents, latestReceipt?.turnID]);
   const turnChrome = useMemo(
     () => projectMessageChrome(presentationEvents),
     [presentationEvents]
@@ -597,7 +647,7 @@ export function App({client}: Props) {
     const direction = scrollDirectionRef.current;
     const shortContent = node.scrollHeight <= node.clientHeight;
     const earlier = node.scrollTop <= node.clientHeight && (direction < 0 || shortContent);
-    const later = direction > 0 && transcriptEnd < entries.length &&
+    const later = direction > 0 && transcriptEnd < windowEntries.length &&
       node.scrollHeight - node.scrollTop - node.clientHeight <= node.clientHeight;
     if (!earlier && !later) return;
     if (earlier && transcriptStart === 0) {
@@ -605,15 +655,22 @@ export function App({client}: Props) {
       return;
     }
     const visible = visibleTranscriptAnchors(node);
-    const first = entries.findIndex((entry) => entry.id === visible[0]?.dataset.entryId);
-    const last = entries.findIndex((entry) => entry.id === visible.at(-1)?.dataset.entryId);
+    let first = -1;
+    let last = -1;
+    for (const anchor of visible) {
+      const rowID = transcriptWindow.rowIDs.get(anchor.dataset.entryId ?? "");
+      const index = transcriptWindow.rowIndexes.get(rowID ?? "");
+      if (index === undefined) continue;
+      first = first < 0 ? index : Math.min(first, index);
+      last = Math.max(last, index);
+    }
     // Keep all currently visible entries inside the bounded, overlapping window.
     const nextEnd = earlier
       ? Math.max(transcriptEnd - transcriptPageStep, last >= 0 ? last + 1 : transcriptStart + 1)
-      : Math.min(entries.length, transcriptEnd + transcriptPageStep,
+      : Math.min(windowEntries.length, transcriptEnd + transcriptPageStep,
         (first >= 0 ? first : transcriptEnd - transcriptPageOverlap) + transcriptPageSize);
     if (nextEnd === transcriptEnd || nextEnd <= 0) return;
-    const endID = entries[nextEnd - 1]?.id;
+    const endID = windowEntries[nextEnd - 1]?.id;
     const anchor = captureReadingPosition(true);
     if (anchor) {
       const saved = {...anchor, windowEndID: endID, atBottom: false};
@@ -664,8 +721,8 @@ export function App({client}: Props) {
   const jumpToNavigationItem = useCallback(
     (item: ConversationNavigationItem) => {
       const page = transcriptPageForEntry(
-        entries,
-        item.entryID,
+        windowEntries,
+        transcriptWindow.rowIDs.get(item.entryID) ?? item.entryID,
         transcriptPageSize,
         transcriptPageStep
       );
@@ -678,7 +735,7 @@ export function App({client}: Props) {
       pendingReadingRestoreRef.current = undefined;
       interactionAnchorRef.current = undefined;
       scrollDirectionRef.current = 0;
-      setTranscriptWindowEndID(entries[entries.length - page * transcriptPageStep - 1]?.id);
+      setTranscriptWindowEndID(windowEntries[windowEntries.length - page * transcriptPageStep - 1]?.id);
       setActiveView("chat");
       setNavigationHighlightID(item.entryID);
       setReaderEntryID(item.entryID);
@@ -686,7 +743,7 @@ export function App({client}: Props) {
       atBottomRef.current = false;
       setAtBottom(false);
     },
-    [entries]
+    [windowEntries, transcriptWindow]
   );
   const jumpToQuestion = useCallback(
     (item?: ConversationNavigationItem) => {
@@ -959,7 +1016,7 @@ export function App({client}: Props) {
     setDraft(value);
   };
 
-  useLayoutEffect(() => {
+  const restoreNavigationTarget = useCallback(() => {
     const node = transcriptRef.current;
     if (!node || activeView !== "chat") return;
     const navigation = navigationTarget;
@@ -973,6 +1030,13 @@ export function App({client}: Props) {
         : anchorContent(anchor);
       centerTranscriptTarget(node, target);
       scrollTopRef.current = node.scrollTop;
+      readingPositionsRef.current.set(snapshot.selectedSessionID, {
+        entryID: navigation.entryID,
+        top: anchorContent(anchor).getBoundingClientRect().top - node.getBoundingClientRect().top,
+        scrollTop: node.scrollTop,
+        windowEndID: transcriptWindowEndID,
+        atBottom: false
+      });
       atBottomRef.current = false;
       setAtBottom(false);
       setReaderEntryID(navigation.entryID);
@@ -990,6 +1054,14 @@ export function App({client}: Props) {
         () => setNavigationHighlightID(""),
         1_400
       );
+    }
+  }, [activeView, navigationTarget, transcriptWindowEndID, snapshot.selectedSessionID]);
+
+  useLayoutEffect(() => {
+    const node = transcriptRef.current;
+    if (!node || activeView !== "chat") return;
+    if (navigationTarget) {
+      restoreNavigationTarget();
       return;
     }
     // 跟随优先于交互锚点：处于跟随态时清掉点击锚点并继续钉底，
@@ -1011,7 +1083,7 @@ export function App({client}: Props) {
     }
     if (!snapshot.hydratingSessionID && !snapshot.historyMoreBefore &&
         windowEndIndex < 0) pendingReadingRestoreRef.current = undefined;
-    if (atBottomRef.current && transcriptEnd === entries.length) {
+    if (atBottomRef.current && transcriptEnd === windowEntries.length) {
       node.scrollTop = node.scrollHeight;
       scrollTopRef.current = node.scrollTop;
     }
@@ -1023,10 +1095,11 @@ export function App({client}: Props) {
     snapshot.historyMoreBefore,
     transcriptWindowEndID,
     transcriptEnd,
-    entries.length,
+    windowEntries.length,
     historyLoading,
     historyError,
-    restoreInteractionAnchor
+    restoreInteractionAnchor,
+    restoreNavigationTarget
   ]);
 
   useEffect(() => {
@@ -1041,7 +1114,13 @@ export function App({client}: Props) {
     const observer = new ResizeObserver(() => {
       const node = transcriptRef.current;
       if (!node) return;
-      if (atBottomRef.current && transcriptEnd === entries.length) {
+      // A navigation target inside a collapsed history group mounts after the
+      // parent's layout effect. Finish positioning when that content appears.
+      if (navigationTarget) {
+        restoreNavigationTarget();
+        return;
+      }
+      if (atBottomRef.current && transcriptEnd === windowEntries.length) {
         interactionAnchorRef.current = undefined;
         node.scrollTop = node.scrollHeight;
         scrollTopRef.current = node.scrollTop;
@@ -1063,7 +1142,8 @@ export function App({client}: Props) {
     observer.observe(content);
     return () => observer.disconnect();
   }, [activeView, snapshot.selectedSessionID, transcriptWindowEndID,
-    transcriptEnd, entries.length, scheduleReadingPositionCapture, restoreInteractionAnchor]);
+    transcriptEnd, windowEntries.length, scheduleReadingPositionCapture,
+    restoreInteractionAnchor, navigationTarget, restoreNavigationTarget]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -1269,24 +1349,6 @@ export function App({client}: Props) {
           reportLocalError(error);
         }
       }
-    },
-    {
-      id: "plan",
-      label: "plan",
-      description: "Analyze and propose a plan before implementation",
-      icon: TextSelect,
-      active: snapshot.profile?.profile.mode === "plan",
-      disabled: !profileMutable(snapshot, "mode") || Boolean(profilePending),
-      run: () => updateComposerProfile({mode: "plan"}, "Updating mode")
-    },
-    {
-      id: "act",
-      label: "act",
-      description: "Execute the requested coding task",
-      icon: Wrench,
-      active: snapshot.profile?.profile.mode === "act",
-      disabled: !profileMutable(snapshot, "mode") || Boolean(profilePending),
-      run: () => updateComposerProfile({mode: "act"}, "Updating mode")
     },
     {
       id: "suggest",
@@ -1754,7 +1816,7 @@ export function App({client}: Props) {
             // 滞回跟随：跟随时滚离 160px 才脱离；脱离后回到距底 48px 内恢复。
             const distanceFromBottom =
               node.scrollHeight - node.scrollTop - node.clientHeight;
-            const next = transcriptEnd === entries.length &&
+            const next = transcriptEnd === windowEntries.length &&
               (atBottomRef.current
                 ? distanceFromBottom <= experience.scrolling.followLeaveThreshold
                 : distanceFromBottom <= experience.scrolling.followEnterThreshold);
@@ -1864,7 +1926,7 @@ export function App({client}: Props) {
                 <p>{snapshot.workspaceRoot}</p>
               </div>
             ) : (
-              groupTranscriptTurns(visibleEntries).map((turn) => (
+              visibleTurns.map((turn) => (
                 <TurnTranscript
                   key={turn.id}
                   entries={turn.entries}
@@ -1885,10 +1947,10 @@ export function App({client}: Props) {
                 />
               ))
             )}
-            {transcriptEnd < entries.length && (
+            {transcriptEnd < windowEntries.length && (
               <div ref={historyBottomRef} className="transcriptBoundary" data-history-edge="newer" aria-hidden="true" />
             )}
-            {activeTurn && transcriptEnd === entries.length &&
+            {activeTurn && transcriptEnd === windowEntries.length &&
               <TurnStatus events={presentationEvents} turnID={activeTurn}
                 status={snapshot.conversation.activeStatus} />}
           </div>}
@@ -1908,7 +1970,7 @@ export function App({client}: Props) {
                   setTranscriptWindowEndID(undefined);
                   setNavigationTarget(undefined);
                   navigationReaderLockRef.current = "";
-                  if (transcriptEnd === entries.length) {
+                  if (transcriptEnd === windowEntries.length) {
                     node.scrollTo({top: node.scrollHeight, behavior: motionEnabled ? "smooth" : "auto"});
                   }
                   atBottomRef.current = true;
@@ -2092,19 +2154,6 @@ export function App({client}: Props) {
                       }
                     }}
                   />
-                  <ContextMeter
-                    attribution={contextAttribution}
-                    fallbackUsed={numberValue(
-                      isObject(latestReceipt?.data.context_budget)
-                        ? latestReceipt.data.context_budget.active_tokens
-                        : 0
-                    )}
-                    capacity={numberValue(
-                      isObject(latestReceipt?.data.context_budget)
-                        ? latestReceipt.data.context_budget.max_context_tokens
-                        : 0
-                    ) || selectedModelEntry?.capabilities.context_window}
-                  />
                   <div className="composerActions">
                     {activeTurn && (
                       <IconButton
@@ -2201,17 +2250,6 @@ export function App({client}: Props) {
                       />
                     </Suspense>
                     <CompactSelect
-                      label="Mode"
-                      value={snapshot.profile?.profile.mode ?? "act"}
-                      values={["plan", "act", "operate"]}
-                      disabled={!profileMutable(snapshot, "mode") ||
-                        Boolean(profilePending)}
-                      onChange={(value) => void updateComposerProfile(
-                        {mode: value},
-                        "Updating mode"
-                      )}
-                    />
-                    <CompactSelect
                       label="Approval"
                       value={snapshot.profile?.profile.approval_posture ?? "auto"}
                       values={["suggest", "auto", "never"]}
@@ -2224,6 +2262,19 @@ export function App({client}: Props) {
                     />
                   </div>
                   <div>
+                    <ComposerStats
+                      key={snapshot.selectedSessionID}
+                      attribution={contextAttribution}
+                      capacity={selectedModelEntry?.capabilities.context_window}
+                      receipt={latestReceipt?.data}
+                      usage={snapshot.usage}
+                      running={Boolean(activeTurn)}
+                      previous={Boolean(latestReceipt && (
+                        activeTurn && activeTurn !== latestReceipt.turnID ||
+                        selected?.latest_turn_id && selected.latest_turn_id !== latestReceipt.turnID
+                      ))}
+                      terminal={latestReceiptTerminal}
+                    />
                     <CompactCatalogSelect
                       label="Model"
                       value={selectedModelValue}
@@ -2280,11 +2331,6 @@ export function App({client}: Props) {
                 </div>
               </div>
             )}
-            <ComposerStats
-              receipt={latestReceipt?.data}
-              usage={snapshot.usage}
-              toolCalls={entries.filter((entry) => entry.kind === "tool").length}
-            />
           </div>}
         </div>
       </main>
@@ -2803,6 +2849,7 @@ function TurnTranscript({
     terminalKind ? "settled" : "live"
   );
   const [executionOpen, setExecutionOpen] = useState(false);
+  const [settling, setSettling] = useState(false);
   // Decide before committing DOM: moving an inspected entry into a different
   // subtree would discard its disclosure state, focus and selection.
   if (layout === "live" && terminalKind) {
@@ -2814,6 +2861,7 @@ function TurnTranscript({
       // 配合底部跟随的 ResizeObserver 逐帧贴底，取代“条目瞬间消失 +
       // 视口砸底”的跳变。
       setExecutionOpen(true);
+      setSettling(true);
     }
   }
   // reading 态不再自动折叠：用户正在回读时，滚回底部不应触发
@@ -2834,10 +2882,13 @@ function TurnTranscript({
   // settle 时以展开态挂载，下一帧收起：折叠走 Collapse 的动画过渡，
   // 配合底部跟随逐帧贴底，取代“条目瞬间消失 + 视口砸底”的跳变。
   useEffect(() => {
-    if (layout !== "settled" || !executionOpen || revealExecution) return;
-    const frame = window.requestAnimationFrame(() => setExecutionOpen(false));
+    if (!settling) return;
+    const frame = window.requestAnimationFrame(() => {
+      setSettling(false);
+      if (!revealExecution) setExecutionOpen(false);
+    });
     return () => window.cancelAnimationFrame(frame);
-  }, [layout, executionOpen, revealExecution]);
+  }, [settling, revealExecution]);
   const [withdrawnOpen, setWithdrawnOpen] = useState(false);
   const withdrawn = withdrawalCommitted ||
     entries.some((entry) => entry.kind === "user" && entry.withdrawn);
@@ -3874,81 +3925,6 @@ function CompactCatalogSelect({
       </select>
       <ChevronDown size={13} aria-hidden="true" />
     </label>
-  );
-}
-
-function ComposerStats({
-  receipt,
-  usage,
-  toolCalls
-}: {
-  receipt?: Readonly<Record<string, unknown>>;
-  usage?: RuntimeSnapshot["usage"];
-  toolCalls: number;
-}) {
-  if (!receipt && (!usage || usage.turns === 0)) {
-    return <div className="composerMeta" />;
-  }
-  const latency = isObject(receipt?.latency) ? receipt.latency : undefined;
-  const input = numberValue(receipt?.input_tokens);
-  const output = numberValue(receipt?.output_tokens);
-  const reasoning = numberValue(receipt?.reasoning_tokens);
-  const cached = numberValue(receipt?.cached_tokens);
-  // Reasoning tokens are a subset of output tokens in the Runtime contract.
-  // Keep them visible as a breakdown without charging them a second time.
-  const totalTokens = input + output || usage?.total_tokens || 0;
-  const cacheShare = input > 0
-    ? `${Math.round(cached / input * 100)}% cache`
-    : "";
-  const turns = numberValue(usage?.turns) || (receipt ? 1 : 0);
-  const turnText = `${turns} ${turns === 1 ? "turn" : "turns"}`;
-  const toolText = `${toolCalls} ${toolCalls === 1 ? "tool" : "tools"}`;
-  const totalTime = numberValue(latency?.total_ms) > 0
-    ? `${formatDuration(numberValue(latency?.total_ms))} total`
-    : "";
-  const modelTime = numberValue(latency?.provider_ms) > 0
-    ? `${formatDuration(numberValue(latency?.provider_ms))} model`
-    : "";
-  const toolTime = numberValue(latency?.tool_ms) > 0
-    ? `${formatDuration(numberValue(latency?.tool_ms))} tools`
-    : "";
-  const ttft = latency?.first_token_ms === undefined
-    ? ""
-    : `${formatDuration(numberValue(latency.first_token_ms))} TTFT`;
-  const timing = [totalTime, modelTime, toolTime].filter(Boolean).join(" · ");
-  const tokenSummary = [
-    totalTokens > 0 ? `${formatCompactCount(totalTokens)} tokens` : "",
-    cacheShare
-  ].filter(Boolean).join(" · ");
-  const detailedValues = [
-    turnText,
-    toolText,
-    totalTime,
-    modelTime,
-    toolTime,
-    ttft,
-    input > 0 ? `${input.toLocaleString()} in` : "",
-    output > 0 ? `${output.toLocaleString()} out` : "",
-    reasoning > 0 ? `${reasoning.toLocaleString()} reasoning` : "",
-    cached > 0 ? `${cached.toLocaleString()} cached` : "",
-    input > 0 ? `${(input - cached).toLocaleString()} uncached` : "",
-    totalTokens > 0 ? `${totalTokens.toLocaleString()} tokens` : "",
-    cacheShare
-  ].filter(Boolean);
-  const summary = [
-    `${turnText} · ${toolText}`,
-    timing,
-    ttft,
-    tokenSummary
-  ].filter(Boolean).join(" | ");
-  return (
-    <div
-      className="composerMeta"
-      aria-label={`Run statistics: ${summary}`}
-      title={detailedValues.join(" · ")}
-    >
-      <span>{summary}</span>
-    </div>
   );
 }
 

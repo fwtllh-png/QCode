@@ -107,7 +107,7 @@ type StartTurnPayload struct {
 	Context           []EditorContextReference `json:"context,omitempty"`
 	Recovery          *TurnRecoveryContext     `json:"recovery,omitempty"`
 	QueueID           string                   `json:"queue_id,omitempty"`
-	Idle              bool                     `json:"idle,omitempty"` // Plan mode rejects automatic idle work.
+	Idle              bool                     `json:"idle,omitempty"`
 	PlanExecution     *PlanTransitionRequest   `json:"plan_execution,omitempty"`
 }
 

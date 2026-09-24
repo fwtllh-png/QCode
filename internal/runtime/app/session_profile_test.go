@@ -16,7 +16,7 @@ func TestPlanningPolicyIsNotMutable(t *testing.T) {
 	planning := "required"
 	err := validateMutableProfilePatch(
 		protocol.SessionProfilePatch{PlanningPolicy: &planning},
-		[]string{"mode", "max_steps"},
+		[]string{"max_steps"},
 	)
 	if protocol.CodeOf(err) != protocol.CodeConflict {
 		t.Fatalf("planning policy mutation error = %v", err)
@@ -145,13 +145,13 @@ func TestSessionProfileUpdateRejectsActiveTurnBeforePersistence(t *testing.T) {
 	if event := receiveEvent(t, events); event.Kind != protocol.EventTurnStarted {
 		t.Fatalf("first event = %s", event.Kind)
 	}
-	mode := "plan"
+	effort := "high"
 	_, err = runtime.UpdateSessionProfile(
 		t.Context(),
 		"session-profile",
 		"thread-profile",
 		1,
-		protocol.SessionProfilePatch{Mode: &mode},
+		protocol.SessionProfilePatch{ReasoningEffort: &effort},
 	)
 	if protocol.CodeOf(err) != protocol.CodeConflict {
 		t.Fatalf("active update error = %v", err)
@@ -322,13 +322,13 @@ func TestTerminalEventIsPublishedAfterActiveTurnIsReleased(t *testing.T) {
 		if !protocol.IsTerminalEvent(event.Kind) {
 			return
 		}
-		mode := "plan"
+		effort := "high"
 		_, err := runtime.UpdateSessionProfile(
 			context.Background(),
 			"session-profile",
 			event.ThreadID,
 			defaults.Revision,
-			protocol.SessionProfilePatch{Mode: &mode},
+			protocol.SessionProfilePatch{ReasoningEffort: &effort},
 		)
 		observed <- err
 	}
@@ -369,13 +369,13 @@ func TestSessionProfileUpdateAppliesRevisionAndCacheReset(t *testing.T) {
 		ProfileCapabilities: runtimeTestCapabilities(defaults),
 	})
 	t.Cleanup(func() { closeRuntime(t, runtime) })
-	mode := "plan"
+	effort := "high"
 	updated, err := runtime.UpdateSessionProfile(
 		t.Context(),
 		"session-profile",
 		"thread-profile",
 		1,
-		protocol.SessionProfilePatch{Mode: &mode},
+		protocol.SessionProfilePatch{ReasoningEffort: &effort},
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -386,7 +386,7 @@ func TestSessionProfileUpdateAppliesRevisionAndCacheReset(t *testing.T) {
 	engine.mu.Lock()
 	applied := engine.applied
 	engine.mu.Unlock()
-	if applied.Revision != 2 || applied.Mode != mode {
+	if applied.Revision != 2 || applied.ReasoningEffort != effort {
 		t.Fatalf("applied profile = %+v", applied)
 	}
 }
@@ -622,7 +622,6 @@ func runtimeTestCapabilities(
 			SelectionMode:    "restart_required",
 		},
 		MutableFields: []string{
-			"mode",
 			"reasoning_effort",
 			"enabled_tool_ids",
 			"approval_posture",

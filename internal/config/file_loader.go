@@ -64,10 +64,10 @@ type executionFileConfig struct {
 		RecoverOnStart *bool `toml:"recover_on_start"`
 	} `toml:"journal"`
 	Environment struct {
-		Contract       *string                `toml:"contract"`
-		Profile        *string                `toml:"profile"`
-		SharedUserTemp *bool                  `toml:"shared_user_temp"`
-		Source         *string                `toml:"source"`
+		Contract       *string                   `toml:"contract"`
+		Profile        *string                   `toml:"profile"`
+		SharedUserTemp *bool                     `toml:"shared_user_temp"`
+		Source         *string                   `toml:"source"`
 		Resources      *[]EnvironmentResource    `toml:"resources"`
 		AuthServices   *[]EnvironmentAuthService `toml:"auth_services"`
 	} `toml:"environment"`
@@ -78,7 +78,6 @@ type executionFileConfig struct {
 // refused at load time rather than accepted as a slot nothing reads.
 type routeFileConfig struct {
 	Lock    *bool                `toml:"lock"`
-	Plan    *routeSlotFileConfig `toml:"plan"`
 	Vision  *routeSlotFileConfig `toml:"vision"`
 	Summary *routeSlotFileConfig `toml:"summary"`
 }
@@ -520,7 +519,6 @@ func applyRouteFile(
 		purpose string
 		input   *routeSlotFileConfig
 	}{
-		{purpose: "plan", input: input.Plan},
 		{purpose: "vision", input: input.Vision},
 		{purpose: "summary", input: input.Summary},
 	}

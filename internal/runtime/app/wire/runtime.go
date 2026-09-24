@@ -1,9 +1,9 @@
 package wire
 
 import (
-	"github.com/fwtllh-png/QCode/internal/adapter/model"
 	"context"
 	"errors"
+	"github.com/fwtllh-png/QCode/internal/adapter/model"
 	"os/exec"
 	"path/filepath"
 	"slices"
@@ -294,10 +294,8 @@ func childEngineOptions(
 		options.WorkspaceIsolation = app.SessionIsolationWorktree
 	}
 	if spec.ReadOnly && !spec.CanDelegate && options.Security != nil {
-		// Plan mode is the existing, tested read-only enforcement: everything
-		// that is not a read capability is denied with mode_denied. A read-only
-		// stance that only shaped the prompt would not be a stance at all.
-		options.Security.SetModePermission(policy.ModePlan, policy.PermissionNever)
+		// Read-only child roles enforce their authority through policy.
+		options.Security.SetPermission(policy.PermissionNever)
 	}
 	if slices.Contains(spec.AllowedTools, "verify") {
 		options.VerificationOnly = true

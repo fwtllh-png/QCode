@@ -10,13 +10,6 @@ import (
 )
 
 func (r StartTurnHandler) validateStart(payload *protocol.StartTurnPayload) error {
-	if payload.Idle {
-		if checker, ok := r.engine.(interface{ AllowIdleTurn() error }); ok {
-			if err := checker.AllowIdleTurn(); err != nil {
-				return err
-			}
-		}
-	}
 	if payload.Recovery == nil {
 		return nil
 	}

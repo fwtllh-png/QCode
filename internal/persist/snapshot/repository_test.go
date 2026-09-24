@@ -249,7 +249,7 @@ func artifactProfile() protocol.SessionProfile {
 	return protocol.SessionProfile{
 		Version:             protocol.SessionProfileVersion,
 		Revision:            2,
-		Mode:                "plan",
+		Mode:                "act",
 		Provider:            "fixture",
 		Model:               "fixture-model",
 		ApprovalPosture:     "suggest",

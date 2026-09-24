@@ -122,7 +122,7 @@ func (e *Engine) frozenWorldSections(
 	appendSection(
 		promptcontext.PartitionMode,
 		"session://profile.mode",
-		promptcontext.ModeInstructionPack(string(spec.Mode)),
+		promptcontext.ActInstructionPack(),
 		"",
 	)
 	policy := promptcontext.NewPolicySection(spec.Policy)

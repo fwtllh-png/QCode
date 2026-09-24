@@ -100,7 +100,7 @@ type Engine struct {
 	turnCheckpoints  []agentcontext.TurnCheckpoint
 	narrativeMu      sync.Mutex
 	pendingNarrative chan struct{}
-	titleState      sessionTitleState
+	titleState       sessionTitleState
 
 	context         agentcontext.Authority
 	prefixMu        sync.Mutex
@@ -453,14 +453,6 @@ func profilePermissionCeiling(options Options) policy.Permission {
 
 func profileReadOnlyFromOptions(options Options) bool {
 	return profilePermissionCeiling(options) == policy.PermissionNever
-}
-
-func (e *Engine) SetPolicyMode(mode policy.Mode) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	if e.options.Security != nil {
-		e.options.Security.SetMode(mode)
-	}
 }
 
 func (e *Engine) SetPermission(permission policy.Permission) {

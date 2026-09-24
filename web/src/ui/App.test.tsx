@@ -467,7 +467,7 @@ describe("projectTranscript", () => {
     fireEvent.click(screen.getByRole("button", {name: "Tools"}));
     expect(screen.getByText("read_file")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", {name: "Agent preset"}));
-    expect(screen.getByLabelText("Agent mode")).toBeTruthy();
+    expect(screen.queryByLabelText("Agent mode")).toBeNull();
   });
 
   it("adds a Workspace through the managed selector", async () => {
@@ -677,21 +677,16 @@ describe("projectTranscript", () => {
     expect(screen.queryByRole("dialog", {name: "Add model"})).toBeNull();
   });
 
-  it("offers three modes without exposing the derived planning policy", async () => {
+  it("keeps act fixed without mode controls or mode commands", async () => {
     const client = mockClient(snapshot());
     render(<App client={client} />);
 
-    expect(Array.from(
-      (screen.getByLabelText("Mode") as HTMLSelectElement).options
-    ).map((option) => option.value)).toEqual(["plan", "act", "operate"]);
-    fireEvent.change(screen.getByLabelText("Mode"), {
-      target: {value: "operate"}
-    });
-    await waitFor(() => {
-      expect(client.updateProfile).toHaveBeenCalledWith({
-        mode: "operate"
-      });
-    });
+    expect(screen.queryByLabelText("Mode")).toBeNull();
+    fireEvent.click(screen.getByRole("button", {name: "Commands"}));
+    await screen.findByRole("menu", {name: "Commands"});
+    expect(screen.queryByRole("menuitem", {name: /^plan\b/})).toBeNull();
+    expect(screen.queryByRole("menuitem", {name: /^act\b/})).toBeNull();
+    expect(client.updateProfile).not.toHaveBeenCalled();
   });
 
   it("blocks duplicate composer profile updates while one is pending", async () => {
@@ -937,10 +932,12 @@ describe("projectTranscript", () => {
     }
   });
 
-  it("renders run statistics as one readable line", () => {
+  it("separates latest turn statistics from authoritative session totals", () => {
     const value = snapshot([
       event(1, "turn.receipt", {
         outcome: "answered",
+        routes: [{purpose: "act", provider: "provider", model: "receipt-model"}],
+        tool_execution: {business: 2, control: 1, failed: 1},
         latency: {
           total_ms: 36_423,
           provider_ms: 35_000,
@@ -955,22 +952,30 @@ describe("projectTranscript", () => {
       })
     ]);
     value.usage = {
-      turns: 1,
+      activity: {turns: 4, completed: 2, failed: 1, canceled: 1, tool_calls: 38},
+      turns: 3,
       calls: 9,
       total_tokens: 119_901,
       cost_microunits: 0,
       cost_known: false
     };
-    const {container} = render(<App client={mockClient(value)} />);
+    render(<App client={mockClient(value)} />);
 
-    const stats = screen.getByLabelText(/^Run statistics:/);
-    expect(stats.textContent).toBe(
-      "1 turn · 0 tools | 36.4 s total · 35.0 s model · 388 ms tools | " +
-      "1.34 s TTFT | 119.2K tokens · 45% cache"
-    );
-    expect(container.querySelectorAll(".composerMeta > span")).toHaveLength(1);
-    expect(stats.getAttribute("title")).toContain("115,465 in");
-    expect(stats.getAttribute("title")).toContain("63,241 uncached");
+    const stats = screen.getByRole("button", {name: /Run statistics/});
+    expect(stats.textContent).toBe("");
+    expect(stats.closest(".composer")).toBeTruthy();
+    expect(screen.queryByRole("dialog", {name: "Run statistics details"})).toBeNull();
+    fireEvent.click(stats);
+    const latest = screen.getByRole("region", {name: "Latest turn details"});
+    expect(within(latest).getByText("receipt-model")).toBeTruthy();
+    expect(within(latest).getByText("36.4 s")).toBeTruthy();
+    expect(within(latest).getByText("1.34 s")).toBeTruthy();
+    expect(within(latest).getByText("119,207")).toBeTruthy();
+    expect(within(latest).getByText("3", {selector: "dd"})).toBeTruthy();
+    const session = screen.getByRole("region", {name: "Session totals"});
+    expect(within(session).getByText("4", {selector: "dd"})).toBeTruthy();
+    expect(within(session).getByText("38")).toBeTruthy();
+    expect(within(session).getByText("119,901")).toBeTruthy();
   });
 
   it("shows a zero cache hit rate instead of hiding a cold sample", () => {
@@ -982,8 +987,8 @@ describe("projectTranscript", () => {
       })
     ]))} />);
 
-    expect(screen.getByLabelText(/^Run statistics:/).textContent)
-      .toContain("0% cache");
+    fireEvent.click(screen.getByRole("button", {name: /Run statistics/}));
+    expect(screen.getByText("0%", {selector: "dd"})).toBeTruthy();
   });
 
   it("creates a new session without replaying first-run setup", async () => {
@@ -1363,9 +1368,7 @@ describe("projectTranscript", () => {
     fireEvent.click(screen.getByRole("button", {name: "Agent preset"}));
     await waitFor(() => expect(client.listAgentPresets).toHaveBeenCalled());
 
-    fireEvent.change(screen.getByLabelText("Agent mode"), {
-      target: {value: "plan"}
-    });
+    expect(screen.queryByLabelText("Agent mode")).toBeNull();
     expect(screen.queryByLabelText("Planning policy")).toBeNull();
     fireEvent.change(screen.getByLabelText("Maximum steps"), {
       target: {value: "16"}
@@ -1380,9 +1383,6 @@ describe("projectTranscript", () => {
     fireEvent.click(screen.getByRole("button", {name: "Settings"}));
     await screen.findByRole("dialog", {name: "Settings"});
     fireEvent.click(screen.getByRole("button", {name: "Agent preset"}));
-    fireEvent.change(screen.getByLabelText("Agent mode"), {
-      target: {value: "plan"}
-    });
     fireEvent.change(screen.getByLabelText("Maximum steps"), {
       target: {value: "16"}
     });
@@ -1390,7 +1390,6 @@ describe("projectTranscript", () => {
 
     await waitFor(() => {
       expect(client.updateProfile).toHaveBeenCalledWith({
-        mode: "plan",
         max_steps: 16
       });
     });
@@ -1443,7 +1442,7 @@ describe("projectTranscript", () => {
       description: "Review changes",
       scope: "workspace" as const,
       profile: {
-        mode: "plan" as const,
+        mode: "act" as const,
         provider: "fixture",
         model: "fixture",
         reasoning_effort: "",
@@ -1484,11 +1483,10 @@ describe("projectTranscript", () => {
         profile: {
           ...value.profile!.profile,
           revision: 2,
-          mode: "plan",
+          mode: "act",
           max_steps: 16
         },
-        prompt_cache_reset: true,
-        reset_reason: "mode"
+        prompt_cache_reset: false
       },
       restart_required: false
     });
@@ -1523,7 +1521,7 @@ describe("projectTranscript", () => {
     await waitFor(() => {
       expect(client.saveAgentPreset).toHaveBeenCalledWith(expect.objectContaining({
         name: "Strict review copy",
-        profile: expect.objectContaining({mode: "plan", max_steps: 16})
+        profile: expect.objectContaining({mode: "act", max_steps: 16})
       }));
     });
 
@@ -2884,7 +2882,7 @@ describe("projectTranscript", () => {
     }
   });
 
-  it("shows provider-attributed context usage beside the send action", () => {
+  it("unifies provider-attributed context and statistics beside the model selector", () => {
     const value = snapshot([
       event(1, "usage", {
         context: {
@@ -2903,13 +2901,17 @@ describe("projectTranscript", () => {
     ]);
     render(<App client={mockClient(value)} />);
 
-    fireEvent.click(screen.getByRole("button", {name: "25% of context used"}));
-    const panel = screen.getByRole("dialog", {name: "Context usage"});
-    expect(panel.textContent).toContain("~32K / 128K");
-    expect(panel.textContent).toContain("Stable / system~3.5K");
-    expect(panel.textContent).toContain("Tools~7K");
-    expect(panel.textContent).toContain("Messages~18.5K");
-    expect(panel.textContent).toContain("Provider framing~3K");
+    const ring = screen.getByRole("button", {name: /25% of context used/});
+    expect(ring.closest(".composerControls")?.querySelector('[aria-label="Model"]')).toBeTruthy();
+    expect(document.querySelectorAll(".contextMeter")).toHaveLength(1);
+    fireEvent.click(ring);
+    const panel = screen.getByRole("dialog", {name: "Run statistics details"});
+    expect(panel.textContent).toContain("~31.3K / 125K");
+    expect(panel.textContent).toContain("Stable / system~3.4K");
+    expect(panel.textContent).toContain("Tools~6.8K");
+    expect(panel.textContent).toContain("Messages~18.1K");
+    expect(panel.textContent).toContain("Provider framing~2.9K");
+    expect(within(panel).getByRole("region", {name: "Session totals"})).toBeTruthy();
   });
 
   it("renders GFM tables in a keyboard-scrollable Markdown wrapper", () => {
@@ -3269,7 +3271,6 @@ function snapshot(events: RuntimeEvent[] = []): RuntimeSnapshot {
         provider: "fixture",
         model: "fixture",
         mutable_fields: [
-          "mode",
           "provider", "model", "reasoning_effort",
           "approval_posture", "execution_target", "max_steps",
           "enabled_tool_ids"

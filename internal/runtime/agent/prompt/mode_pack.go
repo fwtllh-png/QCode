@@ -39,38 +39,15 @@ calls is a progress update. A tool-enabled Turn ends when you stop calling tools
 and write the user-facing answer. turn_complete is optional for incomplete work
 or to replace the captured answer.`
 
-// ModeInstructionPack returns the developer-facing CollaborationMode pack
-// injected into PartitionMode (W5.2). Switching mode changes this text for the
-// next Assemble / turn.
-func ModeInstructionPack(mode string, imageInput ...bool) string {
-	var instructions string
-	switch strings.ToLower(strings.TrimSpace(mode)) {
-	case "plan":
-		instructions = `Mode: plan
-You are in Plan mode. Investigate first, then call submit_plan with purpose=deliverable and a structured implementation plan.
-Break multi-stage work into independently verifiable steps instead of one broad step.
-Do not edit files, run mutating shell commands, or call write/network tools.
-Use shell_read for inspection pipelines; its workspace is mechanically read-only and network-isolated.
-Ask clarifying questions when requirements are ambiguous.`
-	case "operate":
-		instructions = `Mode: operate
-You are in Operate mode. Prefer careful execution: investigate, then act with clear receipts.
-Use shell_read instead of exec_command whenever a command only inspects local data.
-Process tools may run under auto posture; still request approval for network and external tools.
-Keep the user informed of irreversible side effects before applying them.`
-	case "act":
-		instructions = `Mode: act
+// ActInstructionPack returns the developer-facing execution instructions
+// injected into PartitionMode.
+func ActInstructionPack(imageInput ...bool) string {
+	instructions := `Mode: act
 You are in Act mode. Implement the requested change with tools when appropriate.
 When a Plan is active, call update_plan before starting a step and immediately after its evidence is complete.
 Keep at most one step in_progress and do not defer Plan updates until the end of the Turn.
 Use shell_read instead of exec_command whenever a command only inspects local data.
 High-risk capabilities (process/network/external) still follow the active permission posture.`
-	default:
-		if mode == "" {
-			return ""
-		}
-		instructions = "Mode: " + mode
-	}
 	if len(imageInput) != 0 && imageInput[0] {
 		instructions += `
 This Session accepts image attachments. You can inspect and reason about images supplied by the user.`

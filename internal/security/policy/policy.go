@@ -14,11 +14,7 @@ import (
 
 type Mode string
 
-const (
-	ModePlan    Mode = "plan"
-	ModeAct     Mode = "act"
-	ModeOperate Mode = "operate"
-)
+const ModeAct Mode = "act"
 
 type Permission string
 
@@ -112,16 +108,6 @@ func DefaultRuntime(mode Mode, permission Permission) *Runtime {
 	}
 }
 
-func (r *Runtime) SetMode(mode Mode) uint64 {
-	if r == nil {
-		return 0
-	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.Mode = mode
-	return r.bumpRevisionLocked()
-}
-
 func (r *Runtime) SetPermission(permission Permission) uint64 {
 	if r == nil {
 		return 0
@@ -129,35 +115,6 @@ func (r *Runtime) SetPermission(permission Permission) uint64 {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.Permission = permission
-	return r.bumpRevisionLocked()
-}
-
-func (r *Runtime) SetModePermission(mode Mode, permission Permission) uint64 {
-	if r == nil {
-		return 0
-	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.Mode = mode
-	r.Permission = permission
-	return r.bumpRevisionLocked()
-}
-
-func (r *Runtime) SetModePermissionWithinCeiling(
-	mode Mode,
-	requested Permission,
-	ceiling Permission,
-) uint64 {
-	if r == nil {
-		return 0
-	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if ceiling == "" {
-		ceiling = r.Permission
-	}
-	r.Mode = mode
-	r.Permission = TightenPermission(requested, ceiling)
 	return r.bumpRevisionLocked()
 }
 
@@ -219,14 +176,6 @@ func (r *Runtime) PermissionValue() Permission {
 		return PermissionNever
 	}
 	return snapshot.Permission
-}
-
-func (r *Runtime) ModeValue() Mode {
-	snapshot := r.CloneSampling()
-	if snapshot == nil {
-		return ModePlan
-	}
-	return snapshot.Mode
 }
 
 func (r *Runtime) bumpRevisionLocked() uint64 {
@@ -348,7 +297,7 @@ func (r *Runtime) evaluate(invocation Invocation) Decision {
 		}
 	}
 	effect := NormalizeEffect(invocation)
-	if err := modeDecision(r.Mode, invocation.Capability, effect.Kind); err != nil {
+	if err := validateMode(r.Mode); err != nil {
 		return decisionFromError(err)
 	}
 	if decision := planningDecision(r, invocation, effect); decision != nil {
@@ -399,20 +348,9 @@ func decisionFromError(err error) Decision {
 	return deny("policy_denied", err.Error())
 }
 
-func modeDecision(mode Mode, capability tool.Capability, effect EffectKind) error {
-	switch mode {
-	case ModePlan:
-		if capability != tool.CapabilityRead &&
-			effect != EffectProcessReadOnly &&
-			effect != EffectSessionMutation {
-			return decisionError(
-				"mode_denied",
-				"plan mode only allows reads, read-only processes, and bounded session state updates",
-			)
-		}
-	case ModeAct, ModeOperate:
-	default:
-		return decisionError("mode_unknown", "unknown mode is denied")
+func validateMode(mode Mode) error {
+	if mode != ModeAct {
+		return decisionError("mode_unknown", "only act mode is supported")
 	}
 	return nil
 }
@@ -513,11 +451,7 @@ func Validate(runtime *Runtime) error {
 		return errors.New("runtime is required")
 	}
 	runtime = runtime.CloneSampling()
-	if err := modeDecision(
-		runtime.Mode,
-		tool.CapabilityRead,
-		EffectWorkspaceRead,
-	); err != nil {
+	if err := validateMode(runtime.Mode); err != nil {
 		return fmt.Errorf("mode: %w", err)
 	}
 	if _, err := permissionDecision(runtime.Permission, tool.CapabilityRead, Effect{

@@ -6,7 +6,7 @@ func TestCloneSnapshotCopiesNestedMapsAndSlices(t *testing.T) {
 	original := Snapshot{
 		Config: Config{
 			Route: Route{Slots: map[string]RouteSlot{
-				"plan": {Provider: "fixture", Model: "planner"},
+				"summary": {Provider: "fixture", Model: "summarizer"},
 			}},
 			Diagnostics: Diagnostics{Commands: map[string]DiagnosticCommand{
 				".go": {Name: "go", Args: []string{"test", "{path}"}},
@@ -18,7 +18,7 @@ func TestCloneSnapshotCopiesNestedMapsAndSlices(t *testing.T) {
 				}},
 				AuthServices: []EnvironmentAuthService{{
 					Protocol: "goproxy", Upstream: "https://proxy.example",
-					Prefixes: []string{"example.com/"},
+					Prefixes:   []string{"example.com/"},
 					Credential: EnvironmentAuthCredential{Kind: "env", Name: "TOKEN"},
 				}},
 			}},
@@ -26,7 +26,7 @@ func TestCloneSnapshotCopiesNestedMapsAndSlices(t *testing.T) {
 		Provenance: map[string]Source{fieldProvider: SourceFile},
 	}
 	cloned := CloneSnapshot(original)
-	cloned.Config.Route.Slots["plan"] = RouteSlot{
+	cloned.Config.Route.Slots["summary"] = RouteSlot{
 		Provider: "other",
 		Model:    "other",
 	}
@@ -38,7 +38,7 @@ func TestCloneSnapshotCopiesNestedMapsAndSlices(t *testing.T) {
 	cloned.Config.Execution.Environment.AuthServices[0].Prefixes[0] = "other.com/"
 	cloned.Provenance[fieldProvider] = SourceStartup
 
-	if original.Config.Route.Slots["plan"].Provider != "fixture" ||
+	if original.Config.Route.Slots["summary"].Provider != "fixture" ||
 		original.Config.Diagnostics.Commands[".go"].Args[0] != "test" ||
 		original.Config.Execution.Environment.Resources[0].Path != "/opt/a" ||
 		original.Config.Execution.Environment.Resources[0].Methods[0] != "GET" ||

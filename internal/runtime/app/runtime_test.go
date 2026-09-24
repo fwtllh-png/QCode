@@ -761,9 +761,9 @@ func waitForProcessed(t *testing.T, runtime *Runtime, count uint64) {
 	}
 }
 
-func TestRuntimeIdleTurnRejectedInPlanMode(t *testing.T) {
+func TestRuntimeIdleTurnStarts(t *testing.T) {
 	runtime := NewRuntime(Options{
-		Engine: &planGatedEngine{mode: "plan"}, SubscriberBuffer: 8,
+		Engine: &testEngine{}, SubscriberBuffer: 8,
 	})
 	t.Cleanup(func() { closeRuntime(t, runtime) })
 	events, err := runtime.Events(t.Context(), 0)
@@ -781,39 +781,9 @@ func TestRuntimeIdleTurnRejectedInPlanMode(t *testing.T) {
 		t.Fatal(err)
 	}
 	event := receiveEvent(t, events)
-	if event.Kind != protocol.EventOperationRejected {
-		t.Fatalf("event = %s, want operation.rejected", event.Kind)
+	if event.Kind != protocol.EventTurnStarted {
+		t.Fatalf("event = %s, want turn.started", event.Kind)
 	}
-
-	// Non-idle user turns still start in plan mode.
-	userOp, err := protocol.NewOperation(&protocol.StartTurnPayload{
-		ThreadID: "thread-user", TurnID: "turn-user", ItemID: "item-user",
-		Prompt: "please plan",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.Submit(t.Context(), userOp); err != nil {
-		t.Fatal(err)
-	}
-	started := receiveEvent(t, events)
-	if started.Kind != protocol.EventTurnStarted {
-		t.Fatalf("user turn event = %s, want turn.started", started.Kind)
-	}
-}
-
-type planGatedEngine struct {
-	testEngine
-	mode string
-}
-
-func (e *planGatedEngine) AllowIdleTurn() error {
-	if e.mode == "plan" {
-		return protocol.NewProblem(
-			protocol.CodeConflict, "plan mode rejects automatic idle turns", false, nil,
-		)
-	}
-	return nil
 }
 
 func TestRuntimeToolAndApprovalGetOwnedItemIDs(t *testing.T) {

@@ -226,7 +226,7 @@ func (s *AgentPresetService) validateProfile(
 }
 
 func emptySessionProfilePatch(patch protocol.SessionProfilePatch) bool {
-	return patch.Mode == nil && patch.Provider == nil &&
+	return patch.Provider == nil &&
 		patch.Model == nil && patch.ReasoningEffort == nil &&
 		patch.EnabledToolIDs == nil && patch.ApprovalPosture == nil &&
 		patch.ExecutionTarget == nil && patch.MaxSteps == nil

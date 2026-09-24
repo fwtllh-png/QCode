@@ -359,11 +359,11 @@ func sessionProfileRevisionIsShared(t *testing.T, host Host, _ Setup) {
 		snapshot.Capabilities.Model != snapshot.Profile.Model {
 		t.Fatalf("%s: session profile = %+v", host.Transport(), snapshot)
 	}
-	mode := "plan"
+	tools := []string{"builtin:file_read"}
 	updated, err := host.UpdateSessionProfile(
 		t.Context(),
 		snapshot.Profile.Revision,
-		protocol.SessionProfilePatch{Mode: &mode},
+		protocol.SessionProfilePatch{EnabledToolIDs: &tools},
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -372,13 +372,13 @@ func sessionProfileRevisionIsShared(t *testing.T, host Host, _ Setup) {
 		updated.Profile.PromptCacheRevision !=
 			snapshot.Profile.PromptCacheRevision+1 ||
 		!updated.PromptCacheReset ||
-		updated.ResetReason != "mode" {
+		updated.ResetReason != "enabled_tool_ids" {
 		t.Fatalf("%s: profile update = %+v", host.Transport(), updated)
 	}
 	if _, err := host.UpdateSessionProfile(
 		t.Context(),
 		snapshot.Profile.Revision,
-		protocol.SessionProfilePatch{Mode: &mode},
+		protocol.SessionProfilePatch{EnabledToolIDs: &tools},
 	); err == nil {
 		t.Fatalf("%s: stale session profile revision was accepted", host.Transport())
 	}
@@ -387,7 +387,8 @@ func sessionProfileRevisionIsShared(t *testing.T, host Host, _ Setup) {
 		t.Fatal(err)
 	}
 	if recovered.Profile.Revision != updated.Profile.Revision ||
-		recovered.Profile.Mode != mode {
+		len(recovered.Profile.EnabledToolIDs) != 1 ||
+		recovered.Profile.EnabledToolIDs[0] != tools[0] {
 		t.Fatalf("%s: recovered profile = %+v", host.Transport(), recovered)
 	}
 }

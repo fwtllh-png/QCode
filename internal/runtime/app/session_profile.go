@@ -356,7 +356,6 @@ func validateMutableProfilePatch(
 		name string
 		set  bool
 	}{
-		{"mode", patch.Mode != nil},
 		{"planning_policy", patch.PlanningPolicy != nil},
 		{"provider", patch.Provider != nil},
 		{"model", patch.Model != nil},

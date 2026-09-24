@@ -255,7 +255,7 @@ export interface OperationReceipt {
 export interface SessionProfile {
   version: number;
   revision: number;
-  mode: "plan" | "act" | "operate";
+  mode: "act";
   planning_policy?: "off" | "adaptive" | "required";
   provider: string;
   model: string;
@@ -551,11 +551,20 @@ export interface AgentSummary {
 }
 
 export interface UsageRollup {
+  activity?: {
+    turns: number;
+    completed: number;
+    failed: number;
+    canceled: number;
+    tool_calls: number;
+  };
   turns: number;
   calls: number;
   total_tokens: number;
   cost_microunits: number;
   cost_known: boolean;
+  priced_calls?: number;
+  unpriced_calls?: number;
 }
 
 export interface UsageAggregate {

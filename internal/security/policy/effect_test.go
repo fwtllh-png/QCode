@@ -200,8 +200,8 @@ func TestEffectRiskDrivesApprovalWithoutToolNameExceptions(t *testing.T) {
 	}
 }
 
-func TestPlanModeAllowsOnlyReadOnlyProcessEffects(t *testing.T) {
-	runtime := DefaultRuntime(ModePlan, PermissionNever)
+func TestNeverPostureAllowsOnlyReadOnlyProcessEffects(t *testing.T) {
+	runtime := DefaultRuntime(ModeAct, PermissionNever)
 	readOnly := effectInvocation(
 		"exec_command",
 		CapabilityProcess,
@@ -221,8 +221,8 @@ func TestPlanModeAllowsOnlyReadOnlyProcessEffects(t *testing.T) {
 		tool.Resource{Kind: "file", Path: "a.go", Access: tool.AccessWrite},
 	)
 	decision := runtime.Evaluate(mutating)
-	if decision.Action != ActionDeny || decision.Code != "mode_denied" {
-		t.Fatalf("mutating process decision = %+v, want mode_denied", decision)
+	if decision.Action != ActionDeny || decision.Code != "permission_denied" {
+		t.Fatalf("mutating process decision = %+v, want permission_denied", decision)
 	}
 }
 

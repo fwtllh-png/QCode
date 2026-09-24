@@ -45,7 +45,7 @@ func (e *Engine) applySessionPolicyLocked(profile protocol.SessionProfile) {
 		return
 	}
 	permission := effectiveProfilePermission(e.profileReadOnly, policy.Permission(profile.ApprovalPosture))
-	e.options.Security.SetModePermissionWithinCeiling(policy.Mode(profile.Mode), permission, e.options.ProfilePermissionCeiling)
+	e.options.Security.SetPermissionWithinCeiling(permission, e.options.ProfilePermissionCeiling)
 	e.options.Security.ConfigurePlanning(policy.PlanningAdaptive)
 }
 

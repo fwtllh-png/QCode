@@ -54,12 +54,9 @@ type TurnSpec struct {
 	Identity TurnIdentity
 	Request  TurnRequest
 	Profile  protocol.SessionProfile
-	// Purpose is what this turn samples for, derived from the frozen mode. It is
-	// what selects Route out of the session's routing table.
+	// Purpose selects the main act route out of the session's routing table.
 	Purpose model.Purpose
-	// Route is the model this turn samples on. Freezing it with the mode is what
-	// keeps a mid-turn switch to plan from changing which model is already
-	// answering.
+	// Route is frozen so profile changes cannot change the model mid-turn.
 	Route          model.ReadyRoute
 	Provider       string
 	Model          string
@@ -85,23 +82,7 @@ type TurnSpec struct {
 type SkillSummary = promptcontext.SkillSummary
 type SkillSelectionMetrics = promptcontext.SkillSelectionMetrics
 
-// PurposeForMode is which route a turn in this mode samples on. Plan mode is the
-// only mode with a purpose of its own: operate is act with wider permissions, not
-// a different kind of thinking, so giving it a third slot would ask an operator
-// to configure a distinction the runtime does not make.
-func PurposeForMode(mode policy.Mode) model.Purpose {
-	if mode == policy.ModePlan {
-		return model.PurposePlan
-	}
-	return model.PurposeAct
-}
-
 // SnapshotTurnSpec captures all mutable Session inputs before a Scope starts.
-//
-// It fails when the frozen mode's purpose has no route, which happens only under
-// a locked route set. Failing here is deliberate: it is before the turn announces
-// what it is about to do, so a locked session that cannot honor plan mode says so
-// instead of sampling on the act model and reporting plan.
 func SnapshotTurnSpec(
 	options Options,
 	identity TurnIdentity,
@@ -113,11 +94,14 @@ func SnapshotTurnSpec(
 	} else {
 		security = security.CloneSampling()
 	}
+	if err := policy.Validate(security); err != nil {
+		return TurnSpec{}, err
+	}
 	routes, err := effectiveRoutes(options)
 	if err != nil {
 		return TurnSpec{}, err
 	}
-	purpose := PurposeForMode(security.Mode)
+	purpose := model.PurposeAct
 	route, err := routes.For(purpose)
 	if err != nil {
 		return TurnSpec{}, err

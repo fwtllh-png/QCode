@@ -59,7 +59,7 @@ Route/Context Digest 不属于跨运行稳定字段，不得据此设置发布�
 | `posture` | 权限姿态（`suggest`/`auto`/`bypass`/`never`），缺省 `auto` |
 | `approval_decision` | 自动回答停驻 Approval；仅接受 Protocol Decision（如 `approve`） |
 | `budget_tokens` | Session Token Budget；用于验证首请求前的硬门禁 |
-| `mode` | 工具模式（`plan`/`act`/`operate`），缺省取配置默认 |
+| `mode` | 固定为 `act`，省略时取默认值 |
 | `max_steps` | Agent 步数上限 |
 | `timeout_ms` | 单任务超时，缺省 2 分钟 |
 | `verify` | 验证门禁配置，对应 `[execution.verify]`：`mode`/`scope`/`on_failure`/`command`/`max_repair_steps`/`timeout_ms`。门禁默认 `off`，任务必须显式开启 |

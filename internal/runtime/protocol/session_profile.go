@@ -25,7 +25,6 @@ type SessionProfile struct {
 }
 
 type SessionProfilePatch struct {
-	Mode            *string   `json:"mode,omitempty"`
 	PlanningPolicy  *string   `json:"planning_policy,omitempty"`
 	Provider        *string   `json:"provider,omitempty"`
 	Model           *string   `json:"model,omitempty"`
@@ -117,10 +116,8 @@ func (p SessionProfile) Validate() error {
 	if p.Revision == 0 || p.PromptCacheRevision == 0 {
 		return errors.New("session profile revisions must be positive")
 	}
-	switch p.Mode {
-	case "plan", "act", "operate":
-	default:
-		return errors.New("session profile mode must be plan, act, or operate")
+	if p.Mode != "act" {
+		return errors.New("session profile mode must be act")
 	}
 	if !slices.Contains([]string{"", "off", "adaptive", "required"}, p.PlanningPolicy) {
 		return errors.New("session profile planning_policy is invalid")
@@ -161,7 +158,7 @@ func (p SessionProfile) Validate() error {
 }
 
 func (p SessionProfilePatch) Validate() error {
-	if p.Mode == nil && p.Provider == nil && p.Model == nil &&
+	if p.Provider == nil && p.Model == nil &&
 		p.PlanningPolicy == nil &&
 		p.ReasoningEffort == nil && p.EnabledToolIDs == nil &&
 		p.ApprovalPosture == nil && p.ExecutionTarget == nil &&
@@ -194,7 +191,6 @@ func ApplySessionProfilePatch(
 			*target = *change
 		}
 	}
-	applyCached(&next.Mode, patch.Mode, "mode")
 	applyCached(&next.PlanningPolicy, patch.PlanningPolicy, "planning_policy")
 	applyCached(&next.Provider, patch.Provider, "provider")
 	applyCached(&next.Model, patch.Model, "model")
@@ -305,7 +301,7 @@ func (c SessionProfileCapabilities) Validate(profile SessionProfile) error {
 	}
 	for _, field := range c.MutableFields {
 		switch field {
-		case "mode", "provider", "model", "reasoning_effort",
+		case "provider", "model", "reasoning_effort",
 			"enabled_tool_ids", "approval_posture", "execution_target", "max_steps":
 		default:
 			return fmt.Errorf("unknown mutable session profile field %q", field)

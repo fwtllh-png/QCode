@@ -229,28 +229,57 @@ Authorization、Cookie、API Key 等会被持久化进 Tool Call 的敏感 Heade
 不可逆外部变更，要求 Plan 和单次审批。GitLab、内部代码托管平台和企业认证流程继续
 通过 MCP 或 Skill 提供，不把平台凭据写入通用 Tool 参数。
 
-Composer 下方的 Stats 使用一条可整体省略的摘要展示 Turn、Tool、总耗时、模型耗时、
-Tool 耗时、TTFT、Token、Cache 和 Cost；完整明细保留在 Tooltip 中，不逐项压缩。
+Composer 内、模型选择器左侧统一使用上下文圆环作为统计入口，平时只显示圆环。
+进度按最近可用的上下文占用量／模型窗口计算，优先使用最近模型采样的上下文估算，
+缺失时使用回执的上下文记录；不包含尚未发送的草稿。尚无记录时保留空环，
+详情明确显示未记录，不将未知值解释为 0%。鼠标悬浮即展示紧凑统计卡片，
+移入卡片可继续查看，移出后自动收起；悬浮不抢占
+输入焦点。点击可固定卡片，触屏和键盘仍可打开，支持 Escape、关闭按钮及点击外部关闭。
+卡片顶部展示上下文占比、已用／总容量及系统、工具、消息、Provider framing 分项，
+随后展示最近一轮的 Token 总数、输入／输出分段条、缓存、耗时和独立的会话累计。
+轮次分段条表示该轮 Token 构成；圆环表示上下文容量。统计口径与审批、
+验证耗时收在 `About these numbers` 中，按需展开。
+窄屏下卡片保持在视口内，内容超出可用高度时可滚动。
+新一轮运行时卡片显示 `Running`，此前的回执标为 `Previous turn`，不会把上一轮耗时
+误写成本轮实时数据。模型名来自该轮回执的实际 Route，不随当前模型选择变化。
 
-Plan 模式只允许 Workspace Read 与有界的 Session Plan 状态更新。Agent 调研完成后通过
+- Token 总量为 Input + Output；Reasoning 是 Output 子集，Cached 是 Input 子集，
+  不重复相加。上下文 `1K = 1024 tokens`，轮次用量显示完整数字。缺失值显示 `—`，
+  缓存字段缺失显示 `Not reported`，不会推断为 0%。
+- 首次响应从 Turn 开始计时，包含首次正文、推理或工具调用片段，不等同于首次正文
+  或一次 HTTP 请求的 TTFT。Tool 耗时为调用耗时之和，包含审批等待；并行调用会
+  重叠，因此不能将各阶段耗时直接相加得到总耗时。
+- 会话累计来自后端完整持久化记录，包含子 Agent 的历史轮次以及失败、取消轮次。
+  `Turns started` 统计 `turn.started`，完成、失败、取消分别统计对应终态事件；
+  工具次数按 Turn/Item 去重的 `tool.result` 统计，包含控制类调用及失败调用，
+  未闭合调用不计入；本轮工具次数来自回执中业务、控制、验证三类计数之和，
+  `failed` 是这些调用的子集，不重复相加。
+- 模型调用数只统计有 Usage 记录的调用，包含辅助模型调用；它对应的有用量轮数
+  不等同于所有已开始轮数。累计不依赖浏览器已加载的历史页数，运行中暂保留已查询
+  结果，终态刷新。`usage/query` 的 `rollup.activity` 提供执行计数，带 Provider、
+  Model 或账单时间过滤时不提供该字段；原 `rollup.turns` 仍表示有 Usage 的轮数。
+- 未知价格显示 `Unknown`；部分调用有价格时，会话费用显示已知金额下界及
+  `partly unpriced`，不把未知费用显示成免费。
+
+Agent 固定使用 `act`。需要规划时，调研完成后通过
 `submit_plan` 提交带步骤、依赖、预期证据和受影响文件的结构化 JSON 计划。`purpose`
 区分两种用途：`execution`（默认）是本次执行计划，`deliverable` 是交付给用户的
-未来方案。只要求补充计划或设计方案时，Agent 使用 `deliverable`；Plan 模式也使用
-该用途。Plan Artifact 不接受 Markdown 或 XML 标签输出。交付方案显示为
+未来方案。只要求补充计划或设计方案时，Agent 使用 `deliverable`。
+Plan Artifact 不接受 Markdown 或 XML 标签输出。交付方案显示为
 `Proposed plan`，不显示为正在执行的 Tasks。提交计划时会记录受影响文件摘要，
 执行前若文件已变化，Runtime 拒绝旧 Revision 并要求重新规划。
 
-Mode 只提供 `plan`、`act`、`operate` 三项。`act` 与 `operate` 固定使用自适应规划：
+Composer、设置页和命令菜单不提供模式切换。`act` 固定使用自适应规划：
 非高风险且非不可逆的 Workspace 操作直接执行，不按文件数量升级；高风险、不可逆、
 网络写、外部写或 Agent 生命周期操作先提交计划。界面不再暴露独立的 Planning
-Policy，避免用户同时选择模式和规划策略。
+Policy。只读操作限制由 `never` 工具审批姿态执行。
 
 执行 Plan 提交后自动批准并继续当前 Turn；用户无需选择 `Implement` 或 `Autopilot`。
 交付 Plan 只保存产物，不授权实施、不覆盖当前执行清单，也不能直接转换为执行。
 用户后续要求实施时，Agent 核对当前状态后另行提交 `purpose=execution` 的计划。
 执行计划的提交状态只属于
-当前 Turn，不写回 Session 默认工具审批姿态。独立 Plan 模式仍使用 Plan 模型路由；
-Act 内规划保持 Turn 已冻结的 Act 路由，不在一次回答中途切换模型。新 Session 默认
+当前 Turn，不写回 Session 默认工具审批姿态。
+规划和执行保持 Turn 已冻结的 Act 路由，不在一次回答中途切换模型。新 Session 默认
 使用 `approval_posture=auto`。Plan Artifact 以执行配置摘要而不是整个 Session
 Profile Revision 判断是否过期；模型、工具集、审批姿态或执行目标等执行配置变化仍会
 要求重新规划。
@@ -304,8 +333,11 @@ Turn 完成后，Chat 默认只保留用户问题和最终结论；阶段说明�
 Conversation Header 显示当前用户问题位置，并提供上一个、下一个问题和会话内搜索动作。
 搜索面板可按 Turn、问题、阶段说明（`Updates`）、Tool 或文件过滤；命中项使用 Runtime 派生的稳定
 Entry、Turn、Call 和 Path Identity 定位。Chat 与 Trajectory 往返、切换 Session、
-加载更早历史或展开 Tool 时，页面会保留当前语义阅读锚点。Transcript 使用最多
-200 个业务节点的重叠滑动窗口，避免长会话无限扩张 DOM。向上滚动时自动显示或读取
+加载更早历史或展开 Tool 时，页面会保留当前语义阅读锚点。Transcript 以
+200 个顶层展示节点为预算使用重叠滑动窗口：历史执行过程和已撤回轮次的折叠入口
+各计一个节点，内部工具、推理和阶段说明不逐条占用窗口。窗口边界保留完整的历史
+轮次，避免长执行过程把问题、回答及更早对话隔断；展开与搜索仍可读取完整细节。
+向上滚动时自动显示或读取
 更早历史，向下滚动时自动显示后续消息，不再显示 `Earlier messages` / `Newer messages`
 分页按钮。加载期间保留当前可见消息及其视口位置；浏览旧消息时，新输出不会强制拉回底部，
 滚动与流式更新同时发生时以最新滚动位置为准。`Back to bottom` 会切回最新窗口并继续跟随输出。

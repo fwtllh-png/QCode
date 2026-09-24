@@ -52,7 +52,7 @@ name = "OPENAI_API_KEY"      # 只保存引用，不能填写密钥值
 provider = "openai"
 model = "gpt-4.1"
 protocol = "openai_chat"
-mode = "act"                 # plan | act | operate
+mode = "act"                 # 固定为 act，不支持其他值
 workspace = "."
 tools = true
 max_output_tokens = 0           # 0 = 使用当前模型声明的 MaxOutputTokens
@@ -303,10 +303,6 @@ Prompt 工作集仍按 `context.working_set.max_entries` 取 top-N，两层不�
 lock = false
 
 
-[route.plan]
-provider = "openai"
-model = "gpt-4.1-mini"
-
 [route.vision]
 provider = "openai-responses"
 model = "gpt-4.1"
@@ -324,6 +320,11 @@ DeepSeek 的默认值为 High，可选档位为 Off、Low、High、Max。未声�
 Runtime 不发送 `reasoning_effort`；声明了集合但没有默认值时，自适应策略只在声明的
 集合内选择。显式 Effort 始终固定，且必须由所有已配置 Route 广告；不支持的值会在
 Provider I/O 前失败。Reasoning Effort 不再改变输出容量。
+
+执行模式固定为 `act`；`execution.mode`、`QCODE_MODE` 及 Session/Preset 的 `mode`
+仅接受该值，Profile Patch 不再接受模式变更。旧的非 act 配置和 `[route.plan]`
+会明确报错，需移除旧路由并将模式改为 `act`。主 Turn 使用 Act 路由，辅助路由仅有
+`vision` 和 `summary`。
 
 `max_output_tokens = 0` 会根据当前 Model Catalog 能力和输入投影后剩余的 Context
 空间，为每次请求动态计算上限。初始 Ceiling 来自模型声明的 `MaxOutputTokens`；
@@ -585,7 +586,7 @@ Provider 变更会在没有活动或待处理工作的前提下重建已注册�
 Composer 可直接切换历史 Model。同一 Provider 内标记为 `hot` 的 Model 可作为 Session
 Profile 在 Turn 之间切换；运行中的 Turn 继续使用启动时冻结的 Route。
 
-用途路由支持 `plan`、`vision` 和 `summary`。设置 `route.lock=true` 后，缺失用途路由
+用途路由支持 `vision` 和 `summary`。设置 `route.lock=true` 后，缺失用途路由
 会直接报错，不再静默回落到主执行路由。
 
 ## 凭证

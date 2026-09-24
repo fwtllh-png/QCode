@@ -34,13 +34,13 @@ func TestProfilePersistsWithRevisionCASAndPreservesMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	mode := "plan"
+	model := "other-model"
 	updated, err := repository.UpdateProfile(
 		t.Context(),
 		"session",
 		current.Revision,
 		defaults,
-		protocol.SessionProfilePatch{Mode: &mode},
+		protocol.SessionProfilePatch{Model: &model},
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -54,7 +54,7 @@ func TestProfilePersistsWithRevisionCASAndPreservesMetadata(t *testing.T) {
 		"session",
 		current.Revision,
 		defaults,
-		protocol.SessionProfilePatch{Mode: &mode},
+		protocol.SessionProfilePatch{Model: &model},
 	); !errors.Is(err, session.ErrProfileRevisionConflict) {
 		t.Fatalf("stale update error = %v", err)
 	}
@@ -76,7 +76,7 @@ func TestProfilePersistsWithRevisionCASAndPreservesMetadata(t *testing.T) {
 		t.Fatal(err)
 	}
 	if recovered.Revision != updated.Profile.Revision ||
-		recovered.Mode != mode {
+		recovered.Model != model {
 		t.Fatalf("recovered profile = %+v", recovered)
 	}
 }

@@ -164,11 +164,6 @@ func (a *EngineAdapter) ApplySessionProfile(
 	}
 	return a.engine.ApplySessionProfile(profile)
 }
-func (a *EngineAdapter) SetPolicyMode(mode policy.Mode) {
-	if a != nil && a.engine != nil {
-		a.engine.SetPolicyMode(mode)
-	}
-}
 func (a *EngineAdapter) SetPermission(permission policy.Permission) {
 	if a != nil && a.engine != nil {
 		a.engine.SetPermission(permission)
@@ -190,33 +185,11 @@ func AdaptEngineWithWorkspaceIdentity(
 	return &EngineAdapter{engine: value, workspaceIdentity: identity}
 }
 
-// AllowIdleTurn rejects extension/automation idle starts while Plan mode is active (C4).
-func (a *EngineAdapter) AllowIdleTurn() error {
-	if a == nil || a.engine == nil {
-		return nil
-	}
-	seed := a.engine.OptionsSeed()
-	if seed.Security != nil && seed.Security.ModeValue() == policy.ModePlan {
-		return protocol.NewProblem(
-			protocol.CodeConflict,
-			"plan mode rejects automatic idle turns",
-			false,
-			nil,
-		)
-	}
-	return nil
-}
-
 func (a *EngineAdapter) StartTurn(
 	ctx context.Context,
 	payload *protocol.StartTurnPayload,
 	sink EngineSink,
 ) error {
-	if payload != nil && payload.Idle {
-		if err := a.AllowIdleTurn(); err != nil {
-			return err
-		}
-	}
 	intent := protocol.NormalizeTurnIntent(payload.Intent)
 	identity := a.workspaceIdentity
 	if payload.WorkspaceIdentity != nil {
@@ -568,14 +541,12 @@ func (a *EngineAdapter) StartTurn(
 	// each plan-approved turn re-submits explicitly.
 	_, planTransition, planApproved := turnPlanExecution(payload)
 	if planApproved {
-		mode, permission := security.ModeValue(), security.PermissionValue()
-		a.engine.SetPolicyMode(policy.ModeAct)
+		permission := security.PermissionValue()
 		security.SubmitPlan()
 		if planTransition == protocol.PlanTransitionAutopilot {
 			a.engine.SetPermission(policy.PermissionAuto)
 		}
 		defer func() {
-			a.engine.SetPolicyMode(mode)
 			a.engine.SetPermission(permission)
 		}()
 	}

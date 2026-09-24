@@ -262,9 +262,8 @@ func TestRecoverResultStructuresPolicyDenialForWriteTools(t *testing.T) {
 		provider.ToolCall{ID: "call-1", Name: "policy_write"},
 		tool.Result{},
 		&policy.DecisionError{
-			Code: "mode_denied",
-			Reason: "plan mode only allows reads, read-only processes, and " +
-				"bounded session state updates",
+			Code:   "permission_denied",
+			Reason: "never posture denies side effects",
 		},
 	)
 	if !ok {
@@ -273,13 +272,13 @@ func TestRecoverResultStructuresPolicyDenialForWriteTools(t *testing.T) {
 	if !result.IsError {
 		t.Fatal("recovered denial is not an error result")
 	}
-	if action, _ := result.Metadata["required_action"].(string); action != "submit_plan" {
+	if action, _ := result.Metadata["required_action"].(string); action != "choose_read_only_alternative" {
 		t.Fatalf("required_action = %v", result.Metadata["required_action"])
 	}
 	if result.Metadata["retry_original"] != false {
 		t.Fatalf("retry_original = %v", result.Metadata["retry_original"])
 	}
-	if !strings.Contains(result.Content, "required_action=submit_plan") {
+	if !strings.Contains(result.Content, "required_action=choose_read_only_alternative") {
 		t.Fatalf("content = %q", result.Content)
 	}
 

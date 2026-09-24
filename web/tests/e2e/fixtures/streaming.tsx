@@ -72,9 +72,19 @@ const paragraph = [
   "| Render | Ready |",
   ""
 ].join("\n");
-for (let index = 0; index < (scrolling ? 10 : 60); index += 1) {
+const historyTurns = scrolling === "history-pages" ? 120 : scrolling ? 10 : 60;
+for (let index = 0; index < historyTurns; index += 1) {
   emit("turn.started", {prompt: `Historical question ${index}`}, `history-${index}`);
-  emit("turn.completed", {text: paragraph.repeat(3)}, `history-${index}`);
+  if ((scrolling === "history" || scrolling === "history-pages") && index === historyTurns - 2) {
+    for (let tool = 0; tool < 250; tool += 1) {
+      const call_id = `history-read-${tool}`;
+      emit("tool.start", {call_id, tool: "file_read", arguments: {path: `file-${tool}.ts`}}, `history-${index}`);
+      emit("tool.result", {call_id, tool: "file_read", output: "Inspected."}, `history-${index}`);
+    }
+  }
+  emit("turn.completed", {
+    text: scrolling === "history-pages" ? `Historical answer ${index}` : paragraph.repeat(3)
+  }, `history-${index}`);
 }
 emit("turn.started", {prompt: "Stream a detailed answer"});
 if (scrolling) {

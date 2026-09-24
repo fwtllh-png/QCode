@@ -2767,6 +2767,11 @@ textarea:disabled {
   background: var(--ch-panel-subtle);
 }
 
+.contextMeter:focus-visible {
+  outline: 2px solid var(--ch-text-secondary);
+  outline-offset: 2px;
+}
+
 .contextMeter svg {
   width: 16px;
   height: 16px;
@@ -2787,40 +2792,6 @@ textarea:disabled {
   stroke-linecap: round;
 }
 
-.contextPanel {
-  position: absolute;
-  right: 0;
-  bottom: calc(100% + 8px);
-  z-index: var(--ch-layer-popover);
-  width: 280px;
-  padding: 12px;
-  color: var(--ch-text-secondary);
-  background: var(--ch-panel-raised);
-  border: 1px solid var(--ch-border-strong);
-  border-radius: var(--ch-radius-control);
-  box-shadow: var(--ch-elevation-2);
-  font-size: 12px;
-  line-height: 20px;
-}
-
-.contextPanelHeader {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  color: var(--ch-text-muted);
-}
-
-.contextPanelHeader strong,
-.contextPanelHeader b {
-  color: var(--ch-text);
-  font-weight: 600;
-}
-
-.contextPanelHeader b {
-  margin-left: auto;
-  font-variant-numeric: tabular-nums;
-}
-
 .contextBar {
   display: flex;
   height: 4px;
@@ -2832,7 +2803,6 @@ textarea:disabled {
 }
 
 .contextBar > span {
-  min-width: 2px;
   height: 100%;
   background: var(--ch-text-muted);
 }
@@ -2889,30 +2859,213 @@ textarea:disabled {
   font-variant-numeric: tabular-nums;
 }
 
-.contextPanel > small {
-  display: block;
-  margin-top: 10px;
+.composerStatsPopover {
+  position: absolute;
+  bottom: 100%;
+  right: var(--stats-right, 0px);
+  z-index: var(--ch-layer-popover);
+  width: min(390px, calc(100vw - 24px));
+  /* Keep the hover target continuous between the ring and the card. */
+  padding-bottom: 8px;
+}
+
+.composerStatsPanel {
+  max-height: min(680px, var(--stats-height, calc(100dvh - 100px)));
+  overflow-y: auto;
+  padding: 18px 20px 12px;
+  border: 1px solid var(--ch-border);
+  border-radius: 16px;
+  background: var(--ch-panel-raised);
+  box-shadow: var(--ch-modal-shadow);
+  color: var(--ch-text);
+  outline: none;
+  font-size: 12px;
+  line-height: 19px;
+  font-variant-numeric: tabular-nums;
+}
+
+.composerStatsContextTotal {
+  margin: 8px 0 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.composerStatsPanel header,
+.composerStatsHeading,
+.composerStatsRow {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.composerStatsPanel header {
+  align-items: start;
+  margin-bottom: 14px;
+  font-size: 13px;
+}
+
+.composerStatsFooter button {
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--ch-text-muted);
+  cursor: pointer;
+  padding: 4px;
+}
+
+.composerStatsFooter button:hover {
+  background: var(--ch-state-hover);
+}
+
+.composerStatsPanel section + section {
+  margin-top: 12px;
+  padding-top: 14px;
+  border-top: 1px solid var(--ch-border);
+}
+
+.composerStatsHeading h3 {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.composerStatsHeading > span,
+.composerStatsStatus {
   color: var(--ch-text-caption);
+  font-size: 11px;
+}
+
+.composerStatsModel {
+  margin: 2px 0 0;
+  color: var(--ch-text-secondary);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.composerStatsPanel dl {
+  margin: 8px 0 0;
+}
+
+.composerStatsRow {
+  padding: 4px 0;
+}
+
+.composerStatsRow dt {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  color: var(--ch-text-muted);
+}
+
+.composerStatsRow dd {
+  margin: 0;
+  font-weight: 500;
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+
+.composerStatsTotal .composerStatsRow {
+  align-items: center;
+  padding: 0;
+}
+
+.composerStatsTotal dd {
+  font-size: 20px;
+  line-height: 26px;
+  letter-spacing: -0.4px;
+  font-weight: 600;
+}
+
+.composerStatsTokenBar {
+  display: flex;
+  height: 7px;
+  overflow: hidden;
+  margin: 10px 0 12px;
+  border-radius: 7px;
+  background: var(--ch-panel-subtle);
+}
+
+.composerStatsDot {
+  width: 8px;
+  height: 8px;
+  flex-shrink: 0;
+  border-radius: 50%;
+}
+
+.composerStatsPanel [data-token="input"] {
+  background: var(--ch-business);
+}
+
+.composerStatsPanel [data-token="output"] {
+  background: var(--ch-context-messages);
+}
+
+.composerStatsTokens .composerStatsRow:last-child {
+  padding-left: 17px;
+  font-size: 11px;
+}
+
+.composerStatsPanel .composerStatsCache {
+  margin-top: 10px;
+  padding: 7px 0;
+  border-top: 1px solid var(--ch-border);
+  border-bottom: 1px solid var(--ch-border);
+}
+
+.composerStatsPanel .composerStatsMetrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px 14px;
+  margin-top: 14px;
+}
+
+.composerStatsMetrics .composerStatsRow {
+  display: block;
+  padding: 0;
+}
+
+.composerStatsMetrics dt {
+  min-height: 16px;
+  font-size: 10px;
   line-height: 16px;
 }
 
-.composerMeta {
-  display: block;
-  min-height: 22px;
-  padding: 3px 10px 0;
-  color: var(--ch-text-muted);
-  font-size: 12px;
-  line-height: 19px;
-  overflow: hidden;
-  text-align: center;
-  white-space: nowrap;
+.composerStatsMetrics dd {
+  margin-top: 3px;
+  font-size: 13px;
+  text-align: left;
 }
 
-.composerMeta span {
-  display: block;
-  width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
+.composerStatsFooter {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--ch-border);
+}
+
+.composerStatsFooter details {
+  flex: 1;
+  min-width: 0;
+}
+
+.composerStatsFooter summary {
+  width: fit-content;
+  color: var(--ch-text-caption);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.composerStatsNote {
+  margin: 9px 0 0;
+  color: var(--ch-text-caption);
+  font-size: 11px;
+  line-height: 16px;
 }
 
 .contextTray {
@@ -3593,11 +3746,6 @@ textarea:disabled {
 
   .composerControls > div:last-child {
     justify-content: flex-end;
-  }
-
-  .contextPanel {
-    right: -44px;
-    width: min(280px, calc(100vw - 76px));
   }
 
   .resizeHandle {

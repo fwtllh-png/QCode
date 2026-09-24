@@ -467,7 +467,6 @@ func TestExactContextRestoreAndForkPersistCurrentBaselines(t *testing.T) {
 
 func TestCheckpointRestoreIsStateOnlyAndForkPreservesLineage(t *testing.T) {
 	profile := runtimeTestProfile()
-	profile.Mode = "plan"
 	encoded, err := sessionhistory.EncodeCompactedHistory([]provider.Message{
 		provider.TextMessage(provider.RoleUser, "checkpoint prompt"),
 		provider.TextMessage(provider.RoleAssistant, "checkpoint result"),
@@ -609,7 +608,6 @@ func TestCheckpointRestoreJoinsPublicationAndRollbackFailures(t *testing.T) {
 
 func TestPlanExecutionDoesNotMutateProfile(t *testing.T) {
 	profile := runtimeTestProfile()
-	profile.Mode = "plan"
 	profile.ApprovalPosture = "suggest"
 	profiles := &memoryProfileStore{profile: profile}
 	artifacts := &memoryArtifactStore{plan: protocol.SessionPlanArtifact{
@@ -642,7 +640,7 @@ func TestPlanExecutionDoesNotMutateProfile(t *testing.T) {
 	if !strings.Contains(prepared.Prompt, artifacts.plan.Body) {
 		t.Fatalf("execution prompt = %q", prepared.Prompt)
 	}
-	if profiles.profile.Mode != "plan" ||
+	if profiles.profile.Mode != "act" ||
 		profiles.profile.ApprovalPosture != "suggest" ||
 		profiles.profile.Revision != profile.Revision {
 		t.Fatalf("persistent profile mutated = %+v", profiles.profile)
@@ -737,7 +735,6 @@ func TestPlanExecutionSurvivesPlanningPolicyChange(t *testing.T) {
 
 func TestPlanExecutionAllowsTrailingSourceOperationCommit(t *testing.T) {
 	profile := runtimeTestProfile()
-	profile.Mode = "plan"
 	profiles := &memoryProfileStore{profile: profile}
 	artifacts := &memoryArtifactStore{plan: protocol.SessionPlanArtifact{
 		Version: protocol.CheckpointProtocolVersion,

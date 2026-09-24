@@ -439,7 +439,7 @@ describe("RuntimeClient", () => {
           capabilities: {
             provider: currentProvider,
             model: currentModel,
-            mutable_fields: ["mode", "provider", "model"],
+            mutable_fields: ["provider", "model"],
             model_capabilities: modelCapabilities(
               currentModel === "reasoner" ? "Reasoner" : "Fixture"
             )
@@ -594,16 +594,15 @@ describe("RuntimeClient", () => {
             profile: {
               version: 1,
               revision: 2,
-              mode: "plan",
+              mode: "act",
               provider: currentProvider,
               model: currentModel,
               approval_posture: "suggest",
               execution_target: "local",
               max_steps: 16,
-              prompt_cache_revision: 2
+              prompt_cache_revision: 1
             },
-            prompt_cache_reset: true,
-            reset_reason: "mode"
+            prompt_cache_reset: false
           },
           restart_required: false
         });
@@ -1703,7 +1702,7 @@ describe("RuntimeClient", () => {
       name: "Review",
       description: "Focused review",
       profile: {
-        mode: "plan",
+        mode: "act",
         provider: "fixture",
         model: "fixture",
         enabled_tool_ids: [],
@@ -1726,7 +1725,8 @@ describe("RuntimeClient", () => {
     expect((await client.listAgentPresets()).presets).toHaveLength(1);
 
     const applied = await client.applyAgentPreset("preset-request-id");
-    expect(applied.profile_update.profile.mode).toBe("plan");
+    expect(applied.profile_update.profile.mode).toBe("act");
+    expect(applied.profile_update.profile.max_steps).toBe(16);
     expect(requests.find((request) =>
       request.route.endsWith("/agent-preset/apply")
     )?.body).toMatchObject({

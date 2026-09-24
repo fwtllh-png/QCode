@@ -461,7 +461,7 @@ test("captures populated model, tool, and agent settings", async ({page}) => {
   await expect(page).toHaveScreenshot("canonical-settings-tools.png");
 
   await page.getByRole("button", {name: "Agent preset"}).click();
-  await expect(page.getByLabel("Agent mode")).toBeVisible();
+  await expect(page.getByLabel("Agent mode")).toHaveCount(0);
   await expect(page).toHaveScreenshot("canonical-settings-agent.png");
 });
 
@@ -1015,12 +1015,10 @@ test("captures message actions, commands, context usage, and rich Markdown", asy
   })).toBeVisible();
 
   const selectWidths = await page.evaluate(() => ({
-    mode: document.querySelector<HTMLSelectElement>('select[aria-label="Mode"]')
-      ?.getBoundingClientRect().width ?? 0,
     approval: document.querySelector<HTMLSelectElement>('select[aria-label="Approval"]')
       ?.getBoundingClientRect().width ?? 0
   }));
-  expect(selectWidths.mode).toBeLessThan(150);
+  await expect(page.getByLabel("Mode", {exact: true})).toHaveCount(0);
   expect(selectWidths.approval).toBeLessThan(92);
   await expect(page).toHaveScreenshot("canonical-message-chrome.png");
 

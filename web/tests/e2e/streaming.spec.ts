@@ -43,6 +43,33 @@ async function openScrollingFixture(page: Page, width: number, mode: "tool" | "d
 }
 
 for (const width of [1440, 390]) {
+  for (const mode of ["history", "history-pages"]) {
+    test(`scrolls past a long collapsed execution (${mode}) to the first question at ${width}px`, async ({page}) => {
+      await page.setViewportSize({width, height: 900});
+      await page.goto(`${url}?scrolling=${mode}`);
+      await expect(page.locator('[data-entry-id="output-live"]')).toBeVisible();
+      const scrollport = page.locator("[data-conversation-scroll]");
+      await scrollport.hover();
+      for (let step = 0; step < 5; step += 1) {
+        await page.mouse.wheel(0, -100_000);
+        await nextFrames(page);
+      }
+      await expect(page.getByText("Historical question 0", {exact: true})).toBeInViewport();
+      await page.getByRole("button", {name: "Search conversation", exact: true}).click();
+      const search = page.getByRole("dialog", {name: "Search conversation", exact: true});
+      await search.getByRole("tab", {name: "Files", exact: true}).click();
+      await search.getByRole("combobox", {name: "Search conversation", exact: true})
+        .fill("file-0.ts");
+      await search.getByRole("option").filter({hasText: "file-0.ts"}).click();
+      await nextFrames(page);
+      await expect(page.getByRole("button", {name: "Read file-0.ts", exact: true})).toBeInViewport();
+      await page.getByRole("button", {name: "Back to bottom", exact: true}).click();
+      await expect.poll(() => scrollport.evaluate((node) =>
+        node.scrollHeight - node.scrollTop - node.clientHeight
+      )).toBeLessThanOrEqual(24);
+    });
+  }
+
   for (const streamFirst of [true, false]) {
     test(`user scroll survives either stream callback order (${streamFirst}) at ${width}px`, async ({page}) => {
       await openScrollingFixture(page, width, "draft");

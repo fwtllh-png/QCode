@@ -10,8 +10,8 @@ import (
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
 )
 
-func TestRuntimeModePermissionUpdateIsAtomic(t *testing.T) {
-	runtime := DefaultRuntime(ModePlan, PermissionNever)
+func TestRuntimePermissionUpdateIsAtomic(t *testing.T) {
+	runtime := DefaultRuntime(ModeAct, PermissionNever)
 	var wait sync.WaitGroup
 	wait.Add(2)
 	invalid := make(chan struct{}, 1)
@@ -19,8 +19,8 @@ func TestRuntimeModePermissionUpdateIsAtomic(t *testing.T) {
 	go func() {
 		defer wait.Done()
 		for range 10_000 {
-			runtime.SetModePermission(ModeAct, PermissionAuto)
-			runtime.SetModePermission(ModePlan, PermissionNever)
+			runtime.SetPermission(PermissionAuto)
+			runtime.SetPermission(PermissionNever)
 		}
 		close(done)
 	}()
@@ -28,8 +28,8 @@ func TestRuntimeModePermissionUpdateIsAtomic(t *testing.T) {
 		defer wait.Done()
 		for {
 			snapshot := runtime.CloneSampling()
-			if (snapshot.Mode == ModeAct && snapshot.Permission != PermissionAuto) ||
-				(snapshot.Mode == ModePlan && snapshot.Permission != PermissionNever) {
+			if snapshot.Mode != ModeAct ||
+				(snapshot.Permission != PermissionAuto && snapshot.Permission != PermissionNever) {
 				select {
 				case invalid <- struct{}{}:
 				default:
@@ -55,10 +55,10 @@ func TestRuntimePermissionCeilingUsesCurrentValueUnderLock(t *testing.T) {
 	runtime := DefaultRuntime(ModeAct, PermissionSuggest)
 
 	runtime.SetPermission(PermissionNever)
-	runtime.SetModePermissionWithinCeiling(ModePlan, PermissionBypass, "")
+	runtime.SetPermissionWithinCeiling(PermissionBypass, "")
 	snapshot := runtime.CloneSampling()
-	if snapshot.Mode != ModePlan {
-		t.Fatalf("mode = %q, want %q", snapshot.Mode, ModePlan)
+	if snapshot.Mode != ModeAct {
+		t.Fatalf("mode = %q, want %q", snapshot.Mode, ModeAct)
 	}
 	if snapshot.Permission != PermissionNever {
 		t.Fatalf("permission = %q, want revoked ceiling %q", snapshot.Permission, PermissionNever)
@@ -80,14 +80,14 @@ func TestPolicyTruthTableAndDenyPrecedence(t *testing.T) {
 		tool       string
 		wantCode   string
 	}{
-		{name: "plan read", mode: ModePlan, permission: PermissionSuggest, tool: "file_read"},
-		{name: "plan write denied", mode: ModePlan, permission: PermissionBypass, tool: "file_write", wantCode: "mode_denied"},
-		{name: "plan request_user_input", mode: ModePlan, permission: PermissionSuggest, tool: "request_user_input"},
-		{name: "plan session state allowed", mode: ModePlan, permission: PermissionSuggest, tool: "submit_plan"},
+		{name: "act read", mode: ModeAct, permission: PermissionSuggest, tool: "file_read"},
+		{name: "act request_user_input", mode: ModeAct, permission: PermissionSuggest, tool: "request_user_input"},
+		{name: "act session state allowed", mode: ModeAct, permission: PermissionSuggest, tool: "submit_plan"},
 		{name: "act auto write", mode: ModeAct, permission: PermissionAuto, tool: "file_write"},
 		{name: "act auto read-only shell", mode: ModeAct, permission: PermissionAuto, tool: "shell_read"},
 		{name: "act auto sandboxed process", mode: ModeAct, permission: PermissionAuto, tool: "exec_command"},
-		{name: "operate auto sandboxed process", mode: ModeOperate, permission: PermissionAuto, tool: "exec_command"},
+		{name: "removed plan rejected", mode: "plan", permission: PermissionBypass, tool: "file_write", wantCode: "mode_unknown"},
+		{name: "removed operate rejected", mode: "operate", permission: PermissionBypass, tool: "file_read", wantCode: "mode_unknown"},
 		{name: "never write denied", mode: ModeAct, permission: PermissionNever, tool: "file_write", wantCode: "permission_denied"},
 		{name: "unknown denied", mode: ModeAct, permission: PermissionBypass, tool: "future_tool", wantCode: "policy_unknown_capability"},
 	}
@@ -104,15 +104,8 @@ func TestPolicyTruthTableAndDenyPrecedence(t *testing.T) {
 		})
 	}
 
-	t.Run("operate auto network read asks", func(t *testing.T) {
-		runtime := DefaultRuntime(ModeOperate, PermissionAuto)
-		call := invocation("file_read", "net-1", `{}`)
-		call.Capability = CapabilityNetwork
-		err := authorize(runtime, call)
-		assertDecisionCode(t, err, "approval_required")
-	})
-	t.Run("operate auto external asks", func(t *testing.T) {
-		runtime := DefaultRuntime(ModeOperate, PermissionAuto)
+	t.Run("act auto external asks", func(t *testing.T) {
+		runtime := DefaultRuntime(ModeAct, PermissionAuto)
 		call := invocation("file_read", "external-1", `{}`)
 		call.Capability = CapabilityExternal
 		err := authorize(runtime, call)
@@ -147,11 +140,6 @@ func TestPolicyTruthTableAndDenyPrecedence(t *testing.T) {
 	err = authorize(runtime, invocation("file_write", "call-never", `{"path":"notes.txt"}`))
 	assertDecisionCode(t, err, "permission_denied")
 
-	runtime = DefaultRuntime(ModePlan, PermissionSuggest)
-	runtime.User = []Rule{{Tool: "file_write", Resource: "notes.txt", Action: ActionAllow}}
-	err = authorize(runtime, invocation("file_write", "call-plan", `{"path":"notes.txt"}`))
-	assertDecisionCode(t, err, "mode_denied")
-
 	runtime = DefaultRuntime(ModeAct, PermissionSuggest)
 	err = authorize(runtime, invocation(
 		"file_write", "call-auto-write", `{"path":"notes.txt","content":"done"}`,
@@ -170,7 +158,7 @@ func TestPolicyTruthTableAndDenyPrecedence(t *testing.T) {
 	assertDecisionCode(t, err, "approval_required")
 }
 
-func TestCloneSamplingIsolatesModePermissionAndRules(t *testing.T) {
+func TestCloneSamplingIsolatesPermissionAndRules(t *testing.T) {
 	parent := DefaultRuntime(ModeAct, PermissionSuggest)
 	parent.Repository = []Rule{{Tool: "write", Resource: "*", Action: ActionAsk}}
 	clone := parent.CloneSampling()
@@ -180,7 +168,6 @@ func TestCloneSamplingIsolatesModePermissionAndRules(t *testing.T) {
 	if clone.Approvals != parent.Approvals {
 		t.Fatal("approvals cache should be shared")
 	}
-	parent.Mode = ModePlan
 	parent.Permission = PermissionBypass
 	parent.Repository[0].Action = ActionDeny
 	if clone.Mode != ModeAct || clone.Permission != PermissionSuggest {
@@ -191,45 +178,40 @@ func TestCloneSamplingIsolatesModePermissionAndRules(t *testing.T) {
 	}
 }
 
-func TestPolicyCompleteModePermissionCapabilityTruthTable(t *testing.T) {
-	modes := []Mode{ModePlan, ModeAct, ModeOperate}
+func TestPolicyCompletePermissionCapabilityTruthTable(t *testing.T) {
 	permissions := []Permission{
 		PermissionSuggest, PermissionAuto, PermissionBypass, PermissionNever,
 	}
 	capabilities := []Capability{
 		CapabilityRead, CapabilityWrite, CapabilityProcess, CapabilityNetwork, CapabilityExternal,
 	}
-	for _, mode := range modes {
-		for _, permission := range permissions {
-			for _, capability := range capabilities {
-				name := string(mode) + "/" + string(permission) + "/" + string(capability)
-				t.Run(name, func(t *testing.T) {
-					runtime := DefaultRuntime(mode, permission)
-					call := invocation("file_read", "truth-table", `{}`)
-					call.Capability = capability
-					call.Access, call.Sandbox = "", ""
-					err := authorize(runtime, call)
-					want := ""
-					switch {
-					case mode == ModePlan && capability != CapabilityRead:
-						want = "mode_denied"
-					case permission == PermissionSuggest && capability != CapabilityRead:
+	for _, permission := range permissions {
+		for _, capability := range capabilities {
+			name := string(permission) + "/" + string(capability)
+			t.Run(name, func(t *testing.T) {
+				runtime := DefaultRuntime(ModeAct, permission)
+				call := invocation("file_read", "truth-table", `{}`)
+				call.Capability = capability
+				call.Access, call.Sandbox = "", ""
+				err := authorize(runtime, call)
+				want := ""
+				switch {
+				case permission == PermissionSuggest && capability != CapabilityRead:
+					want = "approval_required"
+				case permission == PermissionAuto:
+					switch capability {
+					case CapabilityRead:
+						want = ""
+					case CapabilityWrite, CapabilityProcess, CapabilityNetwork, CapabilityExternal:
 						want = "approval_required"
-					case permission == PermissionAuto:
-						switch capability {
-						case CapabilityRead:
-							want = ""
-						case CapabilityWrite, CapabilityProcess, CapabilityNetwork, CapabilityExternal:
-							want = "approval_required"
-						default:
-							want = "permission_denied"
-						}
-					case permission == PermissionNever && capability != CapabilityRead:
+					default:
 						want = "permission_denied"
 					}
-					assertDecisionCode(t, err, want)
-				})
-			}
+				case permission == PermissionNever && capability != CapabilityRead:
+					want = "permission_denied"
+				}
+				assertDecisionCode(t, err, want)
+			})
 		}
 	}
 }

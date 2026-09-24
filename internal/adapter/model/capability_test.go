@@ -34,9 +34,9 @@ func TestFallingBackToABlindActForVisionIsRefused(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Plan is ordinary chat, so it still falls back.
-	if _, routeErr := routes.For(PurposePlan); routeErr != nil {
-		t.Fatalf("For(%q) error = %v", PurposePlan, routeErr)
+	// Summary is ordinary chat, so it still falls back.
+	if _, routeErr := routes.For(PurposeSummary); routeErr != nil {
+		t.Fatalf("For(%q) error = %v", PurposeSummary, routeErr)
 	}
 	_, err = routes.For(PurposeVision)
 	if err == nil || !strings.Contains(err.Error(), "vision") {
@@ -72,7 +72,7 @@ func TestPurposeRequiredCapabilitiesOnlyVisionAsksForVision(t *testing.T) {
 	if got := PurposeRequiredCapabilities(PurposeVision); len(got) != 1 || got[0] != CapVision {
 		t.Fatalf("vision requirements = %v", got)
 	}
-	for _, purpose := range []Purpose{PurposeAct, PurposePlan} {
+	for _, purpose := range []Purpose{PurposeAct, PurposeSummary} {
 		if got := PurposeRequiredCapabilities(purpose); got != nil {
 			t.Fatalf("%s requirements = %v, want none", purpose, got)
 		}

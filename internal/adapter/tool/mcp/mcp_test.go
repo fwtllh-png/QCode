@@ -223,7 +223,7 @@ func TestAdapterModelCallRequiresToolGuardPolicy(t *testing.T) {
 
 	denyingGuard, err := toolguard.New(toolguard.Options{
 		Registry: registry,
-		Policy:   policy.DefaultRuntime(policy.ModePlan, policy.PermissionNever), Workspace: t.TempDir(),
+		Policy:   policy.DefaultRuntime(policy.ModeAct, policy.PermissionNever), Workspace: t.TempDir(),
 	})
 	if err != nil {
 		t.Fatal(err)

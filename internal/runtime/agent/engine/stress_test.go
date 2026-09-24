@@ -87,9 +87,9 @@ func TestStressConcurrentEngineOptionsRead(t *testing.T) {
 	}
 }
 
-// TestStressConcurrentPolicyModeChanges verifies that SetPolicyMode,
-// SetPermission, and SetGranular are safe under concurrent calls.
-func TestStressConcurrentPolicyModeChanges(t *testing.T) {
+// TestStressConcurrentPolicyChanges verifies that SetPermission and
+// SetGranular are safe under concurrent calls.
+func TestStressConcurrentPolicyChanges(t *testing.T) {
 	engine := newEngine(t, &scriptedProvider{}, tool.NewRegistry(nil, nil))
 
 	const numGoroutines = 50
@@ -100,12 +100,10 @@ func TestStressConcurrentPolicyModeChanges(t *testing.T) {
 		go func(idx int) {
 			defer wg.Done()
 			for j := 0; j < 100; j++ {
-				switch (idx + j) % 3 {
+				switch (idx + j) % 2 {
 				case 0:
-					engine.SetPolicyMode(policy.ModeAct)
-				case 1:
 					engine.SetPermission(policy.PermissionBypass)
-				case 2:
+				case 1:
 					engine.SetGranular(policy.Granular{})
 				}
 			}
@@ -122,7 +120,7 @@ func TestStressConcurrentPolicyModeChanges(t *testing.T) {
 	case <-done:
 		// Success.
 	case <-time.After(10 * time.Second):
-		t.Error("BUG: stress concurrent policy mode changes deadlocked")
+		t.Error("BUG: stress concurrent policy changes deadlocked")
 	}
 }
 

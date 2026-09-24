@@ -327,7 +327,7 @@ func (r *Repository) QueryAggregates(ctx context.Context, filter Query) ([]Aggre
 		if filter.IncludeChildren {
 			add(`(session_id = ? OR EXISTS (
 				SELECT 1 FROM agent_nodes child
-				WHERE child.session_id = ? AND child.turn_id = usage.turn_id
+				WHERE child.session_id = ? AND child.thread_id = usage.thread_id
 			))`, filter.SessionID, filter.SessionID)
 		} else {
 			add("session_id = ?", filter.SessionID)

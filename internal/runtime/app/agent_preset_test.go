@@ -37,7 +37,7 @@ func TestAgentPresetLifecycleValidatesPersistsAndAppliesProfile(t *testing.T) {
 	t.Cleanup(func() { closeRuntime(t, runtime) })
 
 	presetProfile := protocol.NewAgentPresetProfile(defaults)
-	presetProfile.Mode = "plan"
+	presetProfile.ReasoningEffort = "high"
 	created, err := runtime.AgentPresetService.Save(
 		t.Context(),
 		protocol.AgentPresetSaveRequest{
@@ -79,16 +79,16 @@ func TestAgentPresetLifecycleValidatesPersistsAndAppliesProfile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if applied.ProfileUpdate.Profile.Mode != "plan" ||
+	if applied.ProfileUpdate.Profile.ReasoningEffort != "high" ||
 		applied.ProfileUpdate.Profile.Revision != defaults.Revision+1 ||
 		!applied.RestartRequired {
 		t.Fatalf("applied = %+v", applied)
 	}
 	engine.mu.Lock()
-	engineMode := engine.applied.Mode
+	engineEffort := engine.applied.ReasoningEffort
 	engine.mu.Unlock()
-	if engineMode != "plan" {
-		t.Fatalf("engine mode = %q, want plan", engineMode)
+	if engineEffort != "high" {
+		t.Fatalf("engine reasoning effort = %q, want high", engineEffort)
 	}
 
 	if _, err := runtime.AgentPresetService.Delete(

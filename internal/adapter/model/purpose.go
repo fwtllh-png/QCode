@@ -8,8 +8,6 @@ type Purpose string
 const (
 	// PurposeAct is the main route and fallback.
 	PurposeAct Purpose = "act"
-	// PurposePlan is plan-mode sampling.
-	PurposePlan Purpose = "plan"
 	// PurposeVision is image analysis.
 	PurposeVision Purpose = "vision"
 	// PurposeSummary is semantic context maintenance.
@@ -21,7 +19,7 @@ const (
 // Purposes reports every purpose in stable order.
 func Purposes() []Purpose {
 	return []Purpose{
-		PurposeAct, PurposePlan, PurposeVision,
+		PurposeAct, PurposeVision,
 		PurposeSummary, PurposeJudge,
 	}
 }
@@ -29,7 +27,7 @@ func Purposes() []Purpose {
 // Wired reports whether the runtime currently samples for this purpose.
 func (p Purpose) Wired() bool {
 	switch p {
-	case PurposeAct, PurposePlan, PurposeVision, PurposeSummary:
+	case PurposeAct, PurposeVision, PurposeSummary:
 		return true
 	default:
 		return false

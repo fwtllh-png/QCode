@@ -25,6 +25,8 @@ type Scope struct {
 // through Cost, which says which of the two it is.
 type Rollup struct {
 	Scope Scope
+	// Activity is absent for billing filters that cannot scope execution events.
+	Activity *Activity
 	// Turns counts distinct turns, so a scope's spend can be divided by the work
 	// it paid for rather than by how many provider calls that work needed.
 	Turns uint64
@@ -86,9 +88,11 @@ func (r *Repository) QueryRollup(ctx context.Context, filter Query) (Rollup, err
 	if err != nil {
 		return Rollup{}, err
 	}
-	return Fold(Scope{
+	rollup := Fold(Scope{
 		SessionID: filter.SessionID, ThreadID: filter.ThreadID, TurnID: filter.TurnID,
-	}, aggregates), nil
+	}, aggregates)
+	rollup.Activity, err = r.queryActivity(ctx, filter)
+	return rollup, err
 }
 
 // Fold sums aggregate rows into one rollup.

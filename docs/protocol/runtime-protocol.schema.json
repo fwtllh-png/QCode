@@ -2294,9 +2294,6 @@
         "max_steps": {
           "type": "integer"
         },
-        "mode": {
-          "type": "string"
-        },
         "model": {
           "type": "string"
         },

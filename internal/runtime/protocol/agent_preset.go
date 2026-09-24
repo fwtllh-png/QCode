@@ -51,7 +51,6 @@ func (p AgentPresetProfile) Validate() error {
 
 func (p AgentPresetProfile) Patch(current SessionProfile) SessionProfilePatch {
 	var patch SessionProfilePatch
-	setStringPatch(&patch.Mode, p.Mode, current.Mode)
 	setStringPatch(&patch.Provider, p.Provider, current.Provider)
 	setStringPatch(&patch.Model, p.Model, current.Model)
 	setStringPatch(&patch.ReasoningEffort, p.ReasoningEffort, current.ReasoningEffort)

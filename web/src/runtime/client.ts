@@ -694,7 +694,7 @@ export class RuntimeClient {
         this.state.sessions.some((item) =>
           this.workspaceIDForSession(item.session_id) === workspaceID &&
           ["running", "awaiting_approval", "awaiting_input"].includes(item.status)) ||
-        this.state.profile?.profile.mode === "plan" || this.state.profile?.profile.approval_posture === "never") {
+        this.state.profile?.profile.approval_posture === "never") {
       throw new Error("Finish or resume current work before changing Git state.");
     }
     if (!action.branch || !action.revision || (action.action === "commit" || action.action === "commit_push") && (!action.paths?.length || !action.message?.trim()) ||
@@ -1037,7 +1037,7 @@ export class RuntimeClient {
       payload: {
         prompt,
         display_prompt: prompt,
-        intent: this.state.profile?.profile.mode === "plan" ? "plan" : "answer",
+        intent: "answer",
         context: this.state.contextResources
       }
     });
@@ -1148,7 +1148,7 @@ export class RuntimeClient {
         turn_id: turnID,
         prompt: normalized,
         display_prompt: normalized,
-        intent: this.state.profile?.profile.mode === "plan" ? "plan" : "answer",
+        intent: "answer",
         context: this.state.contextResources
       }
     });

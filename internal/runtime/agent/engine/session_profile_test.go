@@ -86,12 +86,12 @@ func TestSessionProfileUsesAutomaticPlanningPolicy(t *testing.T) {
 	}
 }
 
-func TestSessionProfileModeProjectsThroughWorldState(t *testing.T) {
+func TestSessionProfileActProjectsThroughWorldState(t *testing.T) {
 	engine := newEngine(t, &scriptedProvider{}, tool.NewRegistry(nil, nil))
 	route := engine.options.Routes.Act()
 	profile := protocol.SessionProfile{
 		Version: protocol.SessionProfileVersion, Revision: 2,
-		Mode: "plan", Provider: route.ProviderID(), Model: route.Model().ID,
+		Mode: "act", Provider: route.ProviderID(), Model: route.Model().ID,
 		ApprovalPosture: "suggest", ExecutionTarget: "local",
 		MaxSteps: 8, PromptCacheRevision: 2,
 	}
@@ -117,8 +117,7 @@ func TestSessionProfileModeProjectsThroughWorldState(t *testing.T) {
 			mode = section.Message.Text()
 		}
 	}
-	if !strings.Contains(mode, "Mode: plan") ||
-		strings.Contains(mode, "Mode: act") {
+	if !strings.Contains(mode, "Mode: act") {
 		t.Fatalf("projected mode = %q", mode)
 	}
 	found := false

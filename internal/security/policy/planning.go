@@ -93,7 +93,7 @@ func planningDecision(
 	invocation Invocation,
 	effect Effect,
 ) *Decision {
-	if r == nil || r.Mode == ModePlan ||
+	if r == nil ||
 		planningExemptTool(invocation.Tool) ||
 		!consequentialPlanningEffect(effect.Kind) {
 		return nil

@@ -51,7 +51,7 @@ func TestASessionWithoutSlotsRoutesEveryPurposeToAct(t *testing.T) {
 	}
 
 	for _, purpose := range []model.Purpose{
-		model.PurposeAct, model.PurposePlan, model.PurposeVision,
+		model.PurposeAct, model.PurposeVision,
 		model.PurposeSummary,
 	} {
 		route, err := routes.For(purpose)
@@ -72,22 +72,22 @@ func TestASlotResolvesThroughTheConnectionsCatalog(t *testing.T) {
 			plain.ID: plain,
 		},
 		Slots: map[string]config.RouteSlot{
-			"plan": {Provider: "openai", Model: "gpt-4.1-mini"},
+			"summary": {Provider: "openai", Model: "gpt-4.1-mini"},
 		},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	plan, err := routes.For(model.PurposePlan)
+	summary, err := routes.For(model.PurposeSummary)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if plan.ProviderID() != "openai" || plan.Model().ID != "gpt-4.1-mini" {
-		t.Fatalf("plan route = %s/%s", plan.ProviderID(), plan.Model().ID)
+	if summary.ProviderID() != "openai" || summary.Model().ID != "gpt-4.1-mini" {
+		t.Fatalf("summary route = %s/%s", summary.ProviderID(), summary.Model().ID)
 	}
-	if plan.Provenance() != model.ProvenanceConfig {
-		t.Fatalf("plan provenance = %q, want config", plan.Provenance())
+	if summary.Provenance() != model.ProvenanceConfig {
+		t.Fatalf("summary provenance = %q, want config", summary.Provenance())
 	}
 }
 
@@ -139,24 +139,24 @@ func TestAFixtureSessionKeepsEverySlotOnTheFixture(t *testing.T) {
 
 	routes, err := resolveRouteSet(routeSetOptions{
 		Act:   act,
-		Slots: map[string]config.RouteSlot{"plan": {Provider: "fixture", Model: "planner"}},
+		Slots: map[string]config.RouteSlot{"summary": {Provider: "fixture", Model: "summarizer"}},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	plan, err := routes.For(model.PurposePlan)
+	summary, err := routes.For(model.PurposeSummary)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if plan.Endpoint() != act.BaseURL || plan.Model().ID != "planner" {
-		t.Fatalf("plan route = %s %s", plan.Endpoint(), plan.Model().ID)
+	if summary.Endpoint() != act.BaseURL || summary.Model().ID != "summarizer" {
+		t.Fatalf("summary route = %s %s", summary.Endpoint(), summary.Model().ID)
 	}
 
 	// A slot naming a catalog provider would leave the fixture and dial the real
 	// thing, which would quietly falsify what a hermetic test claims.
 	_, err = resolveRouteSet(routeSetOptions{
 		Act:   act,
-		Slots: map[string]config.RouteSlot{"plan": {Provider: "openai", Model: "gpt-4.1"}},
+		Slots: map[string]config.RouteSlot{"summary": {Provider: "openai", Model: "gpt-4.1"}},
 	})
 	if err == nil || !strings.Contains(err.Error(), "fixture provider") {
 		t.Fatalf("resolveRouteSet() error = %v, want the fixture to be enforced", err)
@@ -167,7 +167,7 @@ func TestASlotNamingAnUnconfiguredConnectionFailsTheSession(t *testing.T) {
 	_, err := resolveRouteSet(routeSetOptions{
 		Act: bundledAct(),
 		Slots: map[string]config.RouteSlot{
-			"plan": {Provider: "openai", Model: "other"},
+			"summary": {Provider: "openai", Model: "other"},
 		},
 	})
 
@@ -199,41 +199,38 @@ func TestAVisionSlotWithoutVisionFailsBeforeTheSessionStarts(t *testing.T) {
 func TestLockedSlotsResolveAndLockedGapsDoNot(t *testing.T) {
 	routes, err := resolveRouteSet(routeSetOptions{
 		Act:   bundledAct(),
-		Slots: map[string]config.RouteSlot{"plan": {Provider: "openai", Model: "gpt-4.1"}},
+		Slots: map[string]config.RouteSlot{"summary": {Provider: "openai", Model: "gpt-4.1"}},
 		Lock:  true,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if _, err := routes.For(model.PurposePlan); err != nil {
-		t.Fatalf("For(plan) error = %v", err)
+	if _, err := routes.For(model.PurposeSummary); err != nil {
+		t.Fatalf("For(summary) error = %v", err)
 	}
 	if _, err := routes.For(model.PurposeVision); err == nil {
 		t.Fatal("For(vision) fell back to act under a lock")
 	}
 }
 
-// TestAPlanTurnInAFixtureSessionSamplesOnThePlanSlot is the end-to-end shape of
-// this shard: a configuration file names a plan route, the session runs a turn in
-// plan mode, and the turn reports the plan model rather than the act model.
-func TestAPlanTurnInAFixtureSessionSamplesOnThePlanSlot(t *testing.T) {
+func TestAFixtureTurnUsesActWithAnAuxiliaryRouteConfigured(t *testing.T) {
 	workspace := t.TempDir()
 	configPath := filepath.Join(workspace, "qcode.toml")
 	if err := os.WriteFile(configPath, []byte(`
-[route.plan]
+[route.summary]
 provider = "fixture"
-model = "planner"
+model = "summarizer"
 `), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	mode, tools := "plan", true
+	tools := true
 	session, err := NewExec(context.Background(), withNonDurableTestJournal(t, ExecOptions{
 		ConfigPath:  configPath,
 		FixturePath: subagentFixture(t, "openai"),
 		Permission:  "bypass",
 		ConfigOverrides: config.Overrides{
-			Workspace: &workspace, Mode: &mode, Tools: &tools,
+			Workspace: &workspace, Tools: &tools,
 		},
 	}))
 	if err != nil {
@@ -276,10 +273,10 @@ model = "planner"
 		t.Fatalf("receipt routes = %+v, want one entry", receipt.Routes)
 	}
 	route := receipt.Routes[0]
-	if route.Purpose != string(model.PurposePlan) || route.Model != "planner" {
-		t.Fatalf("receipt route = %+v, want the plan slot", route)
+	if route.Purpose != string(model.PurposeAct) || route.Model != session.ModelID() {
+		t.Fatalf("receipt route = %+v, want the act route", route)
 	}
-	if receipt.Mode != "plan" {
+	if receipt.Mode != "act" {
 		t.Fatalf("receipt mode = %q", receipt.Mode)
 	}
 }

@@ -11,11 +11,10 @@ func TestMutableSessionProfileFieldsExcludeDerivedPlanningPolicy(t *testing.T) {
 		true,
 		true,
 	)
-	if slices.Contains(fields, "planning_policy") {
-		t.Fatalf("derived planning policy is mutable: %v", fields)
+	if slices.Contains(fields, "planning_policy") || slices.Contains(fields, "mode") {
+		t.Fatalf("fixed policy field is mutable: %v", fields)
 	}
-	if !slices.Contains(fields, "mode") ||
-		!slices.Contains(fields, "enabled_tool_ids") ||
+	if !slices.Contains(fields, "enabled_tool_ids") ||
 		!slices.Contains(fields, "approval_posture") {
 		t.Fatalf("expected mutable fields are missing: %v", fields)
 	}

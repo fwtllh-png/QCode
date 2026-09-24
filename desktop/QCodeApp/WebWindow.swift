@@ -138,6 +138,26 @@ private final class WindowDelegates: NSObject, WKNavigationDelegate, WKUIDelegat
 
     // MARK: WKUIDelegate
 
+    // macOS WebKit 未实现此代理时会直接取消 <input type="file"> 请求。
+    func webView(
+        _ webView: WKWebView,
+        runOpenPanelWith parameters: WKOpenPanelParameters,
+        initiatedByFrame frame: WKFrameInfo,
+        completionHandler: @escaping ([URL]?) -> Void
+    ) {
+        guard let window = webView.window else {
+            completionHandler(nil)
+            return
+        }
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = !parameters.allowsDirectories
+        panel.canChooseDirectories = parameters.allowsDirectories
+        panel.allowsMultipleSelection = parameters.allowsMultipleSelection
+        panel.beginSheetModal(for: window) { response in
+            completionHandler(response == .OK ? panel.urls : nil)
+        }
+    }
+
     // target="_blank" 等新窗口请求：不在壳内开新窗口，外部链接走系统浏览器。
     func webView(
         _ webView: WKWebView,

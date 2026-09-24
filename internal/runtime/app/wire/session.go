@@ -127,19 +127,8 @@ func (s *Session) MCPHealth() []mcp.HealthSnapshot {
 	return s.mcpPool.HealthSnapshots()
 }
 
-func (s *Session) SetPolicyMode(mode policy.Mode) {
-	// Applies to the next turn's SnapshotTurnContext; in-flight turns use a
-	// CloneSampling policy installed on Guard for the turn duration.
-	if s != nil && s.security != nil {
-		s.security.SetMode(mode)
-		if s.threads != nil {
-			s.threads.SetPolicyMode(mode)
-		}
-	}
-}
-
 func (s *Session) SetPermission(permission policy.Permission) {
-	// Applies to the next turn only; see SetPolicyMode.
+	// In-flight turns use a frozen policy; changes apply to the next turn.
 	if s != nil && s.security != nil {
 		s.security.SetPermission(permission)
 		if s.threads != nil {
@@ -149,7 +138,7 @@ func (s *Session) SetPermission(permission policy.Permission) {
 }
 
 func (s *Session) SetGranular(granular policy.Granular) {
-	// Applies to the next turn only; see SetPolicyMode.
+	// Applies to the next turn's frozen policy.
 	if s != nil && s.security != nil {
 		s.security.SetGranular(granular)
 		if s.threads != nil {
