@@ -6,7 +6,7 @@
       "id": "engine",
       "package": "./internal/runtime/agent/engine",
       "hotspot_file": "internal/runtime/agent/engine/engine.go",
-      "baseline_lines": 482,
+      "baseline_lines": 502,
       "responsibilities": {
         "engine_core": [
           "Engine",
@@ -86,6 +86,7 @@
         "internal/observability/trace",
         "internal/observability/verify",
         "internal/persist/workspacejournal",
+        "internal/platform/tokenestimate",
         "internal/runtime/agent/context",
         "internal/runtime/agent/contextview",
         "internal/runtime/agent/prompt",
@@ -166,6 +167,7 @@
         "provenance": "provenance.go"
       },
       "allowed_internal_imports": [
+        "internal/environment",
         "internal/runtime/protocol"
       ],
       "required_test_assets": [

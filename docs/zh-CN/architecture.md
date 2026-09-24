@@ -472,8 +472,9 @@ Logical/Transport Digest 与序列化 Request Bytes，传输收益不会被报�
 
 每条 Route 都携带显式 `AdapterID`，不可变 Provider Router 是生产环境唯一采样路径。
 Composition Root 安装 OpenAI Adapter，以及一个参数化的 OpenAI-compatible
-Adapter。DeepSeek 与 GLM 通过后者接入；它们不广告 Incremental Responses，因此
-Chat Route 始终使用完整 HTTP/SSE 请求，不发送 `previous_response_id`。
+Adapter。每条用户配置的连接都通过 OpenAI-compatible Adapter 接入显式端点，
+Chat 请求统一携带 `tool_stream=true`（工具参数逐段接收）；不广告 Incremental
+Responses 的模型始终使用完整 HTTP/SSE 请求，不发送 `previous_response_id`。
 
 Turn 开始时冻结 `ContextCapacity`：模型 Context Window 扣除模型能力、Operator
 Ceiling 和 Turn/Session Budget 共同确定的 Output Reserve 后，得到硬输入容量。
@@ -788,8 +789,7 @@ Tool 链。缺少终态证据的旧 Checkpoint 只回封检索指针，状态为
 ## 可观测性架构
 
 Provider 配额耗尽与瞬时限流分开处理。OpenAI-compatible 的明确
-`insufficient_quota` 和 GLM 官方定义的配额业务码不会进入短期退避；GLM 数字码仅在
-对应 Provider 下解释，未知 429 不按文本推断为 TPM 或配额。配额终态使用
+`insufficient_quota` 不会进入短期退避；未知 429 不按文本推断为 TPM 或配额。配额终态使用
 `resource_exhausted`，保留 Provider 原因和重置时间文案，恢复动作为额度恢复后 Continue。
 `provider_retry_after_ms` 只保存 Provider Header 值；本地推导退避留在 Route Cooldown
 与实际等待字段，并在 20% 幅度内用 Session / Route / Sample 的确定性 jitter 错开

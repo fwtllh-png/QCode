@@ -3,7 +3,7 @@ package model
 import "fmt"
 
 // CapabilityObservation is one probe (or user) verdict about a model ability.
-// It lives in SQLite beside the catalog and never rewrites catalog.v1.json.
+// It lives in SQLite beside the catalog and never rewrites configured connections.
 type CapabilityObservation struct {
 	ConnectionID string
 	ModelID      string

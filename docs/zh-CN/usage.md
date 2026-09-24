@@ -267,8 +267,7 @@ Profile Revision 判断是否过期；模型、工具集、审批姿态或执行
 创建新 Session 时，Web 会继承当前 Session 的 Approval Posture；因此用户选择 `auto`
 后，新建 Session 不会重新回到 `suggest`。显式的新建参数仍优先于继承值。
 
-内置 `deepseek-v4-flash-vision-exp` 模型声明 Image Input 与 Vision 能力，并通过
-DeepSeek Responses 协议发送图片。支持图片的 Session 会在模型上下文中明确声明该能力，
+声明 Image Input 与 Vision 能力的模型可直接在请求中发送图片。支持图片的 Session 会在模型上下文中明确声明该能力，
 避免模型仅凭通用身份说明误判为纯文本环境。实际交给模型的图片同时随
 `turn.started` 持久化为用户消息附件，因此发送后、刷新页面或重新进入 Session 时仍可
 在对话中查看。
@@ -388,11 +387,12 @@ Checkpoint Restore/Fork 或 Plan 执行。Composer 恢复普通发送，不会�
 
 ## 配置与凭证
 
-首次进入且尚未完成 Runtime Setup 时，Web 不提供默认 Provider 或 Model。用户必须
-选择 OpenAI、DeepSeek、GLM 或自定义 OpenAI-Compatible 服务，并输入准确的
-Model ID。自定义 Endpoint 或未进入内置目录的 Model 还必须填写 Base URL（自定义
-Provider）、`openai_chat` / `openai_responses` 协议，以及 Canonical ID、Wire ID、
-Context、Max Output 和完整 Capability 声明。字段为空或不一致时 Runtime 拒绝构造
+首次进入且尚未配置模型连接时，Web 直接展示主界面与一条引导横幅，模型配置在
+Settings 的 Connection 页面完成，过程中不提供默认 Provider 或 Model。所有连接
+统一为 OpenAI-Compatible 形态，用户必须填写 Base URL（HTTPS 或回环地址）、
+`openai_chat` / `openai_responses` 协议、准确的 Model ID 和 API Key。模型的
+Canonical ID、Wire ID、Context、Max Output 和完整 Capability 声明通过连接探测
+自动填写或手动录入。字段为空或不一致时 Runtime 拒绝构造
 Route，不会按 Model 名称或 `/models` 列表猜测能力。Credential Value 只发送到本机
 Loopback Runtime，由 Credential Control 写入操作系统 Keyring 加密保存；浏览器不
 持久化原始值。
@@ -402,21 +402,22 @@ Provider、Endpoint、Protocol 和 Keyring Credential；Models、Reasoning、Mod
 Approval、执行目标和 Tool allowlist 属于当前 Session。Session 配置先进入 Draft，
 点击 Apply 后才通过 Runtime `profile/update` 原子生效，并显示具体变更摘要。
 
-每个 Session 独立持久化准确的 Model ID，并可在 Composer 中切换当前连接已验证的
-Catalog Model。Composer 的 `New model...` 打开独立模型配置弹窗；探测并确认元数据后，
-新模型追加到当前 Connection 的模型注册表，不替换默认模型，也不迁移其他 Session。
-同一 Provider、Endpoint、Protocol 和 Credential 下的注册模型可在 Turn 之间热切换；
-更换连接仍由 Connection 设置负责。
+每个 Session 独立持久化准确的 (Provider, Model)，并可在 Composer 中跨全部
+已配置连接切换可用 Model（选项只显示模型名，内部以 Provider 与 Model 区分连接），
+切换在 Turn 之间热生效，不重建 Runtime。Composer 的 `New model...` 打开独立
+模型配置弹窗；探测并确认元数据后，新模型追加到当前 Connection 的模型注册表，
+不替换默认模型，也不迁移其他 Session。Connection 设置维护连接集合：新增或更新
+连接（`Save connection`）、保存并设为默认（`Apply and restart`）、切换默认与
+移除非默认连接；被 Session 使用的连接会拒绝移除。添加、移除连接或切换默认会
+重建空闲 Workspace Runtime，已有 Session 的模型选择保持不变。
 模型变化会重置该 Session 的 Prompt Cache，Active Turn 期间拒绝修改。Settings 明确
 显示 Limits 与 Capabilities 的来源；`Test connection` 检查 Endpoint、Credential 和
 启动模型，`Test model` 只检查 Provider 模型目录是否包含 Model ID，不把该结果视为
 容量或能力证明。
 
-Composer 内的 Reasoning 菜单直接采用当前模型目录声明的档位。DeepSeek 显示
-Off、Low、High、Max，默认 High；GLM-5.3、GLM-5.3-Flash 和 GLM-5.3-FlashX
-显示 Low、High、Max，默认 Max；其他模型保留各自完整档位，不做跨档位折算。
-三个 GLM 模型均在聊天框的模型菜单中默认列出，使用同一 GLM 连接：
-`https://open.bigmodel.cn/api/coding/paas/v4` 的 OpenAI Chat Completions 兼容接口。
+Composer 内的 Reasoning 菜单直接采用当前模型目录声明的档位；模型未声明档位时
+提供 `low`、`medium`、`high`、`xhigh`、`max`（默认 `medium`），各模型保留
+各自完整档位，不做跨档位折算。
 
 Credential 支持创建或轮换、在线校验和二次确认删除。Settings 还可查看 Tool 的
 Policy、Constitution 和 Sandbox 信息，以及 Skill 的来源、健康、信任、权限

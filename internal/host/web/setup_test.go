@@ -2,8 +2,8 @@ package web
 
 import (
 	"os"
+	"path/filepath"
 	"reflect"
-	"slices"
 	"strings"
 	"testing"
 
@@ -12,239 +12,164 @@ import (
 	"github.com/fwtllh-png/QCode/internal/security/credential"
 )
 
-func TestWebSetupCatalogRequiresExplicitProviderAndModel(t *testing.T) {
-	catalog := webSetupCatalog()
-	if catalog.Version != webhost.SetupCatalogVersion || len(catalog.Providers) != 4 {
-		t.Fatalf("setup catalog = %+v", catalog)
+func TestWebSetupRequiresFourExplicitFields(t *testing.T) {
+	valid := webhost.SetupRequest{
+		Model: "vendor/model-v1", APIKey: "secret-value",
+		BaseURL: "https://models.example.com/v1", Protocol: "openai_chat",
+		ModelMetadata: testSetupMetadata("vendor/model-v1"),
 	}
-	for _, id := range []string{
-		"openai", "deepseek", "glm", customProviderID,
-	} {
-		found := false
-		for _, provider := range catalog.Providers {
-			if provider.ID == id {
-				found = true
-			}
-		}
-		if !found {
-			t.Errorf("setup provider %q is missing", id)
-		}
-	}
-	for _, provider := range catalog.Providers {
-		if provider.ID == "deepseek" && len(provider.Models) == 0 {
-			t.Fatal("bundled setup provider did not advertise its model ids")
-		}
-		if provider.ID == "deepseek" &&
-			!slices.Contains(provider.Models, "deepseek-v4-flash") {
-			t.Fatal("setup catalog omitted uniquely routable DeepSeek model")
-		}
-	}
-	if _, _, err := resolveWebSetup(webhost.SetupRequest{}); err == nil {
-		t.Fatal("empty setup selection was accepted")
-	}
-	if _, _, err := resolveWebSetup(webhost.SetupRequest{
-		Provider: "deepseek", Model: "deepseek-chat",
-	}); err == nil {
-		t.Fatal("DeepSeek setup without an API key was accepted")
-	}
-	selection, _, err := resolveWebSetup(webhost.SetupRequest{
-		Provider: "deepseek", Model: "deepseek-future-model", APIKey: "secret",
-		ModelMetadata: testSetupMetadata("deepseek-future-model"),
-	})
-	if err != nil ||
-		selection.Model != "deepseek-future-model" ||
-		selection.BaseURL != "https://api.deepseek.com/v1" {
-		t.Fatalf("future model setup = %+v err=%v", selection, err)
-	}
-	if _, _, err := resolveWebSetup(webhost.SetupRequest{
-		Provider: "deepseek", Model: "another-future-model", APIKey: "secret",
-	}); err == nil {
-		t.Fatal("unknown catalog model without explicit metadata was accepted")
-	}
-	if _, _, err := resolveWebSetup(webhost.SetupRequest{
-		Provider: "deepseek", Model: "openrouter-auto", APIKey: "secret",
-	}); err == nil {
-		t.Fatal("cross-provider model inherited catalog metadata")
-	}
-	crossProvider, _, err := resolveWebSetup(webhost.SetupRequest{
-		Provider: "deepseek", Model: "openrouter-auto", APIKey: "secret",
-		ModelMetadata: testSetupMetadata("openrouter-auto"),
-	})
+	selection, reference, err := resolveWebSetup(valid)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if crossProvider.Provider != "deepseek" ||
-		crossProvider.BaseURL != "https://api.deepseek.com/v1" ||
-		setupRuntimeProviderID(crossProvider) != "deepseek" {
-		t.Fatalf("cross-provider metadata leaked: %+v", crossProvider)
+	if selection.Provider != connectionID("https://models.example.com/v1") ||
+		selection.ID != selection.Provider ||
+		selection.Model != "vendor/model-v1" ||
+		selection.BaseURL != "https://models.example.com/v1" ||
+		selection.Protocol != "openai_chat" ||
+		selection.MetadataProvenance != model.ProvenanceOperatorConfig {
+		t.Fatalf("resolved selection = %+v", selection)
 	}
-	if _, _, err := resolveWebSetup(webhost.SetupRequest{
-		Provider: "deepseek", Model: "deepseek-chat", APIKey: "secret",
-		ModelMetadata: testSetupMetadata("deepseek-chat"),
-	}); err == nil {
-		t.Fatal("catalog model accepted operator metadata")
+	if reference.Kind != "" || reference.Name != "" {
+		t.Fatalf("connection carries no credential reference: %+v", reference)
+	}
+
+	for name, mutate := range map[string]func(*webhost.SetupRequest){
+		"missing base URL":   func(r *webhost.SetupRequest) { r.BaseURL = "" },
+		"missing model":      func(r *webhost.SetupRequest) { r.Model = "" },
+		"missing api key":    func(r *webhost.SetupRequest) { r.APIKey = "" },
+		"missing metadata":   func(r *webhost.SetupRequest) { r.ModelMetadata = nil },
+		"plain http base":    func(r *webhost.SetupRequest) { r.BaseURL = "http://example.com/v1" },
+		"unknown protocol": func(r *webhost.SetupRequest) {
+			r.Protocol = "anthropic"
+		},
+		"invalid model id": func(r *webhost.SetupRequest) {
+			r.Model = "not a model id"
+		},
+	} {
+		request := valid
+		mutate(&request)
+		if _, _, err := resolveWebSetup(request); err == nil {
+			t.Fatalf("%s was accepted", name)
+		}
 	}
 }
 
-func TestWebSetupResolvesGLMProvider(t *testing.T) {
-	catalog := webSetupCatalog()
-	var advertised webhost.SetupProvider
-	for _, provider := range catalog.Providers {
-		if provider.ID == "glm" {
-			advertised = provider
-			break
-		}
+func TestLegacyPresetConnectionsMaterializeOnLoad(t *testing.T) {
+	reference := &credential.Reference{
+		Kind: "keyring",
+		Name: "web/setup/00000000000000000000000000000000",
 	}
-	if advertised.DisplayName != "GLM" ||
-		advertised.Protocol != string(model.ProtocolOpenAIChat) ||
-		!advertised.RequiresAPIKey ||
-		!reflect.DeepEqual(advertised.Models, []string{"glm-5.3", "glm-5.3-flash", "glm-5.3-flashx"}) {
-		t.Fatalf("advertised GLM provider = %+v", advertised)
-	}
+	for _, test := range []struct {
+		provider   string
+		model      string
+		endpoint   string
+		context    uint64
+		reasoning  bool
+	}{
+		{"openai", "gpt-4.1", "https://api.openai.com/v1", 1_047_576, false},
+		{"deepseek", "deepseek-chat", "https://api.deepseek.com/v1", 131_072, false},
+		{"glm", "glm-5.3", "https://open.bigmodel.cn/api/coding/paas/v4", 1_000_000, true},
+		// 旧别名归属：deepseek 连接引用 deepseek-v4-flash provider 的模型。
+		{"deepseek", "deepseek-v4-flash", "https://api.deepseek.com", 1_048_576, true},
+	} {
+		t.Run(test.provider+"/"+test.model, func(t *testing.T) {
+			stored := webSetupConnection{
+				ID: test.provider, Provider: test.provider, Model: test.model,
+				MetadataProvenance: model.ProvenanceBundled,
+				Credential:         reference,
+			}
+			materialized, ok := materializeLegacyConnection(stored)
+			if !ok {
+				t.Fatalf("legacy connection %s/%s did not materialize", test.provider, test.model)
+			}
+			if materialized.BaseURL != test.endpoint ||
+				materialized.Protocol != string(model.ProtocolOpenAIChat) ||
+				materialized.ID != test.provider ||
+				materialized.Provider != test.provider ||
+				materialized.Credential != reference {
+				t.Fatalf("materialized = %+v", materialized)
+			}
+			descriptor := setupModelMetadata(materialized).Descriptor
+			if descriptor == nil ||
+				descriptor.Limits.ContextTokens != test.context ||
+				descriptor.Capabilities.Reasoning != test.reasoning {
+				t.Fatalf("materialized metadata = %+v", descriptor)
+			}
+			if !isMaterializedLegacyConnection(materialized) {
+				t.Fatal("materialized connection is not recognized as canonical legacy form")
+			}
 
-	resolver, err := model.NewResolver(model.DefaultCatalog())
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, modelID := range []string{"glm-5.3-flash", "glm-5.3-flashx"} {
-		t.Run(modelID, func(t *testing.T) {
-			selection, reference, err := resolveWebSetup(webhost.SetupRequest{
-				Provider: "glm", Model: modelID, APIKey: "secret",
-			})
-			if err != nil {
+			dataDir := t.TempDir()
+			if err := saveWebSetupSelection(
+				dataDir, "workspace", wrapConnection(stored),
+			); err != nil {
 				t.Fatal(err)
 			}
-			if selection.Provider != "glm" ||
-				selection.Model != modelID ||
-				selection.BaseURL != "" ||
-				selection.Protocol != string(model.ProtocolOpenAIChat) ||
-				selection.Metadata != nil ||
-				selection.MetadataProvenance != model.ProvenanceBundled {
-				t.Fatalf("resolved GLM selection = %+v", selection)
+			loaded, found, err := loadWebSetupSelection(dataDir, "workspace")
+			if err != nil || !found {
+				t.Fatalf("loaded materialized selection: found=%v err=%v", found, err)
 			}
-			if reference.Kind != "env" || reference.Name != "ZAI_API_KEY" {
-				t.Fatalf("resolved GLM credential = %+v", reference)
+			if !reflect.DeepEqual(loaded.Active(), &materialized) {
+				t.Fatalf("loaded = %+v want %+v", loaded.Active(), materialized)
 			}
-			providerID := setupRuntimeProviderID(selection)
-			if providerID != "glm" {
-				t.Fatalf("runtime provider = %q, want glm", providerID)
-			}
-			route, err := resolver.Resolve(model.RouteRequest{
-				ProviderID: providerID, ModelID: modelID,
-			})
-			if err != nil {
-				t.Fatal(err)
-			}
-			capabilities := route.Model().Capabilities
-			if route.Endpoint() != "https://open.bigmodel.cn/api/coding/paas/v4" ||
-				route.Protocol() != model.ProtocolOpenAIChat ||
-				route.Adapter() != model.AdapterOpenAICompatible ||
-				route.Model().WireID != modelID ||
-				route.Model().Limits.ContextTokens != 1_000_000 ||
-				route.Model().Limits.MaxOutputTokens != 131_072 ||
-				!capabilities.Reasoning ||
-				!reflect.DeepEqual(capabilities.ReasoningEfforts, []string{"low", "high", "max"}) ||
-				capabilities.DefaultReasoningEffort != "max" ||
-				!capabilities.ToolCalls ||
-				!capabilities.ImageInput ||
-				!capabilities.AutomaticPromptCache ||
-				capabilities.ThinkingToggle {
-				t.Fatalf("resolved GLM route = %+v", route.Model())
+			// 物化结果必须可以再次加载（canonical 稳定）。
+			reloaded, found, err := loadWebSetupSelection(dataDir, "workspace")
+			if err != nil || !found || !reflect.DeepEqual(reloaded, loaded) {
+				t.Fatalf("reloaded = %+v err=%v", reloaded, err)
 			}
 		})
 	}
 }
 
-func TestWebSetupResolvesKnownModelToOwningProviderPreset(t *testing.T) {
-	selection, reference, err := resolveWebSetup(webhost.SetupRequest{
-		Provider: "deepseek", Model: "deepseek-v4-flash", APIKey: "secret",
-	})
-	if err != nil {
-		t.Fatal(err)
+func TestUnresolvableLegacyConnectionsAreDropped(t *testing.T) {
+	selection := webSetupSelection{
+		Version: webSetupVersion,
+		Connections: []webSetupConnection{
+			{
+				ID: "openrouter", Provider: "openrouter", Model: "openrouter/auto",
+				MetadataProvenance: model.ProvenanceBundled,
+			},
+		},
+		DefaultConnection: "openrouter",
 	}
-	if selection.Provider != "deepseek" ||
-		selection.Model != "deepseek-v4-flash" ||
-		selection.BaseURL != "" ||
-		selection.Protocol != string(model.ProtocolOpenAIChat) {
-		t.Fatalf("resolved selection = %+v", selection)
-	}
-	if providerID := setupRuntimeProviderID(selection); providerID != "deepseek-v4-flash" {
-		t.Fatalf("runtime provider = %q, want deepseek-v4-flash", providerID)
-	}
-	if reference.Kind != "keyring" || reference.Name != "deepseek/default" {
-		t.Fatalf("resolved credential = %+v", reference)
-	}
-	if metadata := setupModelMetadata(selection); metadata.Descriptor != nil ||
-		metadata.Path != "" {
-		t.Fatalf("known model received fallback metadata = %+v", metadata)
-	}
-	visionSelection, _, err := resolveWebSetup(webhost.SetupRequest{
-		Provider: "deepseek", Model: "deepseek-v4-flash-vision-exp",
-		APIKey: "secret",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	visionRoute, err := model.NewResolver(model.DefaultCatalog())
-	if err != nil {
-		t.Fatal(err)
-	}
-	resolvedVision, err := visionRoute.Resolve(model.RouteRequest{
-		ProviderID: setupRuntimeProviderID(visionSelection),
-		ModelID:    visionSelection.Model,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if visionSelection.BaseURL != "" ||
-		visionSelection.Protocol != string(model.ProtocolOpenAIChat) ||
-		!resolvedVision.Model().Capabilities.ImageInput {
-		t.Fatalf(
-			"resolved vision selection=%+v model=%+v",
-			visionSelection,
-			resolvedVision.Model(),
-		)
-	}
-
-	resolver, err := model.NewResolver(model.DefaultCatalog())
-	if err != nil {
-		t.Fatal(err)
-	}
-	route, err := resolver.Resolve(model.RouteRequest{
-		ProviderID: setupRuntimeProviderID(selection),
-		ModelID:    selection.Model,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if route.Model().Limits.ContextTokens != 1_048_576 ||
-		route.Model().Limits.MaxOutputTokens != 384_000 ||
-		!route.Model().Capabilities.Reasoning ||
-		!route.Model().Capabilities.PromptCache {
-		t.Fatalf("resolved model capabilities = %+v", route.Model())
-	}
-
 	dataDir := t.TempDir()
 	if err := saveWebSetupSelection(dataDir, "workspace", selection); err != nil {
 		t.Fatal(err)
 	}
-	loaded, found, err := loadWebSetupSelection(dataDir, "workspace")
-	if err != nil || !found || !reflect.DeepEqual(loaded, selection) {
-		t.Fatalf("loaded selection = %+v found=%v err=%v", loaded, found, err)
+	if _, found, err := loadWebSetupSelection(dataDir, "workspace"); err != nil || found {
+		t.Fatalf("unresolvable legacy selection found=%v err=%v", found, err)
 	}
+}
 
-	legacy := selection
-	legacy.Version = 1
-	legacy.BaseURL = "https://api.deepseek.com/v1"
-	legacy.Protocol = string(model.ProtocolOpenAIChat)
-	legacy.MetadataProvenance = ""
-	legacyDataDir := t.TempDir()
-	if err := saveWebSetupSelection(legacyDataDir, "workspace", legacy); err != nil {
+func TestLegacyCustomProviderFormNormalizesToConnectionID(t *testing.T) {
+	// 旧自定义连接：Provider 为 "openai-compatible"，ID 为端点摘要。
+	connection := webSetupConnection{
+		ID: connectionID("https://models.example.com/v1"),
+		Provider: customProviderID, Model: "vendor/model-v1",
+		BaseURL: "https://models.example.com/v1", Protocol: "openai_chat",
+		Metadata: testSetupMetadata("vendor/model-v1"),
+		MetadataProvenance: model.ProvenanceOperatorConfig,
+		Credential: &credential.Reference{
+			Kind: "keyring",
+			Name: "web/setup/00000000000000000000000000000000",
+		},
+	}
+	dataDir := t.TempDir()
+	if err := saveWebSetupSelection(dataDir, "workspace", wrapConnection(connection)); err != nil {
 		t.Fatal(err)
 	}
-	loaded, found, err = loadWebSetupSelection(legacyDataDir, "workspace")
-	if err != nil || !found || !reflect.DeepEqual(loaded, selection) {
-		t.Fatalf("upgraded selection = %+v found=%v err=%v", loaded, found, err)
+	loaded, found, err := loadWebSetupSelection(dataDir, "workspace")
+	if err != nil || !found {
+		t.Fatalf("legacy custom selection found=%v err=%v", found, err)
+	}
+	active := loaded.Active()
+	if active.Provider != connection.ID || active.ID != connection.ID {
+		t.Fatalf("normalized connection = %+v", active)
+	}
+	// 规范化结果回写后再加载保持稳定。
+	if _, _, err := loadWebSetupSelection(dataDir, "workspace"); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -252,7 +177,7 @@ func TestWebSetupPersistsOnlyNonSecretSelection(t *testing.T) {
 	inputMetadata := testSetupMetadata("vendor/model-v1")
 	inputMetadata.WireID = "wire-model-v1"
 	selection, reference, err := resolveWebSetup(webhost.SetupRequest{
-		Provider: customProviderID, Model: "vendor/model-v1",
+		Model: "vendor/model-v1",
 		BaseURL:  "https://models.example.com/v1/",
 		Protocol: "openai_responses", APIKey: "secret-value",
 		ModelMetadata: inputMetadata,
@@ -280,11 +205,11 @@ func TestWebSetupPersistsOnlyNonSecretSelection(t *testing.T) {
 	}
 	t.Run("no registered models", func(t *testing.T) {
 		dataDir := t.TempDir()
-		if err := saveWebSetupSelection(dataDir, "workspace", selection); err != nil {
+		if err := saveWebSetupSelection(dataDir, "workspace", wrapConnection(selection)); err != nil {
 			t.Fatal(err)
 		}
 		loaded, found, err := loadWebSetupSelection(dataDir, "workspace")
-		if err != nil || !found || !reflect.DeepEqual(loaded, selection) {
+		if err != nil || !found || !reflect.DeepEqual(loaded, wrapConnection(selection)) {
 			t.Fatalf("loaded setup = %+v found=%v err=%v", loaded, found, err)
 		}
 	})
@@ -297,7 +222,7 @@ func TestWebSetupPersistsOnlyNonSecretSelection(t *testing.T) {
 		Metadata: *testSetupMetadata("vendor/model-v2"),
 	}}
 	dataDir := t.TempDir()
-	if err := saveWebSetupSelection(dataDir, "workspace", selection); err != nil {
+	if err := saveWebSetupSelection(dataDir, "workspace", wrapConnection(selection)); err != nil {
 		t.Fatal(err)
 	}
 	data, err := os.ReadFile(setupSelectionPath(dataDir, "workspace"))
@@ -312,17 +237,17 @@ func TestWebSetupPersistsOnlyNonSecretSelection(t *testing.T) {
 		t.Fatalf("setup selection did not persist model metadata: %s", data)
 	}
 	loaded, found, err := loadWebSetupSelection(dataDir, "workspace")
-	if err != nil || !found || !reflect.DeepEqual(loaded, selection) {
+	if err != nil || !found || !reflect.DeepEqual(loaded, wrapConnection(selection)) {
 		t.Fatalf("loaded setup = %+v found=%v err=%v", loaded, found, err)
 	}
-	restored := setupModelMetadata(loaded).Descriptor
+	restored := setupModelMetadata(*loaded.Active()).Descriptor
 	if restored == nil ||
 		restored.Limits != metadata.Limits ||
 		!reflect.DeepEqual(restored.Capabilities, metadata.Capabilities) ||
 		restored.MetadataProvenance != metadata.MetadataProvenance {
 		t.Fatalf("restored custom metadata = %+v", restored)
 	}
-	additional := setupModelMetadata(loaded).AdditionalDescriptors
+	additional := setupModelMetadata(*loaded.Active()).AdditionalDescriptors
 	if descriptor, ok := additional["vendor/model-v2"]; !ok ||
 		descriptor.ID != "vendor/model-v2" {
 		t.Fatalf("restored additional models = %+v", additional)
@@ -331,7 +256,7 @@ func TestWebSetupPersistsOnlyNonSecretSelection(t *testing.T) {
 
 func TestWebSetupRejectsMissingOrInvalidCustomMetadata(t *testing.T) {
 	base := webhost.SetupRequest{
-		Provider: customProviderID, Model: "custom-model",
+		Model: "custom-model", APIKey: "secret-value",
 		BaseURL: "https://models.example.com/v1", Protocol: "openai_chat",
 	}
 	if _, _, err := resolveWebSetup(base); err == nil {
@@ -379,15 +304,55 @@ func TestWebSetupRejectsMissingOrInvalidCustomMetadata(t *testing.T) {
 
 func TestLegacyCustomSelectionRequiresSetup(t *testing.T) {
 	dataDir := t.TempDir()
-	legacy := webSetupSelection{
-		Version: 1, Provider: customProviderID, Model: "legacy-model",
-		BaseURL: "https://models.example.com/v1", Protocol: "openai_chat",
+	legacyJSON := `{"version":1,"provider":"openai-compatible","model":"legacy-model",` +
+		`"base_url":"https://models.example.com/v1","protocol":"openai_chat"}` + "\n"
+	if err := os.MkdirAll(filepath.Join(dataDir, "web-setup"), 0o700); err != nil {
+		t.Fatal(err)
 	}
-	if err := saveWebSetupSelection(dataDir, "workspace", legacy); err != nil {
+	if err := os.WriteFile(
+		filepath.Join(dataDir, "web-setup", "selection.json"),
+		[]byte(legacyJSON), 0o600,
+	); err != nil {
 		t.Fatal(err)
 	}
 	if _, found, err := loadWebSetupSelection(dataDir, "workspace"); err != nil || found {
 		t.Fatalf("legacy custom selection found=%t err=%v", found, err)
+	}
+}
+
+func TestLegacyFlatPresetSelectionUpgrades(t *testing.T) {
+	// v1 扁平格式（无连接集）的预设连接无损升级并物化。
+	dataDir := t.TempDir()
+	legacyJSON := `{"version":1,"provider":"deepseek","model":"deepseek-chat",` +
+		`"metadata_provenance":"bundled"}` + "\n"
+	if err := os.MkdirAll(filepath.Join(dataDir, "web-setup"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(dataDir, "web-setup", "selection.json"),
+		[]byte(legacyJSON), 0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	loaded, found, err := loadWebSetupSelection(dataDir, "workspace")
+	if err != nil || !found {
+		t.Fatalf("upgraded selection found=%v err=%v", found, err)
+	}
+	active := loaded.Active()
+	if active.ID != "deepseek" || active.Provider != "deepseek" ||
+		active.Model != "deepseek-chat" ||
+		active.BaseURL != "https://api.deepseek.com/v1" ||
+		active.Protocol != string(model.ProtocolOpenAIChat) ||
+		active.Metadata == nil {
+		t.Fatalf("upgraded selection = %+v", active)
+	}
+}
+
+func wrapConnection(connection webSetupConnection) webSetupSelection {
+	return webSetupSelection{
+		Version:           webSetupVersion,
+		Connections:       []webSetupConnection{cloneWebSetupConnection(connection)},
+		DefaultConnection: connection.ID,
 	}
 }
 

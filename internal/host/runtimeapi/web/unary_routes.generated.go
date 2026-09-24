@@ -22,6 +22,14 @@ func unaryRouteHandler(path string) (unaryHandler, bool) {
 		return (*Server).checkpointList, true
 	case "checkpoint/restore":
 		return (*Server).checkpointRestore, true
+	case "connection/add":
+		return (*Server).connectionAdd, true
+	case "connection/default":
+		return (*Server).connectionDefault, true
+	case "connection/list":
+		return (*Server).connectionList, true
+	case "connection/remove":
+		return (*Server).connectionRemove, true
 	case "connection/status":
 		return (*Server).connectionStatus, true
 	case "credential/clear-keyring":

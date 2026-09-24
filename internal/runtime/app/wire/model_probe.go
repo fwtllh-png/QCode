@@ -74,31 +74,6 @@ func WithDefaultReasoningEfforts(
 	if !capabilities.Reasoning || len(capabilities.ReasoningEfforts) != 0 {
 		return capabilities
 	}
-	var matched *model.Model
-	for _, provider := range model.DefaultCatalog().Providers() {
-		candidate, exists := provider.Models[modelID]
-		if !exists || !candidate.Capabilities.Reasoning ||
-			len(candidate.Capabilities.ReasoningEfforts) == 0 {
-			continue
-		}
-		if matched != nil {
-			matched = nil
-			break
-		}
-		value := candidate
-		matched = &value
-	}
-	if matched != nil {
-		capabilities.ReasoningEfforts = append(
-			[]string(nil),
-			matched.Capabilities.ReasoningEfforts...,
-		)
-		capabilities.DefaultReasoningEffort =
-			matched.Capabilities.DefaultReasoningEffort
-		capabilities.ThinkingToggle =
-			matched.Capabilities.ThinkingToggle
-		return capabilities
-	}
 	capabilities.ReasoningEfforts = []string{
 		"low",
 		"medium",

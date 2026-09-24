@@ -298,7 +298,7 @@ func TestCompatibleHTTPFailurePreservesTypedContextError(t *testing.T) {
 		Body: `{"error":{"message":"context length exceeded",` +
 			`"code":"context_length_exceeded","type":"invalid_request_error"}}`,
 		Header: http.Header{
-			"X-Deepseek-Request-Id": []string{"request-1"},
+			"X-Request-Id": []string{"request-1"},
 		},
 	})
 	var failure *provider.Failure

@@ -222,12 +222,33 @@ path / query / handle 等公开白名单，并并入 InputSchema 的 required �
 digest 相同的 160 字节 UTF-8 预算截断，不回灌整段脚本。
 显式非零值属于 Operator 成本或 SLA Ceiling，仍须满足顺序和模型窗口范围校验。
 
-Web 中的自定义 Endpoint 和内置目录之外的 Model 必须提交完整模型元数据，包括
-Canonical ID、Wire ID、Context、Max Output、Capabilities 和可用的 Reasoning
-Efforts。该元数据以 `operator_config` 来源保存；只返回 Model ID 的 `/models` 接口
-不能作为容量或能力来源。同名 Model 的 probe 结果按 Provider、Endpoint、Protocol 和
-Adapter 组成的 Connection Identity 隔离。旧版缺少元数据来源的自定义 Setup Record
-不会迁移为猜测值，而会重新进入 Setup Required。
+Web 中的每个 Model 必须提交完整模型元数据，包括 Canonical ID、Wire ID、
+Context、Max Output、Capabilities 和可用的 Reasoning Efforts；元数据由连接探测
+自动填写或手动录入。该元数据以 `operator_config` 来源保存；只返回 Model ID 的
+`/models` 接口不能作为容量或能力来源。同名 Model 的 probe 结果按 Provider、
+Endpoint、Protocol 和 Adapter 组成的 Connection Identity 隔离。旧版缺少元数据
+来源的自定义 Setup Record 不会迁移为猜测值，而会重新进入 Setup Required；
+旧预设连接（OpenAI、DeepSeek、GLM）在加载时物化为显式连接，Keyring 凭证与
+已保存 Session 选择保持不变。
+
+当前路由允许模型切换，且目录中存在其他连接的可用、可热切换模型时，Session 同时
+开放 `provider` 与 `model` 修改。切换目标必须命中已配置的完整路由；固定路由、
+不可用模型和要求重启的条目不开放跨连接热切换。
+
+模型设置中的 `Context tokens (K)` 和 `Max output tokens (K)` 输入框以 K 为单位，
+约定 **1 K = 1024 tokens**。例如输入 `128` 表示 131072 tokens。允许小数，但换算后
+必须是正的安全整数，且输出上限不能超过上下文容量；编辑已有值时不进行舍入。
+API、配置文件、持久化与探测结果摘要继续使用原始 token 数量。
+
+Chat Completions 与 Responses 能力探测使用 `tool_choice=auto`，通过提示词请求
+调用探测工具，保留服务端默认思考模式，避免强制工具选择与思考模式冲突。
+Streaming、Reasoning、Tool Calls 只根据实际响应事件填写；未观察到工具调用时
+不会自动勾选 Tool Calls，可重试探测或根据服务商文档手动确认能力。
+
+模型能力探测与 `/models` 列表请求失败时，错误保留 HTTP 状态码，并展示服务端
+JSON `error.message` 中的原因；消息经过凭证脱敏。错误正文沿用 Provider HTTP
+诊断上限 `httpclient.MaxErrorBodyBytes`（16 KiB），超过上限、读取失败、非 JSON
+或缺少有效消息时仅显示状态码，不展示原始或截断正文。
 
 `context.view.recent_tail_turns` 是模型可见原文的主边界，默认 2。更早 Turn 的
 消息会被投影裁掉，但不改写 Durable History 里已发送的 Tool Result。
@@ -537,24 +558,22 @@ Memory 使用带稳定 ID 和 Generation 的记录存储。`user`、`workspace` 
 
 ## Provider 与模型
 
-主路由由 `[execution].provider` 和 `[execution].model` 决定。`protocol` 描述 Wire
-格式，例如：
+主路由由 `[execution].provider`、`[execution].model` 与 `execution.base_url` 决定；
+`base_url` 是 Provider 的 OpenAI-Compatible 端点（HTTPS 或回环地址），没有内置
+Provider 目录可以省略。`protocol` 描述 Wire 格式，例如：
 
 - `openai_chat`
 - `openai_responses`
 
-首次 Setup 的一级 Provider 包括 OpenAI、DeepSeek、GLM 和自定义
-OpenAI-Compatible。GLM 内置 `glm-5.3`、`glm-5.3-flash`、`glm-5.3-flashx`，
-均属于 `glm` Provider，使用
-`https://open.bigmodel.cn/api/coding/paas/v4` 与 `openai_chat`。
-三个模型进入同一默认目录，可在聊天框的模型菜单中直接切换。
-FlashX 的 1M 上下文、128K 最大输出、图像输入及推理能力依据
-[智谱官方模型文档](https://docs.bigmodel.cn/cn/guide/models/vlm/glm-5.3-flash)。
+模型元数据通过 `execution.model_metadata` 指向一份 JSON 文件声明（Canonical ID、
+Wire ID、Context、Max Output 与完整 Capability 声明）；Runtime 不猜测模型限制。
+首次 Setup 在 Web 中完成：填写 Base URL、Protocol、Model ID 与 API Key 四项要素，
+元数据由连接探测自动填写或手动录入，不存在内置 Provider 预设。
 
-GLM Chat 请求默认同时发送 `stream=true` 与 `tool_stream=true`，遵循
-[智谱工具流式输出协议](https://docs.bigmodel.cn/cn/guide/capabilities/stream-tool)。
-工具参数逐段接收并续期 `execution.idle_timeout`，完整采样成功后才交给 Guard 执行；
-其他 Provider 和 Responses 协议不发送 `tool_stream`，也不按模型名称猜测是否支持。
+OpenAI-compatible Chat 请求统一同时发送 `stream=true` 与 `tool_stream=true`：
+兼容网关在流式模式下默认缓冲工具参数，`tool_stream` 让参数逐段接收并续期
+`execution.idle_timeout`，完整采样成功后才交给 Guard 执行。该字段对每条连接
+一致发送，不按 Provider 名称区分；Responses 协议不发送 `tool_stream`。
 
 不要猜测标识符。Web Settings 展示 Runtime 发布的 Provider/Model Catalog；即使
 Model ID 相同，Provider ID 也可能不同，存在歧义时必须在 TOML 中显式指定 Provider。

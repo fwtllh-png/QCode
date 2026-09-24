@@ -8,22 +8,23 @@ import (
 	"github.com/fwtllh-png/QCode/internal/adapter/provider"
 )
 
-func TestChatToolStreamIsScopedToGLM(t *testing.T) {
+// TestChatToolStreamIsUniformAcrossCompatibleConnections pins the uniform
+// tool_stream contract: every OpenAI-compatible chat connection sends
+// tool_stream=true regardless of the provider id, while the Responses
+// protocol and the plain OpenAI adapter stay untouched.
+func TestChatToolStreamIsUniformAcrossCompatibleConnections(t *testing.T) {
 	for _, test := range []struct {
 		name       string
 		providerID string
 		adapterID  model.AdapterID
 		protocol   model.WireProtocol
-		withTools  bool
 		want       bool
 	}{
-		{"glm tools", "glm", model.AdapterOpenAICompatible, model.ProtocolOpenAIChat, true, true},
-		{"glm text", "glm", model.AdapterOpenAICompatible, model.ProtocolOpenAIChat, false, true},
-		{"deepseek", "deepseek", model.AdapterOpenAICompatible, model.ProtocolOpenAIChat, true, false},
-		{"custom compatible", "compatible", model.AdapterOpenAICompatible, model.ProtocolOpenAIChat, true, false},
-		{"openai", "openai", model.AdapterOpenAI, model.ProtocolOpenAIChat, true, false},
-		{"responses", "glm", model.AdapterOpenAICompatible, model.ProtocolOpenAIResponses, true, false},
-		{"openai adapter", "glm", model.AdapterOpenAI, model.ProtocolOpenAIChat, true, false},
+		{"glm compatible", "glm", model.AdapterOpenAICompatible, model.ProtocolOpenAIChat, true},
+		{"deepseek compatible", "deepseek", model.AdapterOpenAICompatible, model.ProtocolOpenAIChat, true},
+		{"custom endpoint", "openai-compatible:ab12cd", model.AdapterOpenAICompatible, model.ProtocolOpenAIChat, true},
+		{"responses protocol", "glm", model.AdapterOpenAICompatible, model.ProtocolOpenAIResponses, false},
+		{"openai adapter", "glm", model.AdapterOpenAI, model.ProtocolOpenAIChat, false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			request := compatibleRequest(t)
@@ -47,12 +48,10 @@ func TestChatToolStreamIsScopedToGLM(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if test.withTools {
-				request.Tools = []provider.ToolDefinition{{
-					Name: "file_write", Description: "Write a file",
-					InputSchema: map[string]any{"type": "object"},
-				}}
-			}
+			request.Tools = []provider.ToolDefinition{{
+				Name: "file_write", Description: "Write a file",
+				InputSchema: map[string]any{"type": "object"},
+			}}
 			adapter, err := NewAdapter(test.adapterID)
 			if err != nil {
 				t.Fatal(err)
@@ -73,10 +72,10 @@ func TestChatToolStreamIsScopedToGLM(t *testing.T) {
 			}
 			if test.want {
 				if body.ToolStream == nil || !*body.ToolStream {
-					t.Fatalf("GLM tool_stream must be true: %s", call.Body)
+					t.Fatalf("tool_stream must be true: %s", call.Body)
 				}
 			} else if body.ToolStream != nil {
-				t.Fatalf("provider-specific tool_stream leaked: %s", call.Body)
+				t.Fatalf("tool_stream leaked outside the compatible chat path: %s", call.Body)
 			}
 		})
 	}

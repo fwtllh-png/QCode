@@ -36,6 +36,9 @@ var allowedEnvironment = map[string]bool{
 // sandbox in every posture, never by a declaration). The declaration itself
 // is journaled by the calling tool for audit.
 func SanitizedEnvironment(extra []string) ([]string, error) {
+	if err := ValidateDeclaredEnvironment(extra); err != nil {
+		return nil, err
+	}
 	values := make(map[string]string)
 	for _, entry := range os.Environ() {
 		name, value, ok := strings.Cut(entry, "=")
@@ -45,25 +48,7 @@ func SanitizedEnvironment(extra []string) ([]string, error) {
 		values[name] = value
 	}
 	for _, entry := range extra {
-		name, value, ok := strings.Cut(entry, "=")
-		if !ok || !validEnvironmentName(name) {
-			return nil, errors.New("environment entries must use NAME=value")
-		}
-		if SecretEnvironmentName(name) {
-			return nil, errors.New("secret environment variables cannot be passed to child processes")
-		}
-		if interpreterPreloadEnvironmentName(name) {
-			return nil, fmt.Errorf(
-				"%s changes how the command text is interpreted and cannot be declared; set it inside the command if the task truly needs it",
-				name,
-			)
-		}
-		if policyOwnedEnvironmentName(name) {
-			return nil, fmt.Errorf(
-				"%s is policy-owned: the sandbox decides it in every posture and a declaration cannot move it",
-				name,
-			)
-		}
+		name, value, _ := strings.Cut(entry, "=")
 		values[name] = value
 	}
 	names := make([]string, 0, len(values))
@@ -76,6 +61,37 @@ func SanitizedEnvironment(extra []string) ([]string, error) {
 		result = append(result, name+"="+values[name])
 	}
 	return result, nil
+}
+
+// ValidateDeclaredEnvironment applies the declaration rules to caller-supplied
+// entries without building the inherited environment. Hosts that journal or
+// forward declarations to the process boundary validate early with this and
+// pass the raw entries on: SanitizedEnvironment stays the single place that
+// resolves host inheritance, so a prepared environment is never re-validated
+// as if it were a declaration.
+func ValidateDeclaredEnvironment(extra []string) error {
+	for _, entry := range extra {
+		name, _, ok := strings.Cut(entry, "=")
+		if !ok || !validEnvironmentName(name) {
+			return errors.New("environment entries must use NAME=value")
+		}
+		if SecretEnvironmentName(name) {
+			return errors.New("secret environment variables cannot be passed to child processes")
+		}
+		if interpreterPreloadEnvironmentName(name) {
+			return fmt.Errorf(
+				"%s changes how the command text is interpreted and cannot be declared; set it inside the command if the task truly needs it",
+				name,
+			)
+		}
+		if policyOwnedEnvironmentName(name) {
+			return fmt.Errorf(
+				"%s is policy-owned: the sandbox decides it in every posture and a declaration cannot move it",
+				name,
+			)
+		}
+	}
+	return nil
 }
 
 // interpreterPreloadEnvironmentNames are refused as model declarations

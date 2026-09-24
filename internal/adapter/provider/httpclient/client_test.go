@@ -167,7 +167,26 @@ func TestClientOpenAIResponsesRequest(t *testing.T) {
 // acceptance: a route taken from the bundled catalog, with no custom endpoint
 // metadata, still produces a /responses body rather than /chat/completions.
 func TestBundledResponsesCatalogEntryEncodesToTheResponsesPath(t *testing.T) {
-	resolver, err := model.NewResolver(model.DefaultCatalog())
+	catalog, err := model.NewCatalog(model.Provider{
+		ID: "openai-responses", Adapter: model.AdapterOpenAI,
+		Endpoint: "https://api.openai.com/v1", Protocol: model.ProtocolOpenAIResponses,
+		Credential: model.CredentialRef{Kind: "env", Name: "OPENAI_API_KEY"},
+		Models: map[string]model.Model{
+			"gpt-4.1": {
+				ID: "gpt-4.1", CanonicalID: "gpt-4.1", WireID: "gpt-4.1",
+				Limits: model.Limits{ContextTokens: 1_047_576, MaxOutputTokens: 32_768},
+				Capabilities: model.Capabilities{
+					Streaming: true, ToolCalls: true, PromptCache: true,
+					IncrementalResponses: true,
+				},
+				Provenance: model.ProvenanceOperatorConfig,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolver, err := model.NewResolver(catalog)
 	if err != nil {
 		t.Fatal(err)
 	}

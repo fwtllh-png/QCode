@@ -31,6 +31,7 @@ import {
 } from "react";
 import {useModalFocus} from "./primitives/useModalFocus";
 import {Presence} from "./primitives/Presence";
+import {Switch} from "./primitives/Switch";
 import type {
   AgentPreset,
   AgentPresetApplyResult,
@@ -41,6 +42,8 @@ import type {
   SessionProfile,
   SessionProfileUpdateResult,
   SetupModelMetadata,
+  ConnectionEntry,
+  ConnectionListResult,
   SetupRequest,
   WorkspaceConnection
 } from "../protocol";
@@ -65,7 +68,6 @@ export type ThemeMode = "light" | "dark" | "system";
 
 export type SettingsSection =
   | "general"
-  | "connection"
   | "models"
   | "tools"
   | "extensions"
@@ -93,11 +95,22 @@ interface Props {
   newIsolation: "shared" | "worktree";
   theme: ThemeMode;
   initialSection?: SettingsSection;
-  initialAddModel?: boolean;
   onIsolationChange: (value: "shared" | "worktree") => void;
   onThemeChange: (value: ThemeMode) => void;
   onClose: () => void;
   onError: (error: unknown) => void;
+}
+
+function apiKeyError(value: string): string {
+  if (!value) return "";
+  if (value.trim() !== value || !/^[\x21-\x7e]+$/.test(value)) {
+    return "Enter the API key only, without spaces or quotes.";
+  }
+  if (/^[A-Z][A-Z0-9_]*=[^=]/.test(value) ||
+      (/^([\"'`]).*\1$/.test(value))) {
+    return "Enter the API key value, not an environment assignment.";
+  }
+  return "";
 }
 
 const sections: readonly {
@@ -106,7 +119,6 @@ const sections: readonly {
   icon: typeof Settings2;
 }[] = [
   {id: "general", label: "General", icon: Settings2},
-  {id: "connection", label: "Connection", icon: KeyRound},
   {id: "models", label: "Models", icon: Database},
   {id: "tools", label: "Tools", icon: Wrench},
   {id: "extensions", label: "Extensions", icon: Boxes},
@@ -119,7 +131,6 @@ export function SettingsDialog({
   newIsolation,
   theme,
   initialSection = "general",
-  initialAddModel = false,
   onIsolationChange,
   onThemeChange,
   onClose,
@@ -189,8 +200,10 @@ export function SettingsDialog({
   ]);
 
   useEffect(() => {
+    // credential/* 属于 Runtime RPC；模型未配置（setup 阶段）时不可用。
+    if (snapshot.phase === "setup") return;
     void client.credentialStatus().then(setCredential, reportError);
-  }, [client, reportError]);
+  }, [client, reportError, snapshot.phase]);
 
   const changeProfileDraft = (patch: Partial<ProfileDraft>) => {
     setProfileDraft((current) => current ? {...current, ...patch} : current);
@@ -248,7 +261,10 @@ export function SettingsDialog({
         <nav className="settingsNav" aria-label="Settings sections">
           <h2 id="settings-title">Settings</h2>
           <div>
-            {sections.map((section) => {
+            {sections
+              .filter((section) => snapshot.phase !== "setup" ||
+                section.id === "general" || section.id === "models")
+              .map((section) => {
               const Icon = section.icon;
               return (
                 <button
@@ -298,16 +314,8 @@ export function SettingsDialog({
                 draft={profileDraft}
                 onDraftChange={changeProfileDraft}
                 client={client}
-                initialAddModel={initialAddModel}
-                onError={reportError}
-              />
-            )}
-            {active === "connection" && (
-              <ConnectionSettings
-                snapshot={snapshot}
                 credential={credential}
                 onCredential={setCredential}
-                client={client}
                 onConfigured={requestClose}
                 onError={reportError}
               />
@@ -340,7 +348,7 @@ export function SettingsDialog({
               />
             )}
           </div>
-          {active !== "connection" && (
+          {true && (
           <footer className="settingsApplyBar" data-dirty={dirty || undefined}>
             <span aria-live="polite">
               {dirty
@@ -458,17 +466,15 @@ function GeneralSettings({
       >
         <label className="settingsPreferenceControl">
           <Bell size={15} aria-hidden="true" />
-          <input
-            type="checkbox"
-            role="switch"
-            aria-label="Desktop notifications"
+          <Switch
+            label="Desktop notifications"
             checked={notificationSettings.enabled}
             disabled={
               notificationPending ||
               notificationSettings.permission === "unsupported" ||
               notificationSettings.permission === "denied"
             }
-            onChange={(event) => onNotificationsChange(event.target.checked)}
+            onChange={(next) => onNotificationsChange(next)}
           />
           <span>
             {notificationPending
@@ -501,24 +507,28 @@ function ModelSettings({
   draft,
   onDraftChange,
   client,
-  initialAddModel,
+  credential,
+  onCredential,
+  onConfigured,
   onError
 }: {
   snapshot: RuntimeSnapshot;
   draft: ProfileDraft;
   onDraftChange: (patch: Partial<ProfileDraft>) => void;
   client: RuntimeClient;
-  initialAddModel: boolean;
+  credential?: CredentialStatus;
+  onCredential: (status: CredentialStatus) => void;
+  onConfigured: () => void;
   onError: (error: unknown) => void;
 }) {
   const catalogModel = snapshot.models.find(
     (model) => model.provider === draft.provider && model.id === draft.model
   );
+  // 会话模型跨全部已配置连接选择（不同 Base URL 的连接均可用）。
   const availableModels = snapshot.models.filter(
-    (model) =>
-      model.provider === draft.provider &&
-      model.capabilities.availability === "available"
+    (model) => model.capabilities.availability === "available"
   );
+  const selectedModelValue = `${draft.provider}\u0000${draft.model}`;
   const profileCapabilities = snapshot.profile?.capabilities.model_capabilities;
   const selectedModel = catalogModel ?? (
     profileCapabilities && draft.model.trim()
@@ -535,7 +545,6 @@ function ModelSettings({
         }
       : undefined
   );
-  const [addingModel, setAddingModel] = useState(initialAddModel);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<ModelTestResult>();
   const advertisedReasoningValues =
@@ -543,12 +552,16 @@ function ModelSettings({
   const reasoningValues = selectedModel?.capabilities.default_reasoning_effort
     ? advertisedReasoningValues
     : ["", ...advertisedReasoningValues];
-  const changeModel = (modelID: string) => {
+  const changeModel = (value: string) => {
     setTestResult(undefined);
+    const separator = value.indexOf("\u0000");
+    const provider = value.slice(0, separator);
+    const modelID = value.slice(separator + 1);
     const model = availableModels.find(
-      (entry) => entry.id === modelID
+      (entry) => entry.provider === provider && entry.id === modelID
     );
     onDraftChange({
+      provider,
       model: modelID,
       reasoningEffort: model
         ? model.capabilities.default_reasoning_effort ?? ""
@@ -570,27 +583,41 @@ function ModelSettings({
   return (
     <SettingsSectionView
       title="Models"
-      description="Choose the model QCode uses for this session."
+      description="Manage connections and choose the model QCode uses for this session."
     >
+      <ConnectionsBlock
+        snapshot={snapshot}
+        client={client}
+        credential={credential}
+        onCredential={onCredential}
+        onConfigured={onConfigured}
+        onError={onError}
+        onModelAdded={(model, metadata) => onDraftChange({
+          model,
+          reasoningEffort: metadata.capabilities.default_reasoning_effort ?? ""
+        })}
+      />
       <div className="settingsBlock">
         <div className="settingsBlockTitle">Session model</div>
         <p>Select a configured model, or add another model.</p>
           <div className="settingsButtonRow modelSelectionPrimary">
             <SelectControl
               label="Settings model"
-              value={draft.model}
-              values={availableModels.map((model) => model.id)}
+              value={selectedModelValue}
+              values={availableModels.map(
+                (model) => `${model.provider}\u0000${model.id}`
+              )}
               disabled={!mutable(snapshot, "model")}
-              format={(value) => value}
+              format={(value) => {
+                const separator = value.indexOf("\u0000");
+                const provider = value.slice(0, separator);
+                const modelID = value.slice(separator + 1);
+                return provider === draft.provider
+                  ? modelID
+                  : `${provider} · ${modelID}`;
+              }}
               onChange={changeModel}
             />
-            <button
-              type="button"
-              disabled={Boolean(snapshot.conversation.activeTurnID)}
-              onClick={() => setAddingModel(true)}
-            >
-              <Plus size={13} /> Add model
-            </button>
           </div>
           <div className="settingsButtonRow">
             <button
@@ -639,99 +666,298 @@ function ModelSettings({
       {selectedModel && (
         <ModelCapabilityPanel model={selectedModel} />
       )}
-      <Presence open={addingModel} kind="dialog">
-        <ModelEditorDialog
-          client={client}
-          onClose={() => setAddingModel(false)}
-          onAdded={(model, metadata) => {
-            onDraftChange({
-              model,
-              reasoningEffort:
-                metadata.capabilities.default_reasoning_effort ?? ""
-            });
-            setAddingModel(false);
-          }}
-          onError={onError}
-        />
-      </Presence>
     </SettingsSectionView>
   );
 }
 
-function ModelEditorDialog({
+// ConnectionsBlock：连接集合管理块（连接列表 + 添加/更新表单 + 凭证面板），
+// 嵌入 ModelSettings——连接与模型同属模型管理。
+function ConnectionsBlock({
+  snapshot,
   client,
-  onClose,
-  onAdded,
-  onError
+  credential,
+  onCredential,
+  onConfigured,
+  onError,
+  onModelAdded
 }: {
+  snapshot: RuntimeSnapshot;
   client: RuntimeClient;
-  onClose: () => void;
-  onAdded: (model: string, metadata: SetupModelMetadata) => void;
+  credential?: CredentialStatus;
+  onCredential: (status: CredentialStatus) => void;
+  onConfigured: () => void;
   onError: (error: unknown) => void;
+  onModelAdded: (model: string, metadata: SetupModelMetadata) => void;
 }) {
-  const dialogRef = useRef<HTMLElement>(null);
-  useModalFocus(dialogRef, true, onClose);
-  const [modelID, setModelID] = useState("");
-  const [metadata, setMetadata] = useState<ModelMetadataDraft>(
-    emptyModelMetadataDraft()
-  );
-  const [probed, setProbed] = useState(false);
-  const [probing, setProbing] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [problem, setProblem] = useState("");
-  const [protocol, setProtocol] = useState("openai_chat");
+  const unconfigured = snapshot.phase === "setup";
+  const [connections, setConnections] = useState<ConnectionListResult>();
+  const [connectionBusy, setConnectionBusy] = useState("");
+  // 向导仅在首次配置（setup 阶段）自动展开；其余入口由用户显式打开。
+  const [wizardOpen, setWizardOpen] = useState(unconfigured);
+  const [wizardTarget, setWizardTarget] = useState<ConnectionEntry>();
+
   useEffect(() => {
-    void client.connectionStatus().then(
-      (connection) => setProtocol(connection.protocol || "openai_chat"),
-      onError
-    );
-  }, [client, onError]);
-  const metadataError = probed
-    ? modelMetadataProblem(metadata, protocol)
-    : "";
-  const probe = async () => {
-    if (modelIDProblem(modelID) || probing) return;
-    setProbing(true);
-    setProblem("");
+    void client.listConnections().then(setConnections, () => undefined);
+  }, [client]);
+
+  const refresh = async () => {
     try {
-      const result = await client.probeModel(modelID.trim());
-      setMetadata(modelMetadataFromProbe(modelID.trim(), result));
-      setProbed(true);
-      setProblem(result.warning ?? "");
-    } catch (error) {
-      setProbed(false);
-      setProblem(error instanceof Error ? error.message : String(error));
-    } finally {
-      setProbing(false);
+      setConnections(await client.listConnections());
+    } catch {
+      // 列表刷新失败不阻断主流程。
     }
   };
-  const add = async () => {
-    if (!probed || metadataError || saving) return;
-    const model = modelID.trim();
-    const resolved = setupModelMetadata(metadata);
-    setSaving(true);
+
+  const runConnectionAction = async (
+    label: string,
+    action: () => Promise<ConnectionListResult>
+  ) => {
+    if (connectionBusy) return;
+    setConnectionBusy(label);
+    try {
+      setConnections(await action());
+    } catch (error) {
+      onError(error);
+    } finally {
+      setConnectionBusy("");
+    }
+  };
+
+  return (
+    <div className="settingsBlock settingsConnectionsBlock">
+      <div className="settingsBlockTitle">Connections</div>
+      <p className="settingsBlockDescription">
+        Configure one or more model providers; sessions switch models across
+        connections from the Composer.
+      </p>
+      {connections?.connections.map((entry) => (
+        <SettingRow
+          key={entry.id}
+          title={entry.display_name || entry.provider}
+          description={`模型 ${entry.model}${entry.base_url ? ` · ${entry.base_url}` : ""}${entry.default ? " · 默认" : ""}`}
+        >
+          <span className="settingsStatus" data-ready={entry.default || undefined}>
+            <span />
+            {entry.default ? "Default" : entry.credential_present ? "Ready" : "Key missing"}
+          </span>
+          <button
+            type="button"
+            className="settingsHeaderAction"
+            onClick={() => {
+              setWizardTarget(entry);
+              setWizardOpen(true);
+            }}
+          >
+            Edit
+          </button>
+          {!entry.default && (
+            <>
+              <button
+                type="button"
+                className="settingsHeaderAction"
+                disabled={Boolean(connectionBusy)}
+                onClick={() => void runConnectionAction(
+                  `default:${entry.id}`,
+                  () => client.setDefaultConnection(entry.id).then((result) => {
+                    void refresh();
+                    return result;
+                  })
+                )}
+              >
+                {connectionBusy === `default:${entry.id}` ? "Switching..." : "Set default"}
+              </button>
+              <button
+                type="button"
+                className="settingsHeaderAction"
+                disabled={Boolean(connectionBusy)}
+                onClick={() => void runConnectionAction(
+                  `remove:${entry.id}`,
+                  () => client.removeConnection(entry.id)
+                )}
+              >
+                {connectionBusy === `remove:${entry.id}` ? "Removing..." : "Remove"}
+              </button>
+            </>
+          )}
+        </SettingRow>
+      ))}
+      <div className="settingsButtonRow">
+        <button type="button" onClick={() => {
+          setWizardTarget(undefined);
+          setWizardOpen(true);
+        }}>
+          <Plus size={13} /> Add model
+        </button>
+      </div>
+      {!unconfigured && (
+        <CredentialPanel
+          status={credential}
+          onSet={(secret) => client.setKeyringCredential(secret).then(onCredential)}
+          onValidate={() => client.validateCredential().then(onCredential)}
+          onClear={() => client.clearKeyringCredential().then(onCredential)}
+          onError={onError}
+        />
+      )}
+      <Presence open={wizardOpen} kind="dialog">
+        {wizardOpen && (
+          <ConnectionWizard
+            snapshot={snapshot}
+            client={client}
+            connections={connections}
+            target={wizardTarget}
+            onModelAdded={onModelAdded}
+            onClose={() => {
+              setWizardOpen(false);
+              setWizardTarget(undefined);
+            }}
+            onApplied={async () => {
+              await refresh();
+              if (unconfigured) onConfigured();
+            }}
+            onError={onError}
+          />
+        )}
+      </Presence>
+    </div>
+  );
+}
+
+// ConnectionWizard: linear guided "Add model" flow — Base URL、Protocol、
+// Model ID、API Key 四要素，单一提交。每条连接都是 OpenAI-compatible
+// 端点；模型元数据由探测或手填提供。
+// 提交语义自动判定：未配置时完成首次配置；默认连接上的新模型走热注册
+// （model/add，不重建 Runtime）；其余端点建立新连接。
+function ConnectionWizard({
+  snapshot,
+  client,
+  connections,
+  target,
+  onClose,
+  onApplied,
+  onModelAdded,
+  onError
+}: {
+  snapshot: RuntimeSnapshot;
+  client: RuntimeClient;
+  connections?: ConnectionListResult;
+  target?: ConnectionEntry;
+  onClose: () => void;
+  onApplied: () => Promise<void> | void;
+  onModelAdded: (model: string, metadata: SetupModelMetadata) => void;
+  onError: (error: unknown) => void;
+}) {
+  const unconfigured = snapshot.phase === "setup";
+  const dialogRef = useRef<HTMLElement>(null);
+  useModalFocus(dialogRef, true, onClose);
+  const [modelID, setModelID] = useState(target?.model ?? "");
+  const [baseURL, setBaseURL] = useState(target?.base_url ?? "");
+  const [apiKey, setAPIKey] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [problem, setProblem] = useState("");
+  const [manualMetadata, setManualMetadata] = useState(false);
+  const [metadata, setMetadata] = useState<ModelMetadataDraft>(emptyModelMetadataDraft());
+  const [detected, setDetected] = useState(false);
+  const [protocol, setProtocol] = useState(target?.protocol || "openai_chat");
+  const keyError = apiKeyError(apiKey);
+  const [detecting, setDetecting] = useState(false);
+
+  // 元数据恒必填：每条连接都是显式 OpenAI-compatible 端点。
+  const metadataReady = detected || manualMetadata;
+  // 探测结果信任 Provider 响应；仅手动填写的元数据做严格校验。
+  const metadataProblem = manualMetadata
+    ? modelMetadataProblem(metadata, protocol)
+    : "";
+  const sameBaseURL = (entry: ConnectionEntry) =>
+    (entry.base_url ?? "").replace(/\/+$/, "") === baseURL.trim().replace(/\/+$/, "");
+  const activeConnection = connections?.connections.find((entry) => entry.default);
+  // 已存在同端点连接（编辑或热注册新模型）时凭证已保存，无需重输 API Key。
+  const existingConnection = Boolean(target) ||
+    (activeConnection !== undefined && sameBaseURL(activeConnection));
+  const canSubmit = baseURL.trim() !== "" && modelID.trim() !== "" &&
+    (apiKey.trim() !== "" || existingConnection) && !keyError &&
+    metadataReady && !metadataProblem;
+
+  const detect = async () => {
+    if (detecting || !baseURL.trim() || !modelID.trim()) return;
+    setDetecting(true);
     setProblem("");
     try {
-      await client.addModel({model, model_metadata: resolved});
-      onAdded(model, resolved);
+      // 默认连接上的模型且未填新 Key 时走 Runtime 探测（复用会话凭证）；
+      // 填写了 API Key 时一律走 Supervisor 探测——用户输入的 Key 优先
+      // 于已保存凭证，覆盖"同端点换新 Key"的场景。
+      const useRuntimeProbe = !unconfigured && !apiKey.trim() &&
+        activeConnection !== undefined && sameBaseURL(activeConnection);
+      const result = useRuntimeProbe
+        ? await client.probeModel(modelID.trim())
+        : await client.probeSetup({
+            base_url: baseURL.trim(),
+            protocol,
+            model: modelID.trim(),
+            ...(apiKey.trim() ? {api_key: apiKey.trim()} : {})
+          });
+      setMetadata(modelMetadataFromProbe(modelID.trim(), result));
+      setDetected(true);
+    } catch (error) {
+      setDetected(false);
+      setProblem(error instanceof Error ? error.message : String(error));
+    } finally {
+      setDetecting(false);
+    }
+  };
+
+  const submit = async () => {
+    if (!canSubmit || submitting) return;
+    setSubmitting(true);
+    setProblem("");
+    try {
+      const requestMetadata = setupModelMetadata(metadata);
+      // 默认连接的同一端点上新模型：热注册附加模型。
+      if (!unconfigured && activeConnection && !target &&
+          sameBaseURL(activeConnection) &&
+          activeConnection.model !== modelID.trim()) {
+        await client.addModel({model: modelID.trim(), model_metadata: requestMetadata});
+        onModelAdded(modelID.trim(), requestMetadata);
+      } else if (unconfigured) {
+        await client.completeSetup({
+          model: modelID.trim(),
+          api_key: apiKey,
+          base_url: baseURL.trim(),
+          protocol,
+          model_metadata: requestMetadata
+        });
+      } else {
+        await client.addConnection({
+          model: modelID.trim(),
+          api_key: apiKey,
+          base_url: baseURL.trim(),
+          protocol,
+          model_metadata: requestMetadata
+        });
+      }
+      await onApplied();
+      onClose();
     } catch (error) {
       setProblem(error instanceof Error ? error.message : String(error));
       onError(error);
-      setSaving(false);
+    } finally {
+      setSubmitting(false);
     }
   };
+
   return (
     <div className="modelEditorOverlay" data-motion-backdrop role="presentation">
       <section
-        className="modelEditorDialog"
-        data-motion-surface
         ref={dialogRef}
+        className="modelEditorDialog connectionWizard"
+        data-motion-surface
         role="dialog"
         aria-modal="true"
-        aria-labelledby="model-editor-title"
+        aria-labelledby="connection-wizard-title"
       >
         <header>
-          <h3 id="model-editor-title">Add model</h3>
+          <h3 id="connection-wizard-title">
+            {target ? "Edit connection" : unconfigured ? "Configure model" : "Add model"}
+          </h3>
           <button
             type="button"
             className="settingsClose"
@@ -743,359 +969,108 @@ function ModelEditorDialog({
         </header>
         <div className="modelEditorBody">
           <label className="selectField">
-            <span>Model ID</span>
+            <span>1 · Base URL (HTTPS or loopback)</span>
             <input
               className="settingsSelect"
-              value={modelID}
-              autoFocus
-              disabled={probing || saving}
-              aria-label="New model ID"
+              aria-label="Connection base URL"
+              value={baseURL}
+              placeholder="https://api.example.com/v1"
+              disabled={submitting || detecting}
               onChange={(event) => {
-                const model = event.target.value;
-                setModelID(model);
-                setMetadata(emptyModelMetadataDraft(model.trim()));
-                setProbed(false);
-                setProblem("");
+                setBaseURL(event.target.value);
+                setDetected(false);
               }}
             />
           </label>
-          {probed && (
-            <ModelMetadataFields
-              value={metadata}
-              disabled={saving}
-              onChange={setMetadata}
-            />
-          )}
-          {(modelIDProblem(modelID) || metadataError || problem) && (
-            <small className="settingsError" role="alert">
-              {modelIDProblem(modelID) || metadataError || problem}
-            </small>
-          )}
-        </div>
-        <footer>
-          <button type="button" disabled={saving} onClick={onClose}>
-            Cancel
-          </button>
-          {!probed ? (
-            <button
-              type="button"
-              disabled={probing || Boolean(modelIDProblem(modelID))}
-              onClick={() => void probe()}
-            >
-              {probing
-                ? <><RefreshCw className="spin" size={13} /> Detecting...</>
-                : <><Activity size={13} /> Detect model</>}
-            </button>
-          ) : (
-            <button
-              type="button"
-              disabled={saving || Boolean(metadataError)}
-              onClick={() => void add()}
-            >
-              {saving
-                ? <><RefreshCw className="spin" size={13} /> Adding...</>
-                : <><Plus size={13} /> Add model</>}
-            </button>
-          )}
-        </footer>
-      </section>
-    </div>
-  );
-}
-
-function ConnectionSettings({
-  snapshot,
-  credential,
-  onCredential,
-  client,
-  onConfigured,
-  onError
-}: {
-  snapshot: RuntimeSnapshot;
-  credential?: CredentialStatus;
-  onCredential: (status: CredentialStatus) => void;
-  client: RuntimeClient;
-  onConfigured: () => void;
-  onError: (error: unknown) => void;
-}) {
-  const provider = snapshot.providers.find((entry) => entry.selected);
-  const [connection, setConnection] = useState<WorkspaceConnection>();
-  const [providerID, setProviderID] = useState("");
-  const [modelID, setModelID] = useState("");
-  const [baseURL, setBaseURL] = useState("");
-  const [protocol, setProtocol] = useState("openai_chat");
-  const [metadata, setMetadata] = useState(emptyModelMetadataDraft);
-  const [probed, setProbed] = useState(false);
-  const [probing, setProbing] = useState(false);
-  const [probeError, setProbeError] = useState("");
-  const [apiKey, setAPIKey] = useState("");
-  const [configuring, setConfiguring] = useState(false);
-  const [pending, setPending] = useState(false);
-  const catalog = snapshot.setupCatalog;
-  const providerOption = catalog?.providers.find(
-    (entry) => entry.id === providerID
-  );
-  const configuredProvider = catalog?.providers.find(
-    (entry) => entry.id === connection?.provider
-  );
-  const custom = Boolean(providerOption?.custom);
-  const requiresMetadata = Boolean(
-    providerOption && modelID.trim() &&
-    (custom || !providerOption.models?.includes(modelID.trim()))
-  );
-  const metadataError = requiresMetadata && probed
-    ? modelMetadataProblem(
-        metadata,
-        custom ? protocol : providerOption?.protocol ?? ""
-      )
-    : "";
-  const requiresKey = Boolean(
-    providerOption?.requires_api_key && providerID !== connection?.provider
-  );
-  const currentModel = snapshot.models.find((entry) => entry.selected)?.id ??
-    snapshot.profile?.profile.model ?? "";
-  useEffect(() => {
-    void client.connectionStatus().then((value) => {
-      setConnection(value);
-      setProviderID(value.provider);
-      setModelID(currentModel);
-      setBaseURL(value.endpoint);
-      setProtocol(value.protocol || "openai_chat");
-      setMetadata(modelMetadataDraft(value.model_metadata, currentModel));
-    }, onError);
-  }, [client, currentModel, onError]);
-  const configure = async () => {
-    if (!providerOption || !modelID.trim() || metadataError ||
-        (requiresMetadata && !probed) || pending) return;
-    const request: SetupRequest = {
-      provider: providerID,
-      model: modelID.trim(),
-      api_key: apiKey,
-      ...(custom ? {base_url: baseURL.trim(), protocol} : {}),
-      ...(requiresMetadata ? {model_metadata: setupModelMetadata(metadata)} : {})
-    };
-    setPending(true);
-    try {
-      await client.completeSetup(request);
-      setAPIKey("");
-      onConfigured();
-    } catch (error) {
-      onError(error);
-      setPending(false);
-    }
-  };
-  const probeModel = async () => {
-    if (!providerOption || (custom && !baseURL.trim()) || !modelID.trim() || probing) return;
-    setProbing(true);
-    setProbeError("");
-    try {
-      const result = await client.probeSetup({
-        provider: providerID,
-        base_url: custom ? baseURL.trim() : "",
-        protocol: custom ? protocol : providerOption.protocol,
-        model: modelID.trim(),
-        ...(apiKey.trim() ? {api_key: apiKey.trim()} : {})
-      });
-      setMetadata(modelMetadataFromProbe(modelID.trim(), result));
-      setProbed(true);
-      setProbeError(result.warning ?? "");
-    } catch (error) {
-      setProbed(false);
-      setProbeError(error instanceof Error ? error.message : String(error));
-    } finally {
-      setProbing(false);
-    }
-  };
-  return (
-    <SettingsSectionView
-      title="Connection"
-      description="Provider, endpoint, and credential boundary for all Workspace runtimes."
-    >
-      <SettingRow
-        title="Provider"
-        description="Changing it rebuilds idle Workspace runtimes."
-      >
-        <span className="settingsStatus" data-ready>
-          <span />
-          {configuredProvider?.display_name ||
-            provider?.display_name ||
-            snapshot.profile?.profile.provider}
-        </span>
-        {catalog && (
-          <button
-            type="button"
-            className="settingsHeaderAction"
-            onClick={() => setConfiguring((value) => !value)}
-          >
-            <RefreshCw size={13} />
-            {configuring ? "Cancel change" : "Change provider"}
-          </button>
-        )}
-      </SettingRow>
-      {configuring && catalog && (
-        <div className="settingsBlock">
-          <div className="settingsBlockTitle">Provider connection</div>
-          <SettingRow title="Provider" description="Runtime adapter and API family.">
+          <label className="selectField">
+            <span>2 · Protocol</span>
             <SelectControl
-              label="Connection provider"
-              value={providerID}
-              values={catalog.providers.map((entry) => entry.id)}
-              disabled={pending || probing}
-              format={(value) => catalog.providers.find(
-                (entry) => entry.id === value
-              )?.display_name ?? value}
+              label="Connection protocol"
+              value={protocol}
+              values={["openai_chat", "openai_responses"]}
+              disabled={submitting || detecting}
+              format={(value) => value === "openai_chat" ? "Chat Completions" : "Responses"}
               onChange={(value) => {
-                const next = catalog.providers.find((entry) => entry.id === value);
-                setProviderID(value);
-                setModelID("");
-                setAPIKey("");
-                setBaseURL("");
-                setProtocol(next?.protocol || "openai_chat");
-                setMetadata(emptyModelMetadataDraft());
-                setProbed(false);
-                setProbeError("");
+                setProtocol(value);
+                setDetected(false);
               }}
             />
-          </SettingRow>
-          {custom && (
-            <SettingRow title="Base URL" description="HTTPS or loopback HTTP endpoint.">
-              <input
-                className="settingsSelect"
-                aria-label="Connection base URL"
-                value={baseURL}
-                placeholder="https://api.example.com/v1"
-                disabled={pending || probing}
-                onChange={(event) => {
-                  setBaseURL(event.target.value);
-                  setProbed(false);
-                }}
-              />
-            </SettingRow>
-          )}
-          {custom && (
-            <SettingRow title="Protocol" description="OpenAI-compatible wire format.">
-              <SelectControl
-                label="Connection protocol"
-                value={protocol}
-                values={["openai_chat", "openai_responses"]}
-                disabled={pending || probing}
-                format={(value) => value === "openai_chat"
-                  ? "Chat Completions"
-                  : "Responses"}
-                onChange={(value) => {
-                  setProtocol(value);
-                  setProbed(false);
-                }}
-              />
-            </SettingRow>
-          )}
-          <SettingRow title="Model ID" description="Initial model for rebuilt runtimes.">
+          </label>
+          <label className="selectField">
+            <span>3 · Model ID</span>
             <input
               className="settingsSelect"
               aria-label="Connection model ID"
               value={modelID}
               placeholder="Enter the exact model ID"
-              disabled={pending || probing}
+              disabled={submitting || detecting}
               onChange={(event) => {
-                const nextModelID = event.target.value;
-                setMetadata(emptyModelMetadataDraft(nextModelID.trim()));
-                setModelID(nextModelID);
-                setProbed(false);
+                setModelID(event.target.value);
+                setMetadata(emptyModelMetadataDraft(event.target.value.trim()));
+                setDetected(false);
               }}
             />
-          </SettingRow>
-          {requiresMetadata && probed && (
-            <ModelMetadataFields
-              value={metadata}
-              disabled={pending}
-              onChange={setMetadata}
-            />
-          )}
-          {metadataError && (
-            <small className="settingsError" role="alert">
-              {metadataError}
-            </small>
-          )}
-          {requiresMetadata && (
-            <button
-              type="button"
-              className="settingsHeaderAction"
-              disabled={
-                probing || (custom && !baseURL.trim()) || !modelID.trim()
-              }
-              onClick={() => void probeModel()}
-            >
-              {probing ? "Detecting..." : "Detect model"}
-            </button>
-          )}
-          {probeError && (
-            <small className="settingsError" role="alert">{probeError}</small>
-          )}
-          {requiresMetadata && !probed && (
-            <button type="button" className="settingsHeaderAction" disabled={pending || probing}
-              onClick={() => {
-                setMetadata(emptyModelMetadataDraft(modelID.trim()));
-                setProbed(true);
-              }}>
-              Enter model metadata
-            </button>
-          )}
-          <SettingRow
-            title="API key"
-            description={requiresKey
-              ? "Required when switching to this Provider."
-              : "Leave blank to reuse the saved key for this Provider."}
-          >
+          </label>
+          <label className="selectField">
+            <span>4 · API Key</span>
             <input
               className="settingsSelect"
               type="password"
               autoComplete="off"
               aria-label="Connection API key"
               value={apiKey}
-              placeholder="Use saved key"
-              disabled={pending || probing}
-              onChange={(event) => {
-                setAPIKey(event.target.value);
-                setProbed(false);
-              }}
+              placeholder={target ? "Leave blank to reuse the saved key" : "Paste the API key"}
+              disabled={submitting || detecting}
+              onChange={(event) => setAPIKey(event.target.value)}
             />
-          </SettingRow>
-          <div className="settingsButtonRow">
-            <button
-              type="button"
-              disabled={
-                pending || probing || !providerOption || !modelID.trim() ||
-                (custom && !baseURL.trim()) || (requiresKey && !apiKey.trim()) ||
-                (requiresMetadata && !probed) ||
-                Boolean(metadataError)
-              }
-              onClick={() => void configure()}
-            >
-              {pending
-                ? <><RefreshCw className="spin" size={13} /> Restarting...</>
-                : <><RefreshCw size={13} /> Apply and restart</>}
-            </button>
-          </div>
+          </label>
+          {!metadataReady && (
+            <div className="settingsButtonRow">
+              <button
+                type="button"
+                disabled={detecting || !baseURL.trim() || !modelID.trim()}
+                onClick={() => void detect()}
+              >
+                {detecting ? "Detecting..." : "Detect model"}
+              </button>
+              <button type="button" onClick={() => {
+                setManualMetadata(true);
+                setMetadata(emptyModelMetadataDraft(modelID.trim()));
+              }}>
+                Enter model metadata
+              </button>
+            </div>
+          )}
+          {metadataReady && (
+            <ModelMetadataFields
+              value={metadata}
+              disabled={submitting}
+              onChange={setMetadata}
+            />
+          )}
+          {keyError && (
+            <small className="settingsError" role="alert">{keyError}</small>
+          )}
+          {problem && (
+            <small className="settingsError" role="alert">{problem}</small>
+          )}
         </div>
-      )}
-      <SettingRow title="Endpoint" description="Fixed for this Workspace Runtime.">
-        <code className="settingsReference">
-          {connection ? connection.endpoint || "Runtime-managed" : "Loading..."}
-        </code>
-      </SettingRow>
-      <SettingRow title="Protocol" description="Provider wire protocol.">
-        <code className="settingsReference">
-          {connection?.protocol || "Loading..."}
-        </code>
-      </SettingRow>
-      <CredentialPanel
-        status={credential}
-        onSet={(secret) => client.setKeyringCredential(secret).then(onCredential)}
-        onValidate={() => client.validateCredential().then(onCredential)}
-        onClear={() => client.clearKeyringCredential().then(onCredential)}
-        onError={onError}
-      />
-    </SettingsSectionView>
+        <footer>
+          <button type="button" disabled={submitting} onClick={onClose}>
+            Cancel
+          </button>
+          <button
+            type="button"
+            disabled={!canSubmit || submitting || detecting}
+            onClick={() => void submit()}
+          >
+            {submitting
+              ? <><RefreshCw className="spin" size={13} /> Saving...</>
+              : unconfigured ? "Save and start" : target ? "Save connection" : "Add model"}
+          </button>
+        </footer>
+      </section>
+    </div>
   );
 }
 
@@ -1127,7 +1102,7 @@ function ModelCapabilityPanel({model}: {model: ModelCatalogEntry}) {
       {capabilities.unavailable_reason && (
         <p>{capabilities.unavailable_reason}</p>
       )}
-      <p role="status">
+      <p role="status" className="settingsMetadataProvenance">
         Metadata: <code>{JSON.stringify(capabilities.metadata_provenance)}</code>
       </p>
       <dl className="settingsFacts">
@@ -1192,27 +1167,24 @@ function ToolSettings({
                 <small>{tool.risk_level}</small>
                 {tool.guarded && <small>guarded</small>}
               </span>
-              <label className="settingsToggle">
-                <span className="srOnly">{`${enabled ? "Disable" : "Enable"} ${tool.name}`}</span>
-                <input
-                  type="checkbox"
-                  checked={enabled}
-                  disabled={
-                    tool.availability !== "available" ||
-                    !mutable(snapshot, "enabled_tool_ids") ||
-                    (enabled && draft.enabledToolIDs.length === 1)
-                  }
-                  title={enabled && draft.enabledToolIDs.length === 1
-                    ? "At least one tool must remain enabled"
-                    : undefined}
-                  onChange={(event) => {
-                    const next = event.target.checked
-                      ? [...new Set([...draft.enabledToolIDs, tool.id])]
-                      : draft.enabledToolIDs.filter((id) => id !== tool.id);
-                    onDraftChange({enabledToolIDs: next.sort()});
-                  }}
-                />
-              </label>
+              <Switch
+                label={`${enabled ? "Disable" : "Enable"} ${tool.name}`}
+                checked={enabled}
+                disabled={
+                  tool.availability !== "available" ||
+                  !mutable(snapshot, "enabled_tool_ids") ||
+                  (enabled && draft.enabledToolIDs.length === 1)
+                }
+                title={enabled && draft.enabledToolIDs.length === 1
+                  ? "At least one tool must remain enabled"
+                  : undefined}
+                onChange={(next) => {
+                  const ids = next
+                    ? [...new Set([...draft.enabledToolIDs, tool.id])]
+                    : draft.enabledToolIDs.filter((id) => id !== tool.id);
+                  onDraftChange({enabledToolIDs: ids.sort()});
+                }}
+              />
               <details className="settingsCatalogDetails">
                 <summary>Details</summary>
                 <dl>
@@ -1324,20 +1296,15 @@ function ExtensionSettings({
                 <span className="settingsHealth" data-health={extension.health}>
                   <span />{extension.health}
                 </span>
-                <label className="settingsToggle">
-                  <span className="srOnly">
-                    {`${extension.enabled ? "Disable" : "Enable"} ${extension.name}`}
-                  </span>
-                  <input
-                    type="checkbox"
-                    checked={extension.enabled}
-                    disabled={Boolean(pending)}
-                    onChange={(event) => void run(
-                      extension,
-                      event.target.checked ? "enable" : "disable"
-                    )}
-                  />
-                </label>
+                <Switch
+                  label={`${extension.enabled ? "Disable" : "Enable"} ${extension.name}`}
+                  checked={extension.enabled}
+                  disabled={Boolean(pending)}
+                  onChange={(next) => void run(
+                    extension,
+                    next ? "enable" : "disable"
+                  )}
+                />
                 <div className="settingsExtensionFacts">
                   <span>Trust: {extension.trust || "not declared"}</span>
                   {extension.publisher && (

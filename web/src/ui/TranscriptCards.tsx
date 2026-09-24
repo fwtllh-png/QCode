@@ -81,12 +81,12 @@ export function AgentDisclosure({
   entry: AgentNode;
   onInspect: (callID: string) => void;
 }) {
-  const [open, setOpen] = useState(
-    entry.state === "running" || entry.state === "failed"
-  );
+  const [open, setOpen] = useState(entry.state === "failed");
 
+  // 运行中不再自动展开：卡身高变化会推移视口（布局位移的主要来源之一）。
+  // 失败仍自动展开——失败原因是用户必须看到的信息，且只发生一次。
   useEffect(() => {
-    if (entry.state === "running" || entry.state === "failed") setOpen(true);
+    if (entry.state === "failed") setOpen(true);
   }, [entry.state]);
 
   return (
@@ -563,6 +563,11 @@ function TerminalCard({value}: {value: ShellPresentation}) {
         )}
         {!value.running && value.output && <CopyButton text={value.output} />}
       </div>
+      {value.running && (
+        <div className="terminalOutput terminalPending" aria-hidden="true">
+          <span /><span /><span />
+        </div>
+      )}
       {!value.running && (
         <div className="terminalOutput">
           {lines.length === 0 ? (

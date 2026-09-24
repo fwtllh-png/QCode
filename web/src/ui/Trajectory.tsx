@@ -604,7 +604,7 @@ function Ledger({
   );
 }
 
-function RecordInspector({
+export function RecordInspector({
   record,
   span,
   records,

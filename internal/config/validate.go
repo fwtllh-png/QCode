@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"regexp"
 	"slices"
 	"strings"
@@ -288,6 +289,12 @@ func (s Snapshot) Validate() error {
 	case "openai_chat", "openai_responses":
 	default:
 		return fieldError(fieldProtocol, s.Provenance, "unsupported provider protocol")
+	}
+	if execution.BaseURL != "" {
+		parsed, parseErr := url.Parse(strings.TrimSpace(execution.BaseURL))
+		if parseErr != nil || parsed.Scheme == "" || parsed.Host == "" {
+			return fieldError(fieldBaseURL, s.Provenance, "must be an absolute http(s) URL")
+		}
 	}
 	switch execution.Mode {
 	case "plan", "act", "operate":

@@ -53,7 +53,7 @@
 .contextDialogHeader p {
   margin: 1px 0 0;
   color: var(--ch-text-muted);
-  font-size: 11px;
+  font-size: 12px;
   line-height: 16px;
 }
 
@@ -112,7 +112,7 @@
 
 .contextDialogTabs small {
   color: var(--ch-text-caption);
-  font-size: 11px;
+  font-size: 12px;
   font-variant-numeric: tabular-nums;
 }
 
@@ -183,7 +183,7 @@
   align-items: center;
   gap: 7px;
   color: var(--ch-text-muted);
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .contextResults {
@@ -233,7 +233,7 @@
 .contextResults > button small,
 .contextActionBar small {
   color: var(--ch-text-muted);
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .contextPreview {
@@ -278,7 +278,7 @@
   background: var(--ch-panel-subtle);
   border: 1px solid var(--ch-border);
   border-radius: var(--ch-radius-control);
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .contextPreview > header button:hover:not(:disabled),
@@ -298,7 +298,7 @@
   background: var(--ch-code);
   border: 0;
   outline: 0;
-  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-family: var(--ch-font-mono);
   font-size: 12px;
   line-height: 20px;
   white-space: pre;
@@ -331,7 +331,7 @@
 
 .contextPreviewEmpty span {
   max-width: 360px;
-  font-size: 11px;
+  font-size: 12px;
   line-height: 18px;
 }
 
@@ -365,8 +365,8 @@
   background: var(--ch-code);
   border: 1px solid var(--ch-border);
   border-radius: var(--ch-radius-control);
-  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
-  font-size: 11px;
+  font-family: var(--ch-font-mono);
+  font-size: 12px;
   line-height: 19px;
   white-space: pre;
 }
@@ -439,7 +439,7 @@
 
 .diagnosticResults small {
   color: var(--ch-text-muted);
-  font-size: 11px;
+  font-size: 12px;
 }
 
 @media (max-width: 720px) {

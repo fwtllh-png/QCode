@@ -146,6 +146,8 @@ func applyOverrides(overrides Overrides, config *Config, provenance map[string]S
 	applyString(overrides.Provider, &execution.Provider, fieldProvider, SourceStartup, provenance)
 	applyString(overrides.Model, &execution.Model, fieldModel, SourceStartup, provenance)
 	applyString(overrides.Protocol, &execution.Protocol, fieldProtocol, SourceStartup, provenance)
+	applyString(overrides.BaseURL, &execution.BaseURL, fieldBaseURL, SourceStartup, provenance)
+	applyString(overrides.ModelMetadata, &execution.ModelMetadata, fieldModelMetadata, SourceStartup, provenance)
 	applyString(overrides.Mode, &execution.Mode, fieldMode, SourceStartup, provenance)
 	applyString(overrides.Workspace, &execution.Workspace, fieldWorkspace, SourceStartup, provenance)
 	applyBool(overrides.Tools, &execution.Tools, fieldTools, SourceStartup, provenance)

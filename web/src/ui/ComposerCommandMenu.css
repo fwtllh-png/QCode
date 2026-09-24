@@ -36,7 +36,7 @@
   background: var(--ch-panel-raised);
   border: 1px solid var(--ch-border-strong);
   border-radius: var(--ch-radius-control);
-  box-shadow: var(--ch-shadow);
+  box-shadow: var(--ch-elevation-2);
   outline: 0;
 }
 
@@ -67,7 +67,7 @@
 .commandMenuTitle {
   padding: 5px 8px 3px;
   color: var(--ch-text-secondary);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
   text-transform: uppercase;
 }
@@ -116,7 +116,7 @@
 .commandMenuName small {
   overflow: hidden;
   color: var(--ch-accent-strong);
-  font-size: 11px;
+  font-size: 12px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }

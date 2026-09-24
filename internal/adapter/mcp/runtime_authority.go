@@ -73,6 +73,8 @@ func (r *RuntimeAuthority) Start(
 	config ServerConfig,
 	environment []string,
 ) (*processbroker.Lifecycle, error) {
+	// environment 是调用方声明的条目（非预合成环境）；进程边界
+	// process.NewCommand 负责宿主继承与沙盒覆盖，这里只透传与记账。
 	if r == nil || r.LeaseAuthority == nil || r.ProcessBroker == nil {
 		return nil, errors.New("MCP Runtime Authority is unavailable")
 	}

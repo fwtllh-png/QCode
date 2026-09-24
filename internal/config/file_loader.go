@@ -13,6 +13,8 @@ type executionFileConfig struct {
 	Provider                   *string  `toml:"provider"`
 	Model                      *string  `toml:"model"`
 	Protocol                   *string  `toml:"protocol"`
+	BaseURL                    *string  `toml:"base_url"`
+	ModelMetadata              *string  `toml:"model_metadata"`
 	Mode                       *string  `toml:"mode"`
 	Workspace                  *string  `toml:"workspace"`
 	Tools                      *bool    `toml:"tools"`
@@ -423,6 +425,8 @@ func applyExecutionFile(
 		applyString(input.Provider, &execution.Provider, fieldProvider, source, provenance)
 		applyString(input.Model, &execution.Model, fieldModel, source, provenance)
 		applyString(input.Protocol, &execution.Protocol, fieldProtocol, source, provenance)
+		applyString(input.BaseURL, &execution.BaseURL, fieldBaseURL, source, provenance)
+		applyString(input.ModelMetadata, &execution.ModelMetadata, fieldModelMetadata, source, provenance)
 	}
 	applyString(input.Mode, &execution.Mode, fieldMode, source, provenance)
 	applyString(input.Workspace, &execution.Workspace, fieldWorkspace, source, provenance)

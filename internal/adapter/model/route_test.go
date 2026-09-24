@@ -6,7 +6,7 @@ import (
 )
 
 func TestResolverCreatesReadyRouteWithMetadata(t *testing.T) {
-	resolver, err := NewResolver(DefaultCatalog())
+	resolver, err := NewResolver(testCatalog(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -35,7 +35,7 @@ func TestResolverCreatesReadyRouteWithMetadata(t *testing.T) {
 }
 
 func TestConnectionIdentityIncludesEndpointAndNormalizesTrailingSlash(t *testing.T) {
-	resolver, err := NewResolver(DefaultCatalog())
+	resolver, err := NewResolver(testCatalog(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,7 +59,7 @@ func TestConnectionIdentityIncludesEndpointAndNormalizesTrailingSlash(t *testing
 }
 
 func TestResolverDoesNotInferProviderFromModelName(t *testing.T) {
-	resolver, err := NewResolver(DefaultCatalog())
+	resolver, err := NewResolver(testCatalog(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,7 +72,7 @@ func TestResolverDoesNotInferProviderFromModelName(t *testing.T) {
 }
 
 func TestResolverRejectsForeignModel(t *testing.T) {
-	resolver, err := NewResolver(DefaultCatalog())
+	resolver, err := NewResolver(testCatalog(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,7 +85,7 @@ func TestResolverRejectsForeignModel(t *testing.T) {
 }
 
 func TestResolverAutoRouteRequiresExplicitUniqueMatch(t *testing.T) {
-	resolver, err := NewResolver(DefaultCatalog())
+	resolver, err := NewResolver(testCatalog(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -105,7 +105,7 @@ func TestResolverAutoRouteRequiresExplicitUniqueMatch(t *testing.T) {
 // Responses provider shares the gpt-4.1 model id with the chat provider, so
 // Auto must refuse rather than guess which protocol the operator wanted.
 func TestAutoRouteForAGPTModelIsAmbiguousBetweenChatAndResponses(t *testing.T) {
-	resolver, err := NewResolver(DefaultCatalog())
+	resolver, err := NewResolver(testCatalog(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,7 +116,7 @@ func TestAutoRouteForAGPTModelIsAmbiguousBetweenChatAndResponses(t *testing.T) {
 }
 
 func TestBundledResponsesRouteIsReachableWithoutACustomEndpoint(t *testing.T) {
-	resolver, err := NewResolver(DefaultCatalog())
+	resolver, err := NewResolver(testCatalog(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -141,7 +141,7 @@ func TestBundledResponsesRouteIsReachableWithoutACustomEndpoint(t *testing.T) {
 }
 
 func TestDeepSeekV4FlashDefaultsToChatCompletions(t *testing.T) {
-	resolver, err := NewResolver(DefaultCatalog())
+	resolver, err := NewResolver(testCatalog(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -171,7 +171,7 @@ func TestDeepSeekV4FlashDefaultsToChatCompletions(t *testing.T) {
 }
 
 func TestRouteIdentityExcludesVolatilePricing(t *testing.T) {
-	resolver, err := NewResolver(DefaultCatalog())
+	resolver, err := NewResolver(testCatalog(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -214,7 +214,7 @@ func TestZeroReadyRouteIsInvalid(t *testing.T) {
 }
 
 func TestCatalogDefensivelyCopiesProvider(t *testing.T) {
-	catalog := DefaultCatalog()
+	catalog := testCatalog(t)
 	provider, ok := catalog.Provider("openai")
 	if !ok {
 		t.Fatal("openai provider missing")

@@ -21,6 +21,7 @@ import {
 import ReactMarkdown, {type Components} from "react-markdown";
 import remarkCjkFriendly from "remark-cjk-friendly/parseOnly";
 import remarkGfm from "remark-gfm";
+import {highlightCode} from "./codeHighlight";
 import {
   imageOrigin,
   isCrossOrigin,
@@ -100,18 +101,20 @@ export const MarkdownMessage = memo(function MarkdownMessage({
       </Suspense>
     );
   }
-  return <BaseMarkdownMessage text={settled ? text : deferredText} components={components} />;
+  return <BaseMarkdownMessage text={settled ? text : deferredText} components={components} streaming={!settled} />;
 });
 
 const BaseMarkdownMessage = memo(function BaseMarkdownMessage({
   text,
-  components
+  components,
+  streaming
 }: {
   text: string;
   components: Components;
+  streaming?: boolean;
 }) {
   return (
-    <div className="assistantMarkdown">
+    <div className="assistantMarkdown" data-streaming={streaming || undefined}>
       <ReactMarkdown
         remarkPlugins={[remarkGfm, remarkCjkFriendly]}
         components={components}
@@ -134,7 +137,12 @@ function MarkdownCodeBlock({
   const value = reactText(children).replace(/\n$/, "");
   const language = codeLanguage(children);
   const diagram = settled && language === "mermaid" && value.trim() !== "";
-  const code = <pre tabIndex={0}>{children}</pre>;
+  // Prism.highlight 在分词前转义源码，输出可安全注入；mermaid 属于图表
+  // DSL，保持原文渲染。
+  const highlighted = language && language !== "mermaid"
+    ? <pre tabIndex={0}><code dangerouslySetInnerHTML={{__html: highlightCode(value, language)}} /></pre>
+    : <pre tabIndex={0}>{children}</pre>;
+  const code = highlighted;
   const copy = async () => {
     if (copied || !value) return;
     await navigator.clipboard.writeText(value);
@@ -173,6 +181,10 @@ function MarkdownCodeBlock({
     </div>
   );
 }
+
+// 图片自然尺寸缓存：同一图片在流式重渲染/重挂载时按缓存比例预留高度，
+// 消除"图片加载完成把下方内容推开"的跳变。首次加载仍无法预知尺寸。
+const imageNaturalSizes = new Map<string, {width: number; height: number}>();
 
 function MarkdownImage({
   source,
@@ -221,7 +233,17 @@ function MarkdownImage({
       role="group"
       aria-label={`Image ${label}`}
     >
-      <span className="markdownImageFrame">
+      <span
+        className="markdownImageFrame"
+        style={(() => {
+          const cached = safeSource
+            ? imageNaturalSizes.get(safeSource)
+            : undefined;
+          return cached && cached.height > 0
+            ? {aspectRatio: `${cached.width} / ${cached.height}`}
+            : undefined;
+        })()}
+      >
         {state === "loading" && (
           <span className="markdownImageState" role="status">
             <LoaderCircle className="spin" size={15} /> Loading image
@@ -240,7 +262,16 @@ function MarkdownImage({
           decoding="async"
           referrerPolicy="no-referrer"
           hidden={state === "error"}
-          onLoad={() => setState("ready")}
+          onLoad={(event) => {
+            const image = event.currentTarget;
+            if (safeSource && image.naturalWidth > 0 && image.naturalHeight > 0) {
+              imageNaturalSizes.set(safeSource, {
+                width: image.naturalWidth,
+                height: image.naturalHeight
+              });
+            }
+            setState("ready");
+          }}
           onError={() => setState("error")}
         />
       </span>

@@ -96,6 +96,14 @@ func TestProbeCapabilitiesObservesStreamToolAndReasoning(t *testing.T) {
 		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
 			t.Fatal(err)
 		}
+		if body["tool_choice"] != "auto" {
+			response.WriteHeader(http.StatusBadRequest)
+			_, _ = fmt.Fprint(response, `{"error":{"message":"Thinking mode does not support this tool_choice"}}`)
+			return
+		}
+		if _, exists := body["thinking"]; exists {
+			t.Error("capability probe must preserve the provider's default thinking mode")
+		}
 		if _, exists := body["max_tokens"]; exists {
 			t.Fatal("capability probe imposed a fixed output token limit")
 		}

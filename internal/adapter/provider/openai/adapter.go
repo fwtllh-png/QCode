@@ -46,7 +46,9 @@ func (a *Adapter) Prepare(request provider.ModelRequest) (providerwire.PreparedC
 			policy.EmptyToolOutput = "(empty tool output)"
 			policy.ThinkingOff =
 				request.Route.Model().Capabilities.ThinkingToggle
-			policy.ToolStream = request.Route.ProviderID() == "glm"
+			// 统一携带 tool_stream：兼容网关在 stream 模式下默认缓冲
+			// 工具参数，逐段输出才能持续续期 idle 超时并尽早采样。
+			policy.ToolStream = true
 		}
 		call, err = PrepareChat(request, a.id, policy)
 	case model.ProtocolOpenAIResponses:
@@ -192,7 +194,7 @@ func (a *Adapter) ClassifyHTTP(failure providerwire.HTTPFailure) error {
 		message = fmt.Sprintf("provider returned HTTP %d", failure.Status)
 	}
 	businessCode := jsonScalarText(payload.Error.Code)
-	code, known := structuredHTTPFailure(failure.ProviderID, businessCode, payload.Error.Type)
+	code, known := structuredHTTPFailure(businessCode, payload.Error.Type)
 	if !known && a.id == model.AdapterOpenAICompatible &&
 		failure.Status == http.StatusTooManyRequests {
 		code = provider.FailureRateLimit
@@ -212,31 +214,15 @@ func (a *Adapter) ClassifyHTTP(failure providerwire.HTTPFailure) error {
 			failure.Header,
 			"Openai-Request-Id",
 			"X-Request-Id",
-			"X-Deepseek-Request-Id",
 		),
 	)
 }
 
-func structuredHTTPFailure(providerID, code, kind string) (provider.FailureCode, bool) {
+func structuredHTTPFailure(code, kind string) (provider.FailureCode, bool) {
 	for _, value := range []string{code, kind} {
 		switch value {
 		case "insufficient_quota", "billing_hard_limit_reached":
 			return provider.FailureQuota, true
-		}
-	}
-	// GLM business codes: https://docs.bigmodel.cn/cn/faq/api-code.
-	// Numeric codes are scoped to the provider, never inferred from prose.
-	if providerID == "glm" {
-		switch code {
-		case "1113", "1308", "1309", "1310", "1314",
-			"1316", "1317", "1318", "1319", "1320", "1321":
-			return provider.FailureQuota, true
-		case "1311", "1313", "1315":
-			return provider.FailureAuth, true
-		case "1302", "1305":
-			return provider.FailureRateLimit, true
-		case "1261":
-			return provider.FailureContextWindowExceeded, true
 		}
 	}
 	return "", false
@@ -285,7 +271,8 @@ func chatBody(
 		"stream_options": map[string]bool{"include_usage": true},
 	}
 	if options.ToolStream {
-		// GLM otherwise buffers tool arguments even with stream=true.
+		// OpenAI-compatible 网关在 stream 模式下默认缓冲工具参数；
+		// tool_stream 让参数逐段到达，而不是等整段拼接完成。
 		body["tool_stream"] = true
 	}
 	if request.Temperature != nil {

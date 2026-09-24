@@ -1,6 +1,7 @@
 package wire
 
 import (
+	"github.com/fwtllh-png/QCode/internal/adapter/model"
 	"context"
 	"errors"
 	"os/exec"
@@ -50,6 +51,22 @@ type ExecOptions struct {
 	// SkipHostGoproxyAuth keeps tests from binding the machine GOPROXY
 	// credential onto the process session protocol handler.
 	SkipHostGoproxyAuth bool
+	// ExtraConnections 注入默认连接之外的可选模型路由：每条连接带各自的
+	// 凭证引用与模型清单，进入 SelectableRoutes 与模型目录，会话可按
+	// (provider, model) 热切换。默认连接仍承担 act 路由与凭证热轮换。
+	ExtraConnections []ExtraConnectionSpec
+}
+
+// ExtraConnectionSpec 描述一条附加模型连接：显式 Base URL、协议、
+// 凭证引用与基线/附加模型描述，进入 SelectableRoutes 与模型目录，
+// 会话可按 (provider, model) 热切换。
+type ExtraConnectionSpec struct {
+	ProviderID string
+	BaseURL    string
+	Protocol   model.WireProtocol
+	Credential model.CredentialRef
+	Model      *model.Model
+	Models     map[string]model.Model
 }
 
 // ContextFile is a file a host named for the session (`exec --file`, an editor

@@ -1,0 +1,100 @@
+.modelMetadataFields {
+  display: grid;
+  min-width: 0;
+  gap: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--ch-border);
+}
+
+.modelMetadataCapabilities,
+.modelMetadataGrid,
+.modelMetadataFields .detectedModelLimits {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr));
+  gap: 14px 12px;
+}
+
+.modelMetadataCapabilities .chSwitch {
+  min-width: 0;
+  min-height: 44px;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  color: var(--ch-text);
+  background: var(--ch-panel-subtle);
+  border: 1px solid var(--ch-border);
+  border-radius: var(--ch-radius-control);
+  font-size: 13px;
+  line-height: 20px;
+  text-align: left;
+}
+
+.modelMetadataCapabilities .chSwitch:hover:not(:disabled) {
+  border-color: var(--ch-border-strong);
+}
+
+.modelMetadataCapabilities .chSwitchTrack {
+  order: 1;
+}
+
+.modelMetadataField {
+  display: grid;
+  min-width: 0;
+  align-content: start;
+  gap: 6px;
+  color: var(--ch-text-secondary);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.modelMetadataField input {
+  width: 100%;
+  min-width: 0;
+  height: 36px;
+  padding: 0 10px;
+  color: var(--ch-text);
+  background: var(--ch-panel);
+  border: 1px solid var(--ch-border);
+  border-radius: var(--ch-radius);
+  font: inherit;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+.modelMetadataField input::placeholder {
+  color: var(--ch-text-caption);
+}
+
+.modelMetadataField input:focus-visible {
+  border-color: var(--ch-focus);
+  outline: 2px solid var(--ch-focus);
+  outline-offset: 2px;
+}
+
+.modelMetadataField input:disabled {
+  color: var(--ch-text-muted);
+  background: var(--ch-panel-subtle);
+  cursor: not-allowed;
+}
+
+.modelMetadataUnit {
+  grid-column: 1 / -1;
+  margin-top: -6px;
+  color: var(--ch-text-caption);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.modelMetadataFields .detectedModelLimits {
+  grid-column: 1 / -1;
+  color: var(--ch-text-secondary);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.modelMetadataFields .detectedModelLimits > span {
+  padding: 10px 12px;
+  background: var(--ch-panel-subtle);
+  border: 1px solid var(--ch-border);
+  border-radius: var(--ch-radius);
+}

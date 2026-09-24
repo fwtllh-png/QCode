@@ -37,6 +37,10 @@ var unaryRouteContracts = []RouteContract{
 		false,
 	),
 	setupRPC("workspace/add", "workspace_add", "workspace_add_result", true, true),
+	setupRPC("connection/list", "empty", "connection_list", false, false),
+	setupRPC("connection/add", "setup_request", "connection_list", true, true),
+	setupRPC("connection/remove", "connection_id", "connection_list", true, true),
+	setupRPC("connection/default", "connection_id", "connection_list", true, true),
 	setupRPC(
 		"workspace/remove",
 		"workspace_remove",

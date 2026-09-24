@@ -211,8 +211,6 @@ func (i *Index) RelatedTestsWithEvidence(ctx context.Context, paths []string) (m
 	if err != nil || !snapshot.Ready() {
 		return nil, nil, snapshot, err
 	}
-	i.mu.Lock()
-	defer i.mu.Unlock()
 	snapshot = i.Snapshot()
 	if !snapshot.Ready() {
 		return nil, nil, snapshot, nil
@@ -221,6 +219,12 @@ func (i *Index) RelatedTestsWithEvidence(ctx context.Context, paths []string) (m
 	if err != nil {
 		return nil, nil, snapshot, err
 	}
+	// 刷新只排队图构建：查询前先等图追上当前文件集，否则启动后的
+	// 第一次 impact 查询会退化为纯命名约定答案。等待不能持有索引锁。
+	i.awaitGraph(ctx, files)
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	snapshot = i.Snapshot()
 	indexed := map[string]struct{}{}
 	directories := map[string][]string{}
 	sitesTruncated := false

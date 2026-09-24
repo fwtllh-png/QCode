@@ -49,6 +49,7 @@ policy/sandbox            internal/security
 tasks/workflows/subagents internal/orchestration
 durable state             internal/persist
 usage/traces/verification internal/observability
+macOS desktop shell       desktop
 Web client                 web
 ```
 

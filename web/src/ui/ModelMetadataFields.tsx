@@ -1,15 +1,20 @@
+import {useId} from "react";
 import type {
   SetupModelCapabilities,
   SetupModelMetadata,
   SetupProbeResult
 } from "../protocol";
-import "./SettingsDialog.css";
+import {Switch} from "./primitives/Switch";
+import "./ModelMetadataFields.css";
+
+// UI 单位约定：1 K = 1024 tokens；协议与持久化始终使用 tokens。
+const tokensPerK = 1024;
 
 export interface ModelMetadataDraft {
   canonicalID: string;
   wireID: string;
-  contextTokens: string;
-  maxOutputTokens: string;
+  contextKTokens: string;
+  maxOutputKTokens: string;
   limitsDetected: boolean;
   capabilities: SetupModelCapabilities;
   reasoningEfforts: string;
@@ -20,8 +25,8 @@ export function emptyModelMetadataDraft(modelID = ""): ModelMetadataDraft {
   return {
     canonicalID: modelID,
     wireID: modelID,
-    contextTokens: "",
-    maxOutputTokens: "",
+    contextKTokens: "",
+    maxOutputKTokens: "",
     limitsDetected: false,
     capabilities: {
       streaming: true,
@@ -48,8 +53,8 @@ export function modelMetadataDraft(
   return {
     canonicalID: metadata.canonical_id,
     wireID: metadata.wire_id,
-    contextTokens: String(metadata.context_tokens),
-    maxOutputTokens: String(metadata.max_output_tokens),
+    contextKTokens: String(metadata.context_tokens / tokensPerK),
+    maxOutputKTokens: String(metadata.max_output_tokens / tokensPerK),
     limitsDetected: false,
     capabilities: {...metadata.capabilities, streaming: true},
     reasoningEfforts: metadata.capabilities.reasoning_efforts?.join(", ") ?? "",
@@ -69,11 +74,11 @@ export function modelMetadataFromProbe(
   return {
     canonicalID: modelID,
     wireID: modelID,
-    contextTokens: discovered?.context_tokens
-      ? String(discovered.context_tokens)
+    contextKTokens: discovered?.context_tokens
+      ? String(discovered.context_tokens / tokensPerK)
       : "",
-    maxOutputTokens: discovered?.max_output_tokens
-      ? String(discovered.max_output_tokens)
+    maxOutputKTokens: discovered?.max_output_tokens
+      ? String(discovered.max_output_tokens / tokensPerK)
       : "",
     limitsDetected,
     capabilities: {
@@ -108,8 +113,8 @@ export function modelMetadataProblem(
   draft: ModelMetadataDraft,
   protocol: string
 ): string {
-  const contextTokens = Number(draft.contextTokens);
-  const maxOutputTokens = Number(draft.maxOutputTokens);
+  const contextTokens = Number(draft.contextKTokens) * tokensPerK;
+  const maxOutputTokens = Number(draft.maxOutputKTokens) * tokensPerK;
   const capabilities = draft.capabilities;
   const declaredEfforts = efforts(draft.reasoningEfforts);
   const defaultEffort = draft.defaultReasoningEffort.trim();
@@ -151,8 +156,8 @@ export function setupModelMetadata(
   return {
     canonical_id: draft.canonicalID.trim(),
     wire_id: draft.wireID.trim(),
-    context_tokens: Number(draft.contextTokens),
-    max_output_tokens: Number(draft.maxOutputTokens),
+    context_tokens: Number(draft.contextKTokens) * tokensPerK,
+    max_output_tokens: Number(draft.maxOutputKTokens) * tokensPerK,
     capabilities: {
       ...draft.capabilities,
       reasoning_efforts: draft.capabilities.reasoning
@@ -168,8 +173,8 @@ export function setupModelMetadata(
 type TextFieldKey =
   | "canonicalID"
   | "wireID"
-  | "contextTokens"
-  | "maxOutputTokens"
+  | "contextKTokens"
+  | "maxOutputKTokens"
   | "reasoningEfforts"
   | "defaultReasoningEffort";
 
@@ -181,8 +186,8 @@ interface TextField {
 }
 
 const limitFields: TextField[] = [
-  {key: "contextTokens", label: "Context tokens", type: "number"},
-  {key: "maxOutputTokens", label: "Max output tokens", type: "number"}
+  {key: "contextKTokens", label: "Context tokens (K)", type: "number"},
+  {key: "maxOutputKTokens", label: "Max output tokens (K)", type: "number"}
 ];
 
 const reasoningFields: TextField[] = [
@@ -207,48 +212,51 @@ export function ModelMetadataFields({
   disabled: boolean;
   onChange: (value: ModelMetadataDraft) => void;
 }) {
+  const tokenUnitID = useId();
   const updateText = (key: TextFieldKey, text: string) => {
     onChange({...value, [key]: text});
   };
   return (
-    <>
-      <label className="selectField">
-        <span>
-          <input type="checkbox" aria-label="Tool calling" checked={value.capabilities.tool_calls}
-            disabled={disabled}
-            onChange={(event) => onChange({
-              ...value, capabilities: {...value.capabilities, tool_calls: event.target.checked}
-            })} />
-          Tool calling
-        </span>
-      </label>
-      <label className="selectField">
-        <span>
-          <input type="checkbox" aria-label="Reasoning" checked={value.capabilities.reasoning}
-            disabled={disabled}
-            onChange={(event) => onChange({
-              ...value,
-              capabilities: {...value.capabilities, reasoning: event.target.checked, thinking_toggle: false},
-              reasoningEfforts: "", defaultReasoningEffort: ""
-            })} />
-          Reasoning
-        </span>
-      </label>
-      <div className="settingsFacts">
+    <div className="modelMetadataFields">
+      <div className="modelMetadataCapabilities" role="group" aria-label="Model capabilities">
+        <Switch
+          label="Tool calling"
+          checked={value.capabilities.tool_calls}
+          disabled={disabled}
+          onChange={(checked) => onChange({
+            ...value, capabilities: {...value.capabilities, tool_calls: checked}
+          })}
+        >
+          <span>Tool calling</span>
+        </Switch>
+        <Switch
+          label="Reasoning"
+          checked={value.capabilities.reasoning}
+          disabled={disabled}
+          onChange={(checked) => onChange({
+            ...value,
+            capabilities: {...value.capabilities, reasoning: checked, thinking_toggle: false},
+            reasoningEfforts: "", defaultReasoningEffort: ""
+          })}
+        >
+          <span>Reasoning</span>
+        </Switch>
+      </div>
+      <div className="modelMetadataGrid">
         {value.limitsDetected ? (
           <div className="detectedModelLimits" aria-label="Detected model limits">
-            <span>Context {Number(value.contextTokens).toLocaleString()}</span>
-            <span>Max output {Number(value.maxOutputTokens).toLocaleString()}</span>
+            <span>Context {(Number(value.contextKTokens) * tokensPerK).toLocaleString()} tokens</span>
+            <span>Max output {(Number(value.maxOutputKTokens) * tokensPerK).toLocaleString()} tokens</span>
           </div>
         ) : limitFields.map(({key, label, type, placeholder}) => (
-          <label className="selectField" key={key}>
+          <label className="modelMetadataField" key={key}>
             <span>{label}</span>
             <input
-              className="settingsSelect"
               type={type}
-              min="1"
-              step="1"
+              min={1 / tokensPerK}
+              step="any"
               aria-label={label}
+              aria-describedby={tokenUnitID}
               placeholder={placeholder}
               value={value[key]}
               disabled={disabled}
@@ -256,12 +264,16 @@ export function ModelMetadataFields({
             />
           </label>
         ))}
+        {!value.limitsDetected && (
+          <small className="modelMetadataUnit" id={tokenUnitID}>
+            1 K = 1,024 tokens
+          </small>
+        )}
         {value.capabilities.reasoning && reasoningFields.map(
           ({key, label, type, placeholder}) => (
-            <label className="selectField" key={key}>
+            <label className="modelMetadataField" key={key}>
               <span>{label}</span>
               <input
-                className="settingsSelect"
                 type={type}
                 min="1"
                 step="1"
@@ -275,6 +287,6 @@ export function ModelMetadataFields({
           )
         )}
       </div>
-    </>
+    </div>
   );
 }

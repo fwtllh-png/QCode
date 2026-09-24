@@ -210,17 +210,18 @@ func runWeb(
 				dataDir, workspaceIdentity.RootID,
 			)
 			if configErr == nil && found {
+				active := selection.Active()
 				_, reference, resolveErr := resolveWebSetup(webhost.SetupRequest{
-					Provider: selection.Provider, Model: selection.Model,
-					BaseURL: selection.BaseURL, Protocol: selection.Protocol,
-					APIKey: "persisted", ModelMetadata: selection.Metadata,
+					Model: active.Model,
+					BaseURL: active.BaseURL, Protocol: active.Protocol,
+					APIKey: "persisted", ModelMetadata: active.Metadata,
 				})
 				if resolveErr != nil {
 					configErr = resolveErr
 				} else {
 					routeReference = reference
-					if selection.Credential != nil {
-						routeReference = *selection.Credential
+					if active.Credential != nil {
+						routeReference = *active.Credential
 					}
 					loaded, configErr = loadWebSetupConfig(
 						options,
@@ -231,32 +232,49 @@ func runWeb(
 			} else if configErr == nil {
 				setupRequired = true
 			}
+		case loaded.Config.Execution.BaseURL == "" && options.providerFixture == "":
+			configErr = errors.New(
+				"execution.base_url is required with a configured provider; " +
+					"connections are OpenAI-compatible and explicit")
 		default:
-			selection = webSetupSelection{
-				Version:            webSetupVersion,
-				Provider:           loaded.Config.Execution.Provider,
-				Model:              loaded.Config.Execution.Model,
-				Protocol:           loaded.Config.Execution.Protocol,
-				MetadataProvenance: model.ProvenanceBundled,
+			// TOML/CLI 配置的单连接会话：provider/model/protocol/base_url
+			// 全部显式声明；模型元数据来自 execution.model_metadata 文件。
+			// fixture 会话使用内置 fixture 模型描述与 fixture 端点。
+			execution := loaded.Config.Execution
+			protocol := execution.Protocol
+			if protocol == "" {
+				protocol = string(model.ProtocolOpenAIChat)
 			}
-			if options.providerFixture != "" {
-				selection.MetadataProvenance = model.ProvenanceFixture
-				break
-			}
-			if loaded.Config.Credential.Empty() {
-				if provider, exists := model.DefaultCatalog().Provider(selection.Provider); exists {
-					selection.Protocol = string(provider.Protocol)
-					routeReference = credential.Reference{
-						Kind: provider.Credential.Kind,
-						Name: provider.Credential.Name,
-					}
-					loaded, configErr = loadWebSetupConfig(
-						options,
-						selection,
-						routeReference,
-					)
+			var metadata *webhost.SetupModelMetadata
+			if options.providerFixture == "" {
+				var metadataErr error
+				metadata, metadataErr = loadExecutionModelMetadata(execution)
+				if metadataErr != nil {
+					configErr = metadataErr
+					break
 				}
-			} else {
+			}
+			id := connectionID(execution.BaseURL)
+			provenance := model.ProvenanceConfig
+			if options.providerFixture != "" {
+				id = execution.Provider
+				provenance = model.ProvenanceFixture
+			}
+			connection := webSetupConnection{
+				ID:        id,
+				Provider:  id,
+				Model:     execution.Model,
+				BaseURL:   execution.BaseURL,
+				Protocol:  protocol,
+				Metadata:  metadata,
+				MetadataProvenance: provenance,
+			}
+			selection = webSetupSelection{
+				Version: webSetupVersion,
+				Connections: []webSetupConnection{connection},
+				DefaultConnection: connection.ID,
+			}
+			if !loaded.Config.Credential.Empty() {
 				routeReference = credential.Reference{
 					Kind: loaded.Config.Credential.Kind,
 					Name: loaded.Config.Credential.Name,
@@ -383,7 +401,6 @@ func runWeb(
 	setupRequests := make(chan webSetupAttempt)
 	setupOptions := &webhost.SetupOptions{
 		WorkspaceRoot: workspaceRoot, WorkspaceIdentity: workspaceIdentity,
-		Catalog: webSetupCatalog(),
 		Probe: func(
 			requestContext context.Context,
 			request webhost.SetupProbeRequest,
@@ -406,7 +423,7 @@ func runWeb(
 					requestContext,
 					dataDir,
 					webSupervisorScope,
-					request.Provider,
+					providerID,
 					credential.Reference{},
 					credential.Reference{},
 				)
@@ -475,6 +492,26 @@ func runWeb(
 			case <-ctx.Done():
 				return ctx.Err()
 			}
+		},
+	}
+	setupOptions.Connections = &webhost.ConnectionOptions{
+		List: func(context.Context) (webhost.ConnectionListResult, error) {
+			return workspaceManager.ConnectionList(), nil
+		},
+		Add: func(ctx context.Context, request webhost.SetupRequest) (
+			webhost.ConnectionListResult, error,
+		) {
+			return workspaceManager.AddConnection(ctx, request)
+		},
+		Remove: func(ctx context.Context, connectionID string) (
+			webhost.ConnectionListResult, error,
+		) {
+			return workspaceManager.RemoveConnection(ctx, connectionID)
+		},
+		SetDefault: func(ctx context.Context, connectionID string) (
+			webhost.ConnectionListResult, error,
+		) {
+			return workspaceManager.SetDefaultConnection(ctx, connectionID)
 		},
 	}
 	server, err := webhost.New(webhost.Options{
@@ -565,7 +602,9 @@ func runWeb(
 		)
 		if prepareErr == nil && prepared.credentialActivate != nil {
 			value := prepared.credentialReference
-			candidateSelection.Credential = &value
+			if active := candidateSelection.Active(); active != nil {
+				active.Credential = &value
+			}
 			reference = value
 		}
 		if prepareErr == nil && persist {
@@ -629,9 +668,11 @@ func runWeb(
 		for !workspaceManager.Configured() {
 			select {
 			case attempt := <-setupRequests:
-				candidateSelection, reference, setupErr := resolveWebSetup(attempt.request)
+				connection, reference, setupErr := resolveWebSetup(attempt.request)
+				var candidateSelection webSetupSelection
 				var candidate config.Snapshot
 				if setupErr == nil {
+					candidateSelection = mergeConnection(selection, connection)
 					candidate, setupErr = loadWebSetupConfig(
 						options, candidateSelection, reference,
 					)
@@ -846,6 +887,10 @@ func prepareWebRuntime(
 	stagedControl *credential.Control,
 	stagedReference credential.Reference,
 ) (_ *preparedWebRuntime, resultErr error) {
+	active := selection.Active()
+	if active == nil {
+		return nil, errors.New("no model connection is configured")
+	}
 	preparedCredentials, err := prepareWebCredentials(
 		ctx, loaded, selection, secret, stagedControl, stagedReference,
 	)
@@ -866,11 +911,40 @@ func prepareWebRuntime(
 	runtimeOverrides.Protocol = &loaded.Config.Execution.Protocol
 	runtimeOverrides.CredentialKind = &effectiveCredential.Kind
 	runtimeOverrides.CredentialName = &effectiveCredential.Name
+	extraConnections := make([]wire.ExtraConnectionSpec, 0,
+		len(selection.Connections)-1)
+	for index := range selection.Connections {
+		connection := selection.Connections[index]
+		if connection.ID == active.ID {
+			continue
+		}
+		// fixture 连接（BaseURL 由 fixture 服务器提供时为空）只作为活动
+		// 连接存在，不进入附加连接。
+		if connection.BaseURL == "" {
+			continue
+		}
+		metadata := setupModelMetadata(connection)
+		spec := wire.ExtraConnectionSpec{
+			ProviderID: connection.ID,
+			Protocol:   model.WireProtocol(connection.Protocol),
+			BaseURL:    connection.BaseURL,
+			Model:      metadata.Descriptor,
+			Models:     metadata.AdditionalDescriptors,
+		}
+		if connection.Credential != nil {
+			spec.Credential = model.CredentialRef{
+				Kind: connection.Credential.Kind,
+				Name: connection.Credential.Name,
+			}
+		}
+		extraConnections = append(extraConnections, spec)
+	}
 	skillOptions := wire.SkillOptions{DataDir: loaded.Config.State.DataDir}
 	application, err := wire.NewExec(ctx, wire.ExecOptions{
 		ConfigPath:        options.configPath,
 		ConfigOverrides:   runtimeOverrides,
-		BaseURL:           selection.BaseURL,
+		ExtraConnections:  extraConnections,
+		BaseURL:           active.BaseURL,
 		APIKeyEnv:         options.apiKeyEnv,
 		FixturePath:       options.providerFixture,
 		Permission:        options.posture,
@@ -879,7 +953,7 @@ func prepareWebRuntime(
 		CredentialControl: credentialControl,
 		WorkspaceIdentity: workspaceIdentity,
 		Skills:            skillOptions,
-		ModelMetadata:     setupModelMetadata(selection),
+		ModelMetadata:     setupModelMetadata(*active),
 	})
 	if err != nil {
 		return nil, err
@@ -906,9 +980,9 @@ func prepareWebRuntime(
 			return nil
 		}
 		available, probeErr := wire.ProbeLiveModel(
-			ctx, application.ProviderID(), selection.BaseURL,
+			ctx, application.ProviderID(), active.BaseURL,
 			model.CredentialRef{Kind: reference.Kind, Name: reference.Name},
-			setupWireModelID(selection, selection.Model),
+			setupWireModelID(*active, active.Model),
 		)
 		if probeErr != nil {
 			return probeErr
@@ -930,27 +1004,19 @@ func prepareWebRuntime(
 		return wire.ProbeLiveModel(
 			ctx,
 			application.ProviderID(),
-			selection.BaseURL,
+			active.BaseURL,
 			model.CredentialRef{
 				Kind: status.Reference.Kind,
 				Name: status.Reference.Name,
 			},
-			setupWireModelID(selection, modelID),
+			setupWireModelID(*active, modelID),
 		)
 	}
 	connection := webhost.WorkspaceConnection{
-		Provider:      selection.Provider,
-		Endpoint:      selection.BaseURL,
-		Protocol:      selection.Protocol,
-		ModelMetadata: selection.Metadata,
-	}
-	if provider, ok := model.DefaultCatalog().Provider(application.ProviderID()); ok {
-		if connection.Endpoint == "" {
-			connection.Endpoint = provider.Endpoint
-		}
-		if connection.Protocol == "" {
-			connection.Protocol = string(provider.Protocol)
-		}
+		Provider:      active.Provider,
+		Endpoint:      active.BaseURL,
+		Protocol:      active.Protocol,
+		ModelMetadata: active.Metadata,
 	}
 	return &preparedWebRuntime{
 		preparedWebCredentials: preparedCredentials,
@@ -980,7 +1046,33 @@ func prepareWebCredentials(
 	stagedControl *credential.Control,
 	stagedReference credential.Reference,
 ) (*preparedWebCredentials, error) {
+	return prepareWebCredentialsFor(
+		ctx, loaded, selection, secret, "", stagedControl, stagedReference,
+	)
+}
+
+// prepareWebCredentialsFor 在指定连接（缺省为活动连接）的 provider 命名
+// 空间打开 Control 并暂存密钥；connection/add 用它定向到非默认连接。
+func prepareWebCredentialsFor(
+	ctx context.Context,
+	loaded config.Snapshot,
+	selection webSetupSelection,
+	secret string,
+	targetConnectionID string,
+	stagedControl *credential.Control,
+	stagedReference credential.Reference,
+) (*preparedWebCredentials, error) {
 	credentialControl := stagedControl
+	active := selection.Active()
+	if active == nil {
+		return nil, errors.New("no model connection is configured")
+	}
+	target := active
+	if targetConnectionID != "" && targetConnectionID != active.ID {
+		if connection := selection.Connection(targetConnectionID); connection != nil {
+			target = connection
+		}
+	}
 	effectiveCredential := stagedReference
 	if credentialControl == nil {
 		var err error
@@ -988,16 +1080,24 @@ func prepareWebCredentials(
 			ctx,
 			loaded.Config.State.DataDir,
 			webSupervisorScope,
-			selection.Provider,
-			credential.Reference{
-				Kind: loaded.Config.Credential.Kind,
-				Name: loaded.Config.Credential.Name,
-			},
+			target.Provider,
 			func() credential.Reference {
-				if selection.Credential == nil {
+				if target.ID != active.ID {
+					if target.Credential != nil {
+						return *target.Credential
+					}
 					return credential.Reference{}
 				}
-				return *selection.Credential
+				return credential.Reference{
+					Kind: loaded.Config.Credential.Kind,
+					Name: loaded.Config.Credential.Name,
+				}
+			}(),
+			func() credential.Reference {
+				if target.Credential == nil {
+					return credential.Reference{}
+				}
+				return *target.Credential
 			}(),
 		)
 		if err != nil {

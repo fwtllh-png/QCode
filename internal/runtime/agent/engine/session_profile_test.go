@@ -131,7 +131,7 @@ func TestSessionProfileModeProjectsThroughWorldState(t *testing.T) {
 }
 
 func TestSessionProfileSelectsAvailableModelBetweenTurns(t *testing.T) {
-	resolver, err := model.NewResolver(model.DefaultCatalog())
+	resolver, err := model.NewResolver(testCatalog(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -202,7 +202,7 @@ func TestSessionProfileSelectsAvailableModelBetweenTurns(t *testing.T) {
 }
 
 func TestSessionProfileModelChangeRotatesTokenWindowAndPreparedCompaction(t *testing.T) {
-	resolver, err := model.NewResolver(model.DefaultCatalog())
+	resolver, err := model.NewResolver(testCatalog(t))
 	if err != nil {
 		t.Fatal(err)
 	}

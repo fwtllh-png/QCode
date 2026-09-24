@@ -11,6 +11,13 @@ import {createPortal} from "react-dom";
 let renderCount = 0;
 let renderQueue: Promise<void> = Promise.resolve();
 
+// 图表测量尺寸缓存，按“主题+源码”为键：重挂载时先按上次尺寸占位。
+const diagramBaseSizes = new Map<string, {width: number; height: number}>();
+
+function cacheKey(source: string, theme: string): string {
+  return `${theme}\u0000${source}`;
+}
+
 // Viewer interaction range: 0.25x–4x in 1.25x steps, mirroring common
 // document-zoom controls.
 const SCALE_STEP = 1.25;
@@ -41,7 +48,13 @@ export function MermaidDiagram({
   const [failed, setFailed] = useState(false);
   const [scale, setScale] = useState(1);
   const [expanded, setExpanded] = useState(false);
-  const [base, setBase] = useState<{width: number; height: number} | null>(null);
+  // 同源图表的测量尺寸缓存：重渲染/重挂载（流式 settle 换装、主题切换）
+  // 时按上次尺寸预留高度，避免图表换装把后续内容推开。
+  const [base, setBase] = useState<{width: number; height: number} | null>(
+    () => (source
+      ? diagramBaseSizes.get(cacheKey(source, diagramTheme())) ?? null
+      : null)
+  );
   const container = useRef<HTMLDivElement | null>(null);
   const scrollFrame = useRef<HTMLDivElement | null>(null);
   const toggle = useRef<HTMLButtonElement | null>(null);
@@ -93,9 +106,13 @@ export function MermaidDiagram({
     // inline max-width would cap it at the natural 100% size.
     if (svg) svg.style.maxWidth = "none";
     const rect = svg?.getBoundingClientRect();
-    setBase(rect && rect.width > 0 && rect.height > 0
+    const measured = rect && rect.width > 0 && rect.height > 0
       ? {width: rect.width, height: rect.height}
-      : null);
+      : null;
+    setBase(measured);
+    if (measured && diagram) {
+      diagramBaseSizes.set(cacheKey(diagram.source, diagram.theme), measured);
+    }
     setScale(1);
     return () => {
       if (sheet) detachDiagramSheet(sheet);

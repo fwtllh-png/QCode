@@ -44,9 +44,9 @@ import type {
   SessionProfileSnapshot,
   SessionProfileUpdateResult,
   SessionSummary,
-  SetupCatalog,
   SetupProbeRequest,
   SetupProbeResult,
+  ConnectionListResult,
   SetupRequest,
   SetupResult,
   TraceSnapshot,
@@ -125,7 +125,6 @@ export interface RuntimeSnapshot {
   historyMoreBefore: boolean;
   providers: readonly ProviderCatalogEntry[];
   models: readonly ModelCatalogEntry[];
-  setupCatalog?: SetupCatalog;
   workspaces: readonly WorkspaceDescriptor[];
   selectedWorkspaceID: string;
   profile?: SessionProfileSnapshot;
@@ -216,6 +215,16 @@ const sessionActivityEventKinds = new Set([
   "turn.canceled",
   "turn.withdrawn"
 ]);
+
+// catalogHasActivatingWorkspace：目录里存在尚未激活完成的工作区。
+// ready=true 只表示 Supervisor 就绪；已注册工作区的激活可能仍在进行，
+// 此时不应落入“无工作区”终态，而应继续等待。
+function catalogHasActivatingWorkspace(
+  catalog: WorkspaceCatalog
+): boolean {
+  return catalog.workspaces.length > 0 &&
+    !catalog.workspaces.some((workspace) => workspace.ready);
+}
 
 export class RuntimeClient {
   private token = "";
@@ -311,13 +320,9 @@ export class RuntimeClient {
         (workspace) => workspace.id === selectedWorkspaceID
       );
       if (bootstrap.setup_required) {
-        if (!bootstrap.setup_catalog) {
-          throw new Error("Runtime setup catalog is unavailable");
-        }
         this.update({
           phase: "setup",
           workspaceRoot: bootstrap.workspace_root ?? "",
-          setupCatalog: bootstrap.setup_catalog,
           workspaces: workspaceCatalog.workspaces,
           selectedWorkspaceID,
           problem: undefined
@@ -335,6 +340,18 @@ export class RuntimeClient {
         }
         return;
       }
+      if (!selectedWorkspace && catalogHasActivatingWorkspace(workspaceCatalog)) {
+        // Supervisor 已就绪但已注册工作区仍在激活：等待而不是落入
+        // “无工作区”终态。
+        this.update({
+          phase: "booting",
+          workspaceRoot: bootstrap.workspace_root ?? "",
+          workspaces: workspaceCatalog.workspaces,
+          problem: undefined
+        });
+        this.bootTimer = window.setTimeout(() => void this.start(), 500);
+        return;
+      }
       if (!selectedWorkspace) {
         this.socket?.close(1000, "workspace selection required");
         this.socket = undefined;
@@ -349,19 +366,20 @@ export class RuntimeClient {
           providers: [],
           models: [],
           socketConnected: false,
-          problem: undefined,
-          setupCatalog: bootstrap.setup_catalog
+          problem: undefined
         });
         return;
       }
+      // 多 Workspace 激活是逐个进行的：supervisor 就绪不代表目标 Workspace
+      // 已激活。选中前等待其就绪，避免启动竞态把“未就绪”变成永久错误。
+      await this.awaitWorkspaceReady(selectedWorkspaceID);
       await this.restoreBrowserState(bootstrap, selectedWorkspaceID);
       this.update({
         phase: "reconnecting",
         workspaceRoot: selectedWorkspace?.root ?? bootstrap.workspace_root ?? "",
         workspaces: workspaceCatalog.workspaces,
         selectedWorkspaceID,
-        problem: undefined,
-        setupCatalog: bootstrap.setup_catalog
+        problem: undefined
       });
       this.socket?.close(1000, "client reconnect");
       await this.connect();
@@ -521,7 +539,9 @@ export class RuntimeClient {
     const nextSelected = (query !== undefined && !hydrateSelected) ||
       (searching && Boolean(this.state.selectedSessionID))
       ? this.state.selectedSessionID
-      : selected && candidates.some((item) => item.session_id === selected)
+      : selected
+        // 已有选中会话时保持不变：过滤（搜索/归档开关）或目录分页把它
+        // 暂时挤出列表时，静默切换到其他会话会被感知为“页面自己跳走”。
         ? selected
         : (candidates[0]?.session_id ?? "");
     this.update({
@@ -560,6 +580,11 @@ export class RuntimeClient {
     );
     await this.refreshWorkspaces();
     if (!result.workspace.ready) {
+      if (this.state.phase === "setup") {
+        // Workspace 已登记；模型配置完成前 Runtime 无法激活，
+        // 配置成功后由服务端自动激活，这里不视为错误。
+        return;
+      }
       throw new Error(
         result.workspace.problem || "Workspace was registered but is not ready"
       );
@@ -1694,6 +1719,40 @@ export class RuntimeClient {
     return this.call<WorkspaceConnection>("connection/status", {});
   }
 
+  async listConnections(): Promise<ConnectionListResult> {
+    return this.call<ConnectionListResult>("connection/list", {});
+  }
+
+  async addConnection(request: SetupRequest): Promise<ConnectionListResult> {
+    const result = await this.call<ConnectionListResult>(
+      "connection/add",
+      request,
+      {idempotencyKey: crypto.randomUUID(), retryNetwork: true}
+    );
+    await this.start();
+    return result;
+  }
+
+  async removeConnection(connectionID: string): Promise<ConnectionListResult> {
+    const result = await this.call<ConnectionListResult>(
+      "connection/remove",
+      {connection_id: connectionID},
+      {idempotencyKey: crypto.randomUUID(), retryNetwork: true}
+    );
+    await this.start();
+    return result;
+  }
+
+  async setDefaultConnection(connectionID: string): Promise<ConnectionListResult> {
+    const result = await this.call<ConnectionListResult>(
+      "connection/default",
+      {connection_id: connectionID},
+      {idempotencyKey: crypto.randomUUID(), retryNetwork: true}
+    );
+    await this.start();
+    return result;
+  }
+
   async setKeyringCredential(secret: string): Promise<CredentialStatus> {
     return this.call<CredentialStatus>("credential/set-keyring", {secret});
   }
@@ -2209,6 +2268,29 @@ export class RuntimeClient {
   private protocolVersion: number = webProtocolVersion;
   private serverBuild = "";
 
+  private async awaitWorkspaceReady(workspaceID: string): Promise<void> {
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+      const catalog = await this.call<WorkspaceCatalog>(
+        "workspace/list",
+        {}
+      ).catch(() => undefined);
+      const workspace = catalog?.workspaces?.find(
+        (entry) => entry.id === workspaceID
+      );
+      if (!workspace) throw new Error("Workspace is not registered");
+      if (workspace.ready) {
+        if (catalog?.workspaces) this.update({workspaces: catalog.workspaces});
+        return;
+      }
+      if (workspace.problem) {
+        throw new Error(workspace.problem);
+      }
+      // 仍在激活中：400ms 后重试，约 20s 上限。
+      await new Promise((resolve) => window.setTimeout(resolve, 400));
+    }
+    throw new Error("Workspace Runtime is not ready");
+  }
+
   private async restoreBrowserState(
     bootstrap: Bootstrap,
     workspaceID = bootstrap.workspace?.root_id ?? bootstrap.workspace_root ?? ""
@@ -2242,7 +2324,6 @@ export class RuntimeClient {
       historyMoreBefore: false,
       providers: [],
       models: [],
-      setupCatalog: bootstrap.setup_catalog ?? this.state.setupCatalog,
       profile: undefined,
       tools: [],
       checkpoints: [],

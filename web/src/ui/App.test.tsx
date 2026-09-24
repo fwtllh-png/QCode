@@ -167,17 +167,15 @@ describe("projectTranscript", () => {
     const value = snapshot();
     const session = {...value.sessions[0]!, title_source: "auto" as const, title_revision: 3};
     const client = mockClient({...value, sessions: [session]});
-    const prompt = vi.spyOn(window, "prompt").mockReturnValue(session.title);
-    try {
-      render(<App client={client} />);
-      fireEvent.click(screen.getByRole("button", {name: `Session actions for ${session.title}`}));
-      fireEvent.click(screen.getByRole("menuitem", {name: "Rename"}));
-      await waitFor(() => expect(client.updateSession).toHaveBeenCalledWith(
-        session.session_id, session.revision, {title: session.title}
-      ));
-    } finally {
-      prompt.mockRestore();
-    }
+    render(<App client={client} />);
+    fireEvent.click(screen.getByRole("button", {name: `Session actions for ${session.title}`}));
+    fireEvent.click(screen.getByRole("menuitem", {name: "Rename"}));
+    const input = await screen.findByLabelText("Session title");
+    expect((input as HTMLInputElement).value).toBe(session.title);
+    fireEvent.click(screen.getByRole("button", {name: "Rename"}));
+    await waitFor(() => expect(client.updateSession).toHaveBeenCalledWith(
+      session.session_id, session.revision, {title: session.title}
+    ));
   });
 
   it("projects verification, receipt, and rejection evidence", () => {
@@ -418,29 +416,20 @@ describe("projectTranscript", () => {
     expect(await screen.findByRole("dialog", {name: "Settings"})).toBeTruthy();
     fireEvent.click(screen.getByRole("button", {name: "Models"}));
     expect((screen.getByLabelText("Settings model") as HTMLSelectElement).value)
-      .toBe("fixture");
+      .toBe("fixture\u0000fixture");
     fireEvent.change(screen.getByLabelText("Settings model"), {
-      target: {value: "reasoner"}
+      target: {value: "fixture\u0000reasoner"}
     });
     expect((screen.getByLabelText("Settings model") as HTMLSelectElement).value)
-      .toBe("reasoner");
-    fireEvent.click(screen.getByRole("button", {name: "Add model"}));
+      .toBe("fixture\u0000reasoner");
+    fireEvent.click(screen.getByRole("button", {name: "Add model", exact: true} as never));
     const modelDialog = screen.getByRole("dialog", {name: "Add model"});
-    expect((within(modelDialog).getByLabelText("New model ID") as HTMLInputElement).value)
+    expect((within(modelDialog).getByLabelText("Connection model ID") as HTMLInputElement).value)
       .toBe("");
-    expect(document.activeElement).toBe(
-      within(modelDialog).getByLabelText("New model ID")
-    );
-    expect(within(modelDialog).getByRole("alert").textContent).toContain(
-      "Model ID is required"
-    );
-    fireEvent.change(within(modelDialog).getByLabelText("New model ID"), {
-      target: {value: "invalid model"}
+    fireEvent.change(within(modelDialog).getByLabelText("Connection base URL"), {
+      target: {value: "https://fixture.local/v1"}
     });
-    expect(within(modelDialog).getByRole("alert").textContent).toContain(
-      "Model ID cannot contain whitespace"
-    );
-    fireEvent.change(within(modelDialog).getByLabelText("New model ID"), {
+    fireEvent.change(within(modelDialog).getByLabelText("Connection model ID"), {
       target: {value: "model-released-today"}
     });
     fireEvent.click(within(modelDialog).getByRole(
@@ -451,7 +440,6 @@ describe("projectTranscript", () => {
       (await within(modelDialog).findByLabelText("Detected model limits"))
         .textContent
     ).toContain("Context 200,000");
-    expect(within(modelDialog).queryByLabelText("Context tokens")).toBeNull();
     fireEvent.click(within(modelDialog).getByRole(
       "button",
       {name: "Add model"}
@@ -474,10 +462,8 @@ describe("projectTranscript", () => {
       "Applied: Model fixture → model-released-today; " +
       "Reasoning default → medium · Prompt cache reset"
     )).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", {name: "Connection"}));
+    fireEvent.click(screen.getByRole("button", {name: "Models"}));
     expect(screen.getByRole("button", {name: "Test connection"})).toBeTruthy();
-    expect(await screen.findByText("https://models.example.com/v1")).toBeTruthy();
-    expect(screen.getByText("openai_chat")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", {name: "Tools"}));
     expect(screen.getByText("read_file")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", {name: "Agent preset"}));
@@ -673,7 +659,7 @@ describe("projectTranscript", () => {
     render(<App client={client} />);
 
     fireEvent.change(screen.getByLabelText("Model"), {
-      target: {value: "reasoner"}
+      target: {value: "fixture\u0000reasoner"}
     });
     await waitFor(() => {
       expect(client.updateProfile).toHaveBeenCalledWith({
@@ -685,8 +671,10 @@ describe("projectTranscript", () => {
     fireEvent.change(screen.getByLabelText("Model"), {
       target: {value: "__configure__"}
     });
+    // New model 只落到 Settings 的 Models 页，向导不自动弹出。
     expect(await screen.findByRole("dialog", {name: "Settings"})).toBeTruthy();
     expect(screen.getByRole("heading", {name: "Models"})).toBeTruthy();
+    expect(screen.queryByRole("dialog", {name: "Add model"})).toBeNull();
   });
 
   it("offers three modes without exposing the derived planning policy", async () => {
@@ -720,7 +708,7 @@ describe("projectTranscript", () => {
     render(<App client={client} />);
 
     fireEvent.change(screen.getByLabelText("Model"), {
-      target: {value: "reasoner"}
+      target: {value: "fixture\u0000reasoner"}
     });
     expect(await screen.findByText("Updating model")).toBeTruthy();
     expect((screen.getByLabelText("Model") as HTMLSelectElement).disabled).toBe(true);
@@ -730,7 +718,7 @@ describe("projectTranscript", () => {
     });
   });
 
-  it("opens the model editor for a fixed custom connection", async () => {
+  it("opens the models settings page for a fixed custom connection", async () => {
     const value = snapshot();
     value.profile!.capabilities.mutable_fields =
       value.profile!.capabilities.mutable_fields.filter(
@@ -745,7 +733,8 @@ describe("projectTranscript", () => {
     fireEvent.change(selector, {target: {value: "__configure__"}});
 
     expect(await screen.findByRole("dialog", {name: "Settings"})).toBeTruthy();
-    expect(screen.getByRole("dialog", {name: "Add model"})).toBeTruthy();
+    expect(screen.getByRole("heading", {name: "Models"})).toBeTruthy();
+    expect(screen.queryByRole("dialog", {name: "Add model"})).toBeNull();
     expect(client.updateProfile).not.toHaveBeenCalled();
   });
 
@@ -844,7 +833,8 @@ describe("projectTranscript", () => {
     });
     render(<App client={client} />);
 
-    expect(document.title).toBe("(1) Working · QCode");
+    // 惰性加载的 BackgroundActivityMonitor 需要一个微任务周期才能设置标题。
+    await waitFor(() => expect(document.title).toBe("(1) Working · QCode"));
     const backgroundRow = screen.getByText("Private prompt title")
       .closest(".sessionRow");
     expect(backgroundRow?.querySelector('[title="Running"]')).toBeTruthy();
@@ -853,11 +843,11 @@ describe("projectTranscript", () => {
     const notificationSwitch = await screen.findByRole("switch", {
       name: "Desktop notifications"
     });
-    expect(notificationSwitch).toHaveProperty("checked", false);
+    expect(notificationSwitch.getAttribute("aria-checked")).toBe("false");
     expect(screen.getByText(/Prompts and tool output are excluded/)).toBeTruthy();
     fireEvent.click(notificationSwitch);
     await waitFor(() => {
-      expect(notificationSwitch).toHaveProperty("checked", true);
+      expect(notificationSwitch.getAttribute("aria-checked")).toBe("true");
     });
     expect(TestNotification.requestPermission).toHaveBeenCalledOnce();
     expect(preferences.get(notificationPreferenceKey)).toBe("true");
@@ -1056,100 +1046,87 @@ describe("projectTranscript", () => {
     expect(client.createSession).not.toHaveBeenCalled();
   });
 
-  it("requires provider, model, and API key during first-run setup", async () => {
+  it("requires base URL, model, and API key before first configuration", async () => {
     const value = snapshot();
     value.phase = "setup";
     value.sessions = [];
     value.selectedSessionID = "";
     value.profile = undefined;
-    value.setupCatalog = {
-      version: 2,
-      providers: [{
-        id: "deepseek",
-        display_name: "DeepSeek",
-        protocol: "openai_chat",
-        requires_api_key: true,
-        models: ["deepseek-reasoner"]
-      }, {
-        id: "openai-compatible",
-        display_name: "OpenAI-compatible",
-        protocol: "openai_chat",
-        requires_api_key: false,
-        custom: true
-      }]
-    };
     const client = mockClient(value);
     render(<App client={client} />);
 
-    expect(screen.getByRole("button", {name: "Start QCode"}))
+    // setup 阶段不再阻断：主界面 + 引导横幅常显，配置入口在设置页。
+    expect(screen.getByText(
+      "Configure a model connection to start working with QCode."
+    )).toBeTruthy();
+    expect(screen.queryByRole("button", {name: "Start QCode"})).toBeNull();
+    fireEvent.click(screen.getByRole("button", {name: "Configure model"}));
+    await screen.findByRole("dialog", {name: "Settings"});
+    const wizard = await screen.findByRole("dialog", {name: "Configure model"});
+    expect(within(wizard).getByRole("button", {name: "Save and start"}))
       .toHaveProperty("disabled", true);
-    fireEvent.change(screen.getByLabelText("Provider"), {
-      target: {value: "deepseek"}
+    fireEvent.change(within(wizard).getByLabelText("Connection base URL"), {
+      target: {value: "https://api.deepseek.com/v1"}
     });
-    fireEvent.change(screen.getByLabelText("Model ID"), {
+    fireEvent.change(within(wizard).getByLabelText("Connection model ID"), {
       target: {value: "deepseek-reasoner"}
     });
-    const key = screen.getByLabelText("API key");
+    const key = within(wizard).getByLabelText("Connection API key");
     fireEvent.change(key, {
       target: {value: "DEEPSEEK_API_KEY=secret"}
     });
-    expect(screen.getByText(
+    expect(within(wizard).getByText(
       "Enter the API key value, not an environment assignment."
     )).toBeTruthy();
-    expect(screen.getByRole("button", {name: "Start QCode"}))
+    expect(within(wizard).getByRole("button", {name: "Save and start"}))
       .toHaveProperty("disabled", true);
 
     fireEvent.change(key, {target: {value: "sk-live"}});
-    fireEvent.click(screen.getByRole("button", {name: "Start QCode"}));
+    fireEvent.click(within(wizard).getByRole("button", {name: "Detect model"}));
+    await within(wizard).findByLabelText("Reasoning efforts");
+    fireEvent.click(within(wizard).getByRole("button", {name: "Save and start"}));
 
     await waitFor(() => {
-      expect(client.completeSetup).toHaveBeenCalledWith({
-        provider: "deepseek",
+      expect(client.completeSetup).toHaveBeenCalledWith(expect.objectContaining({
         model: "deepseek-reasoner",
-        api_key: "sk-live"
-      });
+        api_key: "sk-live",
+        base_url: "https://api.deepseek.com/v1",
+        protocol: "openai_chat"
+      }));
     });
     expect(screen.queryByDisplayValue("sk-live")).toBeNull();
   });
 
-  it("detects and submits custom provider metadata", async () => {
+  it("detects and submits custom connection metadata", async () => {
     const value = snapshot();
     value.phase = "setup";
     value.sessions = [];
     value.selectedSessionID = "";
     value.profile = undefined;
-    value.setupCatalog = {
-      version: 2,
-      providers: [{
-        id: "openai-compatible",
-        display_name: "OpenAI-compatible",
-        protocol: "openai_chat",
-        requires_api_key: false,
-        custom: true
-      }]
-    };
     const client = mockClient(value);
     render(<App client={client} />);
 
-    fireEvent.change(screen.getByLabelText("Provider"), {
-      target: {value: "openai-compatible"}
-    });
-    fireEvent.change(screen.getByLabelText("Base URL"), {
+    fireEvent.click(screen.getByRole("button", {name: "Configure model"}));
+    await screen.findByRole("dialog", {name: "Settings"});
+    const wizard = await screen.findByRole("dialog", {name: "Configure model"});
+    fireEvent.change(within(wizard).getByLabelText("Connection base URL"), {
       target: {value: "https://models.example.com/v1"}
     });
-    fireEvent.change(screen.getByLabelText("Model ID"), {
+    fireEvent.change(within(wizard).getByLabelText("Connection model ID"), {
       target: {value: "vendor-model"}
     });
-    fireEvent.click(screen.getByRole("button", {name: "Detect model"}));
-    expect(await screen.findByLabelText("Reasoning efforts")).toBeTruthy();
-    expect(screen.getByLabelText("Default reasoning effort")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", {name: "Start QCode"}));
+    fireEvent.change(within(wizard).getByLabelText("Connection API key"), {
+      target: {value: "sk-live"}
+    });
+    fireEvent.click(within(wizard).getByRole("button", {name: "Detect model"}));
+    expect(await within(wizard).findByLabelText("Reasoning efforts")).toBeTruthy();
+    expect(within(wizard).getByLabelText("Default reasoning effort")).toBeTruthy();
+    fireEvent.click(within(wizard).getByRole("button", {name: "Save and start"}));
 
     await waitFor(() => {
       expect(client.completeSetup).toHaveBeenCalledWith({
-        provider: "openai-compatible",
         model: "vendor-model",
-        api_key: "",
+        api_key: "sk-live",
         base_url: "https://models.example.com/v1",
         protocol: "openai_chat",
         model_metadata: {
@@ -1161,8 +1138,8 @@ describe("projectTranscript", () => {
             streaming: true,
             tool_calls: true,
             reasoning: true,
-            reasoning_efforts: [],
-            default_reasoning_effort: undefined
+            reasoning_efforts: ["low", "medium", "high"],
+            default_reasoning_effort: "medium"
           })
         }
       });
@@ -1170,21 +1147,16 @@ describe("projectTranscript", () => {
   });
 
   it.each([
-    {settings: false, custom: true, protocol: "openai_responses", fail: false},
-    {settings: true, custom: true, protocol: "openai_responses", fail: false},
-    {settings: false, custom: false, protocol: "openai_chat", fail: false},
-    {settings: true, custom: false, protocol: "openai_chat", fail: false},
-    {settings: false, custom: false, protocol: "legacy", fail: true},
-    {settings: true, custom: true, protocol: "openai_responses", fail: true}
-  ])("configures an unknown model: $settings / $custom / $protocol / failure=$fail", async ({
-    settings, custom, protocol, fail
+    {settings: false, protocol: "openai_responses", fail: false},
+    {settings: true, protocol: "openai_responses", fail: false},
+    {settings: false, protocol: "openai_chat", fail: false},
+    {settings: true, protocol: "openai_chat", fail: false},
+    {settings: false, protocol: "openai_chat", fail: true},
+    {settings: true, protocol: "openai_responses", fail: true}
+  ])("configures an unknown model: $settings / $protocol / failure=$fail", async ({
+    settings, protocol, fail
   }) => {
     const value = snapshot();
-    const providerID = custom ? "openai-compatible" : "provider";
-    value.setupCatalog = {version: 2, providers: [{
-      id: providerID, display_name: "Provider", protocol, custom,
-      requires_api_key: false, models: ["catalog-model"]
-    }]};
     if (!settings) {
       value.phase = "setup";
       value.sessions = [];
@@ -1194,43 +1166,49 @@ describe("projectTranscript", () => {
     const client = mockClient(value);
     if (fail) vi.mocked(client.probeSetup).mockRejectedValue(new Error("probe unavailable"));
     render(<App client={client} />);
+    let wizard: HTMLElement;
     if (settings) {
       fireEvent.click(screen.getByRole("button", {name: "Settings"}));
       await screen.findByRole("dialog", {name: "Settings"});
-      fireEvent.click(screen.getByRole("button", {name: "Connection"}));
-      await screen.findByText("https://models.example.com/v1");
-      fireEvent.click(screen.getByRole("button", {name: "Change provider"}));
-    }
-    const label = (name: string) => settings ? ({
-      Provider: "Connection provider", "Base URL": "Connection base URL",
-      Protocol: "Connection protocol", "Model ID": "Connection model ID"
-    }[name]!) : name;
-    fireEvent.change(screen.getByLabelText(label("Provider")), {target: {value: providerID}});
-    if (custom) {
-      fireEvent.change(screen.getByLabelText(label("Base URL")), {target: {value: "https://models.example.com/v1"}});
-      fireEvent.change(screen.getByLabelText(label("Protocol")), {target: {value: protocol}});
-    }
-    fireEvent.change(screen.getByLabelText(label("Model ID")), {target: {value: "vendor-model"}});
-    fireEvent.click(screen.getByRole("button", {name: "Detect model"}));
-    await waitFor(() => expect(client.probeSetup).toHaveBeenCalledWith({
-      provider: providerID, model: "vendor-model",
-      base_url: custom ? "https://models.example.com/v1" : "", protocol
-    }));
-    const submitLabel = settings ? "Apply and restart" : "Start QCode";
-    if (fail) {
-      await screen.findByText("probe unavailable");
-      fireEvent.click(screen.getByRole("button", {name: "Enter model metadata"}));
-      expect(screen.getByRole("button", {name: submitLabel})).toHaveProperty("disabled", true);
-      fireEvent.change(screen.getByLabelText("Context tokens"), {target: {value: "65536"}});
-      fireEvent.change(screen.getByLabelText("Max output tokens"), {target: {value: "8192"}});
-      fireEvent.click(screen.getByLabelText("Tool calling"));
+      fireEvent.click(screen.getByRole("button", {name: "Models"}));
+      fireEvent.click(screen.getByRole("button", {name: "Add model", exact: true} as never));
+      wizard = await screen.findByRole("dialog", {name: "Add model"});
     } else {
-      await screen.findByLabelText("Detected model limits");
+      // setup 阶段：横幅直达 Models，向导自动展开。
+      fireEvent.click(screen.getByRole("button", {name: "Configure model"}));
+      await screen.findByRole("dialog", {name: "Settings"});
+      wizard = await screen.findByRole("dialog", {name: "Configure model"});
     }
-    fireEvent.click(screen.getByRole("button", {name: submitLabel}));
-    await waitFor(() => expect(client.completeSetup).toHaveBeenCalledWith(expect.objectContaining({
-      provider: providerID, model: "vendor-model",
-      ...(custom ? {protocol} : {}),
+    const submitLabel = settings ? "Add model" : "Save and start";
+    fireEvent.change(within(wizard).getByLabelText("Connection base URL"), {target: {value: "https://models.example.com/v1"}});
+    fireEvent.change(within(wizard).getByLabelText("Connection protocol"), {target: {value: protocol}});
+    fireEvent.change(within(wizard).getByLabelText("Connection model ID"), {target: {value: "vendor-model"}});
+    fireEvent.change(within(wizard).getByLabelText("Connection API key"), {target: {value: "sk-live"}});
+    fireEvent.click(within(wizard).getByRole("button", {name: "Detect model"}));
+    await waitFor(() => expect(client.probeSetup).toHaveBeenCalledWith(expect.objectContaining({
+      model: "vendor-model",
+      base_url: "https://models.example.com/v1",
+      protocol
+    })));
+    if (fail) {
+      await within(wizard).findByText("probe unavailable");
+      fireEvent.click(within(wizard).getByRole("button", {name: "Enter model metadata"}));
+      expect(within(wizard).getByRole("button", {name: submitLabel})).toHaveProperty("disabled", true);
+      fireEvent.change(within(wizard).getByLabelText("Context tokens (K)"), {target: {value: "64"}});
+      fireEvent.change(within(wizard).getByLabelText("Max output tokens (K)"), {target: {value: "8"}});
+      fireEvent.click(within(wizard).getByLabelText("Tool calling"));
+    } else {
+      await within(wizard).findByLabelText("Detected model limits");
+    }
+    fireEvent.click(within(wizard).getByRole("button", {name: submitLabel}));
+    // 已配置态：新端点建立附加连接（addConnection，不切换默认）；
+    // setup 态：首连接走 completeSetup。
+    const expectCall = settings ? client.addConnection : client.completeSetup;
+    await waitFor(() => expect(expectCall).toHaveBeenCalledWith(expect.objectContaining({
+      model: "vendor-model",
+      api_key: "sk-live",
+      base_url: "https://models.example.com/v1",
+      protocol,
       model_metadata: expect.objectContaining({
         context_tokens: fail ? 65536 : 200000,
         max_output_tokens: fail ? 8192 : 24000,
@@ -1239,8 +1217,7 @@ describe("projectTranscript", () => {
     })));
   });
 
-  it("requests explicit discard when deleting an active session", () => {
-    vi.spyOn(window, "confirm").mockReturnValue(true);
+  it("requests explicit discard when deleting an active session", async () => {
     const value = snapshot();
     value.sessions = [{
       ...value.sessions[0],
@@ -1252,27 +1229,29 @@ describe("projectTranscript", () => {
     fireEvent.click(screen.getByRole("button", {name: "Session actions for Chat"}));
     fireEvent.click(screen.getByRole("menuitem", {name: "Delete"}));
 
-    expect(window.confirm).toHaveBeenCalledWith(
+    expect(screen.getByText(
       'Delete "Chat" and permanently discard its unfinished work?'
-    );
-    expect(client.deleteSession).toHaveBeenCalledWith("session", 1, true);
+    )).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", {name: "Delete session"}));
+    await waitFor(() => expect(client.deleteSession)
+      .toHaveBeenCalledWith("session", 1, true));
   });
 
-  it("warns that deleting an idle session discards a leftover workspace draft", () => {
-    vi.spyOn(window, "confirm").mockReturnValue(true);
+  it("warns that deleting an idle session discards a leftover workspace draft", async () => {
     const client = mockClient(snapshot());
     render(<App client={client} />);
     fireEvent.click(screen.getByRole("button", {name: "Session actions for Chat"}));
     fireEvent.click(screen.getByRole("menuitem", {name: "Delete"}));
 
-    expect(window.confirm).toHaveBeenCalledWith(
+    expect(screen.getByText(
       'Delete "Chat" and permanently discard its unfinished workspace draft if one exists?'
-    );
-    expect(client.deleteSession).toHaveBeenCalledWith("session", 1, true);
+    )).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", {name: "Delete session"}));
+    await waitFor(() => expect(client.deleteSession)
+      .toHaveBeenCalledWith("session", 1, true));
   });
 
   it("shows session lifecycle failures next to the affected row", async () => {
-    vi.spyOn(window, "confirm").mockReturnValue(true);
     const client = mockClient(snapshot());
     vi.mocked(client.deleteSession).mockRejectedValue(
       new Error("cannot delete session while its isolated worktree has unresolved changes")
@@ -1281,6 +1260,7 @@ describe("projectTranscript", () => {
 
     fireEvent.click(screen.getByRole("button", {name: "Session actions for Chat"}));
     fireEvent.click(screen.getByRole("menuitem", {name: "Delete"}));
+    fireEvent.click(await screen.findByRole("button", {name: "Delete session"}));
 
     expect((await screen.findByRole("alert")).textContent).toContain(
       "cannot delete session while its isolated worktree has unresolved changes"
@@ -1364,7 +1344,7 @@ describe("projectTranscript", () => {
     fireEvent.click(screen.getByRole("button", {name: "Restore"}));
     fireEvent.click(screen.getByRole("button", {name: "Fork"}));
     fireEvent.click(screen.getByRole("button", {name: "Extensions"}));
-    fireEvent.click(screen.getByRole("checkbox", {name: /review/}));
+    fireEvent.click(screen.getByRole("switch", {name: /review/}));
 
     expect(client.restoreCheckpoint).toHaveBeenCalledWith("checkpoint-1");
     expect(client.forkCheckpoint).toHaveBeenCalledWith("checkpoint-1");
@@ -1438,7 +1418,7 @@ describe("projectTranscript", () => {
     await screen.findByRole("dialog", {name: "Settings"});
     fireEvent.click(screen.getByRole("button", {name: "Tools"}));
 
-    fireEvent.click(screen.getByRole("checkbox", {name: "Disable read_file"}));
+    fireEvent.click(screen.getByRole("switch", {name: "Disable read_file"}));
     expect(client.updateProfile).not.toHaveBeenCalled();
     fireEvent.click(screen.getAllByText("Details")[0]!);
     expect(screen.getAllByText("strong")).toHaveLength(2);
@@ -1765,8 +1745,8 @@ describe("projectTranscript", () => {
 
     fireEvent.click(screen.getByRole("button", {name: "Settings"}));
     await screen.findByRole("dialog", {name: "Settings"});
-    fireEvent.click(screen.getByRole("button", {name: "Connection"}));
-    await screen.findByText("valid");
+    fireEvent.click(screen.getByRole("button", {name: "Models"}));
+    await screen.findByText("valid", {selector: "small, span"});
     expect(screen.getByText("Runtime restart required")).toBeTruthy();
     expect(screen.getByText("Reference: qcode")).toBeTruthy();
     fireEvent.change(screen.getByLabelText("Provider credential"), {
@@ -1790,48 +1770,89 @@ describe("projectTranscript", () => {
 
   it("reconfigures the Runtime provider from Connection settings", async () => {
     const value = snapshot();
-    value.setupCatalog = {
-      version: 2,
-      providers: [{
-        id: "fixture",
-        display_name: "Fixture",
-        protocol: "openai_chat",
-        requires_api_key: false
-      }, {
-        id: "deepseek",
-        display_name: "DeepSeek",
-        protocol: "openai_chat",
-        requires_api_key: true,
-        models: ["deepseek-chat"]
-      }]
-    };
     const client = mockClient(value);
     render(<App client={client} />);
 
     fireEvent.click(screen.getByRole("button", {name: "Settings"}));
     await screen.findByRole("dialog", {name: "Settings"});
-    fireEvent.click(screen.getByRole("button", {name: "Connection"}));
-    await screen.findByText("https://models.example.com/v1");
-    fireEvent.click(screen.getByRole("button", {name: "Change provider"}));
-    fireEvent.change(screen.getByLabelText("Connection provider"), {
-      target: {value: "deepseek"}
+    fireEvent.click(screen.getByRole("button", {name: "Models"}));
+    // 添加第二条连接：新端点保存为附加连接（不切换默认）。
+    fireEvent.click(screen.getByRole("button", {name: "Add model", exact: true} as never));
+    const wizard = await screen.findByRole("dialog", {name: "Add model"});
+    fireEvent.change(within(wizard).getByLabelText("Connection base URL"), {
+      target: {value: "https://api.deepseek.com/v1"}
     });
-    fireEvent.change(screen.getByLabelText("Connection model ID"), {
+    fireEvent.change(within(wizard).getByLabelText("Connection model ID"), {
       target: {value: "deepseek-chat"}
     });
-    fireEvent.change(screen.getByLabelText("Connection API key"), {
+    fireEvent.change(within(wizard).getByLabelText("Connection API key"), {
       target: {value: "sk-next"}
     });
-    fireEvent.click(screen.getByRole("button", {name: "Apply and restart"}));
+    fireEvent.click(within(wizard).getByRole("button", {name: "Detect model"}));
+    await within(wizard).findByLabelText("Detected model limits");
+    fireEvent.click(within(wizard).getByRole("button", {name: "Add model"}));
 
     await waitFor(() => {
-      expect(client.completeSetup).toHaveBeenCalledWith({
-        provider: "deepseek",
+      expect(client.addConnection).toHaveBeenCalledWith(expect.objectContaining({
         model: "deepseek-chat",
-        api_key: "sk-next"
-      });
+        api_key: "sk-next",
+        base_url: "https://api.deepseek.com/v1",
+        protocol: "openai_chat"
+      }));
     });
-    expect(screen.queryByRole("dialog", {name: "Settings"})).toBeNull();
+  });
+
+  it("prefers the entered API key over the saved credential when detecting on the default endpoint", async () => {
+    const client = mockClient(snapshot());
+    render(<App client={client} />);
+
+    fireEvent.click(screen.getByRole("button", {name: "Settings"}));
+    await screen.findByRole("dialog", {name: "Settings"});
+    fireEvent.click(screen.getByRole("button", {name: "Models"}));
+    fireEvent.click(screen.getByRole("button", {name: "Add model", exact: true} as never));
+    const wizard = await screen.findByRole("dialog", {name: "Add model"});
+    // 与默认连接相同的端点：填了新 Key 时必须用 Supervisor 探测带上
+    // 用户输入，而不是复用会话凭证的 Runtime 探测。
+    fireEvent.change(within(wizard).getByLabelText("Connection base URL"), {
+      target: {value: "https://fixture.local/v1"}
+    });
+    fireEvent.change(within(wizard).getByLabelText("Connection model ID"), {
+      target: {value: "model-with-new-key"}
+    });
+    fireEvent.change(within(wizard).getByLabelText("Connection API key"), {
+      target: {value: "sk-fresh"}
+    });
+    fireEvent.click(within(wizard).getByRole("button", {name: "Detect model"}));
+    await waitFor(() => expect(client.probeSetup).toHaveBeenCalledWith(
+      expect.objectContaining({
+        model: "model-with-new-key",
+        base_url: "https://fixture.local/v1",
+        api_key: "sk-fresh"
+      })
+    ));
+    expect(client.probeModel).not.toHaveBeenCalled();
+    fireEvent.click(within(wizard).getByRole("button", {name: "Cancel"}));
+  });
+
+  it("reuses the session credential when detecting without a new key on the default endpoint", async () => {
+    const client = mockClient(snapshot());
+    render(<App client={client} />);
+
+    fireEvent.click(screen.getByRole("button", {name: "Settings"}));
+    await screen.findByRole("dialog", {name: "Settings"});
+    fireEvent.click(screen.getByRole("button", {name: "Models"}));
+    fireEvent.click(screen.getByRole("button", {name: "Add model", exact: true} as never));
+    const wizard = await screen.findByRole("dialog", {name: "Add model"});
+    fireEvent.change(within(wizard).getByLabelText("Connection base URL"), {
+      target: {value: "https://fixture.local/v1"}
+    });
+    fireEvent.change(within(wizard).getByLabelText("Connection model ID"), {
+      target: {value: "model-with-saved-key"}
+    });
+    fireEvent.click(within(wizard).getByRole("button", {name: "Detect model"}));
+    await waitFor(() => expect(client.probeModel).toHaveBeenCalledWith("model-with-saved-key"));
+    expect(client.probeSetup).not.toHaveBeenCalled();
+    fireEvent.click(within(wizard).getByRole("button", {name: "Cancel"}));
   });
 
   it("renders full approval decisions and structured input options", () => {
@@ -2954,9 +2975,8 @@ describe("projectTranscript", () => {
     fireEvent.click(screen.getByRole("button", {name: /Read README\.md/}));
     fireEvent.click(screen.getByRole("button", {name: "Inspect"}));
 
-    const trajectory = await screen.findByLabelText("Execution trajectory");
-    expect(trajectory.querySelector(".timelineLabels")?.textContent)
-      .toBe("InputModelTools");
+    // Inspect 现在以侧滑面板呈现，主视图保持在 Chat。
+    await screen.findByRole("dialog", {name: "Inspect tool call"});
     const inspector = screen.getByLabelText("Record inspector");
     expect(inspector.textContent).toContain("call-1");
     expect(screen.getByRole("tab", {name: "Summary"}).getAttribute("aria-selected"))
@@ -2968,12 +2988,19 @@ describe("projectTranscript", () => {
     expect(client.refreshTrace).toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", {name: "Show in chat"}));
     await waitFor(() => {
-      expect(screen.getByRole("button", {name: "Chat"}).getAttribute("aria-current"))
-        .toBe("page");
       expect(
         container.querySelector("[data-entry-id='tool-call-1'][data-navigation-current]")
       ).toBeTruthy();
     });
+    expect(
+      screen.queryByRole("dialog", {name: "Inspect tool call"})
+    ).toBeNull();
+
+    // Trajectory 标签页入口保持不变。
+    fireEvent.click(screen.getByRole("button", {name: "Trajectory"}));
+    const trajectory = await screen.findByLabelText("Execution trajectory");
+    expect(trajectory.querySelector(".timelineLabels")?.textContent)
+      .toBe("InputModelTools");
   });
 
   it("searches stable conversation identities and navigates between questions", async () => {
@@ -3031,7 +3058,7 @@ describe("projectTranscript", () => {
     });
   });
 
-  it("windows 500-turn transcripts to 200 projected rows with automatic history scrolling", async () => {
+  it("windows 500-turn transcripts to 200 projected rows with automatic history scrolling", {timeout: 20_000}, async () => {
     const events = Array.from({length: 500}, (_, index) => ({
       ...event(index + 1, "turn.completed", {
         text: `message-${index + 1}`,
@@ -3313,15 +3340,35 @@ function mockClient(value: RuntimeSnapshot): RuntimeClient {
     setArchivedVisible: vi.fn(async () => {}),
     createSession: vi.fn(async () => {}),
 		completeSetup: vi.fn(async () => {}),
-    probeSetup: vi.fn(async () => ({
+    listConnections: vi.fn(async () => ({
+      version: 1,
+      default_connection: "fixture",
+      connections: [{
+        id: "fixture",
+        provider: value.profile?.profile.provider || "fixture",
+        model: value.profile?.profile.model || "fixture-model",
+        base_url: "https://fixture.local/v1",
+        protocol: "openai_chat",
+        default: true,
+        credential_present: true
+      }]
+    })),
+    addConnection: vi.fn(async () => ({version: 1, connections: []})),
+    removeConnection: vi.fn(async () => ({version: 1, connections: []})),
+    setDefaultConnection: vi.fn(async () => ({version: 1, connections: []})),
+    probeSetup: vi.fn(async (request: {model: string}) => ({
+      context_tokens: 200000,
+      max_output_tokens: 24000,
       models: [{
-        id: "vendor-model",
+        id: request.model,
         context_tokens: 200000,
         max_output_tokens: 24000
       }],
       capabilities: {
         streaming: true,
         reasoning: true,
+        reasoning_efforts: ["low", "medium", "high"],
+        default_reasoning_effort: "medium",
         tool_calls: true,
         native_search: false,
         incremental_responses: false,

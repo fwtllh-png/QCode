@@ -7,18 +7,6 @@ import (
 	"github.com/fwtllh-png/QCode/internal/adapter/model"
 )
 
-func TestWithDefaultReasoningEffortsUsesKnownModelMetadata(t *testing.T) {
-	got := WithDefaultReasoningEfforts(
-		"deepseek-v4-flash",
-		model.Capabilities{Reasoning: true, Streaming: true, ToolCalls: true},
-	)
-	if !reflect.DeepEqual(got.ReasoningEfforts, []string{"off", "low", "high", "max"}) ||
-		got.DefaultReasoningEffort != "high" ||
-		!got.ThinkingToggle {
-		t.Fatalf("capabilities = %+v", got)
-	}
-}
-
 func TestWithDefaultReasoningEffortsUsesConventionalFallback(t *testing.T) {
 	got := WithDefaultReasoningEfforts(
 		"unknown-reasoning-model",

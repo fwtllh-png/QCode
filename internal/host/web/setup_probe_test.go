@@ -3,52 +3,31 @@ package web
 import (
 	"testing"
 
-	"github.com/fwtllh-png/QCode/internal/adapter/model"
 	webhost "github.com/fwtllh-png/QCode/internal/host/runtimeapi/web"
 )
 
 func TestSetupProbeConnectionMatchesApplyBoundary(t *testing.T) {
-	for _, providerID := range []string{"openai", "deepseek", "glm"} {
-		gotID, endpoint, protocol, err := resolveSetupProbeConnection(webhost.SetupProbeRequest{
-			Provider: providerID, Model: "unknown-model",
-			BaseURL: "https://ignored.invalid", Protocol: "ignored",
-		})
-		provider, _ := model.DefaultCatalog().Provider(providerID)
-		if err != nil || gotID != providerID || endpoint != provider.Endpoint || protocol != provider.Protocol {
-			t.Fatalf("%s: id=%s endpoint=%s protocol=%s err=%v", providerID, gotID, endpoint, protocol, err)
-		}
-	}
-	for _, test := range []struct {
-		providerID string
-		modelID    string
-		wantID     string
-	}{
-		{"glm", "glm-5.3-flash", "glm"},
-		{"glm", "glm-5.3-flashx", "glm"},
-		{"deepseek", "glm-5.3-flashx", "deepseek"},
-	} {
-		gotID, endpoint, protocol, err := resolveSetupProbeConnection(webhost.SetupProbeRequest{
-			Provider: test.providerID, Model: test.modelID,
-			BaseURL: "https://ignored.invalid", Protocol: "ignored",
-		})
-		provider, _ := model.DefaultCatalog().Provider(test.wantID)
-		if err != nil || gotID != test.wantID || endpoint != provider.Endpoint || protocol != provider.Protocol {
-			t.Fatalf("%s/%s: id=%s endpoint=%s protocol=%s err=%v",
-				test.providerID, test.modelID, gotID, endpoint, protocol, err)
-		}
-	}
 	for _, protocol := range []string{"openai_chat", "openai_responses"} {
-		_, endpoint, got, err := resolveSetupProbeConnection(webhost.SetupProbeRequest{
-			Provider: customProviderID, BaseURL: "https://models.example.com/v1/", Protocol: protocol,
+		gotID, endpoint, got, err := resolveSetupProbeConnection(webhost.SetupProbeRequest{
+			BaseURL: "https://models.example.com/v1/", Protocol: protocol,
 		})
-		if err != nil || endpoint != "https://models.example.com/v1" || string(got) != protocol {
-			t.Fatalf("endpoint=%s protocol=%s err=%v", endpoint, got, err)
+		if err != nil ||
+			gotID != connectionID("https://models.example.com/v1") ||
+			endpoint != "https://models.example.com/v1" || string(got) != protocol {
+			t.Fatalf("id=%s endpoint=%s protocol=%s err=%v", gotID, endpoint, got, err)
 		}
+	}
+	if _, endpoint, protocol, err := resolveSetupProbeConnection(webhost.SetupProbeRequest{
+		BaseURL: "https://models.example.com/v1",
+	}); err != nil ||
+		endpoint != "https://models.example.com/v1" ||
+		protocol != "openai_chat" {
+		t.Fatalf("default protocol: endpoint=%s protocol=%s err=%v", endpoint, protocol, err)
 	}
 	for _, request := range []webhost.SetupProbeRequest{
-		{Provider: "unknown"},
-		{Provider: customProviderID, BaseURL: "file:///tmp"},
-		{Provider: customProviderID, BaseURL: "https://example.com", Protocol: "unknown"},
+		{},
+		{BaseURL: "file:///tmp"},
+		{BaseURL: "https://example.com", Protocol: "unknown"},
 	} {
 		if _, _, _, err := resolveSetupProbeConnection(request); err == nil {
 			t.Fatalf("accepted invalid connection: %+v", request)

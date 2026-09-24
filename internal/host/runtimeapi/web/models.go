@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"sort"
 	"strings"
@@ -38,7 +39,17 @@ func (s *Server) modelProbe(
 	if err := s.decodeRequest(r, &request); err != nil {
 		return nil, err
 	}
-	return s.modelControl.ProbeModel(r.Context(), request.Model)
+	result, err := s.modelControl.ProbeModel(r.Context(), request.Model)
+	if err != nil {
+		var problem *protocol.Problem
+		if errors.As(err, &problem) {
+			return nil, err
+		}
+		// 探测失败（网络、凭证、端点响应）面向用户展示真实原因，
+		// 不落成不可读的 internal Web API error。
+		return nil, protocol.NewProblem(protocol.CodeUnavailable, err.Error(), true, err)
+	}
+	return result, nil
 }
 
 type ModelTestResult struct {

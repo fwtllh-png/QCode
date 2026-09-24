@@ -85,6 +85,8 @@ const (
 	fieldProvider                   = "execution.provider"
 	fieldModel                      = "execution.model"
 	fieldProtocol                   = "execution.protocol"
+	fieldBaseURL                    = "execution.base_url"
+	fieldModelMetadata              = "execution.model_metadata"
 	fieldMode                       = "execution.mode"
 	fieldWorkspace                  = "execution.workspace"
 	fieldTools                      = "execution.tools"
@@ -243,6 +245,8 @@ func defaultProvenance() map[string]Source {
 		fieldProvider:                   SourceDefault,
 		fieldModel:                      SourceDefault,
 		fieldProtocol:                   SourceDefault,
+		fieldBaseURL:                    SourceDefault,
+		fieldModelMetadata:              SourceDefault,
 		fieldMode:                       SourceDefault,
 		fieldWorkspace:                  SourceDefault,
 		fieldTools:                      SourceDefault,

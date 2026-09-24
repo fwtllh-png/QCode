@@ -1,3 +1,14 @@
+@font-face {
+  font-family: "Inter";
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+  src: url("/fonts/Inter-latin-400-700.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA,
+    U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193,
+    U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
 :root {
   color-scheme: light;
   --ch-canvas: #f7f9fc;
@@ -9,21 +20,21 @@
   --ch-border-strong: #bdc8d5;
   --ch-text: #202833;
   --ch-text-secondary: #526172;
-  --ch-text-muted: #59677a;
-  --ch-text-caption: #606e80;
-  --ch-accent: #dce8f6;
-  --ch-accent-hover: #cbddef;
-  --ch-accent-soft: #e7eef8;
-  --ch-accent-strong: #315b83;
-  --ch-business: #3e658a;
-  --ch-business-soft: #e7eef8;
+  --ch-text-muted: #4d5a6e;
+  --ch-text-caption: #56637a;
+  --ch-accent: #dbe7fb;
+  --ch-accent-hover: #c8d9f8;
+  --ch-accent-soft: #e8effd;
+  --ch-accent-strong: #1e56c8;
+  --ch-business: #2f68c2;
+  --ch-business-soft: #e8effd;
   --ch-reasoning: #75608c;
   --ch-tool: #586c80;
   --ch-context-stable: #aeb6c2;
   --ch-context-tools: #a99ac1;
   --ch-context-messages: #83a6cb;
   --ch-context-framing: #caa46d;
-  --ch-on-accent: #264e75;
+  --ch-on-accent: #17418f;
   --ch-danger: #b63f43;
   --ch-danger-soft: #fbedee;
   --ch-warning: #8b6127;
@@ -31,12 +42,20 @@
   --ch-success: #2f7158;
   --ch-success-soft: #eaf4ee;
   --ch-plan-complete: var(--ch-success);
-  --ch-focus: #486f97;
+  --ch-focus: #2f68c2;
   --ch-code: #f4f6f9;
-  --ch-shadow: 0 2px 6px rgb(29 44 66 / 6%);
+  --ch-font-sans: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI",
+    "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Helvetica Neue",
+    Helvetica, Arial, sans-serif;
+  /* 深度阶梯：1=卡片与工具面板，2=浮层与 Composer，3=模态遮罩层。
+     逐级更强的环境光遮蔽 + 投影，替代纯发丝边框做层级。 */
+  --ch-elevation-1: 0 1px 2px rgb(29 44 66 / 5%), 0 2px 8px rgb(29 44 66 / 5%);
+  --ch-elevation-2: 0 2px 6px rgb(29 44 66 / 6%), 0 6px 20px rgb(29 44 66 / 10%);
+  --ch-elevation-3: 0 4px 12px rgb(29 44 66 / 8%), 0 16px 44px rgb(29 44 66 / 16%);
+  --ch-shadow: var(--ch-elevation-1);
   --ch-modal-mask: rgb(25 35 50 / 24%);
-  --ch-modal-shadow: 0 12px 40px rgb(29 44 66 / 16%);
-  --ch-composer-shadow: 0 3px 14px rgb(29 44 66 / 7%);
+  --ch-modal-shadow: var(--ch-elevation-3);
+  --ch-composer-shadow: var(--ch-elevation-2);
   --ch-state-hover: color-mix(in srgb, var(--ch-business) 7%, transparent);
   --ch-state-pressed: color-mix(in srgb, var(--ch-business) 12%, transparent);
   --ch-font-mono: "SFMono-Regular", Menlo, Monaco, Consolas, "Liberation Mono", monospace;
@@ -92,27 +111,30 @@
   --ch-border-strong: #566273;
   --ch-text: #e3e8ef;
   --ch-text-secondary: #bac6d4;
-  --ch-text-muted: #a4b1c1;
-  --ch-text-caption: #94a3b5;
-  --ch-accent: #314b64;
-  --ch-accent-hover: #3e5c79;
-  --ch-accent-soft: #293e54;
-  --ch-accent-strong: #b7d4f1;
-  --ch-business: #b0ccea;
-  --ch-business-soft: #293e54;
+  --ch-text-muted: #aebace;
+  --ch-text-caption: #a2b1c5;
+  --ch-accent: #2c4a7c;
+  --ch-accent-hover: #3a5d99;
+  --ch-accent-soft: #243a5e;
+  --ch-accent-strong: #a9c6f8;
+  --ch-business: #a3c3f5;
+  --ch-business-soft: #243a5e;
   --ch-reasoning: #c6b3dc;
   --ch-tool: #b3c7d8;
-  --ch-on-accent: #dbeaf9;
+  --ch-on-accent: #d6e4fb;
   --ch-danger: #f0a1a6;
   --ch-danger-soft: #422c32;
   --ch-warning: #e6c28c;
   --ch-warning-soft: #3b3326;
   --ch-success: #9acfb3;
   --ch-success-soft: #253d33;
-  --ch-focus: #b0ccea;
+  --ch-focus: #a3c3f5;
   --ch-code: #222830;
-  --ch-shadow: 0 2px 8px rgb(0 0 0 / 16%);
+  --ch-elevation-1: 0 1px 2px rgb(0 0 0 / 12%), 0 2px 8px rgb(0 0 0 / 12%);
+  --ch-elevation-2: 0 2px 6px rgb(0 0 0 / 14%), 0 6px 20px rgb(0 0 0 / 20%);
+  --ch-elevation-3: 0 4px 12px rgb(0 0 0 / 16%), 0 16px 44px rgb(0 0 0 / 30%);
+  --ch-shadow: var(--ch-elevation-1);
   --ch-modal-mask: rgb(0 0 0 / 48%);
-  --ch-modal-shadow: 0 16px 44px rgb(0 0 0 / 28%);
-  --ch-composer-shadow: 0 3px 14px rgb(0 0 0 / 18%);
+  --ch-modal-shadow: var(--ch-elevation-3);
+  --ch-composer-shadow: var(--ch-elevation-2);
 }

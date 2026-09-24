@@ -21,8 +21,9 @@ func configureProviderClient(
 ) *httpclient.Client {
 	client := httpclient.New()
 	if control != nil {
+		controls := map[model.CredentialRef]*credential.Control{controlled: control}
 		client.Credentials = liveCredentialResolver{
-			control: control, controlled: controlled,
+			controls: controls,
 			fallback: httpclient.DefaultCredentials(),
 		}
 	}
@@ -47,18 +48,19 @@ func configureProviderClient(
 	return client
 }
 
+// liveCredentialResolver 按“引用 → Control”映射热解析多连接凭证：受管
+// 引用走各自命名空间的 Control（支持轮换），其余引用走静态解析器。
 type liveCredentialResolver struct {
-	control    *credential.Control
-	controlled model.CredentialRef
-	fallback   httpclient.Credentials
+	controls  map[model.CredentialRef]*credential.Control
+	fallback  httpclient.Credentials
 }
 
 func (r liveCredentialResolver) Resolve(
 	ctx context.Context,
 	reference model.CredentialRef,
 ) (string, error) {
-	if reference == r.controlled {
-		current, err := r.control.Reference(ctx)
+	if control, ok := r.controls[reference]; ok {
+		current, err := control.Reference(ctx)
 		if err != nil {
 			return "", err
 		}

@@ -134,11 +134,7 @@ func deepSeekLiveRuntimeForProtocol(
 	protocol model.WireProtocol,
 ) (provider.Provider, model.ReadyRoute, *telemetry.Metrics) {
 	t.Helper()
-	bundled := model.DefaultCatalog()
-	descriptor, exists := bundled.Provider("deepseek-v4-flash")
-	if !exists {
-		t.Fatal("bundled DeepSeek V4 provider is unavailable")
-	}
+	descriptor := deepSeekLiveProvider()
 	descriptor.ID += "-" + string(protocol)
 	descriptor.Protocol = protocol
 	catalog, err := model.NewCatalog(descriptor)
@@ -200,9 +196,42 @@ func deepSeekLiveRuntimeWithRoute(
 	return runtime, route, metrics
 }
 
+// deepSeekLiveProvider 内联 DeepSeek V4 Flash 连接声明（端点、凭证引用、
+// 模型元数据），替代已删除的内置目录条目；live 运行手册见
+// docs/DEEPSEEK-LIVE.zh-CN.md。
+func deepSeekLiveProvider() model.Provider {
+	return model.Provider{
+		ID: "deepseek-v4-flash", Adapter: model.AdapterOpenAICompatible,
+		Endpoint: "https://api.deepseek.com", Protocol: model.ProtocolOpenAIChat,
+		Credential: model.CredentialRef{Kind: "keyring", Name: "deepseek/default"},
+		Provenance: model.ProvenanceBundled,
+		Models: map[string]model.Model{
+			"deepseek-v4-flash": {
+				ID: "deepseek-v4-flash", CanonicalID: "deepseek-v4-flash",
+				WireID: "deepseek-v4-flash",
+				Limits: model.Limits{
+					ContextTokens: 1_048_576, MaxOutputTokens: 384_000,
+				},
+				Capabilities: model.Capabilities{
+					Streaming: true, Reasoning: true, ToolCalls: true,
+					PromptCache: true, AutomaticPromptCache: true, ThinkingToggle: true,
+					ReasoningEfforts:       []string{"off", "low", "high", "max"},
+					DefaultReasoningEffort: "high",
+				},
+				Pricing:    model.Pricing{Provenance: model.ProvenanceBundled},
+				Provenance: model.ProvenanceBundled,
+			},
+		},
+	}
+}
+
 func bundledRoute(t *testing.T, providerID, modelID string) model.ReadyRoute {
 	t.Helper()
-	resolver, err := model.NewResolver(model.DefaultCatalog())
+	catalog, err := model.NewCatalog(deepSeekLiveProvider())
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolver, err := model.NewResolver(catalog)
 	if err != nil {
 		t.Fatal(err)
 	}

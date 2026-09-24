@@ -184,7 +184,14 @@ func TestRunContextStartsAndStopsWebHost(t *testing.T) {
 		t.Fatalf("second Workspace is not ready: %+v", catalog)
 	}
 	reconfigureBody := strings.NewReader(
-		`{"provider":"deepseek","model":"deepseek-chat","api_key":"fixture-key"}`,
+		`{"model":"deepseek-chat","api_key":"fixture-key",` +
+			`"base_url":"http://127.0.0.1:1/v1","protocol":"openai_chat",` +
+			`"model_metadata":{"canonical_id":"deepseek-chat","wire_id":"deepseek-chat",` +
+			`"context_tokens":8192,"max_output_tokens":1024,` +
+			`"capabilities":{"streaming":true,"tool_calls":true,"reasoning":false,` +
+			`"native_search":false,"vision":false,"incremental_responses":false,` +
+			`"image_input":false,"prompt_cache":false,"automatic_prompt_cache":false,` +
+			`"thinking_toggle":false}}}`,
 	)
 	reconfigureRequest, err := http.NewRequest(
 		http.MethodPost,
@@ -329,7 +336,7 @@ func TestRunContextStartsWithoutAConfigFile(t *testing.T) {
 		t.Fatalf("bootstrap = %+v", bootstrap)
 	}
 	setupBody := strings.NewReader(
-		`{"provider":"openai-compatible","model":"local-model",` +
+		`{"model":"local-model","api_key":"secret-value",` +
 			`"base_url":"http://127.0.0.1:1/v1","protocol":"openai_chat",` +
 			`"model_metadata":{"canonical_id":"local-model","wire_id":"local-model",` +
 			`"context_tokens":8192,"max_output_tokens":1024,` +

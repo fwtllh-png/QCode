@@ -6,18 +6,31 @@ import (
 	"github.com/fwtllh-png/QCode/internal/adapter/model"
 )
 
-func TestSelectedDeepSeekCapabilitiesAdvertiseNativeReasoningLevels(t *testing.T) {
-	resolver, err := model.NewResolver(model.DefaultCatalog())
-	if err != nil {
-		t.Fatal(err)
+func reasoningConnectionRoute(t *testing.T, reasoning bool) model.ReadyRoute {
+	t.Helper()
+	id := "plain-model"
+	if reasoning {
+		id = "reasoning-model"
 	}
-	route, err := resolver.Resolve(model.RouteRequest{
-		ProviderID: "deepseek-v4-flash",
-		ModelID:    "deepseek-v4-flash",
+	descriptor := testCustomModel(id)
+	if reasoning {
+		descriptor.Capabilities.Reasoning = true
+		descriptor.Capabilities.ReasoningEfforts = []string{"off", "low", "high", "max"}
+		descriptor.Capabilities.DefaultReasoningEffort = "high"
+	}
+	route, err := resolveExecRoute(execRouteOptions{
+		ProviderID: "openai-compatible:reason", ModelID: id,
+		BaseURL:  "https://models.example.com/v1",
+		Protocol: model.ProtocolOpenAIChat, Model: &descriptor,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
+	return route
+}
+
+func TestSelectedReasoningCapabilitiesAdvertiseNativeLevels(t *testing.T) {
+	route := reasoningConnectionRoute(t, true)
 	capabilities := selectedModelCapabilities(route)
 	if capabilities.DefaultReasoningEffort != "high" ||
 		len(capabilities.ReasoningEfforts) != 4 ||
@@ -28,20 +41,8 @@ func TestSelectedDeepSeekCapabilitiesAdvertiseNativeReasoningLevels(t *testing.T
 	}
 }
 
-func TestDeepSeekDefaultReasoningEffortIsAppliedWithoutChangingExplicitValues(
-	t *testing.T,
-) {
-	resolver, err := model.NewResolver(model.DefaultCatalog())
-	if err != nil {
-		t.Fatal(err)
-	}
-	route, err := resolver.Resolve(model.RouteRequest{
-		ProviderID: "deepseek-v4-flash",
-		ModelID:    "deepseek-v4-flash",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+func TestReasoningDefaultEffortIsAppliedWithoutChangingExplicitValues(t *testing.T) {
+	route := reasoningConnectionRoute(t, true)
 	if effort := effectiveReasoningEffort(route, ""); effort != "high" {
 		t.Fatalf("default reasoning effort = %q, want high", effort)
 	}
@@ -49,14 +50,8 @@ func TestDeepSeekDefaultReasoningEffortIsAppliedWithoutChangingExplicitValues(
 		t.Fatalf("explicit reasoning effort = %q, want max", effort)
 	}
 
-	openAI, err := resolver.Resolve(model.RouteRequest{
-		ProviderID: "openai",
-		ModelID:    "gpt-4.1",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if effort := effectiveReasoningEffort(openAI, ""); effort != "" {
-		t.Fatalf("OpenAI adaptive reasoning effort = %q, want empty", effort)
+	plain := reasoningConnectionRoute(t, false)
+	if effort := effectiveReasoningEffort(plain, ""); effort != "" {
+		t.Fatalf("non-reasoning model effort = %q, want empty", effort)
 	}
 }

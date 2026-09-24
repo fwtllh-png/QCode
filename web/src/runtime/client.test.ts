@@ -169,6 +169,24 @@ describe("RuntimeClient", () => {
     });
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const route = String(input);
+      const workspaces = [{
+        id: "workspace-id",
+        root: "/workspace",
+        label: "workspace",
+        ready: true,
+        removable: true,
+        session_count: emptyPrimaryWorkspace ? 0 : 1
+      }];
+      if (multipleWorkspaces) {
+        workspaces.push({
+          id: "workspace-b-id",
+          root: "/workspace-b",
+          label: "workspace-b",
+          ready: true,
+          removable: true,
+          session_count: 1
+        });
+      }
       if (route.endsWith("/bootstrap")) {
         if (setupRequired) {
           return response({
@@ -178,34 +196,7 @@ describe("RuntimeClient", () => {
             ready: false,
             draining: false,
             setup_required: true,
-            workspace_root: "/workspace",
-            setup_catalog: {
-              version: 1,
-              providers: [{
-                id: "deepseek",
-                display_name: "DeepSeek",
-                protocol: "openai_chat",
-                requires_api_key: true
-              }]
-            }
-          });
-        }
-        const workspaces = [{
-          id: "workspace-id",
-          root: "/workspace",
-          label: "workspace",
-          ready: true,
-          removable: true,
-          session_count: emptyPrimaryWorkspace ? 0 : 1
-        }];
-        if (multipleWorkspaces) {
-          workspaces.push({
-            id: "workspace-b-id",
-            root: "/workspace-b",
-            label: "workspace-b",
-            ready: true,
-            removable: true,
-            session_count: 1
+            workspace_root: "/workspace"
           });
         }
         return response({
@@ -215,15 +206,6 @@ describe("RuntimeClient", () => {
           ready: true,
           draining: false,
           workspace_root: "/workspace",
-          setup_catalog: {
-            version: 1,
-            providers: [{
-              id: "deepseek",
-              display_name: "DeepSeek",
-              protocol: "openai_chat",
-              requires_api_key: true
-            }]
-          },
           workspace: {
             version: 1,
             root_id: "workspace-id",
@@ -235,6 +217,9 @@ describe("RuntimeClient", () => {
             workspaces
           }
         });
+      }
+      if (route.endsWith("/workspace/list")) {
+        return envelope({version: 1, workspaces});
       }
       if (route.includes("/api/v1/content/")) {
         requests.push({
@@ -779,13 +764,13 @@ describe("RuntimeClient", () => {
       await client.start();
 
       expect(client.getSnapshot().phase).toBe("setup");
-      expect(client.getSnapshot().setupCatalog?.providers[0]?.id).toBe("deepseek");
       expect(FakeWebSocket.instances).toHaveLength(0);
 
       const completed = client.completeSetup({
-        provider: "deepseek",
         model: "deepseek-chat",
-        api_key: "sk-test"
+        api_key: "sk-test",
+        base_url: "https://api.deepseek.com/v1",
+        protocol: "openai_chat"
       });
       await vi.waitFor(() => {
         expect(FakeWebSocket.instances).toHaveLength(1);
@@ -801,9 +786,10 @@ describe("RuntimeClient", () => {
 
       const setup = requests.find((request) => request.route.endsWith("/setup/apply"));
       expect(setup?.body).toEqual({
-        provider: "deepseek",
         model: "deepseek-chat",
-        api_key: "sk-test"
+        api_key: "sk-test",
+        base_url: "https://api.deepseek.com/v1",
+        protocol: "openai_chat"
       });
       expect(setup?.headers.get("Idempotency-Key")).toBe("request-id");
       expect(client.getSnapshot().phase).toBe("ready");
@@ -826,7 +812,6 @@ describe("RuntimeClient", () => {
       "fixture",
       "reasoner"
     ]);
-    expect(client.getSnapshot().setupCatalog?.providers[0]?.id).toBe("deepseek");
     expect(client.getSnapshot().tools).toEqual([]);
     expect(client.getSnapshot().checkpoints).toEqual([]);
 
@@ -1364,7 +1349,6 @@ describe("RuntimeClient", () => {
       workspaceRoot: "/workspace-b",
       selectedSessionID: "session-b"
     });
-    expect(client.getSnapshot().setupCatalog?.providers[0]?.id).toBe("deepseek");
     expect(await client.loadDraft()).toBe("workspace B");
     const listedWorkspaceIDs = requests
       .filter((request) => request.route.endsWith("/session/list"))

@@ -73,11 +73,13 @@ func NewAuthorizedStdioTransport(
 	if strings.TrimSpace(name) == "" {
 		name = "stdio"
 	}
-	environment, err := platformprocess.SanitizedEnvironment(config.Env)
-	if err != nil {
+	// 只校验声明的环境条目；原始声明传给进程边界，由
+	// process.NewCommand 统一做宿主继承合并与沙盒策略覆盖。在这里
+	// 预先合成完整环境会把继承的 HOME/TMPDIR 误当成声明再次消毒。
+	if err := platformprocess.ValidateDeclaredEnvironment(config.Env); err != nil {
 		return nil, fmt.Errorf("sanitize MCP environment: %w", err)
 	}
-	lifecycle, err := runtime.Start(ctx, name, config, environment)
+	lifecycle, err := runtime.Start(ctx, name, config, config.Env)
 	if err != nil {
 		return nil, fmt.Errorf("start MCP stdio server: %w", err)
 	}

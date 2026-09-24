@@ -123,7 +123,7 @@
 }
 
 .assistantMarkdown code {
-  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-family: var(--ch-font-mono);
   font-size: 14px;
 }
 
@@ -172,8 +172,8 @@
   color: var(--ch-text-secondary);
   background: var(--ch-panel-subtle);
   border-bottom: 1px solid var(--ch-border);
-  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
-  font-size: 11px;
+  font-family: var(--ch-font-mono);
+  font-size: 12px;
 }
 
 .markdownCodeHeader button,
@@ -264,7 +264,7 @@
 
 .markdownDiagramScale {
   min-width: 46px;
-  font-size: 11px;
+  font-size: 12px;
   font-variant-numeric: tabular-nums;
 }
 
@@ -451,7 +451,7 @@
   align-items: center;
   gap: 8px;
   color: var(--ch-text-muted);
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .markdownImageCaption > span:first-child {
@@ -501,7 +501,7 @@
 
 .markdownImageConsent small {
   color: var(--ch-text-muted);
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .markdownImageFallback {
@@ -550,4 +550,68 @@
   .markdownDiagramToolbar {
     border: 1px solid CanvasText;
   }
+}
+
+/* 代码语法高亮：颜色取自品牌色板（business/accent-strong、success、
+   reasoning、warning、danger），与整体视觉一致；暗色主题同步覆盖。 */
+.markdownCodeBlock pre .token.keyword,
+.markdownCodeBlock pre .token.tag,
+.markdownCodeBlock pre .token.rule {
+  color: var(--ch-accent-strong);
+}
+
+.markdownCodeBlock pre .token.string,
+.markdownCodeBlock pre .token.char,
+.markdownCodeBlock pre .token.attr-value,
+.markdownCodeBlock pre .token.boolean {
+  color: var(--ch-success);
+}
+
+.markdownCodeBlock pre .token.number,
+.markdownCodeBlock pre .token.constant {
+  color: var(--ch-reasoning);
+}
+
+.markdownCodeBlock pre .token.comment,
+.markdownCodeBlock pre .token.prolog,
+.markdownCodeBlock pre .token.doctype,
+.markdownCodeBlock pre .token.cdata {
+  color: var(--ch-text-muted);
+  font-style: italic;
+}
+
+.markdownCodeBlock pre .token.function,
+.markdownCodeBlock pre .token.class-name,
+.markdownCodeBlock pre .token.builtin {
+  color: var(--ch-warning);
+}
+
+.markdownCodeBlock pre .token.operator,
+.markdownCodeBlock pre .token.punctuation,
+.markdownCodeBlock pre .token.property {
+  color: var(--ch-text-secondary);
+}
+
+.markdownCodeBlock pre .token.attr-name,
+.markdownCodeBlock pre .token.selector {
+  color: var(--ch-tool);
+}
+
+.markdownCodeBlock pre .token.regex,
+.markdownCodeBlock pre .token.important {
+  color: var(--ch-danger);
+}
+
+.markdownCodeBlock pre .token.inserted {
+  color: var(--ch-success);
+}
+
+.markdownCodeBlock pre .token.deleted {
+  color: var(--ch-danger);
+}
+
+:root[data-theme="dark"] .markdownCodeBlock pre .token.function,
+:root[data-theme="dark"] .markdownCodeBlock pre .token.class-name,
+:root[data-theme="dark"] .markdownCodeBlock pre .token.builtin {
+  color: var(--ch-warning);
 }

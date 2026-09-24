@@ -1,8 +1,6 @@
 package model
 
 import (
-	_ "embed"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
@@ -11,9 +9,6 @@ import (
 	"strings"
 	"sync"
 )
-
-//go:embed catalog.v1.json
-var bundledCatalog []byte
 
 type AdapterID string
 
@@ -130,24 +125,6 @@ func NewCatalog(providers ...Provider) (*Catalog, error) {
 		}
 	}
 	return catalog, nil
-}
-
-func DefaultCatalog() *Catalog {
-	var document struct {
-		Version   int        `json:"version"`
-		Providers []Provider `json:"providers"`
-	}
-	if err := json.Unmarshal(bundledCatalog, &document); err != nil {
-		panic(fmt.Errorf("decode bundled model catalog: %w", err))
-	}
-	if document.Version != 1 {
-		panic(fmt.Errorf("unsupported bundled model catalog version %d", document.Version))
-	}
-	catalog, err := NewCatalog(document.Providers...)
-	if err != nil {
-		panic(err)
-	}
-	return catalog
 }
 
 func (c *Catalog) AddProvider(provider Provider) error {

@@ -17,6 +17,7 @@ WEB_BUILD_TAG := webbundle
 
 .PHONY: start install uninstall fmt verify test test-hermetic test-platform-capability reliability-gate test-integration \
 	test-release release-baseline-check integration-gate release-gate race build cross-build smoke \
+	desktop-app package-app \
 	capacity-policy-check \
 	security-side-effect-check \
 	docs-check script-test web-experience-check \
@@ -217,6 +218,16 @@ uninstall:
 	@rm -f '$(INSTALL_BINARY)'
 	@printf 'Removed QCode: %s\n' '$(INSTALL_BINARY)'
 
+DESKTOP_APP ?= dist/QCode.app
+
+desktop-app: build
+	VERSION='$(VERSION)' COMMIT='$(COMMIT)' BUILD_DATE='$(BUILD_DATE)' \
+		./desktop/build-app.sh --binary '$(BINARY)' --output '$(DESKTOP_APP)'
+	@printf 'Built QCode desktop app: %s\n' '$(DESKTOP_APP)'
+
+package-app:
+	VERSION='$(VERSION)' RELEASE_STAGE='$(RELEASE_STAGE)' ./scripts/package-desktop.sh
+
 web-install: $(WEB_INSTALL_STAMP)
 
 $(WEB_INSTALL_STAMP): web/package.json web/package-lock.json
@@ -306,7 +317,7 @@ smoke: build
 	./$(BINARY) --help >/dev/null
 	./$(BINARY) --version
 
-docs-check: web-experience-check benchmark-v2-check catalog-check
+docs-check: web-experience-check benchmark-v2-check
 	./scripts/check-docs.sh
 	$(MAKE) script-test
 
@@ -395,13 +406,6 @@ bench:
 benchmark-v2-check:
 	$(GO) test -count=1 ./scripts/benchmarkv2
 	$(GO) run ./scripts/benchmarkv2 -root .
-
-# catalog-check keeps the hand-maintained bundled model catalog honest:
-# pricing, limit relationships, provenance vocabulary, and cross-model
-# consistency, on top of the runtime per-provider validation.
-catalog-check:
-	$(GO) test -count=1 ./scripts/catalogcheck
-	$(GO) run ./scripts/catalogcheck -root .
 
 benchmark-v2: benchmark-v2-check bench
 	$(GO) test -count=1 -run 'Recovery' ./internal/persist/workspacejournal

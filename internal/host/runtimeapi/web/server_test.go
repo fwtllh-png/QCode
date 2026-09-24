@@ -99,13 +99,6 @@ func TestSetupIsCapabilityFencedBeforeRuntimeActivation(t *testing.T) {
 		Setup: &webhost.SetupOptions{
 			WorkspaceRoot:     "/workspace",
 			WorkspaceIdentity: identity,
-			Catalog: webhost.SetupCatalog{
-				Version: webhost.SetupCatalogVersion,
-				Providers: []webhost.SetupProvider{{
-					ID: "deepseek", DisplayName: "DeepSeek",
-					Protocol: "openai_chat", RequiresAPIKey: true,
-				}},
-			},
 			Apply: func(_ context.Context, request webhost.SetupRequest) error {
 				applied = request
 				return nil
@@ -131,7 +124,7 @@ func TestSetupIsCapabilityFencedBeforeRuntimeActivation(t *testing.T) {
 	server.Handler().ServeHTTP(unauthorized, httptest.NewRequest(
 		http.MethodPost,
 		"http://127.0.0.1:43210/api/v1/setup/apply",
-		strings.NewReader(`{"provider":"deepseek","model":"deepseek-chat"}`),
+		strings.NewReader(`{"model":"deepseek-chat","base_url":"https://api.deepseek.com/v1"}`),
 	))
 	if unauthorized.Code != http.StatusUnauthorized {
 		t.Fatalf("unauthorized setup status = %d", unauthorized.Code)
@@ -141,7 +134,7 @@ func TestSetupIsCapabilityFencedBeforeRuntimeActivation(t *testing.T) {
 		http.MethodPost,
 		"http://127.0.0.1:43210/api/v1/setup/apply",
 		strings.NewReader(
-			`{"provider":"deepseek","model":"deepseek-chat","api_key":"secret-value"}`,
+			`{"model":"deepseek-chat","api_key":"secret-value","base_url":"https://api.deepseek.com/v1"}`,
 		),
 	)
 	request.Header.Set("Authorization", "Bearer setup-token")
@@ -152,7 +145,7 @@ func TestSetupIsCapabilityFencedBeforeRuntimeActivation(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("setup status = %d body=%s", response.Code, response.Body.String())
 	}
-	if applied.APIKey != "secret-value" || applied.Provider != "deepseek" {
+	if applied.APIKey != "secret-value" || applied.Model != "deepseek-chat" {
 		t.Fatalf("applied setup = %+v", applied)
 	}
 	if strings.Contains(response.Body.String(), "secret-value") {

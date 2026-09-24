@@ -119,7 +119,7 @@ func deepSeekEngineLiveRuntime(
 	t *testing.T,
 ) (provider.Provider, model.ReadyRoute) {
 	t.Helper()
-	resolver, err := model.NewResolver(model.DefaultCatalog())
+	resolver, err := model.NewResolver(testCatalog(t))
 	if err != nil {
 		t.Fatal(err)
 	}

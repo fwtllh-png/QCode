@@ -20,8 +20,9 @@
 2. [快速开始](./getting-started.md)
 3. [配置说明](./configuration.md)
 4. [Web 使用与工作流](./usage.md)
-5. [安全模型](./security.md)
-6. [排障指南](./troubleshooting.md)
+5. [桌面应用](./desktop.md)
+6. [安全模型](./security.md)
+7. [排障指南](./troubleshooting.md)
 
 ### 我要使用 Web 工作区
 

@@ -118,6 +118,7 @@
   flex: 1;
   padding: 0 24px 28px;
   overflow-y: auto;
+  overflow-x: hidden;
 }
 
 .settingsApplyBar {
@@ -149,7 +150,7 @@
   align-items: center;
   gap: 5px;
   color: var(--ch-accent-strong);
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .settingsApplyBar > small[data-tone="warning"] {
@@ -229,9 +230,22 @@
   display: flex;
   min-height: 74px;
   align-items: center;
-  gap: 24px;
+  gap: 12px 24px;
   padding: 15px 0;
   border-bottom: 1px solid var(--ch-border);
+  max-width: 100%;
+  /* 窄容器时标题与操作组换行，避免行固有宽度撑破区块。 */
+  flex-wrap: wrap;
+}
+
+/* 标题列占满主行，操作组（状态 + 按钮们）同行展示、放不下时整组换行。 */
+.settingsRow > span:first-child {
+  flex: 1 1 260px;
+}
+
+.settingsRow > :not(:first-child) {
+  flex: 0 1 auto;
+  max-width: 100%;
 }
 
 .settingsRow > span:first-child {
@@ -370,7 +384,7 @@
   align-items: center;
   gap: 6px;
   color: var(--ch-text-muted);
-  font-size: 11px;
+  font-size: 12px;
   text-transform: capitalize;
 }
 
@@ -406,8 +420,8 @@
   background: var(--ch-code);
   border: 1px solid var(--ch-border);
   border-radius: var(--ch-radius-control);
-  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
-  font-size: 11px;
+  font-family: var(--ch-font-mono);
+  font-size: 12px;
   line-height: 18px;
   white-space: pre-wrap;
 }
@@ -422,22 +436,6 @@
 .settingsFacts > div {
   display: grid;
   gap: 2px;
-}
-
-.settingsFacts > .detectedModelLimits {
-  grid-column: 1 / -1;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
-  color: var(--ch-text-secondary);
-  font-size: 12px;
-  font-variant-numeric: tabular-nums;
-}
-
-.detectedModelLimits > span {
-  padding: 8px 10px;
-  background: var(--ch-panel-subtle);
-  border: 1px solid var(--ch-border);
-  border-radius: var(--ch-radius);
 }
 
 .settingsFacts dt,
@@ -472,7 +470,7 @@
   color: var(--ch-text-secondary);
   background: var(--ch-panel-subtle);
   border-radius: var(--ch-radius);
-  font-size: 11px;
+  font-size: 12px;
   line-height: 16px;
 }
 
@@ -574,7 +572,7 @@
 
 .settingsCatalogHeading span {
   color: var(--ch-text-muted);
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .settingsCatalog {
@@ -620,7 +618,7 @@
 
 .settingsCatalogRow small {
   color: var(--ch-text-muted);
-  font-size: 11px;
+  font-size: 12px;
   line-height: 15px;
 }
 
@@ -655,7 +653,7 @@
 .settingsCatalogDetails summary {
   color: var(--ch-text-muted);
   cursor: pointer;
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .settingsCatalogDetails dl {
@@ -676,7 +674,7 @@
   margin: 0;
   overflow-wrap: anywhere;
   color: var(--ch-text-muted);
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .settingsCatalogDetails dd {
@@ -693,7 +691,7 @@
   flex-wrap: wrap;
   gap: 4px 10px;
   color: var(--ch-text-muted);
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .settingsExtensionDetail {
@@ -724,7 +722,7 @@
   min-width: 0;
   gap: 5px;
   color: var(--ch-text-muted);
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .presetFields label:last-child {
@@ -757,12 +755,12 @@
   flex-wrap: wrap;
   gap: 8px;
   color: var(--ch-text-muted);
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .presetScope strong {
   color: var(--ch-text);
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .presetScope small {
@@ -815,7 +813,7 @@
 .settingsActivity b,
 .settingsActivity small {
   color: var(--ch-text-muted);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 500;
 }
 
@@ -850,7 +848,7 @@
   color: var(--ch-text-secondary);
   background: transparent;
   border-radius: var(--ch-radius);
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .checkpointList button:hover:not(:disabled) {
@@ -865,19 +863,28 @@
   display: grid;
   padding: 24px;
   place-items: center;
-  background: var(--ch-modal-mask);
+  /* 嵌套弹窗不叠加第二层遮罩：宿主设置弹窗已压暗背景，双层 mask 在
+     WKWebView 的透明度过渡期间会竞争重绘，产生明暗跳变。 */
+  background: transparent;
+  /* 创建即提升为独立合成层：WebKit 为新插入的 fixed/absolute 图层
+     首帧定位时可能短暂停留在过期坐标，表现为弹框位置跳动。 */
+  transform: translateZ(0);
 }
 
 .modelEditorDialog {
   display: flex;
   width: min(560px, 100%);
-  max-height: 100%;
+  /* 固定高度的向导框架：垂直居中位置由高度决定，高度恒定则盒子
+     在任何内容/滚动条/字体变化下都不可能移动（跳动）。内容超出时
+     由 .modelEditorBody 内部滚动。 */
+  height: min(440px, 100%);
   flex-direction: column;
   overflow: hidden;
   background: var(--ch-panel-raised);
   border: 1px solid var(--ch-border-strong);
   border-radius: var(--ch-radius-modal);
   box-shadow: var(--ch-modal-shadow);
+  transform: translateZ(0);
 }
 
 .modelEditorDialog > header,
@@ -916,9 +923,12 @@
 
 .modelEditorBody {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 14px;
   padding: 18px;
   overflow-y: auto;
+  /* 滚动条出现/消失不改变内容宽度，避免文本回流引起的布局抖动。 */
+  scrollbar-gutter: stable;
 }
 
 @media (max-width: 760px) {
@@ -988,4 +998,47 @@
   .presetFields label:last-child {
     grid-column: auto;
   }
+}
+
+/* 嵌套弹窗（模型向导等）在 WKWebView 中进场即时呈现：
+   closed 态的 opacity/scale/translate 过渡会让面板先以缩小偏移态出现
+   再弹到正位（且阴影参与透明度动画触发合成层重栅格化，表现为明暗
+   跳变）。宿主弹窗已提供模态语境。退出（data-exiting）仍走淡出。 */
+.uiPresence:not([data-exiting]) > .modelEditorOverlay {
+  transition: none;
+  opacity: 1;
+  translate: none;
+}
+
+.uiPresence:not([data-exiting]) > .modelEditorOverlay > .modelEditorDialog {
+  transition: none;
+  opacity: 1;
+  translate: none;
+  scale: none;
+}
+
+/* 嵌套 grid/flex 的默认 min-width:auto 会把最深层不可断内容（长 URL、
+   元数据栅格）的固有宽度逐层上传，把 720px 的区块撑到更宽。统一允许
+   收缩；文本本身仍可正常换行。 */
+.settingsSection :where(.settingsRows, .settingsRows > *, .settingsBlock > *) {
+  min-width: 0;
+}
+
+.settingsSection :where(.settingsRow, .settingsButtonRow, .settingsFacts,
+  .credentialInput, .selectField, .settingsTags) {
+  max-width: 100%;
+}
+
+/* 元数据来源 JSON 是整段不可断的等宽文本，固有宽度会把区块撑破；
+   允许任意位置断行并横向滚动兜底。 */
+.settingsMetadataProvenance {
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.settingsMetadataProvenance code {
+  display: inline-block;
+  max-width: 100%;
+  overflow-wrap: anywhere;
 }

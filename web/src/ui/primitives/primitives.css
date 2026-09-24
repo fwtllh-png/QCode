@@ -165,3 +165,69 @@
   transition: none !important;
   scroll-behavior: auto !important;
 }
+
+.chSwitch {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+}
+
+.chSwitch:disabled { cursor: default; opacity: .55; }
+
+.chSwitchTrack {
+  position: relative;
+  display: inline-block;
+  width: 34px;
+  height: 20px;
+  flex: 0 0 auto;
+  border-radius: 10px;
+  background: var(--ch-border-strong);
+  transition:
+    background-color var(--ch-motion-feedback) var(--ch-ease-in-out),
+    box-shadow var(--ch-motion-feedback) var(--ch-ease-in-out);
+}
+
+.chSwitchThumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--ch-panel);
+  box-shadow: var(--ch-elevation-1);
+  transition: transform var(--ch-motion-feedback) var(--ch-ease-in-out);
+}
+
+.chSwitch[data-on] .chSwitchTrack {
+  background: var(--ch-business);
+}
+
+.chSwitch[data-on] .chSwitchThumb {
+  transform: translateX(14px);
+}
+
+.chSwitch:focus-visible {
+  outline: 2px solid var(--ch-focus);
+  outline-offset: 2px;
+  border-radius: var(--ch-radius);
+}
+
+
+/* instantEnter 宿主：进场首帧即终态，避免父子两层动画竞争。 */
+.uiPresence[data-instant-enter]:not([data-exiting]) {
+  transition: none;
+}
+
+.uiPresence[data-instant-enter]:not([data-exiting]) > [data-motion-surface],
+.uiPresence[data-instant-enter]:not([data-exiting]) > [data-motion-backdrop],
+.uiPresence[data-instant-enter]:not([data-exiting]) > [data-motion-backdrop] > [data-motion-surface] {
+  opacity: 1;
+  translate: none;
+  scale: none;
+  transition: none;
+}

@@ -47,7 +47,7 @@
   padding-left: 12px;
   border-left: 1px solid var(--ch-border);
   color: var(--ch-text-muted);
-  font-size: 11px;
+  font-size: 12px;
   line-height: 22px;
   white-space: nowrap;
 }
@@ -69,7 +69,7 @@
   color: var(--ch-text-muted);
   background: transparent;
   border-radius: 3px;
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .trajectoryModes > button:hover,
@@ -106,7 +106,7 @@
   background: transparent;
   border: 0;
   outline: 0;
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .trajectoryTimeline {
@@ -123,7 +123,7 @@
   position: relative;
   color: var(--ch-text-muted);
   border-right: 1px solid var(--ch-border);
-  font-size: 9px;
+  font-size: 10px;
 }
 
 .timelineLabels span {
@@ -217,7 +217,7 @@
   top: 50%;
   left: 50%;
   color: var(--ch-text-muted);
-  font-size: 11px;
+  font-size: 12px;
   transform: translate(-50%, -50%);
 }
 
@@ -231,7 +231,7 @@
   color: var(--ch-text-muted);
   background: var(--ch-panel);
   border-bottom: 1px solid var(--ch-border);
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .trajectorySplit {
@@ -245,8 +245,8 @@
   min-width: 280px;
   flex: 1;
   overflow: auto;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  font-size: 11px;
+  font-family: var(--ch-font-mono);
+  font-size: 12px;
 }
 
 .ledgerHeader {
@@ -302,7 +302,7 @@
   justify-content: flex-end;
   gap: 5px;
   overflow: hidden;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
   text-align: right;
   text-overflow: ellipsis;
@@ -312,7 +312,7 @@
 .ledgerKind > b {
   min-width: 20px;
   color: var(--ch-text-caption);
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 500;
 }
 
@@ -408,7 +408,7 @@
 .recordInspector > header small {
   max-width: 300px;
   color: var(--ch-text-muted);
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 400;
 }
 
@@ -453,7 +453,7 @@
   padding: 0 0 9px;
   color: var(--ch-text-muted);
   background: transparent;
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .inspectorTabs button[aria-selected="true"] {
@@ -493,7 +493,7 @@
   min-width: 0;
   margin: 0;
   overflow-wrap: anywhere;
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .inspectorFacts dt {
@@ -502,7 +502,7 @@
 
 .inspectorFacts dd {
   color: var(--ch-text-secondary);
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-family: var(--ch-font-mono);
 }
 
 .inspectorFacts dd[data-failed] {
@@ -515,7 +515,7 @@
 
 .inspectorPreview > span {
   color: var(--ch-text-muted);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
   text-transform: uppercase;
 }
@@ -523,7 +523,7 @@
 .inspectorPreview p {
   margin: 6px 0 0;
   color: var(--ch-text-secondary);
-  font-size: 11px;
+  font-size: 12px;
   line-height: 18px;
   overflow-wrap: anywhere;
 }
@@ -545,7 +545,7 @@
   color: var(--ch-text-muted);
   background: var(--ch-code);
   border-radius: var(--ch-radius);
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .inspectorCode > button:hover {
@@ -562,7 +562,7 @@
   background: var(--ch-code);
   border: 1px solid var(--ch-border);
   border-radius: var(--ch-radius);
-  font-size: 11px;
+  font-size: 12px;
   line-height: 17px;
   white-space: pre-wrap;
   overflow-wrap: anywhere;

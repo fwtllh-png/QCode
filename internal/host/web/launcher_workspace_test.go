@@ -131,7 +131,7 @@ func TestSupervisorSetupWithoutWorkspacePersistsConnection(t *testing.T) {
 	assertNoWorkspaceBootstrap(t, url, false)
 	token := fetchSupervisorToken(t, url)
 	request, err := http.NewRequest(http.MethodPost, url+"api/v1/setup/apply", strings.NewReader(
-		`{"provider":"openai-compatible","model":"local-model",`+
+		`{"model":"local-model","api_key":"secret-value",`+
 			`"base_url":"http://127.0.0.1:1/v1","protocol":"openai_chat",`+
 			`"model_metadata":{"canonical_id":"local-model","wire_id":"local-model",`+
 			`"context_tokens":8192,"max_output_tokens":1024,`+
@@ -164,4 +164,116 @@ func TestSupervisorSetupWithoutWorkspacePersistsConnection(t *testing.T) {
 	stop()
 	url, _ = startWorkspaceSupervisor(t, args, "QCode Runtime Ready: ")
 	assertNoWorkspaceBootstrap(t, url, true)
+}
+
+// TestAddConnectionKeepsDefaultCredentialOwnership pins the credential
+// ownership rule: staging a key for a new connection must update only that
+// connection's reference. The default connection keeps its own credential —
+// the bug this guards against sent the new connection's key with every
+// request of the default connection's models (provider HTTP 401).
+func TestAddConnectionKeepsDefaultCredentialOwnership(t *testing.T) {
+	workspace := t.TempDir()
+	dataDir := t.TempDir()
+	args := []string{
+		"--workspace", workspace, "--data-dir", dataDir,
+		"--port", "0", "--no-open",
+	}
+	url, stop := startWorkspaceSupervisor(t, args, "QCode Setup Ready: ")
+	token := fetchSupervisorToken(t, url)
+	apply := func(idempotencyKey, model, baseURL string) {
+		request, err := http.NewRequest(http.MethodPost, url+"api/v1/setup/apply",
+			strings.NewReader(`{"model":"`+model+`","api_key":"sk-`+idempotencyKey+`",`+
+				`"base_url":"`+baseURL+`","protocol":"openai_chat",`+
+				`"model_metadata":{"canonical_id":"`+model+`","wire_id":"`+model+`",`+
+				`"context_tokens":8192,"max_output_tokens":1024,`+
+				`"capabilities":{"streaming":true,"tool_calls":true,"reasoning":false,`+
+				`"native_search":false,"vision":false,"incremental_responses":false,`+
+				`"image_input":false,"prompt_cache":false,"automatic_prompt_cache":false,`+
+				`"thinking_toggle":false}}}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		request.Header.Set("Authorization", "Bearer "+token)
+		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set("Idempotency-Key", idempotencyKey)
+		response, err := http.DefaultClient.Do(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = response.Body.Close()
+		if response.StatusCode != http.StatusOK {
+			t.Fatalf("%s status=%d", idempotencyKey, response.StatusCode)
+		}
+	}
+	apply("first-connection", "model-a", "http://127.0.0.1:1/v1")
+	waitSupervisorReady(t, url)
+	add := func(idempotencyKey, model, baseURL string) {
+		request, err := http.NewRequest(http.MethodPost, url+"api/v1/connection/add",
+			strings.NewReader(`{"model":"`+model+`","api_key":"sk-`+idempotencyKey+`",`+
+				`"base_url":"`+baseURL+`","protocol":"openai_chat",`+
+				`"model_metadata":{"canonical_id":"`+model+`","wire_id":"`+model+`",`+
+				`"context_tokens":8192,"max_output_tokens":1024,`+
+				`"capabilities":{"streaming":true,"tool_calls":true,"reasoning":false,`+
+				`"native_search":false,"vision":false,"incremental_responses":false,`+
+				`"image_input":false,"prompt_cache":false,"automatic_prompt_cache":false,`+
+				`"thinking_toggle":false}}}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		request.Header.Set("Authorization", "Bearer "+token)
+		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set("Idempotency-Key", idempotencyKey)
+		response, err := http.DefaultClient.Do(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = response.Body.Close()
+		if response.StatusCode != http.StatusOK {
+			t.Fatalf("%s status=%d", idempotencyKey, response.StatusCode)
+		}
+	}
+	add("second-connection", "model-b", "http://127.0.0.1:2/v1")
+
+	selection, found, err := loadWebSetupSelection(dataDir, "")
+	if err != nil || !found {
+		t.Fatalf("selection found=%v err=%v", found, err)
+	}
+	if len(selection.Connections) != 2 {
+		t.Fatalf("connections = %+v", selection.Connections)
+	}
+	if selection.DefaultConnection != selection.Connections[0].ID {
+		t.Fatalf("default = %+v", selection)
+	}
+	first := selection.Connections[0]
+	second := selection.Connections[1]
+	if first.Model != "model-a" || second.Model != "model-b" {
+		t.Fatalf("connections = %+v", selection.Connections)
+	}
+	if first.Credential == nil || second.Credential == nil {
+		t.Fatalf("credentials = %+v / %+v", first.Credential, second.Credential)
+	}
+	if *first.Credential == *second.Credential {
+		t.Fatalf("default connection credential was hijacked: %+v", *first.Credential)
+	}
+	if first.Credential.Kind != "keyring" || second.Credential.Kind != "keyring" {
+		t.Fatalf("credential kinds = %+v / %+v", first.Credential, second.Credential)
+	}
+	stop()
+}
+
+func waitSupervisorReady(t *testing.T, url string) {
+	t.Helper()
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		response, err := http.Get(url + "healthz")
+		if err == nil {
+			body, readErr := io.ReadAll(response.Body)
+			_ = response.Body.Close()
+			if readErr == nil && strings.Contains(string(body), `"status":"ready"`) {
+				return
+			}
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Fatal("supervisor did not become ready after first configuration")
 }

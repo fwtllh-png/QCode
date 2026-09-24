@@ -28,7 +28,9 @@ import (
 	"github.com/fwtllh-png/QCode/internal/security/egress"
 )
 
-const maxErrorBodyBytes = 16 << 10
+// MaxErrorBodyBytes bounds provider HTTP error diagnostics to 16 KiB.
+// Model discovery and capability probes share this transport limit.
+const MaxErrorBodyBytes = 16 << 10
 
 var requestSequence atomic.Uint64
 
@@ -249,7 +251,7 @@ func joinEndpoint(endpoint, path string) string {
 }
 func boundedBody(body io.ReadCloser) string {
 	defer body.Close()
-	data, _ := io.ReadAll(io.LimitReader(body, maxErrorBodyBytes))
+	data, _ := io.ReadAll(io.LimitReader(body, MaxErrorBodyBytes))
 	return strings.TrimSpace(string(data))
 }
 func retryableTransportError(err error) bool {

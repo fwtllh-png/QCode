@@ -84,7 +84,9 @@ func ProbeCapabilitiesForProtocol(
 				},
 			},
 		}},
-		"tool_choice": "required",
+		// Forced tool selection can be incompatible with thinking mode.
+		// Ask for the tool in the prompt and observe what the model emits.
+		"tool_choice": "auto",
 	}
 	if protocol == model.ProtocolOpenAIResponses {
 		delete(payload, "messages")
@@ -125,10 +127,7 @@ func ProbeCapabilitiesForProtocol(
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return model.Capabilities{}, fmt.Errorf(
-			"model capability probe HTTP %d",
-			response.StatusCode,
-		)
+		return model.Capabilities{}, responseError("model capability probe", response, apiKey)
 	}
 	stream, err := provideropenai.NewStream(response.Body, protocol)
 	if err != nil {
@@ -192,13 +191,11 @@ func List(
 	credentialOverride model.CredentialRef,
 ) (map[string]any, error) {
 	providerID = strings.TrimSpace(providerID)
-	catalogProvider, ok := model.DefaultCatalog().Provider(providerID)
-	if !ok {
-		if providerID == "" || strings.TrimSpace(baseURL) == "" {
-			return nil, fmt.Errorf("unknown provider %q", providerID)
-		}
-		catalogProvider = model.Provider{ID: providerID, Endpoint: baseURL}
+	baseURL = strings.TrimSpace(baseURL)
+	if baseURL == "" {
+		return nil, fmt.Errorf("base URL is required to list models for provider %q", providerID)
 	}
+	catalogProvider := model.Provider{ID: providerID, Endpoint: baseURL}
 	if fixture := strings.TrimSpace(os.Getenv("QCODE_MODEL_LIST_FIXTURE")); fixture != "" {
 		data, err := os.ReadFile(fixture)
 		if err != nil {
@@ -231,13 +228,11 @@ func Discover(
 	providerID, baseURL, apiKey string,
 ) (map[string]any, error) {
 	providerID = strings.TrimSpace(providerID)
-	catalogProvider, ok := model.DefaultCatalog().Provider(providerID)
-	if !ok {
-		if providerID == "" || strings.TrimSpace(baseURL) == "" {
-			return nil, fmt.Errorf("unknown provider %q", providerID)
-		}
-		catalogProvider = model.Provider{ID: providerID, Endpoint: baseURL}
+	baseURL = strings.TrimSpace(baseURL)
+	if baseURL == "" {
+		return nil, fmt.Errorf("base URL is required to list models for provider %q", providerID)
 	}
+	catalogProvider := model.Provider{ID: providerID, Endpoint: baseURL}
 	return discover(ctx, catalogProvider, baseURL, strings.TrimSpace(apiKey))
 }
 
@@ -273,12 +268,12 @@ func discover(
 		return nil, fmt.Errorf("live list unreachable")
 	}
 	defer response.Body.Close()
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return nil, responseError("live list", response, apiKey)
+	}
 	body, err := io.ReadAll(io.LimitReader(response.Body, 2<<20))
 	if err != nil {
 		return nil, err
-	}
-	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return nil, fmt.Errorf("live list HTTP %d", response.StatusCode)
 	}
 	return liveModelResult(catalogProvider.ID, "live", liveModelHost(base), body)
 }

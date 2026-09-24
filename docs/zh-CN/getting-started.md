@@ -46,24 +46,34 @@ Web 和二进制构建后，会比较 Owner Lease 中的构建身份；若已有
 
 ## 3. 首次引导
 
-首次进入且尚未完成 Runtime Setup 时，页面会要求：
+首次进入且尚未配置模型连接时，Web 直接展示主界面，并在会话区顶部显示一条
+引导横幅；模型配置在 Settings 的 Connection 页面完成，配置前主界面可正常浏览
+与管理工作区。所有连接统一为 OpenAI-Compatible 形态，完成配置需要填写四项要素：
 
-1. 显式选择 OpenAI、DeepSeek、GLM 或自定义 OpenAI-Compatible Provider；
-2. 输入准确的 Model ID；自定义服务还需填写 Base URL、协议、Canonical/Wire ID、
-   Context、Max Output 和完整 Capability 声明；
-3. 填写所需的 API Key 并完成连接设置。
+1. Base URL（OpenAI-Compatible 端点，HTTPS 或回环地址）；
+2. Protocol（`openai_chat` 或 `openai_responses`）；
+3. 准确的 Model ID；
+4. API Key。
 
-没有默认 Provider 或 Model，也不通过内置枚举限制 Model ID。API Key 由操作系统
+模型元数据（Canonical/Wire ID、Context、Max Output 与完整 Capability 声明）
+通过连接探测自动填写，或手动录入。没有默认 Provider 或 Model，也不通过内置枚举
+限制 Model ID。API Key 由操作系统
 Keyring 加密保存，不写入仓库、浏览器存储或 Setup Record；非敏感选择由 Runtime
 管理。连接设置可在零 Workspace 状态下完成，此时不会构造具有目录访问能力的 Runtime。
+配置模型之前添加的 Workspace 会处于待激活状态，配置完成后由 Runtime 自动激活。
 Setup 完成后，页面依次引导添加或选择 Workspace、创建 Session，再进入 Composer，
 不会代替用户自动创建 Session。Runtime 不从 Model ID 或 `/models` 列表猜测容量与
-布尔能力。对于探测到 Reasoning 但未声明 Effort 档位的模型，精确命中内置目录时使用
-目录档位，否则提供 `low`、`medium`、`high`、`xhigh`、`max`，默认 `medium`，
+布尔能力。对于探测到 Reasoning 但未声明 Effort 档位的模型，提供
+`low`、`medium`、`high`、`xhigh`、`max`，默认 `medium`，
 用户可在提交前修改。
-每个 Session 可从 Composer 快速切换当前 Provider Catalog 已验证的 Model；
-自定义 Endpoint 和未知 Model 是固定 Connection，新增或替换时必须在 Settings 的
-Connection 页面重新提交显式元数据并重启 Runtime。Web 默认监听
+每个 Session 可从 Composer 快速切换模型，选择跨全部已配置连接的可用
+Model（不同 Base URL 连接的模型以 `provider · model` 标注来源），切换在回合
+之间热生效，不重建 Runtime。Settings 的 Connection 页面维护连接集合：
+`Save connection` 新增或更新一条连接（不改变默认连接），`Apply and
+restart` 保存并设为默认连接（新 Session 的基线），列表中可切换默认或移
+除非默认连接（仍被 Session 使用的连接会拒绝移除）。添加、移除连接或切
+换默认会重建空闲 Workspace Runtime；已有 Session 保留各自选定的
+(provider, model)，不会被重置。Web 默认监听
 `127.0.0.1:6732`；同一用户重复执行 `qcode` 时复用已有 Supervisor。
 
 ## 4. 直接运行二进制

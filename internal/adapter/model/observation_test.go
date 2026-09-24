@@ -52,7 +52,24 @@ func TestApplyProbeWidensOnlyWithTrust(t *testing.T) {
 }
 
 func TestReadyRouteWithCapabilitiesDoesNotMutateOriginal(t *testing.T) {
-	resolver, err := model.NewResolver(model.DefaultCatalog())
+	catalog, err := model.NewCatalog(model.Provider{
+		ID: "openai", Adapter: model.AdapterOpenAI,
+		Endpoint: "https://api.openai.com/v1", Protocol: model.ProtocolOpenAIChat,
+		Models: map[string]model.Model{
+			"gpt-4.1": {
+				ID: "gpt-4.1", CanonicalID: "gpt-4.1", WireID: "gpt-4.1",
+				Limits: model.Limits{ContextTokens: 1_047_576, MaxOutputTokens: 32_768},
+				Capabilities: model.Capabilities{
+					Streaming: true, ToolCalls: true, Vision: true,
+				},
+				Provenance: model.ProvenanceOperatorConfig,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolver, err := model.NewResolver(catalog)
 	if err != nil {
 		t.Fatal(err)
 	}

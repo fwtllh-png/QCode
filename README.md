@@ -56,12 +56,12 @@ qcode
 用户通过 `Add workspace` 选择目录，或显式运行 `qcode --workspace /path/to/project`。
 已有 Web Supervisor 运行时，显式目录会注册到已有进程，无需启动第二个 Web 服务。
 普通启动只恢复已添加的列表，删除最后一个 Workspace 后重启仍保持空列表。
-首次进入时不会预选 Provider 或 Model，用户必须在页面中选择
-OpenAI、DeepSeek、GLM 或自定义 OpenAI-Compatible 服务，并填写 Model ID。
-自定义 Endpoint 或未进入内置目录的模型还必须显式填写 Context、Output 和 Capability
-元数据；Runtime 不猜测模型限制。API Key 由操作系统 Keyring 加密保存，非敏感选择与
-元数据由 Runtime 管理；无需创建或编辑配置文件。Session 只可在当前连接已验证的模型间
-切换；新增未知模型需要从 Connection 设置提交其元数据并重启 Runtime。
+首次进入时不会预选 Provider 或 Model。所有连接统一为 OpenAI-Compatible 形态，
+用户必须在页面中填写 Base URL、Protocol、Model ID 与 API Key 四项要素；模型
+Context、Output 和 Capability 元数据通过连接探测自动填写或显式录入，
+Runtime 不猜测模型限制。API Key 由操作系统 Keyring 加密保存，非敏感选择与
+元数据由 Runtime 管理；无需创建或编辑配置文件。Session 可跨全部已配置连接
+（不同 Base URL）切换已验证模型；新增未知模型需要从 Connection 设置提交其元数据。
 
 源码开发时仍可使用 `make start`。自定义安装位置使用
 `make install PREFIX=/usr/local`，卸载使用 `make uninstall`。
@@ -79,7 +79,8 @@ Runtime 完成恢复的 URL。
 
 | 入口 | 命令或路径 | 主要用途 |
 | --- | --- | --- |
-| 本机 Web | `qcode` | 唯一产品入口，覆盖会话、审批、变更、Subagent 与运行状态 |
+| 本机 Web | `qcode` | 覆盖会话、审批、变更、Subagent 与运行状态 |
+| macOS 桌面应用 | `make desktop-app` → `dist/QCode.app` | WKWebView 壳，与本机 Web 共享同一 Runtime 与数据 |
 
 ## 一分钟理解安全模型
 
@@ -111,6 +112,7 @@ internal/persist/        SQLite、Event Log、Session、Snapshot、Journal
 internal/observability/  Usage、Trace、Verify、Diagnostics、Telemetry
 internal/platform/       进程和操作系统集成
 web/                     React/TypeScript 本机 Web 前端
+desktop/                 macOS 桌面壳（WKWebView）与 .app 构建
 docs/                    持续维护的中文文档
 scripts/                 构建、验证、配置和发布脚本
 testdata/                Hermetic Provider 与 Benchmark Fixture

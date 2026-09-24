@@ -14,13 +14,20 @@ import (
 )
 
 func bundledAct() execRouteOptions {
-	return execRouteOptions{ProviderID: "openai", ModelID: "gpt-4.1"}
+	return execRouteOptions{
+		ProviderID: "openai", ModelID: "gpt-4.1",
+		BaseURL:  "https://api.openai.com/v1",
+		Protocol: model.ProtocolOpenAIChat, Model: fixtureModel("gpt-4.1"),
+	}
 }
 
-func TestExplicitCredentialReferenceOverridesCatalogRoute(t *testing.T) {
+func TestExplicitCredentialReferenceOverridesConnectionRoute(t *testing.T) {
 	route, err := resolveExecRoute(execRouteOptions{
 		ProviderID: "openai",
 		ModelID:    "gpt-4.1",
+		BaseURL:    "https://api.openai.com/v1",
+		Protocol:   model.ProtocolOpenAIChat,
+		Model:      fixtureModel("gpt-4.1"),
 		Credential: model.CredentialRef{
 			Kind: "env",
 			Name: "WORKSPACE_OPENAI_KEY",
@@ -57,11 +64,15 @@ func TestASessionWithoutSlotsRoutesEveryPurposeToAct(t *testing.T) {
 	}
 }
 
-func TestABundledSlotResolvesThroughTheCatalog(t *testing.T) {
+func TestASlotResolvesThroughTheConnectionsCatalog(t *testing.T) {
+	plain := testCustomModel("gpt-4.1-mini")
 	routes, err := resolveRouteSet(routeSetOptions{
 		Act: bundledAct(),
+		Additional: map[string]model.Model{
+			plain.ID: plain,
+		},
 		Slots: map[string]config.RouteSlot{
-			"plan": {Provider: "openai", Model: "gpt-4.1"},
+			"plan": {Provider: "openai", Model: "gpt-4.1-mini"},
 		},
 	})
 	if err != nil {
@@ -72,11 +83,38 @@ func TestABundledSlotResolvesThroughTheCatalog(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if plan.ProviderID() != "openai" || plan.Model().ID != "gpt-4.1" {
+	if plan.ProviderID() != "openai" || plan.Model().ID != "gpt-4.1-mini" {
 		t.Fatalf("plan route = %s/%s", plan.ProviderID(), plan.Model().ID)
 	}
 	if plan.Provenance() != model.ProvenanceConfig {
 		t.Fatalf("plan provenance = %q, want config", plan.Provenance())
+	}
+}
+
+func TestASlotRoutesToAnExtraConnection(t *testing.T) {
+	secondary := customConnectionModel("secondary-model")
+	routes, err := resolveRouteSet(routeSetOptions{
+		Act: bundledAct(),
+		Extras: []ExtraConnectionSpec{{
+			ProviderID: "openai-compatible:def456",
+			BaseURL:    "https://models.example.com/v1",
+			Protocol:   model.ProtocolOpenAIChat,
+			Model:      secondary,
+		}},
+		Slots: map[string]config.RouteSlot{
+			"summary": {Provider: "openai-compatible:def456", Model: "secondary-model"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	summary, err := routes.For(model.PurposeSummary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.ProviderID() != "openai-compatible:def456" ||
+		summary.Endpoint() != "https://models.example.com/v1" {
+		t.Fatalf("summary route = %s %s", summary.ProviderID(), summary.Endpoint())
 	}
 }
 
@@ -125,17 +163,17 @@ func TestAFixtureSessionKeepsEverySlotOnTheFixture(t *testing.T) {
 	}
 }
 
-func TestACustomEndpointSessionCannotRouteASecondModel(t *testing.T) {
+func TestASlotNamingAnUnconfiguredConnectionFailsTheSession(t *testing.T) {
 	_, err := resolveRouteSet(routeSetOptions{
-		Act: execRouteOptions{
-			ProviderID: "local", ModelID: "local-model", BaseURL: "http://127.0.0.1:1",
-			Protocol: model.ProtocolOpenAIChat, Model: fixtureModel("local-model"),
+		Act: bundledAct(),
+		Slots: map[string]config.RouteSlot{
+			"plan": {Provider: "openai", Model: "other"},
 		},
-		Slots: map[string]config.RouteSlot{"plan": {Provider: "local", Model: "other"}},
 	})
 
-	if err == nil || !strings.Contains(err.Error(), "one model only") {
-		t.Fatalf("resolveRouteSet() error = %v, want the metadata limit explained", err)
+	if err == nil ||
+		!strings.Contains(err.Error(), "configured connection") {
+		t.Fatalf("resolveRouteSet() error = %v, want the connection boundary explained", err)
 	}
 }
 
@@ -143,10 +181,14 @@ func TestACustomEndpointSessionCannotRouteASecondModel(t *testing.T) {
 // configuring [route.vision] with a text-only model is refused at resolve time,
 // not later as a provider 400 about an image field.
 func TestAVisionSlotWithoutVisionFailsBeforeTheSessionStarts(t *testing.T) {
+	plain := testCustomModel("text-only-model")
 	_, err := resolveRouteSet(routeSetOptions{
 		Act: bundledAct(),
+		Additional: map[string]model.Model{
+			plain.ID: plain,
+		},
 		Slots: map[string]config.RouteSlot{
-			"vision": {Provider: "deepseek", Model: "deepseek-chat"},
+			"vision": {Provider: "openai", Model: "text-only-model"},
 		},
 	})
 	if err == nil || !strings.Contains(err.Error(), "vision") {

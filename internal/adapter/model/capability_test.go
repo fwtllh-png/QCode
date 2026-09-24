@@ -45,7 +45,7 @@ func TestFallingBackToABlindActForVisionIsRefused(t *testing.T) {
 }
 
 func TestResolverRequireRefusesAModelMissingTheBit(t *testing.T) {
-	resolver, err := NewResolver(DefaultCatalog())
+	resolver, err := NewResolver(testCatalog(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,7 +80,7 @@ func TestPurposeRequiredCapabilitiesOnlyVisionAsksForVision(t *testing.T) {
 }
 
 func TestIncrementalResponsesIsAdvertisedOnlyByBundledResponsesRoute(t *testing.T) {
-	resolver, err := NewResolver(DefaultCatalog())
+	resolver, err := NewResolver(testCatalog(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -105,7 +105,7 @@ func TestIncrementalResponsesIsAdvertisedOnlyByBundledResponsesRoute(t *testing.
 }
 
 func TestAutomaticPromptCacheRequiresPromptCacheSupport(t *testing.T) {
-	provider, ok := DefaultCatalog().Provider("deepseek")
+	provider, ok := testCatalog(t).Provider("deepseek")
 	if !ok {
 		t.Fatal("DeepSeek provider is missing")
 	}
@@ -120,7 +120,7 @@ func TestAutomaticPromptCacheRequiresPromptCacheSupport(t *testing.T) {
 }
 
 func TestBundledReasoningEffortsAreExplicitAndIsolated(t *testing.T) {
-	catalog := DefaultCatalog()
+	catalog := testCatalog(t)
 	for _, entry := range []struct {
 		provider string
 		model    string
@@ -211,7 +211,7 @@ func TestCatalogRejectsProtocolAndReasoningCapabilityContradictions(t *testing.T
 }
 
 func TestReadyRouteWithModelIDPreservesConnection(t *testing.T) {
-	resolver, err := NewResolver(DefaultCatalog())
+	resolver, err := NewResolver(testCatalog(t))
 	if err != nil {
 		t.Fatal(err)
 	}

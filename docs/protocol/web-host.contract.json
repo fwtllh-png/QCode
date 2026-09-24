@@ -115,6 +115,46 @@
       "requires_capability": true
     },
     {
+      "path": "/api/v1/connection/add",
+      "method": "POST",
+      "request": "setup_request",
+      "response": "connection_list",
+      "mutation": true,
+      "idempotency_key": true,
+      "requires_runtime": false,
+      "requires_capability": true
+    },
+    {
+      "path": "/api/v1/connection/default",
+      "method": "POST",
+      "request": "connection_id",
+      "response": "connection_list",
+      "mutation": true,
+      "idempotency_key": true,
+      "requires_runtime": false,
+      "requires_capability": true
+    },
+    {
+      "path": "/api/v1/connection/list",
+      "method": "POST",
+      "request": "empty",
+      "response": "connection_list",
+      "mutation": false,
+      "idempotency_key": false,
+      "requires_runtime": false,
+      "requires_capability": true
+    },
+    {
+      "path": "/api/v1/connection/remove",
+      "method": "POST",
+      "request": "connection_id",
+      "response": "connection_list",
+      "mutation": true,
+      "idempotency_key": true,
+      "requires_runtime": false,
+      "requires_capability": true
+    },
+    {
       "path": "/api/v1/connection/status",
       "method": "POST",
       "request": "empty",

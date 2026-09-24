@@ -179,8 +179,15 @@ type Execution struct {
 	Provider  string `json:"provider" toml:"provider"`
 	Model     string `json:"model" toml:"model"`
 	Protocol  string `json:"protocol" toml:"protocol"`
-	Mode      string `json:"mode" toml:"mode"`
-	Workspace string `json:"workspace" toml:"workspace"`
+	// BaseURL is the explicit OpenAI-compatible endpoint of the configured
+	// provider. Every model connection is user-declared; there is no bundled
+	// provider directory to resolve endpoints from.
+	BaseURL string `json:"base_url" toml:"base_url"`
+	// ModelMetadata is an optional path to a JSON file declaring the
+	// configured model's identity, limits, and capabilities.
+	ModelMetadata string `json:"model_metadata" toml:"model_metadata"`
+	Mode           string `json:"mode" toml:"mode"`
+	Workspace      string `json:"workspace" toml:"workspace"`
 	// BaseSystem overrides the default base system prompt. Empty uses the
 	// built-in persona plus the probed environment fingerprint; the
 	// base_system partition budget still bounds whatever is configured.
@@ -535,6 +542,8 @@ type Overrides struct {
 	Provider                   *string
 	Model                      *string
 	Protocol                   *string
+	BaseURL                    *string
+	ModelMetadata              *string
 	Mode                       *string
 	Workspace                  *string
 	Tools                      *bool

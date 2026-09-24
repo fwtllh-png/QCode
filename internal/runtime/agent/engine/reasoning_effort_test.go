@@ -18,7 +18,7 @@ func TestEngineRejectsUnadvertisedFixedReasoningEffort(t *testing.T) {
 		!strings.Contains(err.Error(), "does not support reasoning effort") {
 		t.Fatalf("New() error = %v", err)
 	}
-	resolver, err := model.NewResolver(model.DefaultCatalog())
+	resolver, err := model.NewResolver(testCatalog(t))
 	if err != nil {
 		t.Fatal(err)
 	}

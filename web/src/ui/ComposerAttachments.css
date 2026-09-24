@@ -40,13 +40,13 @@
 
 .attachmentItem strong {
   color: var(--ch-text);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
 }
 
 .attachmentItem small {
   color: var(--ch-text-muted);
-  font-size: 9px;
+  font-size: 10px;
 }
 
 .attachmentItem button {

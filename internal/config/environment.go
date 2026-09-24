@@ -294,6 +294,8 @@ func applyEnvironment(lookup func(string) (string, bool), config *Config, proven
 	applyEnvString(lookup, "QCODE_PROVIDER", fieldProvider, &execution.Provider, provenance)
 	applyEnvString(lookup, "QCODE_MODEL", fieldModel, &execution.Model, provenance)
 	applyEnvString(lookup, "QCODE_PROTOCOL", fieldProtocol, &execution.Protocol, provenance)
+	applyEnvString(lookup, "QCODE_BASE_URL", fieldBaseURL, &execution.BaseURL, provenance)
+	applyEnvString(lookup, "QCODE_MODEL_METADATA", fieldModelMetadata, &execution.ModelMetadata, provenance)
 	applyEnvString(lookup, "QCODE_MODE", fieldMode, &execution.Mode, provenance)
 	applyEnvString(lookup, "QCODE_WORKSPACE", fieldWorkspace, &execution.Workspace, provenance)
 	if err := applyEnvBool(lookup, "QCODE_TOOLS", fieldTools, &execution.Tools, provenance); err != nil {

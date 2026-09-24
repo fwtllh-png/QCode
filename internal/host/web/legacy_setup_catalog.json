@@ -1,0 +1,379 @@
+{
+  "version": 1,
+  "providers": [
+    {
+      "id": "openai",
+      "adapter": "openai",
+      "endpoint": "https://api.openai.com/v1",
+      "protocol": "openai_chat",
+      "credential": {
+        "kind": "env",
+        "name": "OPENAI_API_KEY"
+      },
+      "provenance": "bundled",
+      "models": {
+        "gpt-4.1": {
+          "id": "gpt-4.1",
+          "canonical_id": "gpt-4.1",
+          "wire_id": "gpt-4.1",
+          "limits": {
+            "context_tokens": 1047576,
+            "max_output_tokens": 32768
+          },
+          "capabilities": {
+            "streaming": true,
+            "reasoning": false,
+            "tool_calls": true,
+            "native_search": true,
+            "vision": true,
+            "image_input": true,
+            "prompt_cache": true
+          },
+          "pricing": {
+            "input_per_million": 2,
+            "output_per_million": 8,
+            "currency": "USD",
+            "known": true,
+            "provenance": "bundled"
+          },
+          "metadata_provenance": {
+            "canonical_id": "bundled",
+            "wire_id": "bundled",
+            "limits": "bundled",
+            "capabilities": "bundled",
+            "pricing": "bundled"
+          },
+          "provenance": "bundled"
+        }
+      }
+    },
+    {
+      "id": "deepseek",
+      "adapter": "openai_compatible",
+      "endpoint": "https://api.deepseek.com/v1",
+      "protocol": "openai_chat",
+      "credential": {
+        "kind": "env",
+        "name": "DEEPSEEK_API_KEY"
+      },
+      "provenance": "bundled",
+      "models": {
+        "deepseek-chat": {
+          "id": "deepseek-chat",
+          "canonical_id": "deepseek-chat",
+          "wire_id": "deepseek-chat",
+          "limits": {
+            "context_tokens": 131072,
+            "max_output_tokens": 8192
+          },
+          "capabilities": {
+            "streaming": true,
+            "reasoning": false,
+            "tool_calls": true,
+            "native_search": false,
+            "vision": false,
+            "image_input": false,
+            "prompt_cache": true,
+            "automatic_prompt_cache": true,
+            "thinking_toggle": false
+          },
+          "pricing": {
+            "input_per_million": 0.27,
+            "output_per_million": 1.1,
+            "currency": "USD",
+            "known": true,
+            "provenance": "bundled"
+          },
+          "metadata_provenance": {
+            "canonical_id": "bundled",
+            "wire_id": "bundled",
+            "limits": "bundled",
+            "capabilities": "bundled",
+            "pricing": "bundled"
+          },
+          "provenance": "bundled"
+        },
+        "deepseek-reasoner": {
+          "id": "deepseek-reasoner",
+          "canonical_id": "deepseek-reasoner",
+          "wire_id": "deepseek-reasoner",
+          "limits": {
+            "context_tokens": 131072,
+            "max_output_tokens": 65536
+          },
+          "capabilities": {
+            "streaming": true,
+            "reasoning": true,
+            "reasoning_efforts": [
+              "off",
+              "low",
+              "high",
+              "max"
+            ],
+            "default_reasoning_effort": "high",
+            "tool_calls": true,
+            "native_search": false,
+            "vision": false,
+            "image_input": false,
+            "prompt_cache": true,
+            "automatic_prompt_cache": true,
+            "thinking_toggle": true
+          },
+          "pricing": {
+            "input_per_million": 0.55,
+            "output_per_million": 2.19,
+            "currency": "USD",
+            "known": true,
+            "provenance": "bundled"
+          },
+          "metadata_provenance": {
+            "canonical_id": "bundled",
+            "wire_id": "bundled",
+            "limits": "bundled",
+            "capabilities": "bundled",
+            "pricing": "bundled"
+          },
+          "provenance": "bundled"
+        }
+      }
+    },
+    {
+      "id": "deepseek-v4-flash",
+      "adapter": "openai_compatible",
+      "endpoint": "https://api.deepseek.com",
+      "protocol": "openai_chat",
+      "credential": {
+        "kind": "keyring",
+        "name": "deepseek/default"
+      },
+      "provenance": "bundled",
+      "models": {
+        "deepseek-v4-flash": {
+          "id": "deepseek-v4-flash",
+          "canonical_id": "deepseek-v4-flash",
+          "wire_id": "deepseek-v4-flash",
+          "limits": {
+            "context_tokens": 1048576,
+            "max_output_tokens": 384000
+          },
+          "capabilities": {
+            "streaming": true,
+            "reasoning": true,
+            "reasoning_efforts": [
+              "off",
+              "low",
+              "high",
+              "max"
+            ],
+            "default_reasoning_effort": "high",
+            "tool_calls": true,
+            "native_search": false,
+            "vision": false,
+            "image_input": false,
+            "prompt_cache": true,
+            "automatic_prompt_cache": true,
+            "thinking_toggle": true
+          },
+          "pricing": {
+            "input_per_million": 0,
+            "output_per_million": 0,
+            "currency": "",
+            "known": false,
+            "provenance": "bundled"
+          },
+          "metadata_provenance": {
+            "canonical_id": "bundled",
+            "wire_id": "bundled",
+            "limits": "bundled",
+            "capabilities": "bundled",
+            "pricing": "bundled"
+          },
+          "provenance": "bundled"
+        },
+        "deepseek-v4-flash-vision-exp": {
+          "id": "deepseek-v4-flash-vision-exp",
+          "canonical_id": "deepseek-v4-flash-vision-exp",
+          "wire_id": "deepseek-v4-flash-vision-exp",
+          "limits": {
+            "context_tokens": 1048576,
+            "max_output_tokens": 384000
+          },
+          "capabilities": {
+            "streaming": true,
+            "reasoning": true,
+            "reasoning_efforts": [
+              "off",
+              "low",
+              "high",
+              "max"
+            ],
+            "default_reasoning_effort": "high",
+            "tool_calls": true,
+            "native_search": false,
+            "vision": true,
+            "image_input": true,
+            "prompt_cache": true,
+            "automatic_prompt_cache": true,
+            "thinking_toggle": true
+          },
+          "pricing": {
+            "input_per_million": 0,
+            "output_per_million": 0,
+            "currency": "",
+            "known": false,
+            "provenance": "bundled"
+          },
+          "metadata_provenance": {
+            "canonical_id": "bundled",
+            "wire_id": "bundled",
+            "limits": "bundled",
+            "capabilities": "bundled",
+            "pricing": "bundled"
+          },
+          "provenance": "bundled"
+        }
+      }
+    },
+    {
+      "id": "glm",
+      "adapter": "openai_compatible",
+      "endpoint": "https://open.bigmodel.cn/api/coding/paas/v4",
+      "protocol": "openai_chat",
+      "credential": {
+        "kind": "env",
+        "name": "ZAI_API_KEY"
+      },
+      "provenance": "bundled",
+      "models": {
+        "glm-5.3": {
+          "id": "glm-5.3",
+          "canonical_id": "glm-5.3",
+          "wire_id": "glm-5.3",
+          "limits": {
+            "context_tokens": 1000000,
+            "max_output_tokens": 131072
+          },
+          "capabilities": {
+            "streaming": true,
+            "reasoning": true,
+            "reasoning_efforts": [
+              "low",
+              "high",
+              "max"
+            ],
+            "default_reasoning_effort": "max",
+            "tool_calls": true,
+            "native_search": false,
+            "vision": false,
+            "image_input": false,
+            "prompt_cache": true,
+            "automatic_prompt_cache": true,
+            "thinking_toggle": false
+          },
+          "pricing": {
+            "input_per_million": 0,
+            "output_per_million": 0,
+            "currency": "",
+            "known": false,
+            "provenance": "bundled"
+          },
+          "metadata_provenance": {
+            "canonical_id": "bundled",
+            "wire_id": "bundled",
+            "limits": "bundled",
+            "capabilities": "bundled",
+            "pricing": "bundled"
+          },
+          "provenance": "bundled"
+        },
+        "glm-5.3-flash": {
+          "id": "glm-5.3-flash",
+          "canonical_id": "glm-5.3-flash",
+          "wire_id": "glm-5.3-flash",
+          "limits": {
+            "context_tokens": 1000000,
+            "max_output_tokens": 131072
+          },
+          "capabilities": {
+            "streaming": true,
+            "reasoning": true,
+            "reasoning_efforts": [
+              "low",
+              "high",
+              "max"
+            ],
+            "default_reasoning_effort": "max",
+            "tool_calls": true,
+            "native_search": false,
+            "vision": true,
+            "image_input": true,
+            "prompt_cache": true,
+            "automatic_prompt_cache": true,
+            "thinking_toggle": false
+          },
+          "pricing": {
+            "input_per_million": 0,
+            "output_per_million": 0,
+            "currency": "",
+            "known": false,
+            "provenance": "bundled"
+          },
+          "metadata_provenance": {
+            "canonical_id": "bundled",
+            "wire_id": "bundled",
+            "limits": "bundled",
+            "capabilities": "bundled",
+            "pricing": "bundled"
+          },
+          "provenance": "bundled"
+        },
+        "glm-5.3-flashx": {
+          "id": "glm-5.3-flashx",
+          "canonical_id": "glm-5.3-flashx",
+          "wire_id": "glm-5.3-flashx",
+          "limits": {
+            "context_tokens": 1000000,
+            "max_output_tokens": 131072
+          },
+          "capabilities": {
+            "streaming": true,
+            "reasoning": true,
+            "reasoning_efforts": [
+              "low",
+              "high",
+              "max"
+            ],
+            "default_reasoning_effort": "max",
+            "tool_calls": true,
+            "native_search": false,
+            "vision": true,
+            "image_input": true,
+            "prompt_cache": true,
+            "automatic_prompt_cache": true,
+            "thinking_toggle": false
+          },
+          "pricing": {
+            "input_per_million": 0,
+            "output_per_million": 0,
+            "currency": "",
+            "known": false,
+            "provenance": "bundled"
+          },
+          "metadata_provenance": {
+            "canonical_id": "bundled",
+            "wire_id": "bundled",
+            "limits": "bundled",
+            "capabilities": "bundled",
+            "pricing": "bundled"
+          },
+          "provenance": "bundled"
+        }
+      }
+    }
+  ],
+  "aliases": {
+    "deepseek": [
+      "deepseek-v4-flash"
+    ]
+  }
+}

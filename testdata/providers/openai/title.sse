@@ -1,0 +1,5 @@
+data: {"choices":[{"delta":{"content":"{\"title\":\"Browser fixture\"}"},"finish_reason":null}]}
+
+data: {"choices":[],"usage":{"prompt_tokens":3,"completion_tokens":3}}
+
+data: [DONE]

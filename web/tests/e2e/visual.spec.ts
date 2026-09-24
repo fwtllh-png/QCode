@@ -447,7 +447,7 @@ test("captures empty and settings states", async ({page}) => {
 test("captures populated model, tool, and agent settings", async ({page}) => {
   await createSession(page);
   await page.getByRole("button", {name: "Settings"}).click();
-  await page.getByRole("button", {name: "Connection"}).click();
+  await page.getByRole("button", {name: "Models"}).click();
   await expect(page.getByRole("button", {name: "Test connection"})).toBeVisible();
   await expect(page.getByText("Runtime-managed")).toBeVisible();
   await expect(page).toHaveScreenshot("canonical-settings-connection.png");
@@ -766,8 +766,11 @@ test("summarizes the session title once and preserves a manual rename", async ({
   await expect(page.locator(".sessionTitle").last()).toHaveText("Improve session title summaries");
   await page.locator(".sessionRow").filter({hasText: "Improve session title summaries"}).hover();
   await page.getByRole("button", {name: "Session actions for Improve session title summaries"}).click();
-  page.once("dialog", (dialog) => dialog.accept("My investigation"));
   await page.getByRole("menuitem", {name: "Rename", exact: true}).click();
+  const renameDialog = page.getByRole("dialog", {name: "Rename session"});
+  await expect(renameDialog).toBeVisible();
+  await renameDialog.getByLabel("Session title").fill("My investigation");
+  await renameDialog.getByRole("button", {name: "Rename"}).click();
   await expect(page.locator(".sessionTitle").last()).toHaveText("My investigation");
   await submitPrompt(page, "visual session title: now investigate a different topic");
   await expect(page.locator(".assistantMessage")).toHaveCount(2);

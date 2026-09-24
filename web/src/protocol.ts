@@ -32,30 +32,16 @@ export interface Bootstrap {
   workspace_root?: string;
   workspace?: WorkspaceIdentity;
   setup_required?: boolean;
-  setup_catalog?: SetupCatalog;
   workspace_catalog?: WorkspaceCatalog;
   problem?: Problem;
 }
 
-export interface SetupProvider {
-  id: string;
-  display_name: string;
-  protocol: string;
-  requires_api_key: boolean;
-  custom?: boolean;
-  models?: string[];
-}
-
-export interface SetupCatalog {
-  version: number;
-  providers: SetupProvider[];
-}
-
+// SetupRequest 声明一条 OpenAI-compatible 模型连接的四要素：Base URL、
+// Protocol、Model ID、API Key（外加探测或手填的模型元数据）。
 export interface SetupRequest {
-  provider: string;
   model: string;
   api_key?: string;
-  base_url?: string;
+  base_url: string;
   protocol?: string;
   model_metadata?: SetupModelMetadata;
 }
@@ -88,7 +74,6 @@ export interface SetupResult {
 }
 
 export interface SetupProbeRequest {
-  provider: string;
   base_url: string;
   protocol: string;
   model: string;
@@ -420,6 +405,24 @@ export interface WorkspaceConnection {
   endpoint: string;
   protocol: string;
   model_metadata?: SetupModelMetadata;
+}
+
+export interface ConnectionEntry {
+  id: string;
+  provider: string;
+  display_name?: string;
+  base_url?: string;
+  protocol?: string;
+  model: string;
+  models?: string[];
+  default?: boolean;
+  credential_present: boolean;
+}
+
+export interface ConnectionListResult {
+  version: number;
+  default_connection: string;
+  connections: ConnectionEntry[];
 }
 
 export interface ToolCatalogEntry {

@@ -2,5 +2,11 @@
   "protocol": "openai_chat",
   "path": "/chat/completions",
   "model": "fixture-model",
-  "expected_prompt": "say hello"
+  "expected_prompt": "say hello",
+  "routes": [
+    {
+      "match": ["Return only a compact JSON object"],
+      "streams": ["title.sse"]
+    }
+  ]
 }

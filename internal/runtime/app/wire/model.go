@@ -149,6 +149,19 @@ func validateResolvedModelMetadata(descriptor model.Model) error {
 	return nil
 }
 
+// LoadModelMetadataFile 读取并校验一份模型元数据 JSON 文件，供宿主把
+// execution.model_metadata 指向的声明装载进连接配置。
+func LoadModelMetadataFile(path, modelID string) (model.Model, error) {
+	descriptor, err := loadModelMetadata(path, modelID)
+	if err != nil {
+		return model.Model{}, err
+	}
+	if err := validateResolvedModelMetadata(descriptor); err != nil {
+		return model.Model{}, err
+	}
+	return descriptor, nil
+}
+
 func loadModelMetadata(path, modelID string) (model.Model, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {

@@ -13,94 +13,46 @@ func runtimeModelCatalog(
 	selectedCapabilities protocol.ModelCapabilities,
 	selectable map[string]model.ReadyRoute,
 ) (protocol.ProviderCatalog, protocol.ModelCatalog) {
-	catalog := model.DefaultCatalog()
-	providers := catalog.Providers()
-	providerEntries := make([]protocol.ProviderCatalogEntry, 0, len(providers)+1)
-	modelEntries := make([]protocol.ModelCatalogEntry, 0, 128)
 	selectedProvider := selectedRoute.ProviderID()
 	selectedModel := selectedRoute.Model().ID
 	selectedSeen := false
-	seenModels := make(map[string]bool)
-	for _, catalogProvider := range providers {
-		providerEntry := protocol.ProviderCatalogEntry{
-			ID: catalogProvider.ID, DisplayName: catalogProvider.ID,
-			Selected:     catalogProvider.ID == selectedProvider,
-			Availability: "unavailable",
-			Reason:       "Restart Runtime to use this provider",
-		}
-		if catalogProvider.ID == selectedProvider {
-			providerEntry.Availability = "available"
-			providerEntry.Reason = ""
-		}
-		providerEntries = append(providerEntries, providerEntry)
-		ids := make([]string, 0, len(catalogProvider.Models))
-		for id := range catalogProvider.Models {
-			ids = append(ids, id)
-		}
-		sort.Strings(ids)
-		for _, id := range ids {
-			descriptor := catalogProvider.Models[id]
-			selected := catalogProvider.ID == selectedProvider && id == selectedModel
-			capabilities := catalogModelCapabilities(descriptor)
-			if route, ok := selectable[model.RouteKey(catalogProvider.ID, id)]; ok {
-				capabilities = catalogModelCapabilities(route.Model())
-				capabilities.SelectionMode = "hot"
-			} else {
-				capabilities.Availability = "unavailable"
-				capabilities.UnavailableReason =
-					"Restart Runtime to use this model route"
-				capabilities.SelectionMode = "restart_required"
-			}
-			if selected {
-				capabilities = selectedCapabilities
-				if _, ok := selectable[model.RouteKey(
-					catalogProvider.ID,
-					id,
-				)]; ok {
-					capabilities.SelectionMode = "hot"
-				} else {
-					capabilities.SelectionMode = "fixed"
-				}
-				selectedSeen = true
-			}
-			modelEntries = append(modelEntries, protocol.ModelCatalogEntry{
-				Provider: catalogProvider.ID, ID: id, Source: "catalog",
-				Selected: selected, Capabilities: capabilities,
-			})
-			seenModels[model.RouteKey(catalogProvider.ID, id)] = true
-		}
+	providerIDs := make(map[string]bool)
+	modelEntries := make([]protocol.ModelCatalogEntry, 0, len(selectable)+1)
+	// 已配置连接（SelectableRoutes 有路由）的模型逐个列为可热切换条目。
+	keys := make([]string, 0, len(selectable))
+	for key := range selectable {
+		keys = append(keys, key)
 	}
-	if _, ok := catalog.Provider(selectedProvider); !ok {
-		providerEntries = append(providerEntries, protocol.ProviderCatalogEntry{
-			ID: selectedProvider, DisplayName: selectedProvider,
-			Selected: true, Availability: "available",
+	sort.Strings(keys)
+	for _, key := range keys {
+		route := selectable[key]
+		providerIDs[route.ProviderID()] = true
+		capabilities := catalogModelCapabilities(route.Model())
+		capabilities.SelectionMode = "hot"
+		selected := route.ProviderID() == selectedProvider &&
+			route.Model().ID == selectedModel
+		modelEntries = append(modelEntries, protocol.ModelCatalogEntry{
+			Provider: route.ProviderID(), ID: route.Model().ID,
+			Source: "registered", Selected: selected,
+			Capabilities: capabilities,
 		})
+		if selected {
+			selectedSeen = true
+		}
 	}
 	if !selectedSeen {
-		if _, ok := selectable[model.RouteKey(selectedProvider, selectedModel)]; ok {
-			selectedCapabilities.SelectionMode = "hot"
-		} else {
-			selectedCapabilities.SelectionMode = "fixed"
-		}
 		modelEntries = append(modelEntries, protocol.ModelCatalogEntry{
 			Provider: selectedProvider, ID: selectedModel,
 			Source:   "connection_baseline",
 			Selected: true, Capabilities: selectedCapabilities,
 		})
-		seenModels[model.RouteKey(selectedProvider, selectedModel)] = true
 	}
-	for key, route := range selectable {
-		if seenModels[key] {
-			continue
-		}
-		capabilities := catalogModelCapabilities(route.Model())
-		capabilities.SelectionMode = "hot"
-		modelEntries = append(modelEntries, protocol.ModelCatalogEntry{
-			Provider:     selectedProvider,
-			ID:           route.Model().ID,
-			Source:       "registered",
-			Selected:     route.Model().ID == selectedModel,
-			Capabilities: capabilities,
+	providerIDs[selectedProvider] = true
+	providerEntries := make([]protocol.ProviderCatalogEntry, 0, len(providerIDs))
+	for id := range providerIDs {
+		providerEntries = append(providerEntries, protocol.ProviderCatalogEntry{
+			ID: id, DisplayName: id,
+			Selected: id == selectedProvider, Availability: "available",
 		})
 	}
 	sort.Slice(providerEntries, func(left, right int) bool {
@@ -150,33 +102,9 @@ func catalogModelCapabilities(descriptor model.Model) protocol.ModelCapabilities
 
 func runtimeSelectableRoutes(
 	selected model.ReadyRoute,
-	allowCatalogSelection bool,
 	additional map[string]model.Model,
 ) (map[string]model.ReadyRoute, error) {
 	result := make(map[string]model.ReadyRoute)
-	if allowCatalogSelection {
-		catalog := model.DefaultCatalog()
-		provider, ok := catalog.Provider(selected.ProviderID())
-		if !ok {
-			return result, nil
-		}
-		resolver, err := model.NewResolver(catalog)
-		if err != nil {
-			return nil, err
-		}
-		for modelID := range provider.Models {
-			route, err := resolver.Resolve(model.RouteRequest{
-				ProviderID: selected.ProviderID(),
-				ModelID:    modelID,
-				Provenance: model.ProvenanceConfig,
-			})
-			if err != nil {
-				return nil, err
-			}
-			route = route.WithCredential(selected.Credential())
-			result[model.RouteKey(selected.ProviderID(), modelID)] = route
-		}
-	}
 	if len(additional) != 0 {
 		result[model.RouteKey(selected.ProviderID(), selected.Model().ID)] = selected
 	}
@@ -200,18 +128,22 @@ func runtimeProfileModels(
 ) (map[string]protocol.ModelCapabilities, []string) {
 	profiles := make(map[string]protocol.ModelCapabilities)
 	reasoningMutable := selectedCapabilities.Reasoning
+	providerMutable := false
 	for _, entry := range catalog.Models {
-		if entry.Provider != providerID ||
-			entry.Capabilities.Availability != "available" ||
+		if entry.Capabilities.Availability != "available" ||
 			entry.Capabilities.SelectionMode != "hot" {
 			continue
 		}
 		profiles[model.RouteKey(entry.Provider, entry.ID)] =
 			entry.Capabilities
 		reasoningMutable = reasoningMutable || entry.Capabilities.Reasoning
+		providerMutable = providerMutable || entry.Provider != providerID
 	}
-	mutable := make([]string, 0, 2)
+	mutable := make([]string, 0, 3)
 	if selectedCapabilities.SelectionMode != "fixed" {
+		if providerMutable {
+			mutable = append(mutable, "provider")
+		}
 		mutable = append(mutable, "model")
 	}
 	if reasoningMutable {

@@ -3,222 +3,337 @@
   "id": "SEC-EXEC-BOUNDARY-001",
   "rules": [
     {
-      "path": "internal/platform/process",
-      "prefix": true,
-      "categories": ["process", "file"],
-      "owner": "process runtime",
-      "reason": "Low-level process construction and lifecycle owner; callers are inventoried separately."
+      "path": "internal/adapter/environment/go.go",
+      "categories": [
+        "process"
+      ],
+      "owner": "environment adapter",
+      "reason": "Read-only Go toolchain probes (`go env`) bounded by the sandbox probe timeout."
     },
     {
-      "path": "internal/security/sandbox",
-      "prefix": true,
-      "categories": ["process", "file", "network"],
-      "owner": "sandbox",
-      "reason": "Trusted sandbox probes, helper execution, and private policy state."
-    },
-    {
-      "path": "internal/adapter/mcp/oauth.go",
-      "categories": ["process", "file", "network"],
-      "owner": "mcp",
-      "reason": "OAuth callback state and operator browser launch."
+      "path": "internal/adapter/lsp/check.go",
+      "categories": [
+        "process"
+      ],
+      "owner": "lsp tool",
+      "reason": "Guard-authorized sandboxed language server lifecycle."
     },
     {
       "path": "internal/adapter/mcp",
       "prefix": true,
-      "categories": ["network"],
+      "categories": [
+        "network"
+      ],
       "owner": "mcp",
       "reason": "MCP HTTP transport and OAuth callback listener."
     },
     {
-      "path": "internal/host/runtimeapi/web/native_directory.go",
-      "categories": ["process"],
-      "owner": "web host",
-      "reason": "Operator-initiated native directory picker."
-    },
-    {
-      "path": "internal/host/runtimeapi/web/native_path.go",
-      "categories": ["process"],
-      "owner": "web host",
-      "reason": "Operator-initiated native path opener."
-    },
-    {
-      "path": "internal/host/web",
-      "prefix": true,
-      "categories": ["process", "file", "network"],
-      "owner": "web host",
-      "reason": "Local listener, supervisor state, and operator browser launch."
-    },
-    {
-      "path": "internal/host/runtimeapi/runtimecontract",
-      "prefix": true,
-      "categories": ["process", "file"],
-      "owner": "runtime contract fixture",
-      "reason": "Executable contract fixture retained outside production host wiring."
-    },
-    {
-      "path": "internal/persist",
-      "prefix": true,
-      "categories": ["file"],
-      "owner": "persistence",
-      "reason": "Trusted durable state owners."
+      "path": "internal/adapter/mcp/oauth.go",
+      "categories": [
+        "process",
+        "file",
+        "network"
+      ],
+      "owner": "mcp",
+      "reason": "OAuth callback state and operator browser launch."
     },
     {
       "path": "internal/adapter/memory",
       "prefix": true,
-      "categories": ["file"],
+      "categories": [
+        "file"
+      ],
       "owner": "memory adapter",
       "reason": "Runtime-owned memory state."
     },
     {
-      "path": "internal/adapter/skill",
-      "prefix": true,
-      "categories": ["file"],
-      "owner": "skill adapter",
-      "reason": "Runtime-owned skill state and lock files."
-    },
-    {
-      "path": "internal/adapter/tool/content",
-      "prefix": true,
-      "categories": ["process", "file"],
-      "owner": "content tool",
-      "reason": "Guard-authorized sandbox conversion and bounded temporary artifacts."
-    },
-    {
-      "path": "internal/adapter/tool/web",
-      "prefix": true,
-      "categories": ["process", "file", "network"],
-      "owner": "web tool",
-      "reason": "Guarded web transports and the isolated Chromium CDP process/profile lifecycle."
-    },
-    {
-      "path": "internal/adapter/tool/dev",
-      "prefix": true,
-      "categories": ["process"],
-      "owner": "developer tools",
-      "reason": "Guard-authorized sandboxed formatter, debugger, and dependency resolver processes."
-    },
-    {
-      "path": "internal/adapter/tool/repohost",
-      "prefix": true,
-      "categories": ["process"],
-      "owner": "repository host tools",
-      "reason": "Guard-authorized fixed-shape repository hosting CLI operations."
-    },
-    {
       "path": "internal/adapter/provider",
       "prefix": true,
-      "categories": ["file", "network"],
+      "categories": [
+        "file",
+        "network"
+      ],
       "owner": "provider adapter",
       "reason": "Model transports, credential-file readers, and hermetic fixture server."
     },
     {
+      "path": "internal/adapter/skill",
+      "prefix": true,
+      "categories": [
+        "file"
+      ],
+      "owner": "skill adapter",
+      "reason": "Runtime-owned skill state and lock files."
+    },
+    {
       "path": "internal/adapter/tool/agent",
       "prefix": true,
-      "categories": ["process", "file"],
+      "categories": [
+        "process",
+        "file"
+      ],
       "owner": "agent tool",
       "reason": "Guard-authorized child-agent merge checks and workspace preparation."
     },
     {
+      "path": "internal/adapter/tool/content",
+      "prefix": true,
+      "categories": [
+        "process",
+        "file"
+      ],
+      "owner": "content tool",
+      "reason": "Guard-authorized sandbox conversion and bounded temporary artifacts."
+    },
+    {
+      "path": "internal/adapter/tool/dev",
+      "prefix": true,
+      "categories": [
+        "process"
+      ],
+      "owner": "developer tools",
+      "reason": "Guard-authorized sandboxed formatter, debugger, and dependency resolver processes."
+    },
+    {
+      "path": "internal/adapter/tool/git/git.go",
+      "categories": [
+        "process"
+      ],
+      "owner": "git tool",
+      "reason": "Guard-authorized read-only Git metadata commands."
+    },
+    {
+      "path": "internal/adapter/tool/repohost",
+      "prefix": true,
+      "categories": [
+        "process"
+      ],
+      "owner": "repository host tools",
+      "reason": "Guard-authorized fixed-shape repository hosting CLI operations."
+    },
+    {
+      "path": "internal/adapter/tool/shell/shell.go",
+      "categories": [
+        "process"
+      ],
+      "owner": "shell tool",
+      "reason": "Guard-authorized sandboxed foreground shell commands."
+    },
+    {
+      "path": "internal/adapter/tool/web",
+      "prefix": true,
+      "categories": [
+        "process",
+        "file",
+        "network"
+      ],
+      "owner": "web tool",
+      "reason": "Guarded web transports and the isolated Chromium CDP process/profile lifecycle."
+    },
+    {
       "path": "internal/host/bench",
       "prefix": true,
-      "categories": ["file"],
+      "categories": [
+        "file"
+      ],
       "owner": "benchmark host",
       "reason": "Developer-invoked benchmark fixture materialization."
     },
     {
-      "path": "internal/platform/ownerlease",
+      "path": "internal/host/runtimeapi/runtimecontract",
       "prefix": true,
-      "categories": ["file"],
-      "owner": "owner lease",
-      "reason": "Runtime-owned supervisor lease persistence."
+      "categories": [
+        "process",
+        "file"
+      ],
+      "owner": "runtime contract fixture",
+      "reason": "Executable contract fixture retained outside production host wiring."
+    },
+    {
+      "path": "internal/host/runtimeapi/web/native_directory.go",
+      "categories": [
+        "process"
+      ],
+      "owner": "web host",
+      "reason": "Operator-initiated native directory picker."
+    },
+    {
+      "path": "internal/host/web",
+      "prefix": true,
+      "categories": [
+        "process",
+        "file",
+        "network"
+      ],
+      "owner": "web host",
+      "reason": "Local listener, supervisor state, and operator browser launch."
     },
     {
       "path": "internal/observability",
       "prefix": true,
-      "categories": ["file"],
+      "categories": [
+        "file"
+      ],
       "owner": "observability",
       "reason": "Runtime-owned logs, metrics, traces, and provider debug dumps."
     },
     {
+      "path": "internal/observability/diagnostics/diagnostics.go",
+      "categories": [
+        "process"
+      ],
+      "owner": "diagnostics runner",
+      "reason": "Guard-triggered sandboxed post-edit diagnostics."
+    },
+    {
       "path": "internal/orchestration",
       "prefix": true,
-      "categories": ["file"],
+      "categories": [
+        "file"
+      ],
       "owner": "orchestration",
       "reason": "Runtime-owned worktree, lane, and durable orchestration state."
     },
     {
+      "path": "internal/orchestration/chatmerge/service.go",
+      "categories": [
+        "process"
+      ],
+      "owner": "chat merge",
+      "reason": "Runtime-owned read-only Git merge calculations; mutations use File and VCS Brokers."
+    },
+    {
+      "path": "internal/orchestration/execsettle/service.go",
+      "categories": [
+        "process"
+      ],
+      "owner": "exec settlement",
+      "reason": "Settles toolchain installation state through the platform process runner."
+    },
+    {
+      "path": "internal/persist",
+      "prefix": true,
+      "categories": [
+        "file"
+      ],
+      "owner": "persistence",
+      "reason": "Trusted durable state owners."
+    },
+    {
+      "path": "internal/platform/environment",
+      "prefix": true,
+      "categories": [
+        "file",
+        "process"
+      ],
+      "owner": "environment preparer",
+      "reason": "Prepares the policy-owned private home and temp directories; getconf reads the Darwin user temp root."
+    },
+    {
+      "path": "internal/platform/envprobe/envprobe.go",
+      "categories": [
+        "process"
+      ],
+      "owner": "environment probe",
+      "reason": "Fixed read-only host capability probes with substituted fakes in tests."
+    },
+    {
+      "path": "internal/platform/ownerlease",
+      "prefix": true,
+      "categories": [
+        "file"
+      ],
+      "owner": "owner lease",
+      "reason": "Runtime-owned supervisor lease persistence."
+    },
+    {
+      "path": "internal/platform/process",
+      "prefix": true,
+      "categories": [
+        "process",
+        "file"
+      ],
+      "owner": "process runtime",
+      "reason": "Low-level process construction and lifecycle owner; callers are inventoried separately."
+    },
+    {
+      "path": "internal/platform/repowalk/repowalk.go",
+      "categories": [
+        "process"
+      ],
+      "owner": "repository walker",
+      "reason": "Runtime-owned sandboxed read-only Git file enumeration."
+    },
+    {
+      "path": "internal/platform/workspacequery/git.go",
+      "categories": [
+        "process"
+      ],
+      "owner": "workspace query",
+      "reason": "Runtime-owned fixed read-only Git metadata queries; mutations are delegated to VCS Broker."
+    },
+    {
+      "path": "internal/platform/workspacequery/git_inspect.go",
+      "categories": [
+        "process"
+      ],
+      "owner": "workspace query",
+      "reason": "Runtime-owned fixed read-only Git metadata queries; mutations are delegated to VCS Broker."
+    },
+    {
       "path": "internal/runtime/app/wire",
       "prefix": true,
-      "categories": ["process", "file"],
+      "categories": [
+        "process",
+        "file"
+      ],
       "owner": "composition root",
       "reason": "Construction and cleanup of Runtime-owned process managers and state directories."
     },
     {
       "path": "internal/runtime/protocol/schemagen",
       "prefix": true,
-      "categories": ["file"],
+      "categories": [
+        "file"
+      ],
       "owner": "protocol generator",
       "reason": "Developer-invoked generated artifact writer."
     },
     {
       "path": "internal/security",
       "prefix": true,
-      "categories": ["file", "network"],
+      "categories": [
+        "file",
+        "network"
+      ],
       "owner": "security brokers",
       "reason": "Credential, permission, egress, sandbox state, and descriptor-relative File Broker primitives."
     },
     {
-      "path": "internal/adapter/lsp/check.go",
-      "categories": ["process"],
-      "owner": "lsp tool",
-      "reason": "Guard-authorized sandboxed language server lifecycle."
-    },
-    {
-      "path": "internal/adapter/tool/git/git.go",
-      "categories": ["process"],
-      "owner": "git tool",
-      "reason": "Guard-authorized read-only Git metadata commands."
-    },
-    {
-      "path": "internal/adapter/tool/shell/shell.go",
-      "categories": ["process"],
-      "owner": "shell tool",
-      "reason": "Guard-authorized sandboxed foreground shell commands."
-    },
-    {
-      "path": "internal/observability/diagnostics/diagnostics.go",
-      "categories": ["process"],
-      "owner": "diagnostics runner",
-      "reason": "Guard-triggered sandboxed post-edit diagnostics."
-    },
-    {
-      "path": "internal/orchestration/chatmerge/service.go",
-      "categories": ["process"],
-      "owner": "chat merge",
-      "reason": "Runtime-owned read-only Git merge calculations; mutations use File and VCS Brokers."
-    },
-    {
-      "path": "internal/platform/repowalk/repowalk.go",
-      "categories": ["process"],
-      "owner": "repository walker",
-      "reason": "Runtime-owned sandboxed read-only Git file enumeration."
-    },
-    {
-      "path": "internal/platform/workspacequery/git.go",
-      "categories": ["process"],
-      "owner": "workspace query",
-      "reason": "Runtime-owned fixed read-only Git metadata queries; mutations are delegated to VCS Broker."
-    },
-    {
       "path": "internal/security/processbroker",
       "prefix": true,
-      "categories": ["process"],
+      "categories": [
+        "process"
+      ],
       "owner": "process broker",
       "reason": "Lease-consuming process start and lifecycle boundary."
     },
     {
+      "path": "internal/security/sandbox",
+      "prefix": true,
+      "categories": [
+        "process",
+        "file",
+        "network"
+      ],
+      "owner": "sandbox",
+      "reason": "Trusted sandbox probes, helper execution, and private policy state."
+    },
+    {
       "path": "internal/security/vcsbroker/broker.go",
-      "categories": ["process"],
+      "categories": [
+        "process"
+      ],
       "owner": "vcs broker",
       "reason": "Lease-consuming Git mutation boundary and trusted repository identity checks."
     }

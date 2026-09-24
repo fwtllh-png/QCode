@@ -2,6 +2,9 @@ package web
 
 import (
 	"bytes"
+	"crypto/sha256"
+	_ "embed"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,6 +18,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/fwtllh-png/QCode/internal/adapter/model"
 	"github.com/fwtllh-png/QCode/internal/config"
@@ -26,27 +30,103 @@ import (
 )
 
 const (
-	webSetupVersion    = 2
+	webSetupVersion    = 3
 	webSupervisorScope = "web-supervisor"
 	customProviderID   = "openai-compatible"
 )
 
 var setupModelIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$`)
 
-var setupProviderAliases = map[string][]string{
-	"deepseek": {"deepseek-v4-flash"},
+// legacySetupCatalogData 冻结了旧内置目录中曾暴露给 Web 设置界面的
+// provider 条目（openai/deepseek/glm 及 deepseek-v4-flash 别名归属）。
+// 它只服务于 selection.json 旧预设连接的一次性物化迁移，不再作为
+// 可选 provider 来源。
+//
+//go:embed legacy_setup_catalog.json
+var legacySetupCatalogData []byte
+
+type legacySetupCatalog struct {
+	Version   int              `json:"version"`
+	Aliases   map[string][]string `json:"aliases"`
+	Providers []model.Provider `json:"providers"`
 }
 
+var legacySetupProviders = sync.OnceValue(func() map[string]model.Provider {
+	var document legacySetupCatalog
+	if err := json.Unmarshal(legacySetupCatalogData, &document); err != nil {
+		panic(fmt.Errorf("decode legacy setup catalog: %w", err))
+	}
+	if document.Version != 1 {
+		panic(fmt.Errorf("unsupported legacy setup catalog version %d", document.Version))
+	}
+	result := make(map[string]model.Provider, len(document.Providers))
+	for _, provider := range document.Providers {
+		if provider.Adapter.Supports(provider.Protocol) &&
+			provider.Endpoint != "" && len(provider.Models) > 0 {
+			result[provider.ID] = provider
+		}
+	}
+	return result
+})
+
+var legacySetupAliases = sync.OnceValue(func() map[string][]string {
+	var document legacySetupCatalog
+	if err := json.Unmarshal(legacySetupCatalogData, &document); err != nil {
+		panic(err)
+	}
+	return document.Aliases
+})
+
+// webSetupConnection 是一条可用的模型连接：内置 provider 或自定义
+// OpenAI-compatible 端点，带各自的基线模型、附加模型与凭证引用。
+type webSetupConnection struct {
+	ID        string                     `json:"id"`
+	Provider  string                     `json:"provider"`
+	Model     string                     `json:"model"`
+	BaseURL   string                     `json:"base_url,omitempty"`
+	Protocol  string                     `json:"protocol,omitempty"`
+	Metadata  *webhost.SetupModelMetadata `json:"model_metadata,omitempty"`
+	Models    []webSetupModel            `json:"models,omitempty"`
+	MetadataProvenance model.Provenance  `json:"metadata_provenance"`
+	Credential *credential.Reference     `json:"credential,omitempty"`
+}
+
+// webSetupSelection v3：连接集合 + 默认连接。新会话从默认连接的基线
+// 模型出发；已有会话各自持有 (provider, model) 选择。
 type webSetupSelection struct {
-	Version            int                         `json:"version"`
-	Provider           string                      `json:"provider"`
-	Model              string                      `json:"model"`
-	BaseURL            string                      `json:"base_url,omitempty"`
-	Protocol           string                      `json:"protocol,omitempty"`
-	Metadata           *webhost.SetupModelMetadata `json:"model_metadata,omitempty"`
-	Models             []webSetupModel             `json:"models,omitempty"`
-	MetadataProvenance model.Provenance            `json:"metadata_provenance"`
-	Credential         *credential.Reference       `json:"credential,omitempty"`
+	Version           int                   `json:"version"`
+	Connections       []webSetupConnection  `json:"connections"`
+	DefaultConnection string                `json:"default_connection"`
+}
+
+// Active 返回默认连接（缺省回退首条）；零连接时返回 nil。
+func (s webSetupSelection) Active() *webSetupConnection {
+	for index := range s.Connections {
+		if s.Connections[index].ID == s.DefaultConnection {
+			return &s.Connections[index]
+		}
+	}
+	if len(s.Connections) > 0 {
+		return &s.Connections[0]
+	}
+	return nil
+}
+
+// Connection 按 ID 查找连接。
+func (s webSetupSelection) Connection(id string) *webSetupConnection {
+	for index := range s.Connections {
+		if s.Connections[index].ID == id {
+			return &s.Connections[index]
+		}
+	}
+	return nil
+}
+
+// connectionID 生成确定性连接 ID：端点摘要保证可重复保存且 canonical
+// 校验稳定。同一 Base URL 上的多个模型共享一条连接。
+func connectionID(baseURL string) string {
+	digest := sha256.Sum256([]byte(baseURL))
+	return customProviderID + ":" + hex.EncodeToString(digest[:6])
 }
 
 type webSetupModel struct {
@@ -56,6 +136,15 @@ type webSetupModel struct {
 
 func cloneWebSetupSelection(input webSetupSelection) webSetupSelection {
 	out := input
+	out.Connections = make([]webSetupConnection, len(input.Connections))
+	for index, connection := range input.Connections {
+		out.Connections[index] = cloneWebSetupConnection(connection)
+	}
+	return out
+}
+
+func cloneWebSetupConnection(input webSetupConnection) webSetupConnection {
+	out := input
 	if input.Metadata != nil {
 		value := *input.Metadata
 		value.Capabilities.ReasoningEfforts = append(
@@ -64,13 +153,15 @@ func cloneWebSetupSelection(input webSetupSelection) webSetupSelection {
 		)
 		out.Metadata = &value
 	}
-	out.Models = make([]webSetupModel, len(input.Models))
-	for index, entry := range input.Models {
-		out.Models[index] = entry
-		out.Models[index].Metadata.Capabilities.ReasoningEfforts = append(
-			[]string(nil),
-			entry.Metadata.Capabilities.ReasoningEfforts...,
-		)
+	if input.Models != nil {
+		out.Models = make([]webSetupModel, len(input.Models))
+		for index, entry := range input.Models {
+			out.Models[index] = entry
+			out.Models[index].Metadata.Capabilities.ReasoningEfforts = append(
+				[]string(nil),
+				entry.Metadata.Capabilities.ReasoningEfforts...,
+			)
+		}
 	}
 	if input.Credential != nil {
 		value := *input.Credential
@@ -84,207 +175,94 @@ type webSetupAttempt struct {
 	result  chan error
 }
 
-func webSetupCatalog() webhost.SetupCatalog {
-	catalog := model.DefaultCatalog()
-	displayNames := map[string]string{
-		"openai":   "OpenAI",
-		"deepseek": "DeepSeek",
-		"glm":      "GLM",
-	}
-	providers := make([]webhost.SetupProvider, 0, len(displayNames)+1)
-	for _, id := range []string{"openai", "deepseek", "glm"} {
-		provider, exists := catalog.Provider(id)
-		if !exists {
-			continue
-		}
-		providers = append(providers, webhost.SetupProvider{
-			ID: id, DisplayName: displayNames[id],
-			Protocol:       string(provider.Protocol),
-			RequiresAPIKey: provider.Credential.Kind != "",
-			Models:         setupKnownModels(catalog, provider),
-		})
-	}
-	providers = append(providers, webhost.SetupProvider{
-		ID: customProviderID, DisplayName: "OpenAI-compatible",
-		Protocol: string(model.ProtocolOpenAIChat), Custom: true,
-	})
-	return webhost.SetupCatalog{
-		Version: webhost.SetupCatalogVersion, Providers: providers,
-	}
-}
-
-func setupKnownModels(
-	catalog *model.Catalog,
-	selected model.Provider,
-) []string {
-	counts := make(map[string]int)
-	for _, provider := range catalog.Providers() {
-		if !setupProviderOwns(selected.ID, provider.ID) {
-			continue
-		}
-		for modelID := range provider.Models {
-			counts[modelID]++
-		}
-	}
-	models := make([]string, 0, len(counts))
-	for modelID, count := range counts {
-		if _, direct := selected.Models[modelID]; direct || count == 1 {
-			models = append(models, modelID)
-		}
-	}
-	sort.Strings(models)
-	return models
-}
-
-// resolveSetupProbeConnection uses the same provider boundary as setup/apply.
-// Built-in providers never accept an endpoint or protocol override from the UI.
+// resolveSetupProbeConnection uses the same connection boundary as setup/apply:
+// every probe targets an explicit OpenAI-compatible endpoint.
 func resolveSetupProbeConnection(request webhost.SetupProbeRequest) (string, string, model.WireProtocol, error) {
-	providerID := strings.TrimSpace(request.Provider)
-	if providerID == customProviderID {
-		baseURL, err := validateSetupBaseURL(request.BaseURL)
-		if err != nil {
-			return "", "", "", err
-		}
-		protocol := model.WireProtocol(strings.TrimSpace(request.Protocol))
-		if protocol == "" {
-			protocol = model.ProtocolOpenAIChat
-		}
-		if protocol != model.ProtocolOpenAIChat && protocol != model.ProtocolOpenAIResponses {
-			return "", "", "", invalidSetup("custom provider protocol must be openai_chat or openai_responses")
-		}
-		return providerID, baseURL, protocol, nil
+	baseURL, err := validateSetupBaseURL(request.BaseURL)
+	if err != nil {
+		return "", "", "", err
 	}
-	for _, allowed := range webSetupCatalog().Providers {
-		if allowed.ID != providerID || allowed.Custom {
-			continue
-		}
-		provider, exists := model.DefaultCatalog().Provider(providerID)
-		if exists {
-			return providerID, provider.Endpoint, provider.Protocol, nil
-		}
+	protocol := model.WireProtocol(strings.TrimSpace(request.Protocol))
+	if protocol == "" {
+		protocol = model.ProtocolOpenAIChat
 	}
-	return "", "", "", invalidSetup("unknown setup provider")
+	if protocol != model.ProtocolOpenAIChat && protocol != model.ProtocolOpenAIResponses {
+		return "", "", "", invalidSetup("connection protocol must be openai_chat or openai_responses")
+	}
+	return connectionID(baseURL), baseURL, protocol, nil
 }
 
 func resolveWebSetup(request webhost.SetupRequest) (
-	webSetupSelection, credential.Reference, error,
+	webSetupConnection, credential.Reference, error,
 ) {
-	providerID := strings.TrimSpace(request.Provider)
-	modelID := strings.TrimSpace(request.Model)
-	if providerID == customProviderID {
-		baseURL, err := validateSetupBaseURL(request.BaseURL)
-		if err != nil {
-			return webSetupSelection{}, credential.Reference{}, err
-		}
-		protocolName := strings.TrimSpace(request.Protocol)
-		if protocolName == "" {
-			protocolName = string(model.ProtocolOpenAIChat)
-		}
-		if protocolName != string(model.ProtocolOpenAIChat) &&
-			protocolName != string(model.ProtocolOpenAIResponses) {
-			return webSetupSelection{}, credential.Reference{}, invalidSetup(
-				"custom provider protocol must be openai_chat or openai_responses",
-			)
-		}
-		if !setupModelIDPattern.MatchString(modelID) {
-			return webSetupSelection{}, credential.Reference{}, invalidSetup(
-				"custom provider model id is invalid",
-			)
-		}
-		metadata, err := resolveSetupModelMetadata(
-			protocolName,
-			request.ModelMetadata,
-		)
-		if err != nil {
-			return webSetupSelection{}, credential.Reference{}, err
-		}
-		return webSetupSelection{
-			Version: webSetupVersion, Provider: customProviderID, Model: modelID,
-			BaseURL: baseURL, Protocol: protocolName, Metadata: metadata,
-			MetadataProvenance: model.ProvenanceOperatorConfig,
-		}, credential.Reference{}, nil
+	connection, reference, err := resolveWebSetupConnection(request)
+	if err != nil {
+		return webSetupConnection{}, credential.Reference{}, err
 	}
-
-	if !setupModelIDPattern.MatchString(modelID) {
-		return webSetupSelection{}, credential.Reference{}, invalidSetup(
-			"model id is invalid",
-		)
-	}
-	allowed := map[string]bool{
-		"openai": true, "deepseek": true, "glm": true,
-	}
-	catalog := model.DefaultCatalog()
-	provider, exists := catalog.Provider(providerID)
-	_, directlyKnown := provider.Models[modelID]
-	if !exists || !allowed[providerID] && !directlyKnown {
-		return webSetupSelection{}, credential.Reference{}, invalidSetup(
-			"provider must be OpenAI, DeepSeek, GLM, or OpenAI-compatible",
-		)
-	}
-	routeProvider := provider
-	if !directlyKnown {
-		if matched, found := uniqueSetupProviderForModel(
-			catalog,
-			provider,
-			modelID,
-		); found {
-			routeProvider = matched
-			directlyKnown = true
-		}
-	}
-	if routeProvider.Credential.Kind != "" && strings.TrimSpace(request.APIKey) == "" {
-		return webSetupSelection{}, credential.Reference{}, invalidSetup("API key is required")
-	}
-	baseURL := ""
-	if !directlyKnown {
-		baseURL = provider.Endpoint
-	}
-	var metadata *webhost.SetupModelMetadata
-	if !directlyKnown {
-		var err error
-		metadata, err = resolveSetupModelMetadata(
-			string(routeProvider.Protocol),
-			request.ModelMetadata,
-		)
-		if err != nil {
-			return webSetupSelection{}, credential.Reference{}, err
-		}
-	} else if request.ModelMetadata != nil {
-		return webSetupSelection{}, credential.Reference{}, invalidSetup(
-			"model metadata is not accepted for a catalog model",
-		)
-	}
-	return webSetupSelection{
-			Version:  webSetupVersion,
-			Provider: providerID,
-			Model:    modelID,
-			BaseURL:  baseURL,
-			Protocol: string(routeProvider.Protocol),
-			Metadata: metadata,
-			MetadataProvenance: func() model.Provenance {
-				if metadata != nil {
-					return model.ProvenanceOperatorConfig
-				}
-				return model.ProvenanceBundled
-			}(),
-		}, credential.Reference{
-			Kind: routeProvider.Credential.Kind, Name: routeProvider.Credential.Name,
-		}, nil
+	connection.ID = connection.Provider
+	return connection, reference, nil
 }
 
-func uniqueSetupProviderForModel(
-	catalog *model.Catalog,
-	selected model.Provider,
-	modelID string,
-) (model.Provider, bool) {
+// resolveWebSetupConnection 校验一条新模型连接：Base URL、Protocol、
+// Model ID、API Key 四要素齐全，模型元数据探测或手填。连接的运行时
+// provider ID 由 Base URL 摘要决定，与端点一一对应。
+func resolveWebSetupConnection(request webhost.SetupRequest) (
+	webSetupConnection, credential.Reference, error,
+) {
+	modelID := strings.TrimSpace(request.Model)
+	baseURL, err := validateSetupBaseURL(request.BaseURL)
+	if err != nil {
+		return webSetupConnection{}, credential.Reference{}, err
+	}
+	protocolName := strings.TrimSpace(request.Protocol)
+	if protocolName == "" {
+		protocolName = string(model.ProtocolOpenAIChat)
+	}
+	if protocolName != string(model.ProtocolOpenAIChat) &&
+		protocolName != string(model.ProtocolOpenAIResponses) {
+		return webSetupConnection{}, credential.Reference{}, invalidSetup(
+			"connection protocol must be openai_chat or openai_responses",
+		)
+	}
+	if !setupModelIDPattern.MatchString(modelID) {
+		return webSetupConnection{}, credential.Reference{}, invalidSetup(
+			"connection model id is invalid",
+		)
+	}
+	if strings.TrimSpace(request.APIKey) == "" {
+		return webSetupConnection{}, credential.Reference{}, invalidSetup(
+			"API key is required",
+		)
+	}
+	metadata, err := resolveSetupModelMetadata(protocolName, request.ModelMetadata)
+	if err != nil {
+		return webSetupConnection{}, credential.Reference{}, err
+	}
+	return webSetupConnection{
+		Provider: connectionID(baseURL), Model: modelID,
+		BaseURL: baseURL, Protocol: protocolName, Metadata: metadata,
+		MetadataProvenance: model.ProvenanceOperatorConfig,
+	}, credential.Reference{}, nil
+}
+
+// legacyProviderForModel 在冻结迁移表中找到拥有该模型的 provider：
+// 直接匹配优先，再按旧别名归属（如 deepseek → deepseek-v4-flash）。
+func legacyProviderForModel(providerID, modelID string) (model.Provider, bool) {
+	providers := legacySetupProviders()
+	if provider, exists := providers[providerID]; exists {
+		if _, known := provider.Models[modelID]; known {
+			return provider, true
+		}
+	}
 	var match model.Provider
 	found := false
-	for _, provider := range catalog.Providers() {
-		if provider.Adapter != selected.Adapter ||
-			!setupProviderOwns(selected.ID, provider.ID) {
+	for candidateID, provider := range providers {
+		owned := candidateID == providerID ||
+			slices.Contains(legacySetupAliases()[providerID], candidateID)
+		if !owned {
 			continue
 		}
-		if _, exists := provider.Models[modelID]; !exists {
+		if _, known := provider.Models[modelID]; !known {
 			continue
 		}
 		if found {
@@ -296,9 +274,64 @@ func uniqueSetupProviderForModel(
 	return match, found
 }
 
-func setupProviderOwns(selectedID, candidateID string) bool {
-	return selectedID == candidateID ||
-		slices.Contains(setupProviderAliases[selectedID], candidateID)
+// materializeLegacyConnection 把旧预设连接（BaseURL 为空、端点来自已
+// 删除的内置目录）物化为显式连接：补全端点、协议与模型元数据，保留
+// 原连接 ID，keyring 凭证引用继续有效。
+func materializeLegacyConnection(connection webSetupConnection) (webSetupConnection, bool) {
+	owner, known := legacyProviderForModel(connection.Provider, connection.Model)
+	if !known {
+		return webSetupConnection{}, false
+	}
+	descriptor, known := owner.Models[connection.Model]
+	if !known {
+		return webSetupConnection{}, false
+	}
+	connection.BaseURL = owner.Endpoint
+	connection.Protocol = string(owner.Protocol)
+	connection.Metadata = setupMetadataFromModel(descriptor)
+	connection.MetadataProvenance = model.ProvenanceBundled
+	return connection, true
+}
+
+// setupMetadataFromModel 把目录模型描述转换为设置协议的元数据形态。
+func setupMetadataFromModel(descriptor model.Model) *webhost.SetupModelMetadata {
+	value := func(input bool) *bool { return &input }
+	capabilities := descriptor.Capabilities
+	return &webhost.SetupModelMetadata{
+		CanonicalID:     descriptor.CanonicalID,
+		WireID:          descriptor.WireID,
+		ContextTokens:   descriptor.Limits.ContextTokens,
+		MaxOutputTokens: descriptor.Limits.MaxOutputTokens,
+		Capabilities: webhost.SetupModelCapabilities{
+			Streaming:              value(capabilities.Streaming),
+			Reasoning:              value(capabilities.Reasoning),
+			ReasoningEfforts:       append([]string(nil), capabilities.ReasoningEfforts...),
+			DefaultReasoningEffort: capabilities.DefaultReasoningEffort,
+			ToolCalls:              value(capabilities.ToolCalls),
+			NativeSearch:           value(capabilities.NativeSearch),
+			IncrementalResponses:   value(capabilities.IncrementalResponses),
+			Vision:                 value(capabilities.Vision),
+			ImageInput:             value(capabilities.ImageInput),
+			PromptCache:            value(capabilities.PromptCache),
+			AutomaticPromptCache:   value(capabilities.AutomaticPromptCache),
+			ThinkingToggle:         value(capabilities.ThinkingToggle),
+		},
+	}
+}
+
+// isMaterializedLegacyConnection 判断一条已保存连接是否为物化后的旧
+// 预设连接（Provider 保留旧名而非端点摘要）；canonical 校验对其放行。
+func isMaterializedLegacyConnection(connection webSetupConnection) bool {
+	owner, known := legacyProviderForModel(connection.Provider, connection.Model)
+	if !known {
+		return false
+	}
+	descriptor, known := owner.Models[connection.Model]
+	return known &&
+		owner.Endpoint == connection.BaseURL &&
+		owner.Protocol == model.WireProtocol(connection.Protocol) &&
+		connection.Metadata != nil &&
+		reflect.DeepEqual(connection.Metadata, setupMetadataFromModel(descriptor))
 }
 
 func validateSetupBaseURL(value string) (string, error) {
@@ -319,18 +352,64 @@ func validateSetupBaseURL(value string) (string, error) {
 	return "", invalidSetup("custom provider must use HTTPS or loopback HTTP")
 }
 
-func setupModelMetadata(selection webSetupSelection) wire.ModelMetadataOptions {
+// mergeConnection 把解析出的连接并入现有连接集：同 ID 替换、新 ID 追加，
+// 并将其设为默认连接（setup/apply 的既有语义：应用即切换活跃连接）。
+func mergeConnection(
+	selection webSetupSelection, connection webSetupConnection,
+) webSetupSelection {
+	result := cloneWebSetupSelection(selection)
+	replaced := false
+	for index := range result.Connections {
+		if result.Connections[index].ID == connection.ID {
+			connection.Credential = result.Connections[index].Credential
+			result.Connections[index] = connection
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		result.Connections = append(result.Connections, connection)
+	}
+	result.DefaultConnection = connection.ID
+	return result
+}
+
+// mergeConnectionKeepDefault 合并连接但不改变默认连接（connection/add 用；
+// 新连接仅进入集合，默认连接保持不变）。
+func mergeConnectionKeepDefault(
+	selection webSetupSelection, connection webSetupConnection,
+) webSetupSelection {
+	result := cloneWebSetupSelection(selection)
+	replaced := false
+	for index := range result.Connections {
+		if result.Connections[index].ID == connection.ID {
+			connection.Credential = result.Connections[index].Credential
+			result.Connections[index] = connection
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		result.Connections = append(result.Connections, connection)
+	}
+	if result.DefaultConnection == "" {
+		result.DefaultConnection = connection.ID
+	}
+	return result
+}
+
+func setupModelMetadata(connection webSetupConnection) wire.ModelMetadataOptions {
 	result := wire.ModelMetadataOptions{}
-	if selection.BaseURL != "" && selection.Metadata != nil {
+	if connection.BaseURL != "" && connection.Metadata != nil {
 		result.Descriptor = setupModelDescriptor(
-			selection.Model,
-			*selection.Metadata,
-			selection.MetadataProvenance,
+			connection.Model,
+			*connection.Metadata,
+			connection.MetadataProvenance,
 		)
 	}
-	if len(selection.Models) != 0 {
-		result.AdditionalDescriptors = make(map[string]model.Model, len(selection.Models))
-		for _, registered := range selection.Models {
+	if len(connection.Models) != 0 {
+		result.AdditionalDescriptors = make(map[string]model.Model, len(connection.Models))
+		for _, registered := range connection.Models {
 			result.AdditionalDescriptors[registered.ID] = *setupModelDescriptor(
 				registered.ID,
 				registered.Metadata,
@@ -507,30 +586,25 @@ func setupCapabilitiesDTO(
 	}
 }
 
-func setupRuntimeProviderID(selection webSetupSelection) string {
-	if selection.Provider == customProviderID || selection.BaseURL != "" {
-		return selection.Provider
-	}
-	catalog := model.DefaultCatalog()
-	provider, exists := catalog.Provider(selection.Provider)
-	if !exists {
-		return selection.Provider
-	}
-	if routeProvider, found := uniqueSetupProviderForModel(
-		catalog,
-		provider,
-		selection.Model,
-	); found {
-		return routeProvider.ID
-	}
-	return selection.Provider
-}
-
-func setupWireModelID(selection webSetupSelection, modelID string) string {
-	if selection.Metadata != nil && modelID == selection.Model {
-		return selection.Metadata.WireID
+func setupWireModelID(connection webSetupConnection, modelID string) string {
+	if connection.Metadata != nil && modelID == connection.Model {
+		return connection.Metadata.WireID
 	}
 	return modelID
+}
+
+// loadExecutionModelMetadata 装载 TOML/CLI 单连接会话的模型元数据。
+func loadExecutionModelMetadata(execution config.Execution) (*webhost.SetupModelMetadata, error) {
+	if strings.TrimSpace(execution.ModelMetadata) == "" {
+		return nil, invalidSetup(
+			"execution.model_metadata is required; the file declares the model's limits and capabilities")
+	}
+	descriptor, err := wire.LoadModelMetadataFile(
+		execution.ModelMetadata, execution.Model)
+	if err != nil {
+		return nil, fmt.Errorf("load model metadata: %w", err)
+	}
+	return setupMetadataFromModel(descriptor), nil
 }
 
 func setupSelectionPath(dataDir, _ string) string {
@@ -542,11 +616,15 @@ func loadWebSetupConfig(
 	selection webSetupSelection,
 	reference credential.Reference,
 ) (config.Snapshot, error) {
+	active := selection.Active()
+	if active == nil {
+		return config.Snapshot{}, errors.New("no model connection is configured")
+	}
 	overrides := webConfigOverrides(options)
-	runtimeProviderID := setupRuntimeProviderID(selection)
-	overrides.Provider = &runtimeProviderID
-	overrides.Model = &selection.Model
-	overrides.Protocol = &selection.Protocol
+	providerID := active.ID
+	overrides.Provider = &providerID
+	overrides.Model = &active.Model
+	overrides.Protocol = &active.Protocol
 	overrides.CredentialKind = &reference.Kind
 	overrides.CredentialName = &reference.Name
 	return config.Load(config.LoadOptions{
@@ -554,6 +632,9 @@ func loadWebSetupConfig(
 	})
 }
 
+// loadWebSetupSelection 读取并校验已保存的连接集。旧预设连接（BaseURL
+// 为空）与旧自定义连接（Provider 为 "openai-compatible"）在此物化/规范
+// 化为新形态并回写；无法迁移的旧连接被丢弃而不是让启动失败。
 func loadWebSetupSelection(dataDir, workspaceID string) (webSetupSelection, bool, error) {
 	data, err := os.ReadFile(setupSelectionPath(dataDir, workspaceID))
 	if errors.Is(err, os.ErrNotExist) {
@@ -562,54 +643,171 @@ func loadWebSetupSelection(dataDir, workspaceID string) (webSetupSelection, bool
 	if err != nil {
 		return webSetupSelection{}, false, fmt.Errorf("read Web setup selection: %w", err)
 	}
+	selection, err := decodeWebSetupSelection(data)
+	if err != nil {
+		return webSetupSelection{}, false, err
+	}
+	if len(selection.Connections) == 0 {
+		return webSetupSelection{}, false, nil
+	}
+	migrated := false
+	kept := make([]webSetupConnection, 0, len(selection.Connections))
+	for _, stored := range selection.Connections {
+		connection := stored
+		if connection.BaseURL == "" {
+			materialized, ok := materializeLegacyConnection(connection)
+			if !ok {
+				migrated = true
+				continue
+			}
+			connection = materialized
+			migrated = true
+		}
+		if connection.Metadata == nil {
+			migrated = true
+			continue
+		}
+		request := webhost.SetupRequest{
+			Model: connection.Model, BaseURL: connection.BaseURL,
+			Protocol: connection.Protocol, APIKey: "persisted",
+			ModelMetadata: connection.Metadata,
+		}
+		resolved, _, err := resolveWebSetupConnection(request)
+		if err != nil {
+			return webSetupSelection{}, false, err
+		}
+		// 物化迁移保留原 provenance（bundled）；新连接恒为 operator_config。
+		resolved.MetadataProvenance = connection.MetadataProvenance
+		resolved.ID = connection.ID
+		resolved.Models, err = resolveRegisteredModels(
+			resolved.Protocol,
+			resolved.Model,
+			connection.Models,
+		)
+		if err != nil {
+			return webSetupSelection{}, false, err
+		}
+		if connection.Credential != nil {
+			if connection.Credential.Kind != "keyring" ||
+				!strings.HasPrefix(connection.Credential.Name, "web/") {
+				return webSetupSelection{}, false, errors.New(
+					"Web setup credential reference is invalid",
+				)
+			}
+			value := *connection.Credential
+			resolved.Credential = &value
+		}
+		if connection.Provider != resolved.Provider {
+			// 规范化旧形态：旧自定义连接 Provider 为 "openai-compatible"
+			// 而 ID 已是端点摘要；物化后的旧预设连接保留旧 provider 名。
+			hashID := connectionID(connection.BaseURL)
+			switch {
+			case connection.ID == hashID &&
+				(connection.Provider == customProviderID ||
+					connection.Provider == connection.ID):
+				connection.Provider = hashID
+				migrated = true
+			case connection.ID == connection.Provider &&
+				isMaterializedLegacyConnection(connection):
+			default:
+				return webSetupSelection{}, false, errors.New(
+					"Web setup selection is not canonical",
+				)
+			}
+			resolved.Provider = connection.Provider
+		}
+		if !reflect.DeepEqual(resolved, connection) {
+			return webSetupSelection{}, false, errors.New("Web setup selection is not canonical")
+		}
+		kept = append(kept, connection)
+	}
+	selection.Connections = kept
+	if len(kept) == 0 {
+		return webSetupSelection{}, false, nil
+	}
+	if selection.Active() == nil {
+		selection.DefaultConnection = kept[0].ID
+		migrated = true
+	}
+	if migrated {
+		if err := saveWebSetupSelection(dataDir, workspaceID, selection); err != nil {
+			return webSetupSelection{}, false, fmt.Errorf(
+				"persist migrated Web setup selection: %w", err)
+		}
+	}
+	return selection, true, nil
+}
+
+// decodeWebSetupSelection 严格解码 v3 连接集，并把历史 v1/v2 单连接格式
+// 无损升级为单条目 v3（仓库显式升级先例：setup v1→v2）。旧预设连接缺省
+// 的端点/元数据在 loadWebSetupSelection 的物化迁移中补全。
+func decodeWebSetupSelection(data []byte) (webSetupSelection, error) {
 	var selection webSetupSelection
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&selection); err != nil {
-		return webSetupSelection{}, false, fmt.Errorf("decode Web setup selection: %w", err)
+		var typeError *json.UnmarshalTypeError
+		if errors.As(err, &typeError) && typeError.Field == "connections" {
+			return webSetupSelection{}, errors.New("Web setup selection is not canonical")
+		}
+		// v2（及更早）的扁平字段在 v3 结构上是未知字段：尝试旧格式升级。
+		upgraded, upgradeErr := decodeLegacyWebSetupSelection(data)
+		if upgradeErr != nil {
+			return webSetupSelection{}, fmt.Errorf("decode Web setup selection: %w", err)
+		}
+		return upgraded, nil
 	}
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
-		return webSetupSelection{}, false, errors.New("Web setup selection has trailing data")
+		return webSetupSelection{}, errors.New("Web setup selection has trailing data")
 	}
-	if selection.Provider == customProviderID && selection.Metadata == nil {
-		return webSetupSelection{}, false, nil
+	if selection.Version == 0 {
+		selection.Version = webSetupVersion
 	}
-	request := webhost.SetupRequest{
-		Provider: selection.Provider, Model: selection.Model,
-		BaseURL: selection.BaseURL, Protocol: selection.Protocol, APIKey: "persisted",
-		ModelMetadata: selection.Metadata,
+	return selection, nil
+}
+
+type legacyWebSetupSelection struct {
+	Version            int                         `json:"version"`
+	Provider           string                      `json:"provider"`
+	Model              string                      `json:"model"`
+	BaseURL            string                      `json:"base_url,omitempty"`
+	Protocol           string                      `json:"protocol,omitempty"`
+	Metadata           *webhost.SetupModelMetadata `json:"model_metadata,omitempty"`
+	Models             []webSetupModel             `json:"models,omitempty"`
+	MetadataProvenance model.Provenance            `json:"metadata_provenance"`
+	Credential         *credential.Reference       `json:"credential,omitempty"`
+}
+
+func decodeLegacyWebSetupSelection(data []byte) (webSetupSelection, error) {
+	var legacy legacyWebSetupSelection
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&legacy); err != nil {
+		return webSetupSelection{}, err
 	}
-	resolved, _, err := resolveWebSetup(request)
-	if err != nil {
-		if selection.Version < webSetupVersion &&
-			selection.BaseURL != "" && selection.Metadata == nil {
-			return webSetupSelection{}, false, nil
-		}
-		return webSetupSelection{}, false, err
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return webSetupSelection{}, errors.New("Web setup selection has trailing data")
 	}
-	resolved.Models, err = resolveRegisteredModels(
-		resolved.Protocol,
-		resolved.Model,
-		selection.Models,
-	)
-	if err != nil {
-		return webSetupSelection{}, false, err
+	if legacy.Provider == "" {
+		return webSetupSelection{}, errors.New("Web setup selection has no provider")
 	}
-	if selection.Credential != nil {
-		if selection.Credential.Kind != "keyring" ||
-			!strings.HasPrefix(selection.Credential.Name, "web/") {
-			return webSetupSelection{}, false, errors.New(
-				"Web setup credential reference is invalid",
-			)
-		}
-		value := *selection.Credential
-		resolved.Credential = &value
+	id := legacy.Provider
+	if legacy.BaseURL != "" {
+		id = connectionID(legacy.BaseURL)
 	}
-	if !reflect.DeepEqual(resolved, selection) &&
-		!canUpgradeSetupSelection(selection, resolved) {
-		return webSetupSelection{}, false, errors.New("Web setup selection is not canonical")
+	connection := webSetupConnection{
+		ID: id,
+		Provider: legacy.Provider, Model: legacy.Model,
+		BaseURL: legacy.BaseURL, Protocol: legacy.Protocol,
+		Metadata: legacy.Metadata, Models: legacy.Models,
+		MetadataProvenance: legacy.MetadataProvenance,
+		Credential: legacy.Credential,
 	}
-	return resolved, true, nil
+	return webSetupSelection{
+		Version: webSetupVersion,
+		Connections: []webSetupConnection{connection},
+		DefaultConnection: connection.ID,
+	}, nil
 }
 
 func resolveRegisteredModels(
@@ -641,16 +839,6 @@ func resolveRegisteredModels(
 		return result[i].ID < result[j].ID
 	})
 	return result, nil
-}
-
-func canUpgradeSetupSelection(previous, resolved webSetupSelection) bool {
-	return (previous.Version == 1 || previous.Version == webSetupVersion) &&
-		previous.Provider != customProviderID &&
-		previous.Provider == resolved.Provider &&
-		previous.Model == resolved.Model &&
-		(previous.MetadataProvenance == "" ||
-			previous.MetadataProvenance == resolved.MetadataProvenance) &&
-		resolved.BaseURL == ""
 }
 
 func saveWebSetupSelection(dataDir, workspaceID string, selection webSetupSelection) error {

@@ -7,7 +7,7 @@ import (
 
 func testRoute(t *testing.T, providerID, modelID string) ReadyRoute {
 	t.Helper()
-	resolver, err := NewResolver(DefaultCatalog())
+	resolver, err := NewResolver(testCatalog(t))
 	if err != nil {
 		t.Fatal(err)
 	}

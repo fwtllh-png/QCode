@@ -33,8 +33,11 @@ describe("AgentDisclosure", () => {
 
     render(<AgentDisclosure entry={entry} onInspect={onInspect} />);
 
-    expect(screen.getByRole("button", {name: /Review · agent-1/})
-      .getAttribute("aria-expanded")).toBe("true");
+    // 运行中的 agent 卡默认折叠（避免高度变化推移视口），手动展开后可用。
+    const row = screen.getByRole("button", {name: /Review · agent-1/});
+    expect(row.getAttribute("aria-expanded")).toBe("false");
+    fireEvent.click(row);
+    expect(row.getAttribute("aria-expanded")).toBe("true");
     expect(screen.getByText("internal/persist/history/service.go")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", {name: "Inspect Read"}));
     expect(onInspect).toHaveBeenCalledWith("call-1");

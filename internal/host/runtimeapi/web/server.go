@@ -144,7 +144,6 @@ type bootstrapResponse struct {
 	WorkspaceRoot    string                      `json:"workspace_root,omitempty"`
 	Workspace        *protocol.WorkspaceIdentity `json:"workspace,omitempty"`
 	SetupRequired    bool                        `json:"setup_required,omitempty"`
-	SetupCatalog     *SetupCatalog               `json:"setup_catalog,omitempty"`
 	WorkspaceCatalog WorkspaceCatalog            `json:"workspace_catalog"`
 	Problem          *protocol.Problem           `json:"problem,omitempty"`
 }
@@ -361,10 +360,6 @@ func (s *Server) bootstrap(w http.ResponseWriter, r *http.Request) {
 	}
 	if result.WorkspaceCatalog.Version == 0 {
 		result.WorkspaceCatalog = s.workspaceCatalog()
-	}
-	if s.setup != nil {
-		catalog := s.setup.Catalog
-		result.SetupCatalog = &catalog
 	}
 	if dependencies.WorkspaceIdentity.Version != 0 {
 		identity := dependencies.WorkspaceIdentity

@@ -105,7 +105,7 @@ func (m *workspaceRuntimeManager) SetRoute(
 func (m *workspaceRuntimeManager) Configured() bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.selection.Provider != ""
+	return m.selection.Active() != nil
 }
 
 // Connection setup is Supervisor-owned and does not require a synthetic
@@ -137,7 +137,7 @@ func (m *workspaceRuntimeManager) configureWithoutRuntime(
 			return
 		}
 		if selectionPersisted {
-			if previous.Provider != "" {
+			if previous.Active() != nil {
 				resultErr = errors.Join(resultErr, saveWebSetupSelection(m.dataDir, "", previous))
 			} else if err := os.Remove(setupSelectionPath(m.dataDir, "")); !errors.Is(err, os.ErrNotExist) {
 				resultErr = errors.Join(resultErr, err)
@@ -148,7 +148,9 @@ func (m *workspaceRuntimeManager) configureWithoutRuntime(
 	reference = prepared.credentialReference
 	if prepared.credentialActivate != nil {
 		value := reference
-		selection.Credential = &value
+		if active := selection.Active(); active != nil {
+			active.Credential = &value
+		}
 	}
 	if persist {
 		if err := saveWebSetupSelection(m.dataDir, "", selection); err != nil {
@@ -178,12 +180,20 @@ func (m *workspaceRuntimeManager) Reconfigure(
 	if strings.TrimSpace(resolveRequest.APIKey) == "" {
 		resolveRequest.APIKey = "persisted"
 	}
-	selection, reference, err := resolveWebSetup(resolveRequest)
+	connection, reference, err := resolveWebSetup(resolveRequest)
 	if err != nil {
 		return err
 	}
-	_, err = m.replaceSelection(ctx, selection, reference, request.APIKey, true)
+	previous := m.currentSelection()
+	next := mergeConnection(previous, connection)
+	_, err = m.replaceSelection(ctx, next, reference, request.APIKey)
 	return err
+}
+
+func (m *workspaceRuntimeManager) currentSelection() webSetupSelection {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return cloneWebSetupSelection(m.selection)
 }
 
 func (m *workspaceRuntimeManager) AddModel(
@@ -205,13 +215,12 @@ func (m *workspaceRuntimeManager) ProbeModel(
 	selection := cloneWebSetupSelection(m.selection)
 	reference := m.reference
 	m.mu.Unlock()
-	baseURL := selection.BaseURL
-	providerID := selection.Provider
-	if baseURL == "" {
-		if provider, exists := model.DefaultCatalog().Provider(providerID); exists {
-			baseURL = provider.Endpoint
-		}
+	active := selection.Active()
+	if active == nil {
+		return webhost.SetupProbeResult{}, invalidSetup("no model connection is configured")
 	}
+	baseURL := active.BaseURL
+	providerID := active.Provider
 	probed, err := wire.ProbeModelConnection(
 		ctx,
 		providerID,
@@ -219,7 +228,7 @@ func (m *workspaceRuntimeManager) ProbeModel(
 		modelID,
 		"",
 		model.CredentialRef{Kind: reference.Kind, Name: reference.Name},
-		model.WireProtocol(selection.Protocol),
+		model.WireProtocol(active.Protocol),
 	)
 	if err != nil {
 		return webhost.SetupProbeResult{}, err
@@ -258,21 +267,26 @@ func (m *workspaceRuntimeManager) RemoveModel(
 	if modelID == "" {
 		return protocol.ModelCatalog{}, invalidSetup("model id is required")
 	}
-	if modelID == selection.Model {
+	activeConnection := selection.Active()
+	if activeConnection == nil {
+		return protocol.ModelCatalog{}, invalidSetup("no model connection is configured")
+	}
+	connection := *activeConnection
+	if modelID == connection.Model {
 		return protocol.ModelCatalog{}, invalidSetup(
 			"the connection default model cannot be removed",
 		)
 	}
 	found := false
-	next := selection
-	next.Models = make([]webSetupModel, 0, len(selection.Models))
-	for _, entry := range selection.Models {
+	connection.Models = make([]webSetupModel, 0, len(activeConnection.Models))
+	for _, entry := range activeConnection.Models {
 		if entry.ID == modelID {
 			found = true
 			continue
 		}
-		next.Models = append(next.Models, entry)
+		connection.Models = append(connection.Models, entry)
 	}
+	next := mergeConnection(selection, connection)
 	if !found {
 		return protocol.ModelCatalog{}, invalidSetup("model is not registered")
 	}
@@ -303,7 +317,7 @@ func (m *workspaceRuntimeManager) RemoveModel(
 			}
 		}
 	}
-	return m.replaceSelection(ctx, next, reference, "", false)
+	return m.replaceSelection(ctx, next, reference, "")
 }
 
 func (m *workspaceRuntimeManager) mutateModel(
@@ -316,24 +330,28 @@ func (m *workspaceRuntimeManager) mutateModel(
 		return protocol.ModelCatalog{}, invalidSetup("model id is invalid")
 	}
 	m.mu.Lock()
-	selection := m.selection
+	selection := cloneWebSetupSelection(m.selection)
 	reference := m.reference
 	m.mu.Unlock()
+	activeConnection := selection.Active()
+	if activeConnection == nil {
+		return protocol.ModelCatalog{}, invalidSetup("no model connection is configured")
+	}
 	metadata, err := resolveSetupModelMetadata(
-		selection.Protocol,
+		activeConnection.Protocol,
 		&request.ModelMetadata,
 	)
 	if err != nil {
 		return protocol.ModelCatalog{}, err
 	}
-	if modelID == selection.Model {
+	if modelID == activeConnection.Model {
 		return protocol.ModelCatalog{}, invalidSetup(
 			"the connection default model is managed in Connection settings",
 		)
 	}
 	index := -1
-	for candidate := range selection.Models {
-		if selection.Models[candidate].ID == modelID {
+	for candidate := range activeConnection.Models {
+		if activeConnection.Models[candidate].ID == modelID {
 			index = candidate
 			break
 		}
@@ -346,14 +364,15 @@ func (m *workspaceRuntimeManager) mutateModel(
 	}
 	entry := webSetupModel{ID: modelID, Metadata: *metadata}
 	if index >= 0 {
-		selection.Models[index] = entry
+		activeConnection.Models[index] = entry
 	} else {
-		selection.Models = append(selection.Models, entry)
+		activeConnection.Models = append(activeConnection.Models, entry)
 	}
-	sort.Slice(selection.Models, func(i, j int) bool {
-		return selection.Models[i].ID < selection.Models[j].ID
+	sort.Slice(activeConnection.Models, func(i, j int) bool {
+		return activeConnection.Models[i].ID < activeConnection.Models[j].ID
 	})
-	return m.replaceSelection(ctx, selection, reference, "", false)
+	next := mergeConnection(selection, *activeConnection)
+	return m.replaceSelection(ctx, next, reference, "")
 }
 
 func (m *workspaceRuntimeManager) replaceSelection(
@@ -361,7 +380,24 @@ func (m *workspaceRuntimeManager) replaceSelection(
 	selection webSetupSelection,
 	reference credential.Reference,
 	secret string,
-	rebindProfiles bool,
+) (protocol.ModelCatalog, error) {
+	return m.replaceSelectionStaged(
+		ctx, selection, reference, secret, nil, credential.Reference{}, "",
+	)
+}
+
+// replaceSelectionStaged 支持传入已暂存的凭证（connection/add 在目标连接
+// 命名空间预暂存后经此复用）。stagedConnectionID 标记预暂存凭证归属的
+// 连接：空表示默认连接（Reconfigure 语义）；connection/add 传入目标连
+// 接——暂存引用只写回所属连接，不得覆盖默认连接的凭证。
+func (m *workspaceRuntimeManager) replaceSelectionStaged(
+	ctx context.Context,
+	selection webSetupSelection,
+	reference credential.Reference,
+	secret string,
+	prestagedControl *credential.Control,
+	prestagedReference credential.Reference,
+	stagedConnectionID string,
 ) (protocol.ModelCatalog, error) {
 
 	m.mu.Lock()
@@ -427,8 +463,9 @@ func (m *workspaceRuntimeManager) replaceSelection(
 	}
 	sort.Strings(ids)
 	prepared := make(map[string]*preparedWebRuntime, len(active))
-	var stagedControl *credential.Control
-	var stagedReference credential.Reference
+	stagedControl := prestagedControl
+	stagedReference := prestagedReference
+	stagedOwner := stagedConnectionID
 	closePrepared := func() error {
 		var closeErr error
 		for _, runtime := range prepared {
@@ -469,14 +506,23 @@ func (m *workspaceRuntimeManager) replaceSelection(
 		}
 		prepared[id] = replacement
 		if replacement.credentialActivate != nil {
+			// 本次暂存发生在默认连接命名空间（Reconfigure 语义）。
 			stagedControl = replacement.credentialControl
 			stagedReference = replacement.credentialReference
+			stagedOwner = ""
 		}
 	}
 	if stagedControl != nil {
 		value := stagedReference
-		selection.Credential = &value
-		reference = value
+		if stagedOwner == "" {
+			if active := selection.Active(); active != nil {
+				active.Credential = &value
+			}
+			// 默认连接的暂存同时是运行时凭证覆盖。
+			reference = value
+		} else if entry := selection.Connection(stagedOwner); entry != nil {
+			entry.Credential = &value
+		}
 	}
 	if err := idleWorkspaceRuntimes(ctx, active); err != nil {
 		return protocol.ModelCatalog{}, errors.Join(err, closePrepared())
@@ -488,30 +534,9 @@ func (m *workspaceRuntimeManager) replaceSelection(
 	if err := saveWebSetupSelection(m.dataDir, "", selection); err != nil {
 		return protocol.ModelCatalog{}, errors.Join(err, closePrepared())
 	}
-	previousProfile := active[ids[0]].application.DefaultProfile()
-	nextProfile := prepared[ids[0]].application.DefaultProfile()
-	if rebindProfiles {
-		if err := repositories.Sessions.RebindWorkspaceProfiles(
-			ctx,
-			roots,
-			nextProfile,
-		); err != nil {
-			_ = saveWebSetupSelection(m.dataDir, "", previousSelection)
-			return protocol.ModelCatalog{}, errors.Join(err, closePrepared())
-		}
-	}
 	for _, runtime := range prepared {
 		if err := runtime.activateCredential(); err != nil {
-			var rollbackErr error
-			if rebindProfiles {
-				rollbackErr = repositories.Sessions.RebindWorkspaceProfiles(
-					ctx,
-					roots,
-					previousProfile,
-				)
-			}
-			rollbackErr = errors.Join(
-				rollbackErr,
+			rollbackErr := errors.Join(
 				saveWebSetupSelection(m.dataDir, "", previousSelection),
 			)
 			return protocol.ModelCatalog{}, errors.Join(err, rollbackErr, closePrepared())
@@ -527,16 +552,7 @@ func (m *workspaceRuntimeManager) replaceSelection(
 					active[replacedID].dependenciesWithDiagnostics(stderr),
 				)
 			}
-			var rollbackErr error
-			if rebindProfiles {
-				rollbackErr = repositories.Sessions.RebindWorkspaceProfiles(
-					ctx,
-					roots,
-					previousProfile,
-				)
-			}
-			rollbackErr = errors.Join(
-				rollbackErr,
+			rollbackErr := errors.Join(
 				saveWebSetupSelection(m.dataDir, "", previousSelection),
 			)
 			return protocol.ModelCatalog{}, errors.Join(err, rollbackErr, closePrepared())
@@ -710,7 +726,7 @@ func (m *workspaceRuntimeManager) Add(
 			}
 		}
 		m.roots = appendUniqueRoot(m.roots, root)
-		if m.store == nil || m.server == nil || m.selection.Provider == "" {
+		if m.store == nil || m.server == nil || m.selection.Active() == nil {
 			saveErr := saveWorkspaceRoots(m.dataDir, m.roots)
 			m.mu.Unlock()
 			if saveErr != nil {
@@ -1013,4 +1029,203 @@ func appendUniqueRoot(roots []string, root string) []string {
 		}
 	}
 	return append(roots, root)
+}
+
+
+// ConnectionList 投影当前连接集（不含密钥）。
+func (m *workspaceRuntimeManager) ConnectionList() webhost.ConnectionListResult {
+	m.mu.Lock()
+	selection := cloneWebSetupSelection(m.selection)
+	m.mu.Unlock()
+	result := webhost.ConnectionListResult{
+		Version: webhost.ConnectionListVersion,
+	}
+	for _, connection := range selection.Connections {
+		entry := webhost.ConnectionEntry{
+			ID: connection.ID, Provider: connection.Provider,
+			DisplayName: connectionDisplayName(connection),
+			BaseURL: connection.BaseURL, Protocol: connection.Protocol,
+			Model: connection.Model, Default: connection.ID == selection.DefaultConnection,
+			CredentialPresent: connection.Credential != nil,
+		}
+		for _, registered := range connection.Models {
+			entry.Models = append(entry.Models, registered.ID)
+		}
+		if entry.Default {
+			result.DefaultConnection = connection.ID
+		}
+		result.Connections = append(result.Connections, entry)
+	}
+	return result
+}
+
+func connectionDisplayName(connection webSetupConnection) string {
+	if connection.BaseURL == "" {
+		return connection.Provider
+	}
+	parsed, err := url.Parse(connection.BaseURL)
+	if err != nil || parsed.Host == "" {
+		return connection.ID
+	}
+	return parsed.Host
+}
+
+// AddConnection 新增或更新一条连接（不改变默认连接），密钥在目标连接的
+// provider 命名空间暂存；零连接时退化为 Reconfigure（首连接即默认）。
+func (m *workspaceRuntimeManager) AddConnection(
+	ctx context.Context,
+	request webhost.SetupRequest,
+) (webhost.ConnectionListResult, error) {
+	resolveRequest := request
+	if strings.TrimSpace(resolveRequest.APIKey) == "" {
+		resolveRequest.APIKey = "persisted"
+	}
+	connection, _, err := resolveWebSetup(resolveRequest)
+	if err != nil {
+		return webhost.ConnectionListResult{}, err
+	}
+	m.mu.Lock()
+	previous := cloneWebSetupSelection(m.selection)
+	options := m.options
+	busy := m.reconfiguring || len(m.loading) != 0 || m.closing
+	m.mu.Unlock()
+	if busy {
+		return webhost.ConnectionListResult{}, protocol.NewProblem(
+			protocol.CodeConflict,
+			"Runtime configuration is already restarting",
+			true,
+			nil,
+		)
+	}
+	if previous.Active() == nil {
+		if err := m.Reconfigure(ctx, request); err != nil {
+			return webhost.ConnectionListResult{}, err
+		}
+		return m.ConnectionList(), nil
+	}
+	next := mergeConnectionKeepDefault(previous, connection)
+	// 在目标连接命名空间预暂存密钥，经 replaceSelectionStaged 复用。
+	loaded, err := loadWebSetupConfig(options, next, m.currentReference())
+	if err != nil {
+		return webhost.ConnectionListResult{}, err
+	}
+	prepared, err := prepareWebCredentialsFor(
+		ctx, loaded, next, request.APIKey, connection.ID, nil, credential.Reference{},
+	)
+	if err != nil {
+		return webhost.ConnectionListResult{}, err
+	}
+	defer func() { _ = prepared.rollbackCredential() }()
+	if prepared.credentialActivate != nil {
+		value := prepared.credentialReference
+		if entry := next.Connection(connection.ID); entry != nil {
+			entry.Credential = &value
+		}
+	}
+	if _, err := m.replaceSelectionStaged(
+		ctx, next, m.currentReference(), "",
+		prepared.credentialControl, prepared.credentialReference, connection.ID,
+	); err != nil {
+		return webhost.ConnectionListResult{}, err
+	}
+	if err := prepared.commitCredential(); err != nil {
+		_, _ = fmt.Fprintf(m.stderr, "qcode: finalize connection credential: %v\n", err)
+	}
+	return m.ConnectionList(), nil
+}
+
+// RemoveConnection 移除一条连接；默认连接不可移除，被会话钉住的模型
+// 所在连接拒绝移除（与 model/remove 保护一致）。
+func (m *workspaceRuntimeManager) RemoveConnection(
+	ctx context.Context,
+	connectionID string,
+) (webhost.ConnectionListResult, error) {
+	m.mu.Lock()
+	selection := cloneWebSetupSelection(m.selection)
+	active := maps.Clone(m.active)
+	m.mu.Unlock()
+	target := selection.Connection(connectionID)
+	if target == nil {
+		return webhost.ConnectionListResult{}, invalidSetup("connection is not registered")
+	}
+	if connectionID == selection.DefaultConnection {
+		return webhost.ConnectionListResult{}, invalidSetup(
+			"the default connection cannot be removed; switch default first",
+		)
+	}
+	pinned := map[string]bool{target.Model: true}
+	for _, registered := range target.Models {
+		pinned[registered.ID] = true
+	}
+	for _, runtime := range active {
+		sessions, err := runtime.application.Runtime.ListSessions(
+			ctx,
+			protocol.SessionListQuery{
+				WorkspaceRoot:   runtime.dependencies.WorkspaceRoot,
+				IncludeArchived: true,
+				Limit:           1000,
+			},
+		)
+		if err != nil {
+			return webhost.ConnectionListResult{}, err
+		}
+		for _, session := range sessions.Sessions {
+			profile, err := runtime.application.Runtime.SessionProfile(ctx, session.SessionID)
+			if err == nil && profile.Profile.Provider == target.Provider &&
+				pinned[profile.Profile.Model] {
+				return webhost.ConnectionListResult{}, protocol.NewProblem(
+					protocol.CodeConflict,
+					"connection is still used by a Session",
+					false,
+					nil,
+				)
+			}
+		}
+	}
+	next := cloneWebSetupSelection(selection)
+	next.Connections = next.Connections[:0:0]
+	for _, connection := range selection.Connections {
+		if connection.ID != connectionID {
+			next.Connections = append(next.Connections, connection)
+		}
+	}
+	if _, err := m.replaceSelection(ctx, next, m.currentReference(), ""); err != nil {
+		return webhost.ConnectionListResult{}, err
+	}
+	return m.ConnectionList(), nil
+}
+
+// SetDefaultConnection 切换默认连接（新会话基线），不重绑已有会话。
+func (m *workspaceRuntimeManager) SetDefaultConnection(
+	ctx context.Context,
+	connectionID string,
+) (webhost.ConnectionListResult, error) {
+	m.mu.Lock()
+	selection := cloneWebSetupSelection(m.selection)
+	m.mu.Unlock()
+	if selection.Connection(connectionID) == nil {
+		return webhost.ConnectionListResult{}, invalidSetup("connection is not registered")
+	}
+	next := cloneWebSetupSelection(selection)
+	next.DefaultConnection = connectionID
+	connection := *selection.Connection(connectionID)
+	loaded, err := loadWebSetupConfig(m.options, next, m.currentReference())
+	if err != nil {
+		return webhost.ConnectionListResult{}, err
+	}
+	routeReference := m.currentReference()
+	if connection.Credential != nil {
+		routeReference = *connection.Credential
+	}
+	_ = loaded
+	if _, err := m.replaceSelection(ctx, next, routeReference, ""); err != nil {
+		return webhost.ConnectionListResult{}, err
+	}
+	return m.ConnectionList(), nil
+}
+
+func (m *workspaceRuntimeManager) currentReference() credential.Reference {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.reference
 }

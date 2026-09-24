@@ -20,7 +20,7 @@
   background: var(--ch-panel-raised);
   border: 1px solid var(--ch-border-strong);
   border-radius: var(--ch-radius-control);
-  box-shadow: var(--ch-shadow);
+  box-shadow: var(--ch-modal-shadow);
 }
 
 .conversationNavigatorHeader {
@@ -99,7 +99,7 @@
   color: var(--ch-text-secondary);
   background: transparent;
   border-radius: var(--ch-radius);
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .conversationNavigatorFilters button[aria-selected="true"] {
@@ -182,7 +182,7 @@
 .conversationNavigatorText small,
 .conversationNavigatorTurn {
   color: var(--ch-text-secondary);
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .conversationNavigatorTurn {
@@ -207,7 +207,7 @@
   padding: 6px 12px;
   color: var(--ch-text-muted);
   border-top: 1px solid var(--ch-border);
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .conversationNavigatorFooter button {
@@ -216,7 +216,7 @@
   color: var(--ch-accent-strong);
   background: transparent;
   border-radius: var(--ch-radius);
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .conversationNavigatorFooter button:hover,

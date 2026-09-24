@@ -9,27 +9,12 @@ import (
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
 )
 
-const SetupCatalogVersion = 2
-
-type SetupProvider struct {
-	ID             string   `json:"id"`
-	DisplayName    string   `json:"display_name"`
-	Protocol       string   `json:"protocol"`
-	RequiresAPIKey bool     `json:"requires_api_key"`
-	Custom         bool     `json:"custom,omitempty"`
-	Models         []string `json:"models,omitempty"`
-}
-
-type SetupCatalog struct {
-	Version   int             `json:"version"`
-	Providers []SetupProvider `json:"providers"`
-}
-
+// SetupRequest 声明一条 OpenAI-compatible 模型连接的四要素：Base URL、
+// Protocol、Model ID、API Key（外加探测或手填的模型元数据）。
 type SetupRequest struct {
-	Provider      string              `json:"provider"`
 	Model         string              `json:"model"`
 	APIKey        string              `json:"api_key,omitempty"`
-	BaseURL       string              `json:"base_url,omitempty"`
+	BaseURL       string              `json:"base_url"`
 	Protocol      string              `json:"protocol,omitempty"`
 	ModelMetadata *SetupModelMetadata `json:"model_metadata,omitempty"`
 }
@@ -62,7 +47,6 @@ type SetupResult struct {
 }
 
 type SetupProbeRequest struct {
-	Provider string `json:"provider"`
 	BaseURL  string `json:"base_url"`
 	Protocol string `json:"protocol"`
 	Model    string `json:"model"`
@@ -85,9 +69,9 @@ type SetupDiscoveredModel struct {
 type SetupOptions struct {
 	WorkspaceRoot     string
 	WorkspaceIdentity protocol.WorkspaceIdentity
-	Catalog           SetupCatalog
 	Apply             func(context.Context, SetupRequest) error
 	Probe             func(context.Context, SetupProbeRequest) (SetupProbeResult, error)
+	Connections       *ConnectionOptions
 }
 
 func (o SetupOptions) validate() error {
@@ -98,9 +82,6 @@ func (o SetupOptions) validate() error {
 		if err := o.WorkspaceIdentity.Validate(); err != nil {
 			return err
 		}
-	}
-	if o.Catalog.Version != SetupCatalogVersion || len(o.Catalog.Providers) == 0 {
-		return errors.New("setup provider catalog is required")
 	}
 	if o.Apply == nil {
 		return errors.New("setup apply handler is required")
@@ -116,7 +97,17 @@ func (s *Server) setupProbe(r *http.Request, _ Dependencies) (any, error) {
 	if err := s.decodeRequest(r, &request); err != nil {
 		return nil, err
 	}
-	return s.setup.Probe(r.Context(), request)
+	result, err := s.setup.Probe(r.Context(), request)
+	if err != nil {
+		var problem *protocol.Problem
+		if errors.As(err, &problem) {
+			return nil, err
+		}
+		// 探测失败（网络、凭证、端点响应）面向用户展示真实原因，
+		// 不落成不可读的 internal Web API error。
+		return nil, protocol.NewProblem(protocol.CodeUnavailable, err.Error(), true, err)
+	}
+	return result, nil
 }
 
 func (s *Server) setupApply(r *http.Request, _ Dependencies) (any, error) {

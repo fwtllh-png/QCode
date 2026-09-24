@@ -47,9 +47,10 @@ func (providerModule) Build(ctx context.Context, state *buildState) error {
 		return err
 	}
 	capabilities := selectedModelCapabilities(routes.Act())
-	allowCatalogSelection := options.BaseURL == "" && session.fixture == nil
-	allowModelSelection := allowCatalogSelection ||
-		len(options.ModelMetadata.AdditionalDescriptors) != 0
+	// 热切换取决于是否注册了可选路由：默认连接上的附加模型，或默认
+	// 连接之外的附加连接。单一模型连接保持 fixed。
+	allowModelSelection := len(options.ModelMetadata.AdditionalDescriptors) != 0 ||
+		len(options.ExtraConnections) != 0
 	if allowModelSelection {
 		capabilities.SelectionMode = "hot"
 	} else {
@@ -57,11 +58,21 @@ func (providerModule) Build(ctx context.Context, state *buildState) error {
 	}
 	selectableRoutes, err := runtimeSelectableRoutes(
 		routes.Act(),
-		allowCatalogSelection,
 		options.ModelMetadata.AdditionalDescriptors,
 	)
 	if err != nil {
 		return fmt.Errorf("selectable model routes: %w", err)
+	}
+	extraRoutes, err := extraConnectionRoutes(options.ExtraConnections)
+	if err != nil {
+		return fmt.Errorf("extra connections: %w", err)
+	}
+	for key, route := range extraRoutes {
+		if _, exists := selectableRoutes[key]; exists {
+			continue
+		}
+		selectableRoutes[key] = route
+		egressGate.AllowURL(route.Endpoint())
 	}
 	providerCatalog, modelCatalog := runtimeModelCatalog(
 		routes.Act(),
@@ -152,7 +163,7 @@ func buildRouteSet(
 	var routeModel *model.Model
 	if state.session.fixture != nil {
 		routeModel = fixtureModel(execution.Model)
-	} else if options.BaseURL != "" {
+	} else {
 		routeModel, err = resolveModelMetadata(
 			execution.Model,
 			options.ModelMetadata,
@@ -175,8 +186,10 @@ func buildRouteSet(
 			APIKeyEnv: options.APIKeyEnv, Credential: credential,
 			Fixture: state.session.fixture != nil, Model: routeModel,
 		},
-		Slots: state.config.snapshot.Config.Route.Slots,
-		Lock:  state.config.snapshot.Config.Route.Lock,
+		Additional: options.ModelMetadata.AdditionalDescriptors,
+		Extras:     options.ExtraConnections,
+		Slots:      state.config.snapshot.Config.Route.Slots,
+		Lock:       state.config.snapshot.Config.Route.Lock,
 	})
 	if err != nil {
 		return model.RouteSet{}, fmt.Errorf("exec route: %w", err)

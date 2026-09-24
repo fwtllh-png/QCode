@@ -110,9 +110,12 @@ type Index struct {
 	// only when the generation it computed from is still current.
 	fileGen uint64
 	// pending describes the graph work the last refresh queued; graphBuilding
-	// marks the single background builder that drains it.
+	// marks the single background builder that drains it. graphSignal is
+	// closed (and recreated lazily) whenever a build attempt finishes, so a
+	// graph query can wait for the stored graph to catch up.
 	pending       *graphWork
 	graphBuilding bool
+	graphSignal   chan struct{}
 	// failures counts consecutive refreshes that could not trust the store. After
 	// the second one the index stays degraded rather than rebuilding on every
 	// call, because a database that fails twice will not start working.
@@ -477,6 +480,7 @@ func (i *Index) drainGraphWork() {
 		i.mu.Lock()
 		if i.pending == nil {
 			i.graphBuilding = false
+			i.signalGraphWaitersLocked()
 			i.mu.Unlock()
 			return
 		}
@@ -490,11 +494,70 @@ func (i *Index) drainGraphWork() {
 		files, err := i.store.Files(context.Background())
 		if err != nil {
 			i.graphBuilding = false
+			i.signalGraphWaitersLocked()
 			i.mu.Unlock()
 			return
 		}
 		i.pending = &graphWork{gen: i.fileGen, files: files, full: true}
 		i.mu.Unlock()
+	}
+}
+
+// awaitGraph brings the stored graph up to date with files before a graph
+// query answers. A refresh only queues the build and returns, so a query that
+// lands before the background builder drains the queue would answer from an
+// empty or stale graph. This caller waits for a running builder, or becomes
+// the builder itself when none is running, bounded by the caller's context.
+// A build that keeps failing gives up after two attempts: the query then
+// answers from the last completed graph, the same quality bound a failed
+// background build already has.
+func (i *Index) awaitGraph(ctx context.Context, files map[string]File) {
+	for attempts := 0; ; {
+		if ctx.Err() != nil {
+			return
+		}
+		i.mu.Lock()
+		if i.pending == nil && i.graphMatches(files) {
+			i.mu.Unlock()
+			return
+		}
+		if i.graphBuilding {
+			signal := i.graphWaitersLocked()
+			i.mu.Unlock()
+			select {
+			case <-signal:
+			case <-ctx.Done():
+				return
+			}
+			continue
+		}
+		if attempts >= 2 {
+			i.mu.Unlock()
+			return
+		}
+		attempts++
+		i.graphBuilding = true
+		if i.pending == nil {
+			i.pending = &graphWork{gen: i.fileGen, files: files, full: true}
+		}
+		i.mu.Unlock()
+		i.drainGraphWork()
+	}
+}
+
+// graphWaitersLocked returns the channel closed when the current build
+// attempt finishes. Callers copy it under the lock and select on it after.
+func (i *Index) graphWaitersLocked() chan struct{} {
+	if i.graphSignal == nil {
+		i.graphSignal = make(chan struct{})
+	}
+	return i.graphSignal
+}
+
+func (i *Index) signalGraphWaitersLocked() {
+	if i.graphSignal != nil {
+		close(i.graphSignal)
+		i.graphSignal = nil
 	}
 }
 

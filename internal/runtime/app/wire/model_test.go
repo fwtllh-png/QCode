@@ -136,7 +136,7 @@ func TestResolveModelMetadataAllowsExplicitUnknownPricing(t *testing.T) {
 	}
 }
 
-func TestEndpointOverrideUsesCatalogAdapterWithoutNameInference(t *testing.T) {
+func TestEveryConnectionUsesTheCompatibleAdapterWithoutNameInference(t *testing.T) {
 	deepSeek, err := resolveExecRoute(execRouteOptions{
 		ProviderID: "deepseek", ModelID: "deepseek-chat",
 		BaseURL: "http://127.0.0.1:1", Protocol: model.ProtocolOpenAIChat,
@@ -176,7 +176,8 @@ func TestEndpointOverrideUsesCatalogAdapterWithoutNameInference(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if future.Model().ID != "gpt-future" || future.Adapter() != model.AdapterOpenAI {
+	if future.Model().ID != "gpt-future" ||
+		future.Adapter() != model.AdapterOpenAICompatible {
 		t.Fatalf("future provider model route = %+v", future)
 	}
 }

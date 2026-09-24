@@ -66,7 +66,6 @@ import type {
   RuntimeEvent,
   SessionCheckpoint,
   SessionSummary,
-  SetupCatalog,
   SetupRequest
 } from "../protocol";
 import {
@@ -158,6 +157,19 @@ const TurnQueue = lazy(async () => ({
 const BackgroundActivityMonitor = lazy(async () => ({
   default: (await import("./BackgroundActivityMonitor")).BackgroundActivityMonitor
 }));
+
+const InspectPanel = lazy(async () => ({
+  default: (await import("./InspectPanel")).InspectPanel
+}));
+
+function initialCompactViewport(): boolean {
+  if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
+    return false;
+  }
+  return window.matchMedia(
+    `(max-width: ${experience.layout.compactBreakpoint}px)`
+  ).matches;
+}
 const ConversationNavigator = lazy(async () => ({
   default: (await import("./ConversationNavigator")).ConversationNavigator
 }));
@@ -231,7 +243,7 @@ export function App({client}: Props) {
   const [contextOpen, setContextOpen] = useState(false);
   const [railCollapsed, setRailCollapsed] = useState(initialRailCollapsed);
   const [mobileRailOpen, setMobileRailOpen] = useState(false);
-  const [gitOpen, setGitOpen] = useState(true);
+  const [gitOpen, setGitOpen] = useState(!initialCompactViewport());
   const restoreGitFocus = useRef(false);
   useEffect(() => {
     if (!gitOpen && restoreGitFocus.current) {
@@ -247,8 +259,10 @@ export function App({client}: Props) {
     setMobileRailOpen(false);
   }, [snapshot.selectedSessionID, snapshot.selectedWorkspaceID]);
   useEffect(() => {
-    setGitOpen(true);
-  }, [snapshot.selectedWorkspaceID]);
+    // compact 视口下 Git 面板以模态呈现：自动展开会盖住主界面，
+    // 仅在宽视口跟随工作区切换自动展开。
+    setGitOpen(!compactViewport);
+  }, [snapshot.selectedWorkspaceID, compactViewport]);
   const [railWidth, setRailWidth] = useState(
     () => storedPanelWidth(
       "ch.sidebar.width",
@@ -257,10 +271,10 @@ export function App({client}: Props) {
   );
   const [activeView, setActiveView] = useState<"chat" | "trajectory">("chat");
   const [inspectCallID, setInspectCallID] = useState("");
+  const [inspectPanelCallID, setInspectPanelCallID] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsSection, setSettingsSection] =
     useState<SettingsSection>("general");
-  const [settingsAddModel, setSettingsAddModel] = useState(false);
   const [profilePending, setProfilePending] = useState("");
   const [cancelingTurnID, setCancelingTurnID] = useState("");
   const [themeMode, setThemeMode] = useState<ThemeMode>(readThemeMode);
@@ -281,6 +295,10 @@ export function App({client}: Props) {
     sessionID: string;
     pending: boolean;
     error: string;
+  }>();
+  const [sessionDialog, setSessionDialog] = useState<{
+    kind: "delete" | "archive" | "rename";
+    session: SessionSummary;
   }>();
   const [newIsolation, setNewIsolation] =
     useState<"shared" | "worktree">(initialSessionIsolation);
@@ -421,17 +439,20 @@ export function App({client}: Props) {
   const traceRefreshSequence = presentationEvents.at(-1)?.sequence ?? 0;
   const selectedProvider = snapshot.profile?.profile.provider ?? "";
   const selectedModel = snapshot.profile?.profile.model ?? "";
+  const selectedModelValue =
+    `${snapshot.profile?.profile.provider ?? ""}\u0000${selectedModel}`;
   const selectedModelEntry = snapshot.models.find(
     (model) =>
       model.provider === selectedProvider &&
       model.id === selectedModel
   );
+  // 模型选择跨全部已配置连接：值编码 "provider\u0000model"，标签只显示模型名。
   const modelOptions = snapshot.models
-    .filter((model) => model.provider === selectedProvider)
+    .filter((model) => model.capabilities.availability === "available")
     .map((model) => ({
-      value: model.id,
+      value: `${model.provider}\u0000${model.id}`,
       label: model.id,
-      disabled: model.capabilities.availability !== "available"
+      disabled: false
     }));
   const advertisedReasoningValues =
     selectedModelEntry?.capabilities.reasoning_efforts ?? [];
@@ -510,20 +531,15 @@ export function App({client}: Props) {
     const node = transcriptRef.current;
     if (!node || !(target instanceof Element) ||
         !transcriptContentRef.current?.contains(target)) return;
-    // Reading, selecting and activating transcript content take priority over
-    // following new output. Capture before focus/click can change its geometry.
-    atBottomRef.current = false;
-    setAtBottom(false);
-    scrollDirectionRef.current = 0;
-    navigationReaderLockRef.current = "";
-    pendingReadingRestoreRef.current = undefined;
+    // 点击/聚焦只记录交互锚点：被点击元素后续自身变高（展开工具卡、
+    // 输出到达）时用它补偿滚动位置。跟随状态仅由真实滚动决定——
+    // 点击不再解除跟随，否则轻点一下就断流式跟随，被感知为跳变。
     const element = target.closest("button, [role='button'], a, input, select, textarea") ?? target;
     interactionAnchorRef.current = {
       element, top: element.getBoundingClientRect().top - node.getBoundingClientRect().top
     };
     scrollTopRef.current = node.scrollTop;
-    captureReadingPosition(true);
-  }, [captureReadingPosition]);
+  }, []);
   const restoreInteractionAnchor = useCallback(() => {
     const anchor = interactionAnchorRef.current;
     const node = transcriptRef.current;
@@ -714,13 +730,13 @@ export function App({client}: Props) {
   const closeContext = useCallback(() => setContextOpen(false), []);
   const closeSettings = useCallback(() => {
     setSettingsOpen(false);
-    setSettingsAddModel(false);
   }, []);
   const inspectTool = useCallback((callID: string) => {
-    setInspectCallID(callID);
-    switchConversationView("trajectory");
+    // 检查改为侧滑面板，不再整页切到 Trajectory；面板数据用当前事件流
+    // 即时投影，trace 在后台异步补全。
+    setInspectPanelCallID(callID);
     void client.refreshTrace();
-  }, [client, switchConversationView]);
+  }, [client]);
   const attachmentBusy = composerAttachments.some(
     (attachment) => attachment.status === "processing"
   );
@@ -976,7 +992,11 @@ export function App({client}: Props) {
       );
       return;
     }
-    if (restoreInteractionAnchor()) return;
+    // 跟随优先于交互锚点：处于跟随态时清掉点击锚点并继续钉底，
+    // 否则点击后锚点补偿会与底部跟随互相拉扯产生跳动。
+    if (atBottomRef.current) {
+      interactionAnchorRef.current = undefined;
+    } else if (restoreInteractionAnchor()) return;
     const saved = pendingReadingRestoreRef.current ??
       (!atBottomRef.current ? readingPositionsRef.current.get(snapshot.selectedSessionID) : undefined);
     if (saved && saved.windowEndID === transcriptWindowEndID &&
@@ -1021,13 +1041,14 @@ export function App({client}: Props) {
     const observer = new ResizeObserver(() => {
       const node = transcriptRef.current;
       if (!node) return;
-      if (restoreInteractionAnchor()) {
+      if (atBottomRef.current && transcriptEnd === entries.length) {
+        interactionAnchorRef.current = undefined;
+        node.scrollTop = node.scrollHeight;
+        scrollTopRef.current = node.scrollTop;
         scheduleReadingPositionCapture();
         return;
       }
-      if (atBottomRef.current && transcriptEnd === entries.length) {
-        node.scrollTop = node.scrollHeight;
-        scrollTopRef.current = node.scrollTop;
+      if (restoreInteractionAnchor()) {
         scheduleReadingPositionCapture();
         return;
       }
@@ -1096,17 +1117,26 @@ export function App({client}: Props) {
     }
   }, []);
 
-  useEffect(() => {
+  // 草稿高度钳制：上限视口感知——紧凑视口（软键盘开启）下不能把
+  // Composer 底边推出 visualViewport；88px 为 Composer 铬件预算。
+  const clampDraftHeight = useCallback(() => {
     const textarea = textareaRef.current;
     if (!textarea) return;
     textarea.style.height = "0";
-    textarea.style.height = `${Math.min(textarea.scrollHeight, 336)}px`;
-  }, [draft]);
+    const viewport = window.visualViewport?.height ?? window.innerHeight;
+    textarea.style.height =
+      `${Math.min(textarea.scrollHeight, 336, Math.max(120, viewport - 88))}px`;
+  }, []);
+
+  useEffect(() => {
+    clampDraftHeight();
+  }, [draft, clampDraftHeight]);
 
   useEffect(() => {
     const viewport = window.visualViewport;
     if (!viewport) return;
     const keepComposerVisible = () => {
+      clampDraftHeight();
       if (document.activeElement !== textareaRef.current) return;
       requestAnimationFrame(() => textareaRef.current?.scrollIntoView({
         block: "nearest"
@@ -1306,28 +1336,9 @@ export function App({client}: Props) {
   };
 
   const deleteSession = (session: SessionSummary) => {
-    const hasUnfinishedWork =
-      sessionIsBusy(session) || session.isolation === "worktree";
-    const prompt = hasUnfinishedWork
-      ? `Delete "${session.title}" and permanently discard its unfinished work?`
-      : `Delete "${session.title}" and permanently discard its unfinished workspace draft if one exists?`;
-    if (!window.confirm(prompt)) return;
-    void runSessionAction(session, () => client.deleteSession(
-      session.session_id,
-      session.revision,
-      true
-    ));
+    setSessionDialog({kind: "delete", session});
   };
 
-  if (snapshot.phase === "setup" && snapshot.setupCatalog) {
-    return (
-      <FirstRunSetup
-        catalog={snapshot.setupCatalog}
-        workspaceRoot={snapshot.workspaceRoot}
-        client={client}
-      />
-    );
-  }
   if (snapshot.phase === "booting") {
     return <BootState title="Starting QCode" detail={snapshot.workspaceRoot} />;
   }
@@ -1528,16 +1539,7 @@ export function App({client}: Props) {
                               .catch(reportLocalError);
                           }}
                           onRename={() => {
-                            const title = window.prompt(
-                              "Rename session",
-                              session.title
-                            )?.trim();
-                            if (title && (title !== session.title ||
-                              (session.title_source && session.title_source !== "manual"))) {
-                              void runSessionAction(session, () => client.updateSession(
-                                session.session_id, session.revision, {title}
-                              ));
-                            }
+                            setSessionDialog({kind: "rename", session});
                           }}
                           onPin={() => void runSessionAction(
                             session,
@@ -1548,16 +1550,15 @@ export function App({client}: Props) {
                             )
                           )}
                           onArchive={() => {
-                            if (
-                              session.archived ||
-                              window.confirm(`Archive "${session.title}"?`)
-                            ) {
+                            if (session.archived) {
                               void runSessionAction(session, () => client.updateSession(
                                 session.session_id,
                                 session.revision,
                                 {archived: !session.archived}
                               ));
+                              return;
                             }
+                            setSessionDialog({kind: "archive", session});
                           }}
                           onDelete={() => deleteSession(session)}
                           actionPending={
@@ -1580,7 +1581,9 @@ export function App({client}: Props) {
         <div className="railFooter">
           <span className="connectionState" data-online={snapshot.socketConnected || undefined}>
             <span className="statusDot" />
-            {snapshot.socketConnected ? "Connected" : snapshot.phase}
+            {snapshot.socketConnected
+              ? "Connected"
+              : snapshot.phase === "setup" ? "Setup required" : snapshot.phase}
           </span>
           <span className="mobileWorkspaceAction">
             <IconButton
@@ -1593,7 +1596,9 @@ export function App({client}: Props) {
             label="Settings"
             icon={<Settings2 size={16} />}
             onClick={() => {
-              setSettingsSection("general");
+              setSettingsSection(
+                snapshot.phase === "setup" ? "models" : "general"
+              );
               setSettingsOpen((value) => !value);
             }}
           />
@@ -1616,6 +1621,23 @@ export function App({client}: Props) {
       </aside>
 
       <main className="conversation" data-empty={blankSession || undefined}>
+        {snapshot.phase === "setup" && (
+          <div className="setupBanner" role="status">
+            <span className="setupBannerText">
+              Configure a model connection to start working with QCode.
+            </span>
+            <button
+              type="button"
+              className="setupBannerAction"
+              onClick={() => {
+                setSettingsSection("models");
+                setSettingsOpen(true);
+              }}
+            >
+              Configure model
+            </button>
+          </div>
+        )}
         <header
           className="conversationHeader"
         >
@@ -1729,9 +1751,13 @@ export function App({client}: Props) {
             interactionAnchorRef.current = undefined;
             navigationReaderLockRef.current = "";
             scrollDirectionRef.current = delta < 0 ? -1 : 1;
+            // 滞回跟随：跟随时滚离 160px 才脱离；脱离后回到距底 48px 内恢复。
+            const distanceFromBottom =
+              node.scrollHeight - node.scrollTop - node.clientHeight;
             const next = transcriptEnd === entries.length &&
-              node.scrollHeight - node.scrollTop - node.clientHeight <=
-              experience.scrolling.followThreshold;
+              (atBottomRef.current
+                ? distanceFromBottom <= experience.scrolling.followLeaveThreshold
+                : distanceFromBottom <= experience.scrolling.followEnterThreshold);
             atBottomRef.current = next;
             setAtBottom(next);
             const windowEndID = transcriptWindowEndID ??
@@ -1822,8 +1848,13 @@ export function App({client}: Props) {
               <EmptySessionSetup
                 creating={creatingSession}
                 workspaceReady={Boolean(selectedWorkspace)}
+                setupRequired={snapshot.phase === "setup"}
                 onCreate={() => void createSession(selectedWorkspace?.id)}
                 onChooseWorkspace={() => setWorkspaceDialogOpen(true)}
+                onConfigure={() => {
+                  setSettingsSection("models");
+                  setSettingsOpen(true);
+                }}
               />
             ) : entries.length === 0 && snapshot.hydratingSessionID ? (
               <Skeleton label="Loading conversation" />
@@ -2195,26 +2226,36 @@ export function App({client}: Props) {
                   <div>
                     <CompactCatalogSelect
                       label="Model"
-                      value={selectedModel}
+                      value={selectedModelValue}
                       options={[
                         ...modelOptions,
                         {value: "__configure__", label: "New model..."}
                       ]}
                       disabled={Boolean(profilePending)}
-                      onChange={(model) => {
-                        if (model === "__configure__") {
+                      onChange={(selection) => {
+                        if (selection === "__configure__") {
+                          // 只落到 Settings 的 Models 页；向导由用户在
+                          // 页面内自行打开。
                           setSettingsSection("models");
-                          setSettingsAddModel(true);
                           setSettingsOpen(true);
                           return;
                         }
                         if (!profileMutable(snapshot, "model")) return;
+                        // 兼容无分隔符的裸 model id（视为当前 provider）。
+                        const separator = selection.indexOf("\u0000");
+                        const provider = separator < 0
+                          ? selectedProvider
+                          : selection.slice(0, separator);
+                        const model = separator < 0
+                          ? selection
+                          : selection.slice(separator + 1);
                         const target = snapshot.models.find(
                           (entry) =>
-                            entry.provider === selectedProvider &&
+                            entry.provider === provider &&
                             entry.id === model
                         );
                         void updateComposerProfile({
+                          ...(provider !== selectedProvider ? {provider} : {}),
                           model,
                           reasoning_effort:
                             target?.capabilities.default_reasoning_effort ?? ""
@@ -2309,6 +2350,59 @@ export function App({client}: Props) {
         />
       )}
       </Presence>
+      <Presence open={Boolean(sessionDialog)} kind="dialog">
+      {sessionDialog && (
+        <SessionDialog
+          kind={sessionDialog.kind}
+          session={sessionDialog.session}
+          busy={Boolean(
+            sessionAction?.sessionID === sessionDialog.session.session_id &&
+            sessionAction.pending
+          )}
+          onCancel={() => setSessionDialog(undefined)}
+          onConfirm={(title) => {
+            const {kind, session} = sessionDialog;
+            setSessionDialog(undefined);
+            if (kind === "delete") {
+              void runSessionAction(session, () => client.deleteSession(
+                session.session_id,
+                session.revision,
+                true
+              ));
+              return;
+            }
+            if (kind === "archive") {
+              void runSessionAction(session, () => client.updateSession(
+                session.session_id,
+                session.revision,
+                {archived: true}
+              ));
+              return;
+            }
+            const next = title.trim();
+            if (next && (next !== session.title ||
+              (session.title_source && session.title_source !== "manual"))) {
+              void runSessionAction(session, () => client.updateSession(
+                session.session_id, session.revision, {title: next}
+              ));
+            }
+          }}
+        />
+      )}
+      </Presence>
+      <Presence open={Boolean(inspectPanelCallID)} kind="drawer">
+        {inspectPanelCallID && (
+          <Suspense fallback={null}>
+            <InspectPanel
+              events={snapshot.events}
+              trace={snapshot.trace}
+              callID={inspectPanelCallID}
+              onClose={() => setInspectPanelCallID("")}
+              onOpenChat={openChatFromTrajectory}
+            />
+          </Suspense>
+        )}
+      </Presence>
       <Presence open={settingsOpen} kind="dialog">
         <Suspense fallback={null}>
           <SettingsDialog
@@ -2317,7 +2411,6 @@ export function App({client}: Props) {
             newIsolation={newIsolation}
             theme={themeMode}
             initialSection={settingsSection}
-            initialAddModel={settingsAddModel}
             onIsolationChange={setNewIsolation}
             onThemeChange={setThemeMode}
             onClose={closeSettings}
@@ -2709,13 +2802,22 @@ function TurnTranscript({
   const [layout, setLayout] = useState<"live" | "reading" | "settled">(
     terminalKind ? "settled" : "live"
   );
+  const [executionOpen, setExecutionOpen] = useState(false);
   // Decide before committing DOM: moving an inspected entry into a different
   // subtree would discard its disclosure state, focus and selection.
   if (layout === "live" && terminalKind) {
-    setLayout(preserveReading ? "reading" : "settled");
-  } else if (layout === "reading" && !preserveReading) {
-    setLayout("settled");
+    if (preserveReading) {
+      setLayout("reading");
+    } else {
+      setLayout("settled");
+      // 以展开态完成 settle，再在挂载后收起：折叠由 Collapse 动画完成，
+      // 配合底部跟随的 ResizeObserver 逐帧贴底，取代“条目瞬间消失 +
+      // 视口砸底”的跳变。
+      setExecutionOpen(true);
+    }
   }
+  // reading 态不再自动折叠：用户正在回读时，滚回底部不应触发
+  // 整段执行记录的突然收起。保持展开直到会话切换或组件卸载。
   const summarizeExecution = Boolean(terminalKind) && layout === "settled";
   const conclusion = terminalKind
     ? terminalConclusion(entries, terminalKind)
@@ -2729,7 +2831,13 @@ function TurnTranscript({
   const revealExecution = Boolean(
     revealEntryID && executionEntries.some((entry) => entry.id === revealEntryID)
   );
-  const [executionOpen, setExecutionOpen] = useState(false);
+  // settle 时以展开态挂载，下一帧收起：折叠走 Collapse 的动画过渡，
+  // 配合底部跟随逐帧贴底，取代“条目瞬间消失 + 视口砸底”的跳变。
+  useEffect(() => {
+    if (layout !== "settled" || !executionOpen || revealExecution) return;
+    const frame = window.requestAnimationFrame(() => setExecutionOpen(false));
+    return () => window.cancelAnimationFrame(frame);
+  }, [layout, executionOpen, revealExecution]);
   const [withdrawnOpen, setWithdrawnOpen] = useState(false);
   const withdrawn = withdrawalCommitted ||
     entries.some((entry) => entry.kind === "user" && entry.withdrawn);
@@ -3464,6 +3572,103 @@ function WorkspaceDialog({
   );
 }
 
+function SessionDialog({
+  kind,
+  session,
+  busy,
+  onCancel,
+  onConfirm
+}: {
+  kind: "delete" | "archive" | "rename";
+  session: SessionSummary;
+  busy: boolean;
+  onCancel: () => void;
+  onConfirm: (title: string) => void;
+}) {
+  const dialogRef = useRef<HTMLElement>(null);
+  const [title, setTitle] = useState(session.title);
+  useModalFocus(dialogRef, true, () => { if (!busy) onCancel(); });
+  const hasUnfinishedWork =
+    sessionIsBusy(session) || session.isolation === "worktree";
+  const heading = kind === "delete"
+    ? "Delete session?"
+    : kind === "archive"
+      ? "Archive session?"
+      : "Rename session";
+  const message = kind === "delete"
+    ? hasUnfinishedWork
+      ? `Delete "${session.title}" and permanently discard its unfinished work?`
+      : `Delete "${session.title}" and permanently discard its unfinished workspace draft if one exists?`
+    : kind === "archive"
+      ? `Archive "${session.title}"? It stays searchable with archived Sessions shown.`
+      : "";
+  const renameChanged = Boolean(
+    title.trim() && (title.trim() !== session.title ||
+      (session.title_source && session.title_source !== "manual"))
+  );
+  const confirmLabel = kind === "delete"
+    ? "Delete session"
+    : kind === "archive"
+      ? "Archive"
+      : "Rename";
+  return (
+    <div className="contextDialogOverlay" data-motion-backdrop>
+      <section
+        ref={dialogRef}
+        data-motion-surface
+        className="contextDialog workspaceRemovalDialog sessionDialog"
+        role={kind === "rename" ? "dialog" : "alertdialog"}
+        aria-modal="true"
+        aria-labelledby="session-dialog-title"
+        aria-describedby={message ? "session-dialog-description" : undefined}
+      >
+        <header className="contextDialogHeader">
+          <div>
+            <h2 id="session-dialog-title">{heading}</h2>
+          </div>
+        </header>
+        {message && (
+          <p id="session-dialog-description" className="workspaceRemovalMessage">
+            {message}
+          </p>
+        )}
+        {kind === "rename" && (
+          <input
+            className="sessionDialogInput"
+            aria-label="Session title"
+            value={title}
+            autoFocus
+            disabled={busy}
+            onChange={(event) => setTitle(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && renameChanged && !busy) {
+                onConfirm(title);
+              }
+            }}
+          />
+        )}
+        <div className="workspaceRemovalActions">
+          <button type="button" disabled={busy} onClick={onCancel}>
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="workspaceRemovalConfirm"
+            data-tone={kind === "delete" ? "danger" : undefined}
+            disabled={
+              busy || (kind === "rename" && !renameChanged)
+            }
+            onClick={() => onConfirm(title)}
+          >
+            {busy ? <LoaderCircle className="spin" size={14} /> : null}
+            {confirmLabel}
+          </button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
 function WorkspaceRemovalDialog({
   label,
   busy,
@@ -3541,296 +3746,20 @@ function WorkspaceRemovalButton({
   );
 }
 
-function FirstRunSetup({
-  catalog,
-  workspaceRoot,
-  client
-}: {
-  catalog: SetupCatalog;
-  workspaceRoot: string;
-  client: RuntimeClient;
-}) {
-  const [providerID, setProviderID] = useState("");
-  const [modelID, setModelID] = useState("");
-  const [apiKey, setAPIKey] = useState("");
-  const [baseURL, setBaseURL] = useState("");
-  const [protocol, setProtocol] = useState("openai_chat");
-  const [metadata, setMetadata] = useState(emptyModelMetadataDraft);
-  const [probed, setProbed] = useState(false);
-  const [probing, setProbing] = useState(false);
-  const [probeError, setProbeError] = useState("");
-  const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState("");
-  const provider = catalog.providers.find((entry) => entry.id === providerID);
-  const custom = Boolean(provider?.custom);
-  const requiresMetadata = Boolean(
-    provider && modelID.trim() &&
-    (custom || !provider.models?.includes(modelID.trim()))
-  );
-  const metadataError = requiresMetadata && probed
-    ? modelMetadataProblem(
-        metadata,
-        custom ? protocol : provider?.protocol ?? ""
-      )
-    : "";
-  const keyError = apiKeyError(apiKey);
-  const ready = Boolean(
-    provider &&
-    modelID.trim() &&
-    (!provider.requires_api_key || apiKey) &&
-    (!custom || baseURL.trim()) &&
-    (!requiresMetadata || probed) &&
-    !metadataError &&
-    !keyError
-  );
-
-  const submit = async () => {
-    if (!ready || submitting) return;
-    const request: SetupRequest = {
-      provider: providerID,
-      model: modelID.trim(),
-      api_key: apiKey,
-      ...(custom ? {base_url: baseURL.trim(), protocol} : {}),
-      ...(requiresMetadata ? {model_metadata: setupModelMetadata(metadata)} : {})
-    };
-    setSubmitting(true);
-    setError("");
-    try {
-      await client.completeSetup(request);
-      setAPIKey("");
-    } catch (value) {
-      setError(value instanceof Error ? value.message : String(value));
-      setSubmitting(false);
-    }
-  };
-  const probeModel = async () => {
-    if (!provider || (custom && !baseURL.trim()) || !modelID.trim() || probing) return;
-    setProbing(true);
-    setProbeError("");
-    try {
-      const result = await client.probeSetup({
-        provider: providerID,
-        base_url: custom ? baseURL.trim() : "",
-        protocol: custom ? protocol : provider.protocol,
-        model: modelID.trim(),
-        ...(apiKey.trim() ? {api_key: apiKey.trim()} : {})
-      });
-      setMetadata(modelMetadataFromProbe(modelID.trim(), result));
-      setProbed(true);
-      setProbeError(result.warning ?? "");
-    } catch (value) {
-      setProbed(false);
-      setProbeError(value instanceof Error ? value.message : String(value));
-    } finally {
-      setProbing(false);
-    }
-  };
-
-  return (
-    <main className="setupPage">
-      <form
-        className="startupSetup"
-        aria-labelledby="startup-title"
-        onSubmit={(event) => {
-          event.preventDefault();
-          void submit();
-        }}
-      >
-        <div className="startupHeading">
-          <div className="emptyMark"><CapybaraMark size="hero" /></div>
-          <div>
-            <h1 id="startup-title">Set up QCode</h1>
-            <p>Model connection</p>
-          </div>
-        </div>
-
-        <div className="startupSection">
-          <div className="startupSectionHeading">
-            <span>1</span>
-            <strong>Provider</strong>
-          </div>
-          <div className="startupFields">
-            <label className="selectField">
-              <span>Provider</span>
-              <select
-                aria-label="Provider"
-                value={providerID}
-                autoFocus
-                disabled={submitting || probing}
-                onChange={(event) => {
-                  const next = catalog.providers.find(
-                    (entry) => entry.id === event.target.value
-                  );
-                  setProviderID(event.target.value);
-                  setModelID("");
-                  setBaseURL("");
-                  setProtocol(next?.protocol || "openai_chat");
-                  setMetadata(emptyModelMetadataDraft());
-                  setProbed(false);
-                  setProbeError("");
-                  setError("");
-                }}
-              >
-                <option value="" disabled>Select provider</option>
-                {catalog.providers.map((entry) => (
-                  <option value={entry.id} key={entry.id}>
-                    {entry.display_name}
-                  </option>
-                ))}
-              </select>
-            </label>
-          </div>
-        </div>
-
-        {provider && (
-          <div className="startupSection">
-            <div className="startupSectionHeading">
-              <span>2</span>
-              <strong>Model</strong>
-            </div>
-            <div className="startupFields" data-custom={custom || undefined}>
-              {custom && (
-                <label className="selectField">
-                  <span>Base URL</span>
-                  <input
-                    aria-label="Base URL"
-                    value={baseURL}
-                    placeholder="https://api.example.com/v1"
-                    disabled={submitting || probing}
-                    onChange={(event) => {
-                      setBaseURL(event.target.value);
-                      setProbed(false);
-                    }}
-                  />
-                </label>
-              )}
-              {custom && (
-                <label className="selectField">
-                  <span>Protocol</span>
-                  <select
-                    aria-label="Protocol"
-                    value={protocol}
-                    disabled={submitting || probing}
-                    onChange={(event) => {
-                      setProtocol(event.target.value);
-                      setProbed(false);
-                    }}
-                  >
-                    <option value="openai_chat">Chat Completions</option>
-                    <option value="openai_responses">Responses</option>
-                  </select>
-                </label>
-              )}
-              <label className="selectField">
-                <span>Model ID</span>
-                <input
-                  aria-label="Model ID"
-                  value={modelID}
-                  placeholder="Enter the exact model ID"
-                  disabled={submitting || probing}
-                  onChange={(event) => {
-                    const nextModelID = event.target.value;
-                    setMetadata(emptyModelMetadataDraft(nextModelID.trim()));
-                    setModelID(nextModelID);
-                    setProbed(false);
-                  }}
-                />
-              </label>
-              {requiresMetadata && probed && (
-                <ModelMetadataFields
-                  value={metadata}
-                  disabled={submitting}
-                  onChange={setMetadata}
-                />
-              )}
-            </div>
-            {metadataError && (
-              <small className="startupError" role="alert">
-                {metadataError}
-              </small>
-            )}
-          </div>
-        )}
-
-        {provider && (
-          <div className="startupSection">
-            <div className="startupSectionHeading">
-              <span>3</span>
-              <strong>API key</strong>
-              {!provider.requires_api_key && <small data-ready>Optional</small>}
-            </div>
-            <div className="startupCredential">
-              <KeyRound size={16} aria-hidden="true" />
-              <input
-                type="password"
-                autoComplete="off"
-                aria-label="API key"
-                value={apiKey}
-                placeholder={provider.requires_api_key
-                  ? "Enter API key"
-                  : "Optional API key"}
-                disabled={submitting || probing}
-                onChange={(event) => {
-                  setAPIKey(event.target.value);
-                  setProbed(false);
-                }}
-              />
-            </div>
-            <p className="startupNote">
-              Encrypted and stored by the operating system Keyring. Never written
-              to this project, a config file, or browser storage.
-            </p>
-            {keyError && <p className="startupError">{keyError}</p>}
-            {requiresMetadata && (
-              <button
-                type="button"
-                className="settingsHeaderAction"
-                disabled={
-                  probing || (custom && !baseURL.trim()) || !modelID.trim() || Boolean(keyError)
-                }
-                onClick={() => void probeModel()}
-              >
-                {probing ? "Detecting..." : "Detect model"}
-              </button>
-            )}
-            {probeError && <p className="startupError">{probeError}</p>}
-            {requiresMetadata && !probed && (
-              <button type="button" className="settingsHeaderAction" disabled={submitting || probing}
-                onClick={() => {
-                  setMetadata(emptyModelMetadataDraft(modelID.trim()));
-                  setProbed(true);
-                }}>
-                Enter model metadata
-              </button>
-            )}
-          </div>
-        )}
-
-        <div className="startupFooter">
-          {workspaceRoot && <small title={workspaceRoot}>{workspaceRoot}</small>}
-          <button className="startupCreate" disabled={!ready || submitting || probing}>
-            {submitting
-              ? <LoaderCircle className="spin" size={17} />
-              : <Plus size={17} />}
-            <span>{submitting ? "Starting..." : "Start QCode"}</span>
-          </button>
-        </div>
-        {error && <p className="startupError" role="alert">{error}</p>}
-      </form>
-    </main>
-  );
-}
-
 function EmptySessionSetup({
   creating,
   workspaceReady,
+  setupRequired,
   onCreate,
-  onChooseWorkspace
+  onChooseWorkspace,
+  onConfigure
 }: {
   creating: boolean;
   workspaceReady: boolean;
+  setupRequired: boolean;
   onCreate: () => void;
   onChooseWorkspace: () => void;
+  onConfigure: () => void;
 }) {
   return (
     <section className="startupSetup emptySessionSetup" aria-labelledby="startup-title">
@@ -3838,7 +3767,11 @@ function EmptySessionSetup({
         <div className="emptyMark"><CapybaraMark size="hero" /></div>
         <div>
           <h2 id="startup-title">
-            {workspaceReady ? "Start a new session" : "Choose a workspace"}
+            {setupRequired
+              ? "Welcome to QCode"
+              : workspaceReady
+                ? "Start a new session"
+                : "Choose a workspace"}
           </h2>
         </div>
       </div>
@@ -3846,34 +3779,30 @@ function EmptySessionSetup({
         <button
           className="startupCreate"
           disabled={creating}
-          onClick={workspaceReady ? onCreate : onChooseWorkspace}
+          onClick={() => {
+            if (setupRequired) onConfigure();
+            else if (workspaceReady) onCreate();
+            else onChooseWorkspace();
+          }}
         >
           {creating
             ? <LoaderCircle className="spin" size={17} />
-            : workspaceReady
-              ? <Plus size={17} />
-              : <FolderOpen size={17} />}
+            : setupRequired
+              ? <Settings2 size={17} />
+              : workspaceReady
+                ? <Plus size={17} />
+                : <FolderOpen size={17} />}
           <span>{creating
             ? "Creating..."
-            : workspaceReady
-              ? "Create session"
-              : "Choose workspace"}</span>
+            : setupRequired
+              ? "Configure model connection"
+              : workspaceReady
+                ? "Create session"
+                : "Choose workspace"}</span>
         </button>
       </div>
     </section>
   );
-}
-
-function apiKeyError(value: string): string {
-  if (!value) return "";
-  if (value.trim() !== value || !/^[\x21-\x7e]+$/.test(value)) {
-    return "Enter the API key only, without spaces or quotes.";
-  }
-  if (/^[A-Z][A-Z0-9_]*=[^=]/.test(value) ||
-      (/^([\"'`]).*\1$/.test(value))) {
-    return "Enter the API key value, not an environment assignment.";
-  }
-  return "";
 }
 
 function CompactSelect({
@@ -4319,4 +4248,9 @@ function applyThemeMode(theme: ThemeMode, systemDark: boolean) {
     : theme;
   document.documentElement.dataset.theme = resolved;
   document.documentElement.style.colorScheme = resolved;
+  // 桌面壳据此对齐 WKWebView 的原生页面底色：合成层重建瞬间露出的
+  // 底色若与画布不同色，暗色主题下会闪过一块亮色（明暗跳变）。
+  (window as unknown as {
+    webkit?: {messageHandlers?: {qcodeTheme?: {postMessage: (value: string) => void}}};
+  }).webkit?.messageHandlers?.qcodeTheme?.postMessage(resolved);
 }

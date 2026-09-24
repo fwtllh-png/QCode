@@ -67,6 +67,8 @@ git diff --check
 | Target | 作用 |
 | --- | --- |
 | `make build` | 构建包含嵌入式 Web 资源的 `bin/qcode` |
+| `make desktop-app` | 构建 macOS 桌面壳 `dist/QCode.app`（依赖 `make build`） |
+| `make package-app` | 打包桌面应用发布产物（含签名与公证门控，见[桌面应用](./desktop.md)） |
 | `make test` | 执行串行 Hermetic Go Test Lane |
 | `make test-platform-capability` | 验证真实宿主机 Sandbox |
 | `make test-integration` | 验证真实 Binary 与 Web Transport |

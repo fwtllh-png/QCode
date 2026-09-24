@@ -9,7 +9,7 @@ import (
 )
 
 func TestReadyRouteGolden(t *testing.T) {
-	resolver, err := NewResolver(DefaultCatalog())
+	resolver, err := NewResolver(testCatalog(t))
 	if err != nil {
 		t.Fatal(err)
 	}

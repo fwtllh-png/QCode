@@ -54,6 +54,7 @@ context.working_set.max_entries
 credential.kind
 credential.name
 execution.approval_timeout
+execution.base_url
 execution.budget_tokens
 execution.budget_usd
 execution.connection_timeout
@@ -73,6 +74,7 @@ execution.max_output_tokens
 execution.max_steps
 execution.mode
 execution.model
+execution.model_metadata
 execution.native_search
 execution.protocol
 execution.provider

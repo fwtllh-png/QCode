@@ -39,7 +39,7 @@
   font-size: 12px;
 }
 .gitScope > span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.gitScope small { font-size: 11px; }
+.gitScope small { font-size: 12px; }
 .gitSummary { padding: 0 8px 10px; }
 .gitSummaryRow {
   width: 100%;
@@ -54,7 +54,7 @@
 }
 .gitSummaryRow > svg { color: var(--ch-text-secondary); flex: 0 0 auto; }
 .gitSummaryRow > span:not(.gitCounts) { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.gitSummaryRow small { margin-left: 6px; font-size: 11px; color: var(--ch-text-muted); }
+.gitSummaryRow small { margin-left: 6px; font-size: 12px; color: var(--ch-text-muted); }
 .gitTools button:not(:disabled):hover, .gitCommitDialog footer button:not(:disabled):hover { background: var(--ch-state-hover); }
 .gitCounts { display: inline-flex; flex: 0 0 auto; gap: 8px; font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .gitCounts > span:first-child { color: var(--ch-success); }
@@ -83,8 +83,8 @@
 .gitFileList[hidden] { display: none; }
 .gitFileList button { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 38px; padding: 8px; border-radius: var(--ch-radius); background: transparent; text-align: left; font-size: 12px; }
 .gitFileList button > span:nth-child(2) { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.gitFileList small { color: var(--ch-text-muted); font-size: 11px; }
-.gitFileStatus { width: 12px; flex: 0 0 auto; color: var(--ch-business); font-size: 11px; }
+.gitFileList small { color: var(--ch-text-muted); font-size: 12px; }
+.gitFileStatus { width: 12px; flex: 0 0 auto; color: var(--ch-business); font-size: 12px; }
 .gitFileStatus[data-conflict] { color: var(--ch-danger); }
 .gitPatch { display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; padding: 8px; }
 .gitPatch h3 { flex: 0 0 auto; font: 12px/1.7 var(--ch-font-mono); margin: 0 0 4px; max-height: 4em; overflow: auto; overflow-wrap: anywhere; }
