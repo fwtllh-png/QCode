@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -408,6 +409,7 @@ func (c *Service) changedPaths(
 type chatMergeFile struct {
 	exists bool
 	data   []byte
+	mode   fs.FileMode
 }
 
 func (c *Service) mergeChatPath(
@@ -435,7 +437,7 @@ func (c *Service) mergeChatPath(
 		return filetool.Change{}, false, nil
 	}
 	if equalChatMergeFile(parent, base) {
-		return chatMergeChange(path, child), true, nil
+		return chatMergeChange(path, child, parent), true, nil
 	}
 	if equalChatMergeFile(child, base) {
 		return filetool.Change{}, false, nil
@@ -450,11 +452,11 @@ func (c *Service) mergeChatPath(
 	if err != nil {
 		return filetool.Change{}, false, err
 	}
-	desired := chatMergeFile{exists: true, data: merged}
+	desired := chatMergeFile{exists: true, data: merged, mode: child.mode}
 	if equalChatMergeFile(parent, desired) {
 		return filetool.Change{}, false, nil
 	}
-	return chatMergeChange(path, desired), true, nil
+	return chatMergeChange(path, desired, parent), true, nil
 }
 
 func (c *Service) chatBaselineFile(
@@ -479,7 +481,44 @@ func (c *Service) chatBaselineFile(
 			"Chat merge baseline %q is not UTF-8 text", path,
 		)
 	}
-	return chatMergeFile{exists: true, data: data}, nil
+	mode, err := c.chatBaselineMode(ctx, worktree, path)
+	if err != nil {
+		return chatMergeFile{}, err
+	}
+	return chatMergeFile{exists: true, data: data, mode: mode}, nil
+}
+
+// chatBaselineMode reads the permission bits Git recorded for a baseline path.
+// Git only tracks the executable bit, so anything but 100755 maps to the
+// regular non-executable mode.
+func (c *Service) chatBaselineMode(
+	ctx context.Context,
+	worktree string,
+	path string,
+) (fs.FileMode, error) {
+	result, err := process.Run(ctx, process.Options{
+		Path: process.GitExecutable(),
+		Args: process.ManagedGitArguments([]string{"ls-tree", "HEAD", "--", path}),
+		Dir:  worktree,
+	})
+	if err != nil {
+		return 0, err
+	}
+	if result.ExitCode != 0 || result.Stdout == "" {
+		return 0, fmt.Errorf(
+			"Chat merge baseline mode %q is unavailable", path,
+		)
+	}
+	fields := strings.Fields(result.Stdout)
+	if len(fields) == 0 {
+		return 0, fmt.Errorf(
+			"Chat merge baseline mode %q is malformed", path,
+		)
+	}
+	if fields[0] == "100755" {
+		return 0o755, nil
+	}
+	return 0o644, nil
 }
 
 func readChatMergeFile(path string) (chatMergeFile, error) {
@@ -491,7 +530,13 @@ func readChatMergeFile(path string) (chatMergeFile, error) {
 				"Chat merge path %q is not UTF-8 text", path,
 			)
 		}
-		return chatMergeFile{exists: true, data: data}, nil
+		info, statErr := os.Stat(path)
+		if statErr != nil {
+			return chatMergeFile{}, statErr
+		}
+		return chatMergeFile{
+			exists: true, data: data, mode: gitTrackedMode(info.Mode()),
+		}, nil
 	case errors.Is(err, os.ErrNotExist):
 		return chatMergeFile{}, nil
 	default:
@@ -501,14 +546,31 @@ func readChatMergeFile(path string) (chatMergeFile, error) {
 
 func equalChatMergeFile(left, right chatMergeFile) bool {
 	return left.exists == right.exists &&
-		(!left.exists || bytes.Equal(left.data, right.data))
+		(!left.exists || (bytes.Equal(left.data, right.data) &&
+			left.mode.Perm() == right.mode.Perm()))
 }
 
-func chatMergeChange(path string, file chatMergeFile) filetool.Change {
+// gitTrackedMode collapses disk permissions to the executable distinction Git
+// records in trees; other local bits must not turn a clean merge into a
+// conflict or leak restrictive local modes into merge comparisons.
+func gitTrackedMode(mode fs.FileMode) fs.FileMode {
+	if mode.Perm()&0o111 != 0 {
+		return 0o755
+	}
+	return 0o644
+}
+
+func chatMergeChange(path string, file, parent chatMergeFile) filetool.Change {
 	if !file.exists {
 		return filetool.Change{Op: "delete", Path: path}
 	}
-	return filetool.Change{Op: "write", Path: path, Content: string(file.data)}
+	mode := uint32(0)
+	if file.mode != parent.mode {
+		mode = uint32(file.mode)
+	}
+	return filetool.Change{
+		Op: "write", Path: path, Content: string(file.data), Mode: mode,
+	}
 }
 
 func (c *Service) mergeChatText(

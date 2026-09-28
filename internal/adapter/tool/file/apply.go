@@ -45,6 +45,9 @@ type changeRequest struct {
 	Old     string `json:"old"`
 	New     string `json:"new"`
 	To      string `json:"to"`
+	// Mode optionally pins the permission bits a write leaves behind. Git
+	// only tracks 0644 and 0755, so those are the two accepted values.
+	Mode uint32 `json:"mode"`
 	// Occurrences declares how many times Old must appear for the edit to
 	// apply. Zero or one means exactly once; a larger count renames every
 	// occurrence in one compare-and-swap step.
@@ -59,18 +62,30 @@ func (r changeRequest) validate() error {
 	switch r.Op {
 	case opWrite:
 		unexpected = named(r, "old", "new", "to")
+		if r.Mode != 0 && r.Mode != 0o644 && r.Mode != 0o755 {
+			return errors.New(`op "write" mode must be 0644 or 0755`)
+		}
 	case opEdit:
 		unexpected = named(r, "content", "to")
 		if r.Old == "" {
 			return errors.New(`op "edit" requires a non-empty "old"`)
+		}
+		if r.Mode != 0 {
+			unexpected = append(unexpected, "mode")
 		}
 	case opMove:
 		unexpected = named(r, "content", "old", "new")
 		if strings.TrimSpace(r.To) == "" {
 			return errors.New(`op "move" requires "to"`)
 		}
+		if r.Mode != 0 {
+			unexpected = append(unexpected, "mode")
+		}
 	case opDelete:
 		unexpected = named(r, "content", "old", "new", "to")
+		if r.Mode != 0 {
+			unexpected = append(unexpected, "mode")
+		}
 	case "":
 		return errors.New("op is required")
 	default:
@@ -112,7 +127,7 @@ type plannedFile struct {
 	exists bool
 	after  []byte
 
-	editNormalized    bool
+	editNormalized     bool
 	editPrefixStripped bool
 }
 
@@ -148,6 +163,7 @@ type Change struct {
 	Old     string `json:"old,omitempty"`
 	New     string `json:"new,omitempty"`
 	To      string `json:"to,omitempty"`
+	Mode    uint32 `json:"mode,omitempty"`
 }
 
 // AppliedChange is the per-path outcome of a transaction, reported to the model
@@ -240,6 +256,7 @@ func changeRequests(changes []Change) []changeRequest {
 		requests[index] = changeRequest{
 			Op: change.Op, Path: change.Path, Content: change.Content,
 			Old: change.Old, New: change.New, To: change.To,
+			Mode: change.Mode,
 		}
 	}
 	return requests
@@ -452,6 +469,9 @@ func (x *transaction) compose(request changeRequest) error {
 	switch request.Op {
 	case opWrite:
 		planned.exists, planned.after = true, []byte(request.Content)
+		if request.Mode != 0 {
+			planned.mode = fs.FileMode(request.Mode)
+		}
 	case opEdit:
 		if !planned.exists {
 			return errors.New("file does not exist")

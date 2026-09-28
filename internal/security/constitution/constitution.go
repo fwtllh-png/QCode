@@ -170,12 +170,15 @@ func compile(doc Document, source string) []policy.Rule {
 		if resource == "" {
 			continue
 		}
-		for _, toolName := range writeTools() {
-			rules = append(rules, policy.Rule{
-				Tool: toolName, Resource: resource, Action: policy.ActionHold,
-				Code: "constitution_hold:" + source,
-			})
-		}
+		// Write holds match every tool's write-access resources instead of a
+		// hand-maintained tool list. A list cannot cover builtin writers added
+		// later (file_apply, integrate_agent) nor external tools with trusted
+		// write bindings; resource-scoped matching covers all of them while
+		// leaving reads of the protected paths untouched.
+		rules = append(rules, policy.Rule{
+			Tool: "*", Resource: resource, Action: policy.ActionHold,
+			Code: "constitution_hold:" + source, RequireWrite: true,
+		})
 	}
 	for _, name := range doc.HoldTools {
 		name = strings.TrimSpace(name)
@@ -207,11 +210,4 @@ func normalizeGlob(glob string) string {
 	glob = strings.TrimSuffix(glob, "/*")
 	glob = strings.TrimSuffix(glob, "/")
 	return filepath.ToSlash(filepath.Clean(glob))
-}
-
-func writeTools() []string {
-	return []string{
-		"file_write", "file_edit", "file_patch",
-		"exec_command",
-	}
 }

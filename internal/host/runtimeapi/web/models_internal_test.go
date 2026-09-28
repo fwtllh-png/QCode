@@ -86,6 +86,7 @@ func TestModelAddUsesDedicatedController(t *testing.T) {
 		"/api/v1/model/add",
 		strings.NewReader(`{
 			"model":"model-b",
+			"api_key":"sk-test",
 			"model_metadata":{
 				"canonical_id":"model-b",
 				"wire_id":"model-b",
@@ -100,6 +101,9 @@ func TestModelAddUsesDedicatedController(t *testing.T) {
 	}
 	if controller.added.Model != "model-b" {
 		t.Fatalf("added model = %+v", controller.added)
+	}
+	if controller.added.APIKey != "sk-test" {
+		t.Fatalf("added model api key = %+v", controller.added)
 	}
 }
 

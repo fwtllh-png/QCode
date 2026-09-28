@@ -914,7 +914,14 @@ function ConnectionWizard({
       if (!unconfigured && activeConnection && !target &&
           sameBaseURL(activeConnection) &&
           activeConnection.model !== modelID.trim()) {
-        await client.addModel({model: modelID.trim(), model_metadata: requestMetadata});
+        await client.addModel({
+          model: modelID.trim(),
+          model_metadata: requestMetadata,
+          // Detection already honors an entered key on the default endpoint;
+          // submit must rotate the saved credential too instead of silently
+          // dropping it while the runtime keeps the old key.
+          ...(apiKey.trim() ? {api_key: apiKey.trim()} : {})
+        });
         onModelAdded(modelID.trim(), requestMetadata);
       } else if (unconfigured) {
         await client.completeSetup({

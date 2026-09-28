@@ -2,6 +2,7 @@ package admission_test
 
 import (
 	"errors"
+	"math"
 	"testing"
 
 	"github.com/fwtllh-png/QCode/internal/orchestration/admission"
@@ -48,5 +49,39 @@ func TestGovernorAllowsUnboundedZeroLimits(t *testing.T) {
 	governor.Release(lease)
 	if err := governor.Record(1000, 25); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestGovernorTokenOverflowSaturatesInsteadOfWrapping(t *testing.T) {
+	governor := admission.NewGovernor(admission.Limits{MaxTokens: 100})
+	if err := governor.Record(1, 0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := governor.Admit(1, math.MaxUint64, 0); !errors.Is(
+		err, admission.ErrTokenBudget,
+	) {
+		t.Fatalf("overflow admit error = %v", err)
+	}
+	if err := governor.Record(math.MaxUint64, 0); !errors.Is(
+		err, admission.ErrTokenBudget,
+	) {
+		t.Fatalf("overflow record error = %v", err)
+	}
+	if snapshot := governor.Snapshot(); snapshot.SpentTokens != math.MaxUint64 {
+		t.Fatalf("spent tokens = %d, want %d", snapshot.SpentTokens, uint64(math.MaxUint64))
+	}
+
+	unbounded := admission.NewGovernor(admission.Limits{})
+	if err := unbounded.Record(math.MaxUint64, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := unbounded.Record(1, 0); err != nil {
+		t.Fatal(err)
+	}
+	if snapshot := unbounded.Snapshot(); snapshot.SpentTokens != math.MaxUint64 {
+		t.Fatalf(
+			"saturated spent tokens = %d, want %d",
+			snapshot.SpentTokens, uint64(math.MaxUint64),
+		)
 	}
 }

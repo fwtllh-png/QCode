@@ -3,6 +3,7 @@ package subagent
 import (
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
@@ -28,8 +29,16 @@ type ResultUsage struct {
 
 // Tokens is the spend the shared child budget is charged for. It matches the
 // engine's own definition (input plus output) so the fleet ledger and the
-// per-child engine budget cannot disagree about what a turn cost.
-func (u ResultUsage) Tokens() uint64 { return u.InputTokens + u.OutputTokens }
+// per-child engine budget cannot disagree about what a turn cost. The sum
+// saturates: a receipt whose token counts overflow uint64 must read as the
+// maximum possible spend, never as a small number that slips under a budget.
+func (u ResultUsage) Tokens() uint64 {
+	total := u.InputTokens + u.OutputTokens
+	if total < u.InputTokens {
+		return math.MaxUint64
+	}
+	return total
+}
 
 // CostUSD is zero when the model has no pricing metadata. Callers that need to
 // tell "free" from "unpriced" must read CostKnown.

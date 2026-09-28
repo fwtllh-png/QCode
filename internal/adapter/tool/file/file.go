@@ -359,6 +359,11 @@ func (o *operation) Descriptor() tool.Descriptor {
 						"type":        "integer",
 						"description": `For op "edit": how many times old must appear; default 1, set to the observed count to replace every occurrence at once`,
 					},
+					"mode": map[string]any{
+						"type":        "integer",
+						"enum":        []any{float64(0o644), float64(0o755)},
+						"description": `For op "write": target permission bits; omit to keep the existing mode (new files default to 0644)`,
+					},
 				},
 				"required": []string{"op", "path"}, "additionalProperties": false,
 			},

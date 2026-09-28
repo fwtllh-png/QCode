@@ -372,7 +372,9 @@ func (m *workspaceRuntimeManager) mutateModel(
 		return activeConnection.Models[i].ID < activeConnection.Models[j].ID
 	})
 	next := mergeConnection(selection, *activeConnection)
-	return m.replaceSelection(ctx, next, reference, "")
+	// A submitted key rotates the active connection's credential in the same
+	// rebuild (Reconfigure semantics); an empty value keeps the saved key.
+	return m.replaceSelection(ctx, next, reference, strings.TrimSpace(request.APIKey))
 }
 
 func (m *workspaceRuntimeManager) replaceSelection(
@@ -384,6 +386,38 @@ func (m *workspaceRuntimeManager) replaceSelection(
 	return m.replaceSelectionStaged(
 		ctx, selection, reference, secret, nil, credential.Reference{}, "",
 	)
+}
+
+// stagedCredentialTargetsDefault reports whether a staged credential belongs
+// to the default connection's namespace. An empty owner is the Reconfigure
+// path, which always stages in the default namespace; connection/add names
+// the target connection, and only an edit of the default endpoint may double
+// as the Runtime's active credential override.
+func stagedCredentialTargetsDefault(
+	selection webSetupSelection,
+	stagedOwner string,
+) bool {
+	if stagedOwner == "" {
+		return true
+	}
+	connection := selection.Active()
+	return connection != nil && stagedOwner == connection.ID
+}
+
+// runtimeCredentialStaging filters what the rebuild loop may hand to
+// prepareWebRuntime. A staged key owned by another connection's namespace is
+// dropped here — binding it would send the new connection's key to the
+// default connection's Base URL — and is only written back to its own entry.
+func runtimeCredentialStaging(
+	selection webSetupSelection,
+	stagedOwner string,
+	control *credential.Control,
+	reference credential.Reference,
+) (*credential.Control, credential.Reference) {
+	if control != nil && !stagedCredentialTargetsDefault(selection, stagedOwner) {
+		return nil, credential.Reference{}
+	}
+	return control, reference
 }
 
 // replaceSelectionStaged 支持传入已暂存的凭证（connection/add 在目标连接
@@ -487,6 +521,9 @@ func (m *workspaceRuntimeManager) replaceSelectionStaged(
 		if index == 0 {
 			runtimeSecret = secret
 		}
+		runtimeStagedControl, runtimeStagedReference := runtimeCredentialStaging(
+			selection, stagedOwner, stagedControl, stagedReference,
+		)
 		replacement, prepareErr := prepareWebRuntime(
 			ctx,
 			options,
@@ -498,8 +535,8 @@ func (m *workspaceRuntimeManager) replaceSelectionStaged(
 			repositories,
 			stderr,
 			runtimeSecret,
-			stagedControl,
-			stagedReference,
+			runtimeStagedControl,
+			runtimeStagedReference,
 		)
 		if prepareErr != nil {
 			return protocol.ModelCatalog{}, errors.Join(prepareErr, closePrepared())
@@ -514,11 +551,11 @@ func (m *workspaceRuntimeManager) replaceSelectionStaged(
 	}
 	if stagedControl != nil {
 		value := stagedReference
-		if stagedOwner == "" {
+		if stagedCredentialTargetsDefault(selection, stagedOwner) {
 			if active := selection.Active(); active != nil {
 				active.Credential = &value
 			}
-			// 默认连接的暂存同时是运行时凭证覆盖。
+			// 默认连接命名空间的暂存同时是运行时凭证覆盖。
 			reference = value
 		} else if entry := selection.Connection(stagedOwner); entry != nil {
 			entry.Credential = &value
@@ -1031,7 +1068,6 @@ func appendUniqueRoot(roots []string, root string) []string {
 	return append(roots, root)
 }
 
-
 // ConnectionList 投影当前连接集（不含密钥）。
 func (m *workspaceRuntimeManager) ConnectionList() webhost.ConnectionListResult {
 	m.mu.Lock()
@@ -1044,7 +1080,7 @@ func (m *workspaceRuntimeManager) ConnectionList() webhost.ConnectionListResult 
 		entry := webhost.ConnectionEntry{
 			ID: connection.ID, Provider: connection.Provider,
 			DisplayName: connectionDisplayName(connection),
-			BaseURL: connection.BaseURL, Protocol: connection.Protocol,
+			BaseURL:     connection.BaseURL, Protocol: connection.Protocol,
 			Model: connection.Model, Default: connection.ID == selection.DefaultConnection,
 			CredentialPresent: connection.Credential != nil,
 		}

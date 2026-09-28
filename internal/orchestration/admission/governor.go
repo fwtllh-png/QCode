@@ -2,6 +2,7 @@ package admission
 
 import (
 	"errors"
+	"math"
 	"sync"
 	"sync/atomic"
 )
@@ -41,6 +42,17 @@ func NewGovernor(limits Limits) *Governor {
 	return &Governor{limits: limits}
 }
 
+// addSaturating sums token counters without wrapping. Overflowing spend reads
+// as the maximum, so a malformed or hostile receipt can never budget-bypass by
+// wrapping the accumulator back near zero.
+func addSaturating(left, right uint64) uint64 {
+	total := left + right
+	if total < left {
+		return math.MaxUint64
+	}
+	return total
+}
+
 func (g *Governor) Limits() Limits { return g.limits }
 
 func (g *Governor) Snapshot() Snapshot {
@@ -76,7 +88,8 @@ func (g *Governor) Admit(depth int, tokens uint64, cost float64) (Lease, error) 
 	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if g.limits.MaxTokens > 0 && g.spentT+tokens > g.limits.MaxTokens {
+	nextTokens := addSaturating(g.spentT, tokens)
+	if g.limits.MaxTokens > 0 && nextTokens > g.limits.MaxTokens {
 		g.flight.Add(-1)
 		return Lease{}, ErrTokenBudget
 	}
@@ -84,7 +97,7 @@ func (g *Governor) Admit(depth int, tokens uint64, cost float64) (Lease, error) 
 		g.flight.Add(-1)
 		return Lease{}, ErrCostBudget
 	}
-	g.spentT += tokens
+	g.spentT = nextTokens
 	g.spentC += cost
 	if int32(depth) > g.depth.Load() {
 		g.depth.Store(int32(depth))
@@ -101,7 +114,7 @@ func (g *Governor) Release(Lease) {
 func (g *Governor) Record(tokens uint64, cost float64) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	g.spentT += tokens
+	g.spentT = addSaturating(g.spentT, tokens)
 	g.spentC += cost
 	if g.limits.MaxTokens > 0 && g.spentT > g.limits.MaxTokens {
 		return ErrTokenBudget

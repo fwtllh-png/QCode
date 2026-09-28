@@ -15,6 +15,10 @@ import (
 type ModelMutationRequest struct {
 	Model         string             `json:"model"`
 	ModelMetadata SetupModelMetadata `json:"model_metadata"`
+	// APIKey optionally rotates the active connection's saved credential in
+	// the same request. Empty keeps the persisted key, matching the reuse
+	// flow the Add-model dialog offers alongside key rotation.
+	APIKey string `json:"api_key,omitempty"`
 }
 
 type ModelRemoveRequest struct {

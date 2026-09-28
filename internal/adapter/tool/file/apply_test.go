@@ -227,6 +227,59 @@ func TestFileApplyNoopDoesNotRequestApproval(t *testing.T) {
 	}
 }
 
+func TestFileApplyWritePinsAndValidatesMode(t *testing.T) {
+	root, registry := applyTools(t, map[string]string{
+		"script.sh": "echo hi\n",
+	})
+	result, err := applyChanges(t, root, registry, []map[string]any{
+		{"op": "write", "path": "script.sh", "content": "echo hi\n", "mode": 0o755},
+	}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Metadata["observed_changes"] != 1 {
+		t.Fatalf("mode-only change result = %+v", result)
+	}
+	info, err := os.Stat(filepath.Join(root, "script.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o755 {
+		t.Fatalf("script.sh mode = %o, want 755", info.Mode().Perm())
+	}
+
+	result, err = applyChanges(t, root, registry, []map[string]any{
+		{"op": "write", "path": "script.sh", "content": "echo hi\n", "mode": 0o644},
+	}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Metadata["observed_changes"] != 1 {
+		t.Fatalf("mode-only restore result = %+v", result)
+	}
+	info, err = os.Stat(filepath.Join(root, "script.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o644 {
+		t.Fatalf("script.sh mode = %o, want 644", info.Mode().Perm())
+	}
+
+	_, err = applyChanges(t, root, registry, []map[string]any{
+		{"op": "write", "path": "script.sh", "content": "echo hi\n", "mode": 0o777},
+	}, false)
+	if err == nil || !strings.Contains(err.Error(), "value must be one of 420, 493") {
+		t.Fatalf("invalid mode error = %v", err)
+	}
+
+	_, err = applyChanges(t, root, registry, []map[string]any{
+		{"op": "edit", "path": "script.sh", "old": "hi", "new": "bye", "mode": 0o755},
+	}, false)
+	if err == nil || !strings.Contains(err.Error(), `does not take mode`) {
+		t.Fatalf("edit mode error = %v", err)
+	}
+}
+
 // Composition happens in memory, so a precondition that fails on the last
 // operation must leave the files named by the earlier ones untouched.
 func TestFileApplyValidationFailureWritesNothing(t *testing.T) {

@@ -63,3 +63,37 @@ func TestReadChatMergeFile(t *testing.T) {
 		t.Fatalf("invalid UTF-8 error = %v", err)
 	}
 }
+
+func TestChatMergeFileTracksGitVisibleMode(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "file.txt")
+	if err := os.WriteFile(path, []byte("content\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	restrictive, err := readChatMergeFile(path)
+	if err != nil || !restrictive.exists || restrictive.mode != 0o644 {
+		t.Fatalf("restrictive file = %+v, err = %v", restrictive, err)
+	}
+	if err := os.Chmod(path, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	executable, err := readChatMergeFile(path)
+	if err != nil || executable.mode != 0o755 {
+		t.Fatalf("executable file = %+v, err = %v", executable, err)
+	}
+
+	base := chatMergeFile{exists: true, data: []byte("x"), mode: 0o644}
+	changed := base
+	changed.mode = 0o755
+	if equalChatMergeFile(base, changed) {
+		t.Fatal("executable-bit-only change must not read as clean")
+	}
+
+	promoted := chatMergeChange("file.txt", changed, base)
+	if promoted.Mode != 0o755 {
+		t.Fatalf("promoted change = %+v", promoted)
+	}
+	unchanged := chatMergeChange("file.txt", base, base)
+	if unchanged.Mode != 0 {
+		t.Fatalf("unchanged change = %+v", unchanged)
+	}
+}

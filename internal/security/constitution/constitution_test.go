@@ -49,6 +49,95 @@ func TestConstitutionHoldSurvivesBypass(t *testing.T) {
 	}
 }
 
+func TestConstitutionWriteHoldCoversEveryWriterTool(t *testing.T) {
+	workspace := t.TempDir()
+	home := t.TempDir()
+	writeDoc(t, filepath.Join(workspace, ".qcode", "constitution.json"), constitution.Document{
+		Version: 1, DenyWriteGlobs: []string{"secrets/"},
+	})
+	bundle, err := constitution.Load(workspace, home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime := policy.DefaultRuntime(policy.ModeAct, policy.PermissionBypass)
+	runtime.Repository = bundle.Rules
+	secretWrite := tool.Resource{
+		Kind: "file", Path: "secrets/token", Access: tool.AccessWrite,
+	}
+	tests := []struct {
+		name       string
+		tool       string
+		capability policy.Capability
+		resources  []tool.Resource
+		held       bool
+	}{
+		{
+			name: "file_apply transaction write", tool: "file_apply",
+			capability: policy.CapabilityWrite,
+			resources:  []tool.Resource{secretWrite}, held: true,
+		},
+		{
+			name: "integrate_agent expanded merge write", tool: "integrate_agent",
+			capability: policy.CapabilityWrite,
+			resources: []tool.Resource{
+				{Kind: "agent", ID: "agent-1", Access: tool.AccessWrite},
+				secretWrite,
+			},
+			held: true,
+		},
+		{
+			name: "exec_command declared write path", tool: "exec_command",
+			capability: policy.CapabilityProcess,
+			resources: []tool.Resource{
+				{Kind: "repo", ID: ".", Access: tool.AccessRead, Tree: true},
+				secretWrite,
+			},
+			held: true,
+		},
+		{
+			name: "file_read of a protected path", tool: "file_read",
+			capability: policy.CapabilityRead,
+			resources: []tool.Resource{
+				{Kind: "file", Path: "secrets/token", Access: tool.AccessRead},
+			},
+			held: false,
+		},
+		{
+			name: "exec_command without a protected write path", tool: "exec_command",
+			capability: policy.CapabilityProcess,
+			resources: []tool.Resource{
+				{Kind: "repo", ID: ".", Access: tool.AccessRead, Tree: true},
+			},
+			held: false,
+		},
+		{
+			name: "write outside the protected tree", tool: "file_write",
+			capability: policy.CapabilityWrite,
+			resources: []tool.Resource{
+				{Kind: "file", Path: "src/main.go", Access: tool.AccessWrite},
+			},
+			held: false,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			decision := runtime.Evaluate(policy.Invocation{
+				CallID: "c-" + test.name, Tool: test.tool,
+				Capability: test.capability, Validated: true,
+				Arguments: json.RawMessage(`{}`),
+				Resources: test.resources,
+			})
+			if test.held && (decision.Action != policy.ActionDeny ||
+				!strings.Contains(decision.Code, "constitution_hold")) {
+				t.Fatalf("held decision = %+v", decision)
+			}
+			if !test.held && strings.Contains(decision.Code, "constitution_hold") {
+				t.Fatalf("unexpected hold decision = %+v", decision)
+			}
+		})
+	}
+}
+
 func TestRepoOverridesUserPrompt(t *testing.T) {
 	workspace := t.TempDir()
 	home := t.TempDir()

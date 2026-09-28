@@ -62,7 +62,11 @@ type Rule struct {
 	Resource string `json:"resource,omitempty"`
 	// ResourcePath is the Guard-resolved filesystem interpretation of Resource.
 	// Non-path resources always match the original Resource; this is not config.
-	ResourcePath  string `json:"-"`
+	ResourcePath string `json:"-"`
+	// RequireWrite limits resource matching to write-access resources. It is
+	// compiler-internal (not config): constitution write holds must gate every
+	// writer without holding reads of the same paths.
+	RequireWrite  bool   `json:"-"`
 	CommandPrefix string `json:"command_prefix,omitempty"`
 	GrantKey      string `json:"grant_key,omitempty"`
 	Action        Action `json:"action"`
@@ -400,6 +404,9 @@ func ruleMatches(rule Rule, invocation Invocation) bool {
 	if rule.Resource != "" && rule.Resource != "*" {
 		matched := false
 		for _, resource := range invocation.Resources {
+			if rule.RequireWrite && resource.Access != tool.AccessWrite {
+				continue
+			}
 			value := resource.Path
 			pattern := rule.Resource
 			if value == "" {

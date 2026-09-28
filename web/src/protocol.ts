@@ -398,6 +398,7 @@ export interface ModelTestResult {
 export interface ModelMutationRequest {
   model: string;
   model_metadata: SetupModelMetadata;
+  api_key?: string;
 }
 
 export interface WorkspaceConnection {
