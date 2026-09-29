@@ -24,9 +24,13 @@ import (
 	"github.com/fwtllh-png/QCode/internal/platform/textdiff"
 	"github.com/fwtllh-png/QCode/internal/security/authority"
 	"github.com/fwtllh-png/QCode/internal/security/controlplane"
+	"github.com/fwtllh-png/QCode/internal/security/effect"
 	"github.com/fwtllh-png/QCode/internal/security/egress"
 	"github.com/fwtllh-png/QCode/internal/security/goproxy"
+	"github.com/fwtllh-png/QCode/internal/security/netpolicy"
+	"github.com/fwtllh-png/QCode/internal/security/pathpolicy"
 	"github.com/fwtllh-png/QCode/internal/security/policy"
+	securityresource "github.com/fwtllh-png/QCode/internal/security/resource"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
 )
 
@@ -41,8 +45,8 @@ type ApprovalRequest struct {
 	ExpiresAt            time.Time                              `json:"expires_at"`
 	ReplacementAllowed   bool                                   `json:"replacement_allowed"`
 	ModifiableArguments  []string                               `json:"modifiable_arguments"`
-	Effect               policy.EffectKind                      `json:"effect"`
-	Risk                 policy.RiskLevel                       `json:"risk"`
+	Effect               effect.Kind                            `json:"effect"`
+	Risk                 effect.Risk                            `json:"risk"`
 	ReasonCode           string                                 `json:"reason_code"`
 	Network              *NetworkApprovalContext                `json:"network,omitempty"`
 	EditPlan             *tool.EditPlan                         `json:"edit_plan,omitempty"`
@@ -398,7 +402,7 @@ func softFailEgressApproval(err error) bool {
 func (g *Guard) approveEgressTarget(
 	ctx context.Context, invocation Invocation, callID string, target tool.NetworkTarget,
 ) error {
-	host := strings.ToLower(strings.TrimSpace(target.Host))
+	host := netpolicy.NormalizeHost(target.Host)
 	protocol := strings.ToLower(strings.TrimSpace(target.Protocol))
 	if protocol == "" {
 		protocol = "https"
@@ -412,8 +416,8 @@ func (g *Guard) approveEgressTarget(
 	} else if net.ParseIP(host) != nil && strings.Contains(host, ":") {
 		endpoint.Host = "[" + host + "]"
 	}
-	parsed, ok := policy.ParseNetworkTarget(endpoint.String())
-	if !ok || parsed.Host != host || (protocol != "http" && protocol != "https") {
+	parsed, err := netpolicy.ParseTarget(endpoint.String())
+	if _, known := netpolicy.DefaultPort(protocol); err != nil || parsed.Host != host || !known {
 		return errors.New("egress approval requires a valid HTTP target")
 	}
 	method := strings.ToUpper(strings.TrimSpace(target.Method))
@@ -460,7 +464,7 @@ func (g *Guard) approveEgressTarget(
 		approvalAsk{
 			Code: ApprovalReasonNetworkHost,
 			Network: &NetworkApprovalContext{
-				Host: parsed.Host, Protocol: parsed.Protocol, Port: parsed.Port,
+				Host: parsed.Host, Protocol: parsed.Scheme, Port: parsed.Port,
 				Methods: methods, AllowPrivate: hostResource.AllowPrivate,
 				Mode: string(policy.NetworkImmediate),
 			},
@@ -485,7 +489,7 @@ func invocationWritePaths(invocation Invocation) []string {
 	var paths []string
 	for _, resource := range invocation.Resources {
 		if resource.Kind == "file" && !resource.Tree &&
-			resource.Access == tool.AccessWrite && resource.Path != "" {
+			resource.Access.Writes() && resource.Path != "" {
 			paths = append(paths, resource.Path)
 		}
 	}
@@ -496,7 +500,7 @@ func invocationWritePaths(invocation Invocation) []string {
 func invocationWriteTrees(invocation Invocation) []string {
 	var trees []string
 	for _, resource := range invocation.Resources {
-		if resource.Access != tool.AccessWrite || resource.Path == "" {
+		if !resource.Access.Writes() || resource.Path == "" {
 			continue
 		}
 		if resource.Kind == "directory" || resource.Tree {
@@ -998,7 +1002,7 @@ func (g *Guard) prepare(
 
 func hasConsequentialWrite(resources []tool.Resource) bool {
 	for _, resource := range resources {
-		if resource.Access == tool.AccessWrite {
+		if resource.Access.Writes() {
 			return true
 		}
 	}
@@ -1014,7 +1018,7 @@ func (g *Guard) rewriteAbsolutePathArgs(
 	}
 	changed := false
 	for _, template := range descriptor.ResourceResolver.Templates {
-		if template.Field == "" || !isPathKind(template.Kind) {
+		if template.Field == "" || !securityresource.IsPathKind(template.Kind) {
 			continue
 		}
 		raw, ok := values[template.Field].(string)
@@ -1186,14 +1190,14 @@ func (g *Guard) waitForApproval(
 		Network: opts.Network, EditPlan: opts.EditPlan, Grant: request.Grant,
 		AdditionalPermission: opts.AdditionalPermission,
 	}
-	effect := policy.NormalizeEffect(policyInvocation)
-	event.Effect, event.Risk = effect.Kind, effect.Risk
+	classified := policy.NormalizeEffect(policyInvocation)
+	event.Effect, event.Risk = classified.Kind, classified.Risk
 	if recovering {
 		event = recovered
 	}
 	if opts.AdditionalPermission != nil {
-		event.Effect = policy.EffectExternalMutation
-		event.Risk = policy.RiskCritical
+		event.Effect = effect.ExternalMutation
+		event.Risk = effect.RiskCritical
 	}
 	entry := &pending{
 		callID: invocation.CallID, decision: make(chan ApprovalDecision, 1),
@@ -1308,9 +1312,9 @@ func (g *Guard) observeApproval(
 	latency time.Duration,
 ) {
 	if g.observe != nil {
-		effect := policy.NormalizeEffect(invocation)
+		classified := policy.NormalizeEffect(invocation)
 		g.observe(
-			outcome, string(effect.Kind), string(effect.Risk), decision.Code, latency,
+			outcome, string(classified.Kind), string(classified.Risk), decision.Code, latency,
 		)
 	}
 }
@@ -1364,9 +1368,9 @@ func networkApprovalAsk(
 	var network *NetworkApprovalContext
 	for _, resource := range invocation.Resources {
 		if resource.Kind == "url" && strings.TrimSpace(resource.ID) != "" {
-			if target, ok := policy.ParseNetworkTarget(resource.ID); ok {
+			if target, err := netpolicy.ParseTarget(resource.ID); err == nil {
 				network = &NetworkApprovalContext{
-					Host: target.Host, Protocol: target.Protocol, Port: target.Port,
+					Host: target.Host, Protocol: target.Scheme, Port: target.Port,
 				}
 				break
 			}
@@ -1407,7 +1411,7 @@ func (g *Guard) grantNetworkHosts(ctx context.Context, invocation policy.Invocat
 	for _, resource := range invocation.Resources {
 		switch resource.Kind {
 		case "host":
-			if resource.Protocol == "loopback" {
+			if securityresource.IsLoopback(resource.Kind, resource.Protocol) {
 				continue
 			}
 			allow(egress.Target{
@@ -1415,9 +1419,9 @@ func (g *Guard) grantNetworkHosts(ctx context.Context, invocation policy.Invocat
 				Methods: resource.Methods, AllowPrivate: resource.AllowPrivate,
 			})
 		case "url":
-			if target, ok := policy.ParseNetworkTarget(resource.ID); ok {
+			if target, err := netpolicy.ParseTarget(resource.ID); err == nil {
 				allow(egress.Target{
-					Host: target.Host, Protocol: target.Protocol, Port: target.Port,
+					Host: target.Host, Protocol: target.Scheme, Port: target.Port,
 					Methods:      resource.Methods,
 					AllowPrivate: egress.GrantPrivate(ctx, g.lookupIP, target.Host),
 				})
@@ -1614,13 +1618,13 @@ func (g *Guard) resolveResources(
 			}
 			value = text
 		}
-		if value == "" && !isPathKind(template.Kind) {
+		if value == "" && !securityresource.IsPathKind(template.Kind) {
 			continue
 		}
 		resource := tool.Resource{
 			Kind: template.Kind, Access: template.Access, Tree: template.Tree,
 		}
-		if isPathKind(template.Kind) {
+		if securityresource.IsPathKind(template.Kind) {
 			path, err := g.canonicalPath(value, template.Glob)
 			if err != nil {
 				return nil, err
@@ -1635,8 +1639,8 @@ func (g *Guard) resolveResources(
 		if resource.Kind != "url" || resource.ID == "" {
 			continue
 		}
-		target, ok := policy.ParseNetworkTarget(resource.ID)
-		if !ok {
+		target, err := netpolicy.ParseTarget(resource.ID)
+		if err != nil {
 			continue
 		}
 		resources = append(resources, policy.HostResource(target, resource.Access))
@@ -1728,8 +1732,9 @@ func (g *Guard) resolveResources(
 		}
 		if enabled {
 			resources = append(resources, tool.Resource{
-				Kind: "host", ID: "localhost", Access: tool.AccessWrite,
-				Protocol: "loopback", Methods: []string{"BIND", "CONNECT"},
+				Kind: securityresource.KindHost, ID: securityresource.LoopbackHost,
+				Access: tool.AccessWrite, Protocol: securityresource.LoopbackProtocol,
+				Methods:      []string{"BIND", "CONNECT"},
 				AllowPrivate: true,
 			})
 		}
@@ -1868,7 +1873,7 @@ func (g *Guard) canonicalPath(value string, glob bool) (string, error) {
 		}
 	}
 	candidate := filepath.Join(g.workspace, base)
-	canonical, err := canonicalMissing(candidate)
+	canonical, err := pathpolicy.CanonicalAllowMissing(candidate)
 	if err != nil {
 		return "", err
 	}
@@ -1881,29 +1886,6 @@ func (g *Guard) canonicalPath(value string, glob bool) (string, error) {
 		canonical = filepath.Join(canonical, suffix)
 	}
 	return filepath.Clean(canonical), nil
-}
-
-func canonicalMissing(path string) (string, error) {
-	current := filepath.Clean(path)
-	var suffix []string
-	for {
-		resolved, err := filepath.EvalSymlinks(current)
-		if err == nil {
-			for index := len(suffix) - 1; index >= 0; index-- {
-				resolved = filepath.Join(resolved, suffix[index])
-			}
-			return resolved, nil
-		}
-		if !errors.Is(err, os.ErrNotExist) {
-			return "", err
-		}
-		parent := filepath.Dir(current)
-		if parent == current {
-			return "", err
-		}
-		suffix = append(suffix, filepath.Base(current))
-		current = parent
-	}
 }
 
 func patchPaths(patch string) []string {
@@ -1969,10 +1951,6 @@ func schemaProperties(schema map[string]any) []string {
 	return result
 }
 
-func isPathKind(kind string) bool {
-	return kind == "file" || kind == "directory" || kind == "repo" || kind == "workspace"
-}
-
 func randomID(prefix string) string {
 	var value [16]byte
 	if _, err := rand.Read(value[:]); err != nil {
@@ -1989,7 +1967,7 @@ func canonicalizeRuleResource(rule *policy.Rule, workspace string) error {
 		return nil
 	}
 	if filepath.IsAbs(rule.Resource) {
-		canonical, err := canonicalMissing(rule.Resource)
+		canonical, err := pathpolicy.CanonicalAllowMissing(rule.Resource)
 		if err != nil {
 			return err
 		}
@@ -2000,7 +1978,7 @@ func canonicalizeRuleResource(rule *policy.Rule, workspace string) error {
 	if clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
 		return errors.New("rule resource escapes workspace")
 	}
-	canonical, err := canonicalMissing(filepath.Join(workspace, clean))
+	canonical, err := pathpolicy.CanonicalAllowMissing(filepath.Join(workspace, clean))
 	if err != nil {
 		return err
 	}

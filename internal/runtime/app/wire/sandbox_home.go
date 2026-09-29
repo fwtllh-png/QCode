@@ -8,7 +8,6 @@ import (
 
 	adapterenv "github.com/fwtllh-png/QCode/internal/adapter/environment"
 	"github.com/fwtllh-png/QCode/internal/config"
-	envcontract "github.com/fwtllh-png/QCode/internal/environment"
 	platformenv "github.com/fwtllh-png/QCode/internal/platform/environment"
 	"github.com/fwtllh-png/QCode/internal/security/authority"
 	"github.com/fwtllh-png/QCode/internal/security/egress"
@@ -17,7 +16,7 @@ import (
 
 func newWorkspaceSandbox(
 	state *buildState,
-) (sandbox.Backend, []envcontract.Fact, error) {
+) (sandbox.Backend, []platformenv.Fact, error) {
 	privateHome := ""
 	if state.config.workspaceStateRoot != "" {
 		privateHome = filepath.Join(
@@ -56,7 +55,7 @@ func bindEnvironmentSandbox(
 	options sandbox.Options,
 	environment config.ExecutionEnvironment,
 	workspaceID, sandboxHome string,
-) (sandbox.Options, []envcontract.Fact, error) {
+) (sandbox.Options, []platformenv.Fact, error) {
 	prepared, err := platformenv.Prepare(context.Background(), platformenv.Options{
 		Contract:       environment.Contract,
 		Profile:        options.EnvironmentProfile,
@@ -85,8 +84,8 @@ func applyPreparedSandboxOptions(
 		if !item.Bindable {
 			continue
 		}
-		if item.Request.Namespace == envcontract.NamespaceNetwork &&
-			item.Request.Source == envcontract.SourceUserDeclaration &&
+		if item.Request.Namespace == platformenv.NamespaceNetwork &&
+			item.Request.Source == platformenv.SourceUserDeclaration &&
 			strings.TrimSpace(item.Request.Host) != "" {
 			options.EnvironmentNetwork = append(
 				options.EnvironmentNetwork,
@@ -113,8 +112,8 @@ func applyPreparedSandboxOptions(
 			continue
 		}
 		switch item.Request.Namespace {
-		case envcontract.NamespaceHostConfig:
-			if options.EnvironmentProfile != envcontract.ProfileNative &&
+		case platformenv.NamespaceHostConfig:
+			if options.EnvironmentProfile != platformenv.ProfileNative &&
 				pathUnder(home, path) {
 				continue
 			}
@@ -123,17 +122,17 @@ func applyPreparedSandboxOptions(
 			} else {
 				options.HostReadFiles = append(options.HostReadFiles, path)
 			}
-		case envcontract.NamespaceHostToolchain:
+		case platformenv.NamespaceHostToolchain:
 			if isDirectory(path) {
 				options.HostReadRoots = append(options.HostReadRoots, path)
 			} else {
 				options.HostReadFiles = append(options.HostReadFiles, path)
 			}
-		case envcontract.NamespaceSharedUserTemp:
+		case platformenv.NamespaceSharedUserTemp:
 			options.HostWriteRoots = append(options.HostWriteRoots, path)
 		}
 	}
-	if options.EnvironmentProfile == envcontract.ProfileIsolated &&
+	if options.EnvironmentProfile == platformenv.ProfileIsolated &&
 		options.PrivateTemp != "" {
 		env["HOME"] = options.PrivateTemp
 	} else if value := environmentEntryValue(prepared.Env, "HOME"); value != "" {
@@ -155,7 +154,7 @@ func applyPreparedSandboxOptions(
 	}
 }
 
-func preparedPath(item envcontract.CompiledResource, options sandbox.Options) string {
+func preparedPath(item platformenv.CompiledResource, options sandbox.Options) string {
 	if item.Request.Path != "" && filepath.IsAbs(item.Request.Path) {
 		return item.Request.Path
 	}

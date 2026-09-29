@@ -16,6 +16,7 @@ import (
 	"github.com/fwtllh-png/QCode/internal/adapter/provider/httpclient"
 	providerwire "github.com/fwtllh-png/QCode/internal/adapter/provider/wire"
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
+	"github.com/fwtllh-png/QCode/internal/security/egress"
 )
 
 func TestResponsesSessionSendsStrictDeltaAndSeparatesDigests(t *testing.T) {
@@ -785,6 +786,8 @@ func testClient() *adapterClient {
 	}
 	client := httpclient.New()
 	client.Credentials = staticCredentials("")
+	client.Egress = &egress.Gate{}
+	client.Egress.SetRuntimeApprover(func(context.Context, egress.Target) error { return nil })
 	return &adapterClient{Client: client, adapter: adapter}
 }
 

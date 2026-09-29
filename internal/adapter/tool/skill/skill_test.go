@@ -10,7 +10,7 @@ import (
 
 	skillruntime "github.com/fwtllh-png/QCode/internal/adapter/skill"
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
-	"github.com/fwtllh-png/QCode/internal/testutil/tooltest"
+	"github.com/fwtllh-png/QCode/testutil/tooltest"
 )
 
 func TestSkillsReadExecutesThroughTestRegistry(t *testing.T) {

@@ -8,7 +8,6 @@ import (
 	"strings"
 	"testing"
 
-	envcontract "github.com/fwtllh-png/QCode/internal/environment"
 	platformenv "github.com/fwtllh-png/QCode/internal/platform/environment"
 )
 
@@ -39,9 +38,9 @@ func TestGoDiscoverUsesPublicEnvInterfaces(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	byName := map[string]envcontract.ResourceRequest{}
+	byName := map[string]platformenv.ResourceRequest{}
 	for _, request := range requests {
-		if err := envcontract.ValidateRequest(request); err != nil {
+		if err := platformenv.ValidateRequest(request); err != nil {
 			t.Fatalf("%s: %v", request.Name, err)
 		}
 		byName[request.Name] = request
@@ -81,16 +80,16 @@ func TestGoDiscoverUsesPublicEnvInterfaces(t *testing.T) {
 func TestGoproxyDirectFallbackIsNotAutoGranted(t *testing.T) {
 	requests, facts := goproxyNetwork("https://goproxy.example:443|direct")
 	for _, request := range requests {
-		if request.Host == "goproxy.example" && request.Namespace == envcontract.NamespaceNetwork {
+		if request.Host == "goproxy.example" && request.Namespace == platformenv.NamespaceNetwork {
 			continue
 		}
-		if request.Namespace == envcontract.NamespaceCredential && request.Access == envcontract.AccessUse {
+		if request.Namespace == platformenv.NamespaceCredential && request.Access == platformenv.AccessUse {
 			continue
 		}
 		t.Fatalf("unexpected request: %+v", request)
 	}
 	if len(facts) != 1 ||
-		facts[0].Category != envcontract.CategoryNetworkTargetUnapproved ||
+		facts[0].Category != platformenv.CategoryNetworkTargetUnapproved ||
 		facts[0].Resource != "goproxy-direct-fallback" {
 		t.Fatalf("direct facts = %+v", facts)
 	}
@@ -118,7 +117,7 @@ func TestGoDiscoverWithoutSandboxHomeOmitsCaches(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, request := range requests {
-		if request.Namespace == envcontract.NamespaceCache {
+		if request.Namespace == platformenv.NamespaceCache {
 			t.Fatalf("cache without sandbox home: %+v", request)
 		}
 		if request.Env == "GOROOT" && !filepath.IsAbs(request.Path) {
@@ -141,7 +140,7 @@ func TestToolchainFactsExplainAutoSwitchWhenModuleNeedsNewerGo(t *testing.T) {
 		"GOVERSION": "go1.26.3", "GOTOOLCHAIN": "auto",
 	})
 	if len(facts) != 1 ||
-		facts[0].Category != envcontract.CategoryEnvironmentResourceUnavailable ||
+		facts[0].Category != platformenv.CategoryEnvironmentResourceUnavailable ||
 		facts[0].Resource != "go-toolchain" {
 		t.Fatalf("facts = %+v", facts)
 	}
@@ -185,7 +184,7 @@ func TestToolchainFactsHonorToolchainDirectiveAndLocalSwitch(t *testing.T) {
 		t.Fatalf("facts = %+v", facts)
 	}
 	if !strings.Contains(facts[0].Detail, "GOTOOLCHAIN=local") ||
-		facts[0].RequiredAction != envcontract.ActionApproveHostConfig {
+		facts[0].RequiredAction != platformenv.ActionApproveHostConfig {
 		t.Fatalf("local switch must explain and require action: %+v", facts[0])
 	}
 }

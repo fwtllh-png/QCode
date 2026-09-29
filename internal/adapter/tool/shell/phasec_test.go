@@ -7,10 +7,10 @@ import (
 	"testing"
 
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
-	"github.com/fwtllh-png/QCode/internal/environment"
+	"github.com/fwtllh-png/QCode/internal/platform/environment"
 	"github.com/fwtllh-png/QCode/internal/platform/process"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
-	"github.com/fwtllh-png/QCode/internal/testutil/tooltest"
+	"github.com/fwtllh-png/QCode/testutil/tooltest"
 )
 
 func TestServiceFactsSinceCursorSurvivesRotation(t *testing.T) {

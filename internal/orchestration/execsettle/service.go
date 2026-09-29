@@ -170,19 +170,20 @@ func (s *session) PrepareBackend(
 		Environment: append([]string(nil), policy.Toolchains.Environment...),
 	}
 	backend, err := s.service.newBackend(sandbox.Options{
-		WorkspaceRoot:       s.root,
-		PrivateTemp:         policy.PrivateTemp,
-		HostReadRoots:       isolateHostReadRoots(s, policy.HostReadRoots),
-		HostReadFiles:       append([]string(nil), policy.HostReadFiles...),
-		HostWriteRoots:      append([]string(nil), policy.HostWriteRoots...),
-		ManagedProxyPort:    policy.ManagedProxyPort,
-		AllowNetwork:        policy.AllowNetwork,
-		EnvironmentContract: policy.EnvironmentContract,
-		EnvironmentProfile:  policy.EnvironmentProfile,
-		SharedUserTemp:      policy.SharedUserTemp,
-		EnvironmentValues:   append([]string(nil), policy.EnvironmentValues...),
-		Toolchains:          &inherited,
-		SkipPATHReadRoots:   true,
+		WorkspaceRoot:          s.root,
+		PrivateTemp:            policy.PrivateTemp,
+		HostReadRoots:          isolateHostReadRoots(s, policy.HostReadRoots),
+		HostReadFiles:          append([]string(nil), policy.HostReadFiles...),
+		HostWriteRoots:         append([]string(nil), policy.HostWriteRoots...),
+		ManagedProxyPort:       policy.ManagedProxyPort,
+		ManagedProxyCredential: policy.ManagedProxyCredential,
+		AllowNetwork:           policy.AllowNetwork,
+		EnvironmentContract:    policy.EnvironmentContract,
+		EnvironmentProfile:     policy.EnvironmentProfile,
+		SharedUserTemp:         policy.SharedUserTemp,
+		EnvironmentValues:      append([]string(nil), policy.EnvironmentValues...),
+		Toolchains:             &inherited,
+		SkipPATHReadRoots:      true,
 	})
 	if err != nil {
 		return nil, nil, err

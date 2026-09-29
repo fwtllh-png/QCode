@@ -111,6 +111,14 @@ Attempt 都会先签发和消费 Lease，再把 Operation/Lease/Settlement 证�
 输出和 Git Metadata Mutation。`workspacebroker.Runtime` 只组合窄能力，不把 Broker
 业务逻辑放入 `wire`。
 
+安全层共用的词汇放在四个只依赖标准库的叶子包中：`resource`（Access、路径/网络
+Kind、loopback 伪资源）、`effect`（Effect Kind、Risk、Reversibility）、`netpolicy`
+（网络目标解析、默认端口、地址分类）和 `pathpolicy`（控制面目录名、宿主凭据位置、
+允许缺失的路径规范化）。`adapter/tool` 的 Effect 与 Access 类型是它们的别名。
+`internal/security/architecture_test.go` 约束 `internal/security` 的生产代码不导入
+`internal/adapter`、`internal/runtime`、`internal/persist` 与 `internal/host`；
+现存违规登记在允许清单中，清单只减不增。
+
 Builtin、Skill、Memory 与 MCP Tool 共享同一个 Registry 实例。Composition Root
 按固定顺序直接构造 Skill Catalog、Memory Store 和 MCP Pool，并只向后续模块发布
 必要结果。Subagent 工具由 Orchestration Module 单独装配。
@@ -147,10 +155,10 @@ API Key 写入操作系统 Keyring，Provider、Model、Endpoint 与协议写入
 非敏感 Setup Record。只有这些事实持久化成功后，Host 才为已添加的 Workspace 调用
 `wire.NewExec` 并激活 Runtime；没有 Workspace 时仅激活 Supervisor 的目录管理界面。
 
-Web 进程持有一个全局 Owner Lease 和持久化 Workspace Registry。首次启动创建
-Supervisor；普通 `qcode` 启动不把当前目录、安装目录或源码目录注册为 Workspace，
+Web 进程持有一个全局 Owner Lease 和持久化 Workspace Registry。桌面壳默认无参数
+启动内嵌 Runtime，首次启动创建 Supervisor；启动不把当前目录、安装目录或源码目录注册为 Workspace，
 仅恢复 Registry，空列表也是合法状态。启动器按配置 Provenance 区分 Runtime 内部默认值
-与用户显式指定的 Workspace。只有 `--workspace`、显式配置或用户添加目录时，
+与用户显式指定的 Workspace。只有显式 Workspace 配置或用户添加目录时，
 才通过 Lease 中仅对当前用户可读的 Capability Token 调用已有 Host 的 `workspace/add`，
 不会启动第二套控制面。浏览器不接触该 Token：启动器用同一 Token 调用
 `auth/launch-code` 申请一次性启动码，浏览器凭启动码换取 HttpOnly 会话 Cookie
@@ -295,10 +303,25 @@ Web 将正常采样、工具准备与执行、工具回填投影到单一运行�
 `stop_reason=tool_use` 或成功工具结果创建聊天状态卡片。限流、重试、输出不完整和真正的
 终态错误仍保留可检查的提示；终态清除运行状态，历史重放使用同一投影规则。
 
-Web Unary Route 以 `internal/host/runtimeapi/web/contract.go` 为唯一清单。
+`internal/host` 统一持有进程启动、Supervisor 配置和 HTTP/WebSocket 入口。
+实现、同名测试、视图与协议文件平铺在该目录，统一使用 `host` 包；
+唯一子目录 `intergration_test` 用于集成测试。
+连接管理直接使用 Supervisor 提供的接口；Host 仍只向 Runtime 提交操作，
+不执行 Provider、Tool 或 Sandbox 逻辑。`internal/host/view.go` 保存 Web 实际使用的
+Agent、Usage 与 UsageRollup 视图 DTO 及转换函数；仅用于测试对照的 Thread、Turn
+结构与转换留在集成测试文件中。
+`internal/host/intergration_test` 集中 Runtime/Web 共享行为场景、两套驱动以及 Coding
+Benchmark 的任务驱动和统计，全部代码放在 `_test.go` 中，仅由 `go test` 编译。
+Benchmark 执行入口保留 `capability` 标签，任务清单和统计测试在默认测试中运行。
+共享类型和辅助函数保持包内私有；
+Web 路由注册等实现细节仍由 `internal/host` 的同名测试文件验证。
+
+Web Unary Route 以 `internal/host/contract.go` 为唯一清单。
 `webprotocolgen` 从该清单生成公开 Transport Manifest、TypeScript Route Union 和
 Go Handler Table；Handler 方法名由路由分段确定，例如 `session/create` 对应
 `sessionCreate`。服务端不得再维护平行的字符串 Dispatch Switch。
+Unary 入口完成鉴权、容量和 Workspace 就绪校验后才调用处理器。
+需要请求头幂等键的处理器共用解码与校验函数，保留各接口现有的校验顺序。
 
 Web Client 使用 Runtime Snapshot 完成 Hydration，再按当前 Workspace 的 Cursor 消费
 Event。持久层 Sequence 在 Supervisor 内全局严格单调，浏览器则按 Workspace 分别保存
@@ -1032,6 +1055,10 @@ Turn Admission 冻结当前 Generation，按显式 Pin、精确 Scope、词法�
 ### 3. Constitution
 
 普通 Session 配置不能绕过的硬约束。
+`deny_write_globs` 的每一条是工作区相对路径或绝对路径，按路径前缀匹配所有工具的写入资源；
+结尾的 `/`、`/*`、`/**` 都表示保护整棵子树。其他通配符（如 `*.pem`、`**/.env`）
+不受支持，含有它们的 constitution 会加载失败并报出具体条目，Session 不会在规则缺失的
+情况下启动。
 
 ### 4. Tool Guard
 
@@ -1072,6 +1099,10 @@ Cellar 这类布局；证书发现走准备链。平台适配器还会解析可�
 
 将私有 Home 过滤模型替换为可授权环境契约的设计见
 [Sandbox 执行环境重构方案](./sandbox-execution-environment-plan.md)。
+`internal/platform/environment` 统一承载环境契约、资源校验与编译、结构化失败事实
+和平台准备；`internal/adapter/environment` 保留 Go/Git 资源发现实现，通过
+`Discoverer` 接口由 `wire` 组装。通用准备链不依赖具体生态适配器。
+EDS 夹具和静态平台能力矩阵仅用于测试，放在 `_test.go` 中。
 产品默认现为 `execution.environment.contract=v1` 与 `profile=native`：
 准备器按通用 `host_config` / `cache` / `shared_user_temp` / `credential`+`use`
 资源物化环境；主 Agent 保留宿主 HOME 变量，但不开放整个 Home。

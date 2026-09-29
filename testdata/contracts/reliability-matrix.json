@@ -290,7 +290,7 @@
     },
     {
       "id": "host",
-      "owner": "internal/host/runtimeapi/web",
+      "owner": "internal/host",
       "invariants": [
         "no_duplicate_side_effect",
         "terminal_accounted",
@@ -298,19 +298,19 @@
       ],
       "cases": {
         "success": {
-          "package": "./internal/host/runtimeapi/web",
+          "package": "./internal/host",
           "test": "TestWebSocketDownlinkConcurrencyAndShutdown",
           "expected_state": "host projection matches runtime contract",
           "recovery": "none"
         },
         "retryable_failure": {
-          "package": "./internal/host/runtimeapi/web",
+          "package": "./internal/host",
           "test": "TestUnaryRequiresTokenAndRuntimeReadiness",
           "expected_state": "recoverable failure remains typed",
           "recovery": "resume through runtime"
         },
         "permanent_failure": {
-          "package": "./internal/host/runtimeapi/web",
+          "package": "./internal/host",
           "test": "TestArtifactRouteUsesTypedValidation",
           "expected_state": "incomplete terminal is explicit",
           "recovery": "new continuation turn"
@@ -322,7 +322,7 @@
           "recovery": "reconnect at terminal cursor"
         },
         "crash_recovery": {
-          "package": "./internal/host/runtimeapi/web",
+          "package": "./internal/host",
           "test": "TestWebSocketDownlinkConcurrencyAndShutdown",
           "expected_state": "transport shutdown does not fabricate state",
           "recovery": "reconnect and replay cursor"

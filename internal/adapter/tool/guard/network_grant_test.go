@@ -8,6 +8,7 @@ import (
 
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
 	"github.com/fwtllh-png/QCode/internal/security/egress"
+	"github.com/fwtllh-png/QCode/internal/security/netpolicy"
 	"github.com/fwtllh-png/QCode/internal/security/policy"
 )
 
@@ -27,7 +28,7 @@ func TestURLGrantPrivateReachFollowsGrantTimeResolution(t *testing.T) {
 	}}
 	dialTime := "10.9.9.9"
 	gate := &egress.Gate{
-		Enforce: true, UseCallScope: true,
+		UseCallScope: true,
 		LookupIP: func(context.Context, string) ([]net.IP, error) {
 			return []net.IP{net.ParseIP(dialTime)}, nil
 		},
@@ -43,12 +44,12 @@ func TestURLGrantPrivateReachFollowsGrantTimeResolution(t *testing.T) {
 				Methods: []string{"GET"},
 			}},
 		})
-		target, ok := policy.ParseNetworkTarget(rawURL)
-		if !ok {
-			t.Fatalf("parse %s", rawURL)
+		target, err := netpolicy.ParseTarget(rawURL)
+		if err != nil {
+			t.Fatalf("parse %s: %v", rawURL, err)
 		}
-		_, err := gate.Authorize(ctx, egress.Target{
-			Host: target.Host, Protocol: target.Protocol, Port: target.Port,
+		_, err = gate.Authorize(ctx, egress.Target{
+			Host: target.Host, Protocol: target.Scheme, Port: target.Port,
 			Methods: []string{"GET"},
 		}, "web")
 		return err

@@ -9,12 +9,12 @@ import (
 	"strings"
 	"testing"
 
+	buildinfo "github.com/fwtllh-png/QCode/internal"
 	"github.com/fwtllh-png/QCode/internal/adapter/model"
 	"github.com/fwtllh-png/QCode/internal/adapter/provider"
 	"github.com/fwtllh-png/QCode/internal/adapter/skill"
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
 	webtool "github.com/fwtllh-png/QCode/internal/adapter/tool/web"
-	"github.com/fwtllh-png/QCode/internal/buildinfo"
 	"github.com/fwtllh-png/QCode/internal/config"
 	"github.com/fwtllh-png/QCode/internal/persist/contentstore"
 	agentengine "github.com/fwtllh-png/QCode/internal/runtime/agent/engine"
@@ -22,7 +22,7 @@ import (
 	"github.com/fwtllh-png/QCode/internal/runtime/app"
 	"github.com/fwtllh-png/QCode/internal/security/policy"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
-	"github.com/fwtllh-png/QCode/internal/testutil/tooltest"
+	"github.com/fwtllh-png/QCode/testutil/tooltest"
 )
 
 func TestChildSkillsUseOwnCatalogAndRediscoverPrivateHome(t *testing.T) {

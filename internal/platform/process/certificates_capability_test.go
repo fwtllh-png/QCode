@@ -39,7 +39,7 @@ func TestSandboxNodeUsesValidatedCertificateDependencies(t *testing.T) {
 	t.Setenv("NODE_EXTRA_CA_CERTS", caPath)
 	target, _ := url.Parse(server.URL)
 	port, _ := strconv.ParseUint(target.Port(), 10, 16)
-	gate := &egress.Gate{Enforce: true}
+	gate := &egress.Gate{}
 	gate.AllowTarget(egress.Target{
 		Host: target.Hostname(), Protocol: "https", Port: uint16(port),
 		Methods: []string{"CONNECT"}, AllowPrivate: true,
@@ -51,6 +51,7 @@ func TestSandboxNodeUsesValidatedCertificateDependencies(t *testing.T) {
 	defer proxy.Close(context.Background())
 	backend, err := sandbox.NewPlatformBackend(sandbox.Options{
 		WorkspaceRoot: t.TempDir(), ManagedProxyPort: proxy.Port(),
+		ManagedProxyCredential: proxy.Credential(),
 	})
 	if err != nil {
 		t.Fatal(err)

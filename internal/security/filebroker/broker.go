@@ -14,8 +14,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/fwtllh-png/QCode/internal/adapter/tool"
 	"github.com/fwtllh-png/QCode/internal/security/authority"
+	"github.com/fwtllh-png/QCode/internal/security/pathpolicy"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
 )
 
@@ -377,7 +377,7 @@ func validateOperation(operation authority.ExecutionOperation, plan Plan) error 
 		if resource.Namespace != authority.NamespaceWorkspace ||
 			resource.RootID != operation.WorkspaceID ||
 			resource.RootGeneration != operation.WorkspaceGeneration ||
-			(resource.Access != tool.AccessWrite && resource.Access != tool.AccessTree) {
+			!resource.Access.Writes() {
 			continue
 		}
 		resources[filepath.ToSlash(filepath.Clean(resource.RelativePath))] = true
@@ -397,12 +397,8 @@ func validateEntry(entry Entry) error {
 		return errors.New("file transaction path is invalid")
 	}
 	first := strings.SplitN(entry.Path, "/", 2)[0]
-	for _, protected := range []string{
-		".git", ".qcode", ".qcode-worktree", ".agents", ".codex",
-	} {
-		if strings.EqualFold(first, protected) {
-			return errors.New("file transaction cannot write Workspace control metadata")
-		}
+	if _, protected := pathpolicy.ControlPlaneName(first); protected {
+		return errors.New("file transaction cannot write Workspace control metadata")
 	}
 	if entry.Before.Exists &&
 		(!validDigest(entry.Before.Digest) || entry.Before.Identity == "") {

@@ -10,7 +10,7 @@ import (
 
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
 	toolresult "github.com/fwtllh-png/QCode/internal/adapter/tool/result"
-	"github.com/fwtllh-png/QCode/internal/testutil/tooltest"
+	"github.com/fwtllh-png/QCode/testutil/tooltest"
 )
 
 type fixtureInput struct {

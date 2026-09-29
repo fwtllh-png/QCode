@@ -3,6 +3,7 @@ package egress_test
 import (
 	"bufio"
 	"context"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"net"
@@ -11,11 +12,13 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/fwtllh-png/QCode/internal/security/egress"
 	"github.com/fwtllh-png/QCode/internal/security/goproxy"
+	"github.com/fwtllh-png/QCode/internal/security/sandbox"
 )
 
 func TestProcessSessionsIsolateGrantedTargets(t *testing.T) {
@@ -34,7 +37,7 @@ func TestProcessSessionsIsolateGrantedTargets(t *testing.T) {
 	}))
 	t.Cleanup(right.Close)
 
-	workspace := &egress.Gate{Enforce: true}
+	workspace := &egress.Gate{}
 	proxy, err := egress.StartManagedNetworkProxy(workspace)
 	if err != nil {
 		t.Fatal(err)
@@ -52,12 +55,12 @@ func TestProcessSessionsIsolateGrantedTargets(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = sessionB.Close() })
 
-	assertProxyBody(t, sessionA.Port(), left.URL, http.StatusOK, "left")
-	assertProxyStatus(t, sessionA.Port(), right.URL, http.StatusForbidden)
-	assertProxyBody(t, sessionB.Port(), right.URL, http.StatusOK, "right")
-	assertProxyStatus(t, sessionB.Port(), left.URL, http.StatusForbidden)
-	assertProxyStatus(t, proxy.Port(), left.URL, http.StatusForbidden)
-	assertProxyStatus(t, proxy.Port(), right.URL, http.StatusForbidden)
+	assertProxyBody(t, sessionA, left.URL, http.StatusOK, "left")
+	assertProxyStatus(t, sessionA, right.URL, http.StatusForbidden)
+	assertProxyBody(t, sessionB, right.URL, http.StatusOK, "right")
+	assertProxyStatus(t, sessionB, left.URL, http.StatusForbidden)
+	assertProxyStatus(t, proxy, left.URL, http.StatusForbidden)
+	assertProxyStatus(t, proxy, right.URL, http.StatusForbidden)
 	if _, err := workspace.Authorize(
 		t.Context(),
 		httpTarget(t, left.URL, http.MethodGet),
@@ -83,7 +86,7 @@ func TestProcessSessionCloseRecyclesCONNECT(t *testing.T) {
 		accepted <- conn
 	}()
 	address := listener.Addr().(*net.TCPAddr)
-	proxy, err := egress.StartManagedNetworkProxy(&egress.Gate{Enforce: true})
+	proxy, err := egress.StartManagedNetworkProxy(&egress.Gate{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,24 +100,7 @@ func TestProcessSessionCloseRecyclesCONNECT(t *testing.T) {
 	}
 
 	authority := net.JoinHostPort(address.IP.String(), strconv.Itoa(address.Port))
-	client, err := net.Dial("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(int(session.Port()))))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = client.Close() })
-	if _, err = fmt.Fprintf(
-		client,
-		"CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n",
-		authority,
-		authority,
-	); err != nil {
-		t.Fatal(err)
-	}
-	reader := bufio.NewReader(client)
-	status, err := reader.ReadString('\n')
-	if err != nil {
-		t.Fatal(err)
-	}
+	client, reader, status := dialConnect(t, session, authority)
 	if !strings.Contains(status, "200") {
 		t.Fatalf("CONNECT status = %q", status)
 	}
@@ -152,7 +138,7 @@ type boundOriginHandler struct {
 func (h boundOriginHandler) BoundHost() string { return h.host }
 
 func TestProcessSessionDeniesConnectToBoundGoproxyHost(t *testing.T) {
-	workspace := &egress.Gate{Enforce: true}
+	workspace := &egress.Gate{}
 	proxy, err := egress.StartManagedNetworkProxy(workspace)
 	if err != nil {
 		t.Fatal(err)
@@ -173,22 +159,7 @@ func TestProcessSessionDeniesConnectToBoundGoproxyHost(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = session.Close() })
 
-	client, err := net.Dial("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(int(session.Port()))))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = client.Close() })
-	if _, err = fmt.Fprintf(
-		client,
-		"CONNECT goproxy.example:443 HTTP/1.1\r\nHost: goproxy.example:443\r\n\r\n",
-	); err != nil {
-		t.Fatal(err)
-	}
-	reader := bufio.NewReader(client)
-	status, err := reader.ReadString('\n')
-	if err != nil {
-		t.Fatal(err)
-	}
+	_, _, status := dialConnect(t, session, "goproxy.example:443")
 	if !strings.Contains(status, "403") {
 		t.Fatalf("CONNECT status = %q", status)
 	}
@@ -202,7 +173,7 @@ func TestProcessSessionDeniesConnectToBoundGoproxyHost(t *testing.T) {
 }
 
 func TestProcessSessionDeniesAbsoluteFormToBoundGoproxyHost(t *testing.T) {
-	workspace := &egress.Gate{Enforce: true}
+	workspace := &egress.Gate{}
 	proxy, err := egress.StartManagedNetworkProxy(workspace)
 	if err != nil {
 		t.Fatal(err)
@@ -218,7 +189,7 @@ func TestProcessSessionDeniesAbsoluteFormToBoundGoproxyHost(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = session.Close() })
 	assertProxyStatus(
-		t, session.Port(), "http://goproxy.example/", http.StatusForbidden,
+		t, session, "http://goproxy.example/", http.StatusForbidden,
 	)
 	receipts := session.Gate().Receipts()
 	if len(receipts) == 0 || receipts[0].Category != "trust_validation_failed" {
@@ -227,7 +198,7 @@ func TestProcessSessionDeniesAbsoluteFormToBoundGoproxyHost(t *testing.T) {
 }
 
 func TestProtocolHandlerServesOriginFormOnWorkspaceAndSessionChannels(t *testing.T) {
-	workspace := &egress.Gate{Enforce: true}
+	workspace := &egress.Gate{}
 	proxy, err := egress.StartManagedNetworkProxy(workspace)
 	if err != nil {
 		t.Fatal(err)
@@ -254,10 +225,7 @@ func TestProtocolHandlerServesOriginFormOnWorkspaceAndSessionChannels(t *testing
 	}
 	t.Cleanup(func() { _ = session.Close() })
 
-	direct, err := http.Get(fmt.Sprintf(
-		"http://127.0.0.1:%d/example.com/qcode/testmod/@v/v1.2.3.info",
-		session.Port(),
-	))
+	direct, err := http.Get(originFormURL(session))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -268,10 +236,7 @@ func TestProtocolHandlerServesOriginFormOnWorkspaceAndSessionChannels(t *testing
 		t.Fatalf("origin-form status=%d body=%s err=%v", direct.StatusCode, body, err)
 	}
 
-	stable, err := http.Get(fmt.Sprintf(
-		"http://127.0.0.1:%d/example.com/qcode/testmod/@v/v1.2.3.info",
-		proxy.Port(),
-	))
+	stable, err := http.Get(originFormURL(proxy))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -282,13 +247,166 @@ func TestProtocolHandlerServesOriginFormOnWorkspaceAndSessionChannels(t *testing
 		t.Fatalf("stable channel status=%d body=%s err=%v", stable.StatusCode, stableBody, err)
 	}
 
-	assertProxyStatus(t, session.Port(), "http://goproxy.example/", http.StatusForbidden)
+	assertProxyStatus(t, session, "http://goproxy.example/", http.StatusForbidden)
 	if _, err := workspace.Authorize(t.Context(), egress.Target{
 		Host: "goproxy.example", Protocol: "https", Port: 443,
 		Methods: []string{http.MethodConnect},
 	}, "test"); err == nil {
 		t.Fatal("protocol session leaked a grant onto the workspace gate")
 	}
+}
+
+func TestProxyChannelsRequireTheirOwnCredential(t *testing.T) {
+	var reached atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(
+		writer http.ResponseWriter,
+		_ *http.Request,
+	) {
+		reached.Add(1)
+		_, _ = io.WriteString(writer, "ok")
+	}))
+	t.Cleanup(upstream.Close)
+	proxy, err := egress.StartManagedNetworkProxy(&egress.Gate{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = proxy.Close(context.Background()) })
+	target := httpTarget(t, upstream.URL, http.MethodGet)
+	target.Methods = []string{http.MethodGet, http.MethodConnect}
+	sessionA, err := proxy.OpenSession([]egress.Target{target})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sessionA.Close() })
+	sessionB, err := proxy.OpenSession([]egress.Target{target})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sessionB.Close() })
+	credentials := map[string]bool{
+		proxy.Credential(): true, sessionA.Credential(): true, sessionB.Credential(): true,
+	}
+	if len(credentials) != 3 || credentials[""] {
+		t.Fatalf("channel credentials must be distinct and non-empty")
+	}
+	if !strings.Contains(proxy.URL(), proxy.Credential()+"@127.0.0.1:") {
+		t.Fatal("workspace proxy URL does not carry its credential")
+	}
+
+	authority := strings.TrimPrefix(upstream.URL, "http://")
+	for name, endpoint := range map[string]proxyEndpoint{
+		"no credential":             foreignEndpoint{port: sessionB.Port()},
+		"sibling session":           foreignEndpoint{sessionB.Port(), sessionA.Credential()},
+		"session on workspace port": foreignEndpoint{proxy.Port(), sessionA.Credential()},
+		"workspace on session port": foreignEndpoint{sessionA.Port(), proxy.Credential()},
+		"forged credential":         foreignEndpoint{sessionB.Port(), "not-the-credential"},
+	} {
+		response, err := proxyClient(t, endpoint).Get(upstream.URL)
+		if err != nil {
+			t.Fatal(err)
+		}
+		response.Body.Close()
+		if response.StatusCode != http.StatusProxyAuthRequired ||
+			!strings.HasPrefix(response.Header.Get("Proxy-Authenticate"), "Basic ") {
+			t.Fatalf("%s: forward status=%d challenge=%q", name,
+				response.StatusCode, response.Header.Get("Proxy-Authenticate"))
+		}
+		if _, _, status := dialConnect(t, endpoint, authority); !strings.Contains(status, "407") {
+			t.Fatalf("%s: CONNECT status = %q", name, status)
+		}
+	}
+	if reached.Load() != 0 {
+		t.Fatalf("unauthenticated clients reached the upstream %d times", reached.Load())
+	}
+	assertProxyBody(t, sessionA, upstream.URL, http.StatusOK, "ok")
+	assertProxyBody(t, sessionB, upstream.URL, http.StatusOK, "ok")
+}
+
+func TestProtocolHandlerRequiresChannelCredential(t *testing.T) {
+	var served atomic.Int32
+	var leaked atomic.Bool
+	proxy, err := egress.StartManagedNetworkProxy(&egress.Gate{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = proxy.Close(context.Background()) })
+	proxy.BindProtocolHandler(http.HandlerFunc(func(
+		writer http.ResponseWriter,
+		request *http.Request,
+	) {
+		served.Add(1)
+		if request.Header.Get("Authorization") != "" ||
+			request.Header.Get("Proxy-Authorization") != "" {
+			leaked.Store(true)
+		}
+		_, _ = io.WriteString(writer, `{"Version":"v1.2.3"}`)
+	}))
+	session, err := proxy.OpenSession(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = session.Close() })
+
+	for name, endpoint := range map[string]proxyEndpoint{
+		"no credential":   foreignEndpoint{port: session.Port()},
+		"workspace creds": foreignEndpoint{session.Port(), proxy.Credential()},
+	} {
+		response, err := http.Get(originFormURL(endpoint))
+		if err != nil {
+			t.Fatal(err)
+		}
+		response.Body.Close()
+		if response.StatusCode != http.StatusUnauthorized ||
+			!strings.HasPrefix(response.Header.Get("WWW-Authenticate"), "Basic ") {
+			t.Fatalf("%s: origin-form status=%d", name, response.StatusCode)
+		}
+	}
+	if served.Load() != 0 {
+		t.Fatal("protocol handler served an unauthenticated request")
+	}
+
+	request, err := http.NewRequest(http.MethodGet, originFormURL(foreignEndpoint{port: session.Port()}), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Proxy-Authorization", "Basic "+base64.StdEncoding.EncodeToString(
+		[]byte(sandbox.ManagedProxyUser+":"+session.Credential()),
+	))
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK || served.Load() != 1 {
+		t.Fatalf("Proxy-Authorization origin-form status=%d served=%d", response.StatusCode, served.Load())
+	}
+	if leaked.Load() {
+		t.Fatal("channel credential reached the protocol handler")
+	}
+}
+
+func TestUnauthenticatedProxyAcceptsClientsWithoutCredential(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(
+		writer http.ResponseWriter,
+		_ *http.Request,
+	) {
+		_, _ = io.WriteString(writer, "ok")
+	}))
+	t.Cleanup(upstream.Close)
+	proxy, err := egress.StartUnauthenticatedNetworkProxy(&egress.Gate{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = proxy.Close(context.Background()) })
+	if proxy.Credential() != "" || strings.Contains(proxy.URL(), "@") {
+		t.Fatalf("unauthenticated proxy URL = %q", proxy.URL())
+	}
+	session, err := proxy.OpenSession([]egress.Target{httpTarget(t, upstream.URL, http.MethodGet)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = session.Close() })
+	assertProxyBody(t, session, upstream.URL, http.StatusOK, "ok")
 }
 
 func httpTarget(t *testing.T, endpoint, method string) egress.Target {
@@ -307,22 +425,70 @@ func httpTarget(t *testing.T, endpoint, method string) egress.Target {
 	}
 }
 
-func proxyClient(t *testing.T, port uint16) *http.Client {
+// proxyEndpoint is a proxy channel as a client sees it: a loopback port and
+// the credential its owner was handed.
+type proxyEndpoint interface {
+	Port() uint16
+	Credential() string
+}
+
+// foreignEndpoint presents one channel's port with another's credential.
+type foreignEndpoint struct {
+	port       uint16
+	credential string
+}
+
+func (e foreignEndpoint) Port() uint16       { return e.port }
+func (e foreignEndpoint) Credential() string { return e.credential }
+
+func proxyClient(t *testing.T, endpoint proxyEndpoint) *http.Client {
 	t.Helper()
+	proxyURL, err := url.Parse(sandbox.ManagedProxyURL(endpoint.Port(), endpoint.Credential()))
+	if err != nil {
+		t.Fatal(err)
+	}
 	client := &http.Client{Transport: &http.Transport{
-		Proxy: http.ProxyURL(&url.URL{
-			Scheme: "http",
-			Host:   net.JoinHostPort("127.0.0.1", strconv.Itoa(int(port))),
-		}),
+		Proxy:             http.ProxyURL(proxyURL),
 		DisableKeepAlives: true,
 	}}
 	t.Cleanup(client.CloseIdleConnections)
 	return client
 }
 
-func assertProxyBody(t *testing.T, port uint16, endpoint string, want int, body string) {
+func originFormURL(endpoint proxyEndpoint) string {
+	return sandbox.ManagedProxyURL(endpoint.Port(), endpoint.Credential()) +
+		"/example.com/qcode/testmod/@v/v1.2.3.info"
+}
+
+func dialConnect(t *testing.T, endpoint proxyEndpoint, authority string) (net.Conn, *bufio.Reader, string) {
 	t.Helper()
-	response, err := proxyClient(t, port).Get(endpoint)
+	client, err := net.Dial("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(int(endpoint.Port()))))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+	auth := ""
+	if endpoint.Credential() != "" {
+		auth = "Proxy-Authorization: Basic " + base64.StdEncoding.EncodeToString(
+			[]byte(sandbox.ManagedProxyUser+":"+endpoint.Credential()),
+		) + "\r\n"
+	}
+	if _, err = fmt.Fprintf(
+		client, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n%s\r\n", authority, authority, auth,
+	); err != nil {
+		t.Fatal(err)
+	}
+	reader := bufio.NewReader(client)
+	status, err := reader.ReadString('\n')
+	if err != nil {
+		t.Fatal(err)
+	}
+	return client, reader, status
+}
+
+func assertProxyBody(t *testing.T, endpoint proxyEndpoint, target string, want int, body string) {
+	t.Helper()
+	response, err := proxyClient(t, endpoint).Get(target)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -331,25 +497,25 @@ func assertProxyBody(t *testing.T, port uint16, endpoint string, want int, body 
 	if err != nil || response.StatusCode != want || string(got) != body {
 		t.Fatalf(
 			"port %d %s: status=%d body=%q err=%v, want %d %q",
-			port, endpoint, response.StatusCode, got, err, want, body,
+			endpoint.Port(), target, response.StatusCode, got, err, want, body,
 		)
 	}
 }
 
-func assertProxyStatus(t *testing.T, port uint16, endpoint string, want int) {
+func assertProxyStatus(t *testing.T, endpoint proxyEndpoint, target string, want int) {
 	t.Helper()
-	response, err := proxyClient(t, port).Get(endpoint)
+	response, err := proxyClient(t, endpoint).Get(target)
 	if err != nil {
 		t.Fatal(err)
 	}
 	response.Body.Close()
 	if response.StatusCode != want {
-		t.Fatalf("port %d %s: status=%d, want %d", port, endpoint, response.StatusCode, want)
+		t.Fatalf("port %d %s: status=%d, want %d", endpoint.Port(), target, response.StatusCode, want)
 	}
 }
 
 func TestProcessSessionDeniesTrailingDotConnectToBoundHost(t *testing.T) {
-	workspace := &egress.Gate{Enforce: true}
+	workspace := &egress.Gate{}
 	proxy, err := egress.StartManagedNetworkProxy(workspace)
 	if err != nil {
 		t.Fatal(err)
@@ -365,24 +531,9 @@ func TestProcessSessionDeniesTrailingDotConnectToBoundHost(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = session.Close() })
 
-	client, err := net.Dial("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(int(session.Port()))))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = client.Close() })
 	// FQDN trailing dot: same origin after normalization, spelling chosen to
 	// sidestep a naive equality check.
-	if _, err = fmt.Fprintf(
-		client,
-		"CONNECT goproxy.example.:443 HTTP/1.1\r\nHost: goproxy.example.:443\r\n\r\n",
-	); err != nil {
-		t.Fatal(err)
-	}
-	reader := bufio.NewReader(client)
-	status, err := reader.ReadString('\n')
-	if err != nil {
-		t.Fatal(err)
-	}
+	_, _, status := dialConnect(t, session, "goproxy.example.:443")
 	if !strings.Contains(status, "403") {
 		t.Fatalf("trailing-dot CONNECT status = %q", status)
 	}
@@ -417,17 +568,14 @@ func TestGoproxyServiceServesStableWorkspaceChannel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	proxy, err := egress.StartManagedNetworkProxy(&egress.Gate{Enforce: true})
+	proxy, err := egress.StartManagedNetworkProxy(&egress.Gate{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = proxy.Close(context.Background()) })
 	proxy.BindProtocolHandler(service)
 
-	response, err := http.Get(fmt.Sprintf(
-		"http://127.0.0.1:%d/example.com/qcode/testmod/@v/v1.2.3.info",
-		proxy.Port(),
-	))
+	response, err := http.Get(originFormURL(proxy))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -1,51 +1,44 @@
 # Web 使用指南
 
-从源码安装一次：
+主要通过 macOS 桌面 App 使用，从源码构建并启动：
 
 ```bash
-make install
+make start
 ```
 
-之后在任意目录直接启动：
+之后直接打开 App：
 
 ```bash
-qcode
+open dist/QCode.app
 ```
 
-普通启动只打开浏览器，不把当前目录、源码目录或安装目录自动添加为 Workspace，
+桌面壳无参数启动内嵌 Runtime，不把当前目录、源码目录或安装目录自动添加为 Workspace，
 也不自动选中列表中的目录。服务默认监听 `127.0.0.1:6732`。
 打开和打印的地址带一次性启动码（`?launch=`），浏览器首次访问时换成会话 Cookie，
 之后刷新页面无需启动码。启动码只能使用一次，并在短时间后过期；页面提示
-“Session expired” 时，重新运行 `qcode` 即可获得新链接。
-显式执行 `qcode --workspace /path/to/project` 才会注册并打开该目录；已有 Supervisor
-时复用现有进程。`make start` 同样没有默认目录，只有显式传入 `START_WORKSPACE`
-才会添加并打开对应项目。它仅作为源码开发入口保留。
-它会使用 `--replace-owner` 比较构建身份并重启旧的开发 Supervisor；直接执行已安装的
-`qcode` 仍复用现有 Supervisor。
+“Session expired” 时，重新打开桌面窗口或重启 App 获取新链接。
+通过 `Add workspace` 添加目录；已有 Supervisor 时复用现有进程。
+重新构建后需退出并重新打开 App；若桌面复用的是终端启动的 Runtime，先在原终端停止它。
 
-## 启动参数
+## Runtime 调试参数
+
+日常桌面启动无需参数。独立运行 `qcode` 只输出 URL，不自动打开浏览器；
+开发或测试时保留以下参数：
 
 | 参数 | 说明 |
 | --- | --- |
-| `--workspace PATH` | 显式添加并打开目录；也可通过 `execution.workspace` 或 `QCODE_WORKSPACE` 显式指定，无隐式默认值 |
-| `--replace-owner` | 构建身份变化时重启已有 Web Owner；仅供源码开发启动使用 |
 | `--config PATH` | TOML 配置文件 |
 | `--data-dir PATH` | 持久状态目录 |
-| `--host 127.0.0.1` | 监听地址；只接受 Loopback |
 | `--port PORT` | 监听端口；默认 `6732`，`0` 仅用于测试或临时隔离 |
-| `--open` | 启动后打开系统浏览器 |
-| `--no-open` | 禁止自动打开浏览器 |
-| `--enable-tools` | 启用内置 Workspace Tool |
-| `--posture MODE` | `suggest`、`auto` 或 `never` |
 | `--mcp-config PATH` | State Directory 内的版本化 MCP 配置；stdio Server 还需显式 `host_trusted=true` |
-| `--provider ID` | 覆盖配置中的 Provider |
-| `--model ID` | 覆盖配置中的 Model |
-| `--api-key-env NAME` | 使用环境变量中的 Provider Credential |
 | `--provider-fixture PATH` | 使用 Hermetic Provider Fixture |
 | `--version` | 输出构建版本 |
+| `--help` | 输出参数帮助 |
 
-`--host` 固定为 `127.0.0.1`，`bypass` 不允许作为 Web Posture。启动参数只负责构造
-Web Host；会话、审批、输入、工具执行和持久化仍由 Runtime 负责。
+监听地址固定为 `127.0.0.1`。Workspace、连接、模型和 Approval 在界面管理；
+新 Session 默认使用 `auto`，不接受 `bypass`。内置工具默认启用，显式的
+`execution.tools` / `QCODE_TOOLS` 配置仍生效。自动化场景可通过 TOML 或环境变量
+声明 Workspace、模型和凭证引用。会话、审批、输入、工具执行和持久化仍由 Runtime 负责。
 
 ## 代码结构与符号搜索
 
@@ -150,7 +143,7 @@ Workspace、跨 Workspace Session 和内容句柄均拒绝访问。浏览器为�
 Workspace Catalog 和 Session 摘要在页面重新可见时刷新，不持续轮询 Git 状态。
 Trajectory 也由新 Runtime Event 驱动增量 Trace 查询。裸 Supervisor URL 不隐式选择
 默认 Workspace；用户必须先选择一个 Ready Workspace，页面和 Host 才允许创建 Session。
-只有 `qcode --workspace PATH` 或显式 Workspace 配置才会让启动器定位到目录。
+只有显式的 `execution.workspace` 或 `QCODE_WORKSPACE` 配置才会让启动器定位到目录。
 首次启动允许零 Workspace，模型连接设置不依赖默认项目；添加目录后才构造其 Runtime。
 Workspace 管理界面可以移除任意 Workspace。移除只会注销并关闭对应 Runtime，不会
 删除本机目录、Git 内容或持久化 Session。移除当前 Workspace 后，Web 自动切换到另一

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
+	"github.com/fwtllh-png/QCode/internal/security/effect"
 )
 
 type Mode string
@@ -300,17 +301,17 @@ func (r *Runtime) evaluate(invocation Invocation) Decision {
 			userAllow = true
 		}
 	}
-	effect := NormalizeEffect(invocation)
+	eff := NormalizeEffect(invocation)
 	if err := validateMode(r.Mode); err != nil {
 		return decisionFromError(err)
 	}
-	if decision := planningDecision(r, invocation, effect); decision != nil {
+	if decision := planningDecision(r, invocation, eff); decision != nil {
 		return *decision
 	}
 	permissionAction, err := permissionDecision(
 		r.Permission,
 		invocation.Capability,
-		effect,
+		eff,
 	)
 	if err != nil {
 		return decisionFromError(err)
@@ -320,15 +321,15 @@ func (r *Runtime) evaluate(invocation Invocation) Decision {
 	decision := Decision{Action: ActionAllow}
 	if needsApproval {
 		decision = Decision{Action: ActionAsk, Code: "approval_required", Reason: "approval is required"}
-		effect := NormalizeEffect(invocation)
+		eff := NormalizeEffect(invocation)
 		_, typed := GrantForInvocation(invocation)
 		// Loopback services and cloud metadata are never auto-reviewed: model
 		// input naming them is the classic request-forgery path.
 		if !r.DisableAutoReview && permissionAction == ActionAsk &&
 			!repositoryAsk && grant.Action != ActionAsk && typed &&
-			effect.Risk == RiskMedium &&
-			(effect.Kind == EffectAgentLifecycle ||
-				(effect.Kind == EffectNetworkRead && r.Permission == PermissionAuto &&
+			eff.Risk == effect.RiskMedium &&
+			(eff.Kind == effect.AgentLifecycle ||
+				(eff.Kind == effect.NetworkRead && r.Permission == PermissionAuto &&
 					!targetsHostLocal(invocation.Resources))) {
 			decision = Decision{
 				Action: ActionAllow, Code: "auto_review_allowed",
@@ -338,7 +339,7 @@ func (r *Runtime) evaluate(invocation Invocation) Decision {
 	}
 	decision = ApplySurfaceTightening(
 		decision, ClassifySurface(invocation.Source, invocation.Capability),
-		r.Granular, effect,
+		r.Granular, eff,
 	)
 	return decision
 }
@@ -365,7 +366,7 @@ func validateMode(mode Mode) error {
 func permissionDecision(
 	permission Permission,
 	capability tool.Capability,
-	effect Effect,
+	eff effect.Effect,
 ) (Action, error) {
 	if permission != PermissionSuggest && permission != PermissionAuto &&
 		permission != PermissionBypass && permission != PermissionNever {
@@ -373,16 +374,16 @@ func permissionDecision(
 	}
 	if permission == PermissionNever {
 		if capability == tool.CapabilityRead ||
-			effect.Kind == EffectProcessReadOnly {
+			eff.Kind == effect.ProcessReadOnly {
 			return ActionAllow, nil
 		}
 		return ActionDeny, decisionError("permission_denied", "never posture denies side effects")
 	}
-	if effect.Risk == RiskCritical {
+	if eff.Risk == effect.RiskCritical {
 		return ActionDeny, decisionError("permission_denied", "critical-risk execution is denied")
 	}
 	if permission == PermissionBypass || capability == tool.CapabilityRead ||
-		effect.Risk == RiskLow {
+		eff.Risk == effect.RiskLow {
 		return ActionAllow, nil
 	}
 	return ActionAsk, nil
@@ -407,7 +408,7 @@ func ruleMatches(rule Rule, invocation Invocation) bool {
 	if rule.Resource != "" && rule.Resource != "*" {
 		matched := false
 		for _, resource := range invocation.Resources {
-			if rule.RequireWrite && resource.Access != tool.AccessWrite {
+			if rule.RequireWrite && !resource.Access.Writes() {
 				continue
 			}
 			value := resource.Path
@@ -464,8 +465,8 @@ func Validate(runtime *Runtime) error {
 	if err := validateMode(runtime.Mode); err != nil {
 		return fmt.Errorf("mode: %w", err)
 	}
-	if _, err := permissionDecision(runtime.Permission, tool.CapabilityRead, Effect{
-		Kind: EffectWorkspaceRead, Risk: RiskLow, Reversibility: "reversible",
+	if _, err := permissionDecision(runtime.Permission, tool.CapabilityRead, effect.Effect{
+		Kind: effect.WorkspaceRead, Risk: effect.RiskLow, Reversibility: effect.Reversible,
 	}); err != nil {
 		return fmt.Errorf("permission: %w", err)
 	}

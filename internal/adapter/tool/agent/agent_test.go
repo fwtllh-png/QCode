@@ -16,7 +16,7 @@ import (
 	"github.com/fwtllh-png/QCode/internal/adapter/tool/handle"
 	"github.com/fwtllh-png/QCode/internal/orchestration/subagent"
 	"github.com/fwtllh-png/QCode/internal/security/policy"
-	"github.com/fwtllh-png/QCode/internal/testutil/tooltest"
+	"github.com/fwtllh-png/QCode/testutil/tooltest"
 )
 
 type recordingGate struct {

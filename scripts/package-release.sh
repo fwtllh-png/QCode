@@ -27,7 +27,7 @@ rm -rf "$OUT"
 mkdir -p "$OUT/bin" "$OUT/sbom" "$OUT/notes"
 
 MODULE="github.com/fwtllh-png/QCode"
-LDFLAGS="-s -w -X ${MODULE}/internal/buildinfo.Version=${VERSION} -X ${MODULE}/internal/buildinfo.Commit=${COMMIT} -X ${MODULE}/internal/buildinfo.Date=${BUILD_DATE}"
+LDFLAGS="-s -w -X ${MODULE}/internal.Version=${VERSION} -X ${MODULE}/internal.Commit=${COMMIT} -X ${MODULE}/internal.Date=${BUILD_DATE}"
 
 targets=(
   "darwin amd64"

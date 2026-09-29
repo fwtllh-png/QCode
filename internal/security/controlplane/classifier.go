@@ -5,19 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
-	"sort"
 	"strings"
+
+	"github.com/fwtllh-png/QCode/internal/security/pathpolicy"
 )
 
 var ErrProtected = errors.New("security control-plane path is protected")
-
-var protectedNames = map[string]struct{}{
-	".agents":         {},
-	".qcode":          {},
-	".qcode-worktree": {},
-	".codex":          {},
-	".git":            {},
-}
 
 type Classification struct {
 	Root     string
@@ -70,8 +63,7 @@ func (c *Classifier) Classify(path string) (Classification, bool, error) {
 		return Classification{}, false, fmt.Errorf("path %q is outside workspace", path)
 	}
 	for _, component := range pathComponents(relative) {
-		name := strings.ToLower(component)
-		if _, protected := protectedNames[name]; protected {
+		if name, protected := pathpolicy.ControlPlaneName(component); protected {
 			return Classification{Root: name, Relative: relative}, true, nil
 		}
 	}
@@ -114,17 +106,4 @@ func pathComponents(relative string) []string {
 func outside(relative string) bool {
 	return relative == ".." ||
 		strings.HasPrefix(relative, ".."+string(filepath.Separator))
-}
-
-// ProtectedNames returns the control-plane entry names rejected for
-// workload writes, sorted. The sandbox profile denies them inside approved
-// write trees so the OS-level grant is never broader than the settlement
-// classifier that approved the tree.
-func ProtectedNames() []string {
-	names := make([]string, 0, len(protectedNames))
-	for name := range protectedNames {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	return names
 }

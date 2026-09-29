@@ -4,23 +4,25 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
-	"net/url"
 	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/fwtllh-png/QCode/internal/environment"
-	"github.com/fwtllh-png/QCode/internal/security/policy"
+	"github.com/fwtllh-png/QCode/internal/platform/environment"
+	"github.com/fwtllh-png/QCode/internal/security/netpolicy"
 )
 
 const (
 	reasonTargetNotGranted  = "target is not granted"
 	reasonPrivateNotGranted = "local or private address is not granted"
 	reasonDNSFailed         = "DNS resolution failed"
+	reasonGateMissing       = "egress gate is not configured"
+	reasonUnpinnable        = "egress transport cannot pin resolved addresses"
 )
 
 // ErrDenied is returned (via errors.Is) when RoundTrip targets a host the Gate
@@ -67,12 +69,10 @@ func DeniedTarget(err error) (DeniedError, bool) {
 	return *denied, true
 }
 
-// Gate is a session-scoped host allowlist. A zero Gate denies everything once
-// Enforce is true; with Enforce false (or a nil *Gate on WrapClient) traffic
-// passes through unchanged so unit tests that never wired a broker keep working.
+// Gate is a session-scoped host allowlist. A zero Gate and a nil *Gate deny
+// every target; there is no pass-through mode.
 type Gate struct {
-	mu      sync.RWMutex
-	Enforce bool
+	mu sync.RWMutex
 	// UseCallScope binds Web tool traffic to Guard's dynamic call grants.
 	// Provider and process gates retain their independently configured grants.
 	UseCallScope bool
@@ -176,12 +176,12 @@ func (g *Gate) AllowTarget(target Target) {
 
 // AllowURL grants the host+scheme of a URL or bare endpoint string.
 func (g *Gate) AllowURL(raw string) bool {
-	parsed, ok := policy.ParseNetworkTarget(raw)
-	if !ok {
+	parsed, err := netpolicy.ParseTarget(raw)
+	if err != nil {
 		return false
 	}
 	target := Target{
-		Host: parsed.Host, Protocol: parsed.Protocol, Port: parsed.Port,
+		Host: parsed.Host, Protocol: parsed.Scheme, Port: parsed.Port,
 		AllowPrivate: true,
 	}
 	g.AllowTarget(target)
@@ -191,13 +191,10 @@ func (g *Gate) AllowURL(raw string) bool {
 // Allowed reports whether host+protocol is on the allowlist.
 func (g *Gate) Allowed(host, protocol string) bool {
 	if g == nil {
-		return true
+		return false
 	}
 	g.mu.RLock()
 	defer g.mu.RUnlock()
-	if !g.Enforce {
-		return true
-	}
 	target, err := normalizeTarget(Target{Host: host, Protocol: protocol})
 	if err != nil {
 		return false
@@ -206,11 +203,8 @@ func (g *Gate) Allowed(host, protocol string) bool {
 	return ok
 }
 
-// Check returns ErrDenied when Enforce is on and the request URL is not granted.
+// Check returns ErrDenied when the request URL is not granted.
 func (g *Gate) Check(req *http.Request) error {
-	if g == nil || !g.Enforce {
-		return nil
-	}
 	if req == nil || req.URL == nil {
 		return &DeniedError{Reason: "missing request URL"}
 	}
@@ -225,7 +219,7 @@ func (g *Gate) Check(req *http.Request) error {
 	if protocol == "" {
 		protocol = "https"
 	}
-	port, err := requestPort(req.URL)
+	port, err := netpolicy.URLPort(req.URL)
 	if err != nil {
 		return &DeniedError{Host: host, Protocol: protocol, Reason: err.Error()}
 	}
@@ -268,8 +262,8 @@ func (g *Gate) authorize(
 		})
 		return nil, &DeniedError{Reason: err.Error()}
 	}
-	if g == nil || !g.Enforce {
-		return nil, nil
+	if g == nil {
+		return nil, deniedTarget(request, reasonGateMissing)
 	}
 	scoped, allowed, allowPrivate := false, false, false
 	if g.UseCallScope {
@@ -289,7 +283,9 @@ func (g *Gate) authorize(
 			g.recordDenied(source, request, denied)
 			return nil, denied
 		}
-		if len(ips) == 0 || slices.ContainsFunc(ips, nonPublicIP) {
+		if len(ips) == 0 || slices.ContainsFunc(ips, func(ip net.IP) bool {
+			return netpolicy.Classify(ip) != netpolicy.Public
+		}) {
 			denied := deniedTarget(request, reasonPrivateNotGranted)
 			g.recordDenied(source, request, denied)
 			return nil, denied
@@ -313,7 +309,7 @@ func (g *Gate) authorize(
 				return nil, denied
 			}
 			for _, ip := range ips {
-				if nonPublicIP(ip) {
+				if netpolicy.Classify(ip) != netpolicy.Public {
 					granted.AllowPrivate = true
 					break
 				}
@@ -343,19 +339,21 @@ func (g *Gate) authorize(
 	ips := resolved
 	if ips == nil {
 		ips, err = g.resolve(ctx, request.Host)
-		if err != nil {
-			denied := deniedTarget(request, reasonDNSFailed)
-			g.recordDenied(source, request, denied)
-			return nil, denied
-		}
+	}
+	if err != nil || len(ips) == 0 {
+		denied := deniedTarget(request, reasonDNSFailed)
+		g.recordDenied(source, request, denied)
+		return nil, denied
 	}
 	for _, ip := range ips {
 		// Model-driven Web traffic reaches host-local addresses only through a
 		// host that names them; a hostname granted for an intranet address
 		// must not rebind onto loopback services or cloud metadata.
 		modelDriven := scoped || g.AllowPublic
-		hostLocalByName := modelDriven && hostLocalIP(ip) && !policy.NamesHostLocal(request.Host)
-		if (nonPublicIP(ip) && !allowPrivate) || hostLocalByName {
+		reach := netpolicy.Classify(ip)
+		hostLocalByName := modelDriven && reach == netpolicy.HostLocal &&
+			!netpolicy.NamesHostLocal(request.Host)
+		if (reach != netpolicy.Public && !allowPrivate) || hostLocalByName {
 			denied := deniedTarget(request, reasonPrivateNotGranted)
 			g.recordDenied(source, request, denied)
 			return nil, denied
@@ -384,7 +382,17 @@ func (g *Gate) Receipts() []Receipt {
 	return out
 }
 
-// RoundTripper wraps base and refuses ungranted hosts when Enforce is on.
+// PinnedTransport is a base RoundTripper that sends a request only to the
+// addresses the Gate resolved and approved for it.
+type PinnedTransport interface {
+	RoundTripPinned(req *http.Request, addresses []net.IP) (*http.Response, error)
+}
+
+// RoundTripper wraps base and refuses ungranted hosts. Every request goes only
+// to the addresses the Gate resolved and approved: an *http.Transport base
+// (nil selects http.DefaultTransport) is cloned with a pinned dialer, a
+// PinnedTransport receives the addresses, and any other RoundTripper is
+// refused because it could re-resolve the host.
 func (g *Gate) RoundTripper(base http.RoundTripper) http.RoundTripper {
 	if base == nil {
 		base = http.DefaultTransport
@@ -393,13 +401,10 @@ func (g *Gate) RoundTripper(base http.RoundTripper) http.RoundTripper {
 }
 
 // WrapClient returns a shallow clone of client whose Transport is gated.
-// A nil gate returns client unchanged.
+// A nil gate denies every request.
 func WrapClient(client *http.Client, gate *Gate) *http.Client {
 	if client == nil {
 		client = http.DefaultClient
-	}
-	if gate == nil {
-		return client
 	}
 	clone := *client
 	clone.Transport = gate.RoundTripper(client.Transport)
@@ -415,9 +420,17 @@ func (t *transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if req == nil || req.URL == nil {
 		return nil, &DeniedError{Reason: "missing request URL"}
 	}
-	port, err := requestPort(req.URL)
+	port, err := netpolicy.URLPort(req.URL)
 	if err != nil {
 		return nil, err
+	}
+	base, native := t.base.(*http.Transport)
+	custom, declared := t.base.(PinnedTransport)
+	if !native && !declared {
+		return nil, &DeniedError{
+			Host: req.URL.Hostname(), Protocol: req.URL.Scheme, Port: port,
+			Method: req.Method, Reason: reasonUnpinnable,
+		}
 	}
 	ips, err := t.gate.AuthorizeBeforeConnect(req.Context(), Target{
 		Host: req.URL.Hostname(), Protocol: req.URL.Scheme, Port: port,
@@ -426,30 +439,40 @@ func (t *transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if err != nil {
 		return nil, err
 	}
-	if base, ok := t.base.(*http.Transport); ok && len(ips) != 0 {
-		pinned := base.Clone()
-		pinned.Proxy = nil
-		pinned.DisableKeepAlives = true
-		pinned.DialContext = pinnedDialer(ips, req.URL.Hostname(), port)
-		return pinned.RoundTrip(req)
+	if !native {
+		return custom.RoundTripPinned(req, slices.Clone(ips))
 	}
-	return t.base.RoundTrip(req)
+	pinned := base.Clone()
+	pinned.Proxy = nil
+	pinned.DialContext = pinnedDialer(ips, req.URL.Hostname(), port)
+	response, err := pinned.RoundTrip(req)
+	if err != nil {
+		pinned.CloseIdleConnections()
+		return nil, err
+	}
+	if response.StatusCode != http.StatusSwitchingProtocols {
+		response.Body = &releasingBody{ReadCloser: response.Body, transport: pinned}
+	}
+	return response, nil
 }
 
-// HostOf is a small helper for callers that already have a parsed URL.
-func HostOf(u *url.URL) (host, protocol string, ok bool) {
-	if u == nil || u.Hostname() == "" {
-		return "", "", false
-	}
-	protocol = strings.ToLower(u.Scheme)
-	if protocol == "" {
-		protocol = "https"
-	}
-	return strings.ToLower(u.Hostname()), protocol, true
+// releasingBody closes the per-request transport's pooled connection once the
+// caller is done. DisableKeepAlives would avoid the pool, but it also stops
+// request cancellation from closing an in-flight connection that carries a
+// request body.
+type releasingBody struct {
+	io.ReadCloser
+	transport *http.Transport
+}
+
+func (b *releasingBody) Close() error {
+	err := b.ReadCloser.Close()
+	b.transport.CloseIdleConnections()
+	return err
 }
 
 func normalizeTarget(target Target) (Target, error) {
-	target.Host = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(target.Host), "."))
+	target.Host = netpolicy.NormalizeHost(target.Host)
 	target.Protocol = strings.ToLower(strings.TrimSpace(target.Protocol))
 	if target.Protocol == "" {
 		target.Protocol = "https"
@@ -457,57 +480,19 @@ func normalizeTarget(target Target) (Target, error) {
 	if target.Host == "" || strings.ContainsAny(target.Host, "/\\@") {
 		return Target{}, errors.New("network target requires one host")
 	}
-	if target.Port == 0 {
-		switch target.Protocol {
-		case "http":
-			target.Port = 80
-		case "https":
-			target.Port = 443
-		default:
-			return Target{}, errors.New("network target requires one port")
-		}
-	}
-	if target.Protocol != "http" && target.Protocol != "https" {
+	defaultPort, known := netpolicy.DefaultPort(target.Protocol)
+	if !known {
 		return Target{}, errors.New("network target protocol is invalid")
 	}
-	methods := make([]string, 0, len(target.Methods))
-	for _, method := range target.Methods {
-		method = strings.ToUpper(strings.TrimSpace(method))
-		if method == "" {
-			continue
-		}
-		if strings.ContainsAny(method, " \t\r\n") {
-			return Target{}, errors.New("network target method is invalid")
-		}
-		methods = append(methods, method)
+	if target.Port == 0 {
+		target.Port = defaultPort
 	}
-	slices.Sort(methods)
-	target.Methods = slices.Compact(methods)
+	methods, err := netpolicy.NormalizeMethods(target.Methods)
+	if err != nil {
+		return Target{}, err
+	}
+	target.Methods = methods
 	return target, nil
-}
-
-func requestPort(value *url.URL) (uint16, error) {
-	if value == nil {
-		return 0, errors.New("missing request URL")
-	}
-	if raw := value.Port(); raw != "" {
-		port, err := strconv.ParseUint(raw, 10, 16)
-		if err != nil || port == 0 {
-			// An explicit :0 is not a defaultable port; silently mapping it
-			// to the scheme default would authorize a different endpoint
-			// than the URL spelled.
-			return 0, errors.New("request port is invalid")
-		}
-		return uint16(port), nil
-	}
-	switch strings.ToLower(value.Scheme) {
-	case "http":
-		return 80, nil
-	case "https":
-		return 443, nil
-	default:
-		return 0, errors.New("request protocol is invalid")
-	}
 }
 
 // permissions runs under Gate.mu so Authorize retains only immutable decisions
@@ -546,36 +531,6 @@ func (g *Gate) resolve(ctx context.Context, host string) ([]net.IP, error) {
 		return nil, err
 	}
 	return addresses, nil
-}
-
-func nonPublicIP(ip net.IP) bool {
-	return ip == nil || ip.IsUnspecified() || ip.IsLoopback() ||
-		ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() ||
-		ip.IsMulticast() || inCGNATRange(ip) || inBenchmarkRange(ip) ||
-		inReservedRange(ip)
-}
-
-// inCGNATRange covers 100.64.0.0/10 (RFC 6598 carrier-grade NAT): shared
-// address space an approved public origin must not be able to rebind into.
-func inCGNATRange(ip net.IP) bool {
-	address := ip.To4()
-	return address != nil && address[0] == 100 &&
-		address[1] >= 64 && address[1] <= 127
-}
-
-// inBenchmarkRange covers 198.18.0.0/15 (RFC 2544 benchmarking): never a
-// legitimate egress destination from a build.
-func inBenchmarkRange(ip net.IP) bool {
-	address := ip.To4()
-	return address != nil && address[0] == 198 &&
-		(address[1] == 18 || address[1] == 19)
-}
-
-// inReservedRange covers 240.0.0.0/4 (reserved, incl. broadcast): Go's IP
-// helpers have no predicate for it.
-func inReservedRange(ip net.IP) bool {
-	address := ip.To4()
-	return address != nil && address[0] >= 240
 }
 
 func ipStrings(ips []net.IP) []string {

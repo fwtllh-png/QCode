@@ -20,8 +20,9 @@
 
 | 变更领域 | 起始路径 |
 | --- | --- |
-| Web Process/Flag | `internal/host/web` |
-| HTTP/Web Transport | `internal/host/runtimeapi` |
+| Web Process/Flag、HTTP/WebSocket Transport | `internal/host` |
+| Runtime/Web 集成测试、Coding Benchmark | `internal/host/intergration_test`（仅 `_test.go`） |
+| Host 共享视图 DTO | `internal/host/view.go` |
 | Operation/Event Shape | `internal/runtime/protocol` |
 | Turn/Session State | `internal/runtime/app` |
 | Model/Tool Loop | `internal/runtime/agent` |
@@ -240,6 +241,13 @@ Trust 时：
 | Script | Happy Path、Invalid Input、Exit Status |
 
 仓库已有 Target 或 Fixture Framework 时，不创建脱离框架的私有测试脚本。
+纯测试用途的场景、驱动和包内辅助代码必须放在 `_test.go` 中，不放入生产 Go 文件。
+确需跨包复用的测试辅助代码集中在根目录 `testutil`；为支持 Go 跨包导入使用
+普通 `.go` 文件，仅允许测试引用，生产代码禁止导入。
+`internal/host` 的实现、同名测试、视图和协议文件全部平铺，统一使用 `host` 包。
+该目录仅保留 `intergration_test` 一个子目录，集中 Runtime/Web 共享行为测试与
+Coding Benchmark；全部使用 `_test.go`，类型和辅助函数保持私有，
+不作为其他包可导入的测试框架。
 
 ## 文档预期
 

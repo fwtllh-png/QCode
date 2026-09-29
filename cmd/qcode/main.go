@@ -7,7 +7,7 @@ import (
 	"os"
 	"os/signal"
 
-	webhost "github.com/fwtllh-png/QCode/internal/host/web"
+	webhost "github.com/fwtllh-png/QCode/internal/host"
 )
 
 func main() {

@@ -22,6 +22,7 @@ import (
 	"github.com/fwtllh-png/QCode/internal/observability/diagnostics"
 	"github.com/fwtllh-png/QCode/internal/persist/contentstore"
 	"github.com/fwtllh-png/QCode/internal/platform/tokenestimate"
+	securityresource "github.com/fwtllh-png/QCode/internal/security/resource"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
 	"github.com/santhosh-tekuri/jsonschema/v6"
 )
@@ -115,13 +116,13 @@ const (
 	CapabilityExternal Capability = "external"
 )
 
-type AccessMode string
+type AccessMode = securityresource.Access
 
 const (
-	AccessRead  AccessMode = "read"
-	AccessWrite AccessMode = "write"
-	AccessTree  AccessMode = "tree"
-	AccessUse   AccessMode = "use"
+	AccessRead  = securityresource.Read
+	AccessWrite = securityresource.Write
+	AccessTree  = securityresource.Tree
+	AccessUse   = securityresource.Use
 )
 
 type ParallelPolicy string
@@ -2004,7 +2005,7 @@ func removeClaimWaiter(queue *[]*claimWaiter, target *claimWaiter) bool {
 }
 
 func resourcesOverlap(left, right Resource) bool {
-	if isPathKind(left.Kind) && isPathKind(right.Kind) {
+	if securityresource.IsPathKind(left.Kind) && securityresource.IsPathKind(right.Kind) {
 		leftPath, rightPath := filepath.Clean(left.Path), filepath.Clean(right.Path)
 		if leftPath == rightPath {
 			return true
@@ -2026,10 +2027,6 @@ func resourcesOverlap(left, right Resource) bool {
 		return true
 	}
 	return left.Tree && idContains(leftID, rightID) || right.Tree && idContains(rightID, leftID)
-}
-
-func isPathKind(kind string) bool {
-	return kind == "file" || kind == "directory" || kind == "repo" || kind == "workspace"
 }
 
 func pathContains(parent, child string) bool {

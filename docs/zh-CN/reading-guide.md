@@ -79,7 +79,7 @@ Child 的实际执行仍是普通 Runtime Turn，不建立后台 WorkGraph 镜�
 | Agent | `internal/runtime/agent` | Turn Kernel、Engine、Context、Prompt |
 | Adapter | `internal/adapter` | Provider、Tool、MCP、Skill |
 | Security | `internal/security` | Policy、Permission、Constitution、Credential、Sandbox |
-| Environment | `internal/environment` | 执行环境契约、ResourceRequest 夹具、平台能力矩阵 |
+| Environment | `internal/platform/environment`、`internal/adapter/environment` | 通用环境契约与准备；Go/Git 资源发现适配器 |
 | Orchestration | `internal/orchestration` | Subagent、Admission/Budget、Worktree、Chat Merge、Exec Settle |
 | Persistence | `internal/persist` | SQLite、CAS、Event、Session、Snapshot、Journal |
 | Observability | `internal/observability` | Receipt、Usage、Trace、Diagnostics、Verification |
@@ -138,7 +138,7 @@ make web-protocol-check
 
 ```text
 cmd/qcode/main.go
-  -> host/web.RunContext
+  -> host.RunContext
   -> Web 启动参数
   -> wire.NewExec
   -> defaultBuildModules
@@ -148,7 +148,7 @@ cmd/qcode/main.go
 ### 4.1 Host 入口
 
 - `cmd/qcode/main.go`：只建立 Process Context 并委托 Web Host。
-- `internal/host/web/launcher.go`：解析启动参数并执行两阶段 Web Boot；先开放 Boot
+- `internal/host/launcher.go`：解析启动参数并执行两阶段 Web Boot；先开放 Boot
   Surface，再构造并激活
   Runtime。
 
@@ -523,6 +523,9 @@ Model Tool Call
 - `internal/security/constitution`：不可被普通配置覆盖的仓库规则；
 - `internal/security/permissions`：有 Scope 的持久 Grant；
 - `internal/security/sandbox`：平台 Backend 与 Fail-closed；
+- `internal/security/resource`、`effect`、`netpolicy`、`pathpolicy`：Resource Access
+  与 loopback 伪资源、Effect 词汇、网络目标解析与地址分类、控制面目录与凭据位置的
+  唯一定义，只依赖标准库；
 - [Sandbox 执行环境重构方案](./sandbox-execution-environment-plan.md)：把现行过滤模型
   换成环境契约的实现合同，含与 Authority / Control Matrix 的编译表和 EDS/Go 开工实例；
   P1a 已把缺失能力回执接到 `error_category` / `required_action`；P1b 已把 Darwin
@@ -541,6 +544,9 @@ Model Tool Call
   偏离（事前申报闸门、语言特化入通用层、快照式授权、拒绝不可见），
   给出 WS1-WS8 工作流与三阶段验收标准；Phase 1 含隔离后端继承、
   CONNECT 校验下沉、认证绑定失败回执、input 超时状态机修复；
+- [安全策略模型收敛方案](./security-policy-refactor-plan.md)：把 Resource、Effect、
+  Decision、Authority 收敛为单向管线，安全核心不再识别具体工具名；含已确认缺陷
+  （`allow_loopback` 授予范围、Constitution glob）的止血项与五阶段验收标准；
 - `internal/security/goproxy`：GOPROXY 协议服务，凭证留在宿主；
 - `internal/security/egress`：网络目标与 Managed Backend；
   未批准目标带 `network_target_unapproved` 结构化回执；
@@ -690,7 +696,7 @@ go test -run 'TestChildAgent' ./internal/runtime/app/wire
 
 ### 12.1 Web Server
 
-`internal/host/runtimeapi/web/server.go` 是本机 HTTP/WebSocket Host：
+`internal/host/server.go` 是本机 HTTP/WebSocket Host：
 
 - `New` 构造 Boot Surface、随机 Capability Token 和独立的浏览器会话密钥；
 - `Activate` 注入已恢复的 Runtime；
@@ -703,11 +709,24 @@ go test -run 'TestChildAgent' ./internal/runtime/app/wire
 - `validateWebEditorContext` 重新验证浏览器提交的文件、图片、符号、诊断和 Tool Result
   引用。
 
+同包的 `launcher.go` 管理进程启动，`workspace_manager.go` 管理 Supervisor
+工作区和连接生命周期。`internal/host/intergration_test` 是专用集成测试包，
+`suite_test.go` 定义私有测试接口与运行器，`scenarios_test.go` 保存共享场景，
+`runtime_test.go` 和 `web_test.go` 分别实现 Runtime 与 Web 驱动。
+`benchmark_test.go` 保存 Coding Benchmark 的私有任务驱动，
+`benchmark_baseline_test.go` 保存统计与其测试，`benchmark_capability_test.go`
+保存需要真实沙箱能力的执行入口。
+这些代码全部只在测试时编译；`go test ./internal/host/intergration_test` 运行默认测试，
+`make bench` 用 `capability` 标签运行 Benchmark。
+`internal/host/view.go` 保存 Web `agent/list` 和 `usage/query` 实际返回的 Agent、Usage、UsageRollup
+及转换函数。Thread、Turn 对照结构位于 `suite_test.go`，对应转换函数位于
+`runtime_test.go`，仅供集成测试使用。
+
 契约来源：
 
-- `internal/host/runtimeapi/web/contract.go`；
+- `internal/host/contract.go`；
 - `docs/protocol/web-host.contract.json`；
-- `internal/host/runtimeapi/web/web-operation-exposure.json`。
+- `internal/host/web-operation-exposure.json`。
 
 ### 12.2 Browser Runtime
 
@@ -742,7 +761,7 @@ Runtime Authority。
 关键验证：
 
 ```bash
-go test ./internal/host/runtimeapi/web ./internal/runtime/eventview
+go test ./internal/host ./internal/runtime/eventview
 npm --prefix web run check
 npm --prefix web test
 ```
@@ -780,7 +799,7 @@ Interaction、Provider Call 和 Tool Execution。
 ```bash
 go test ./internal/observability/...
 go test -run TestSystemDiagnosticsReportsAuthoritativeRuntimeHealth \
-  ./internal/host/runtimeapi/web
+  ./internal/host
 ```
 
 读完应能回答：为什么 Trace 或 Metrics 写入失败不能把已完成的 Turn 改成 Failed？
@@ -862,7 +881,7 @@ Chat Merge。检查 Agent Path、Trace、Usage 和 Permission Digest 是否保�
 | 改终态 | `app/eventhub/terminal.go` | Turnstate Transaction、Outbox Recovery |
 | 改 Session | `runtime/app/service_facade.go` | Lifecycle Store、Web Query |
 | 改 Subagent | `orchestration/subagent`、`orchestration/childrun` | Child Runner、Budget、Worktree、Merge |
-| 改 Web API | `host/runtimeapi/web` | Contract JSON、Generated TS、Client |
+| 改 Web API | `host` | Contract JSON、Generated TS、Client |
 | 改 Web 展示 | `web/src/runtime/client.ts`、`ui/App.tsx` | Hydration、Cursor、Projection Test |
 | 改 Trace/Usage | `observability/trace`、`observability/usage` | Measurement、Query、Receipt |
 

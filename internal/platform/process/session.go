@@ -56,28 +56,29 @@ type Archive interface {
 const maxArchiveReplay = 256 << 10
 
 type SessionOptions struct {
-	Command              string
-	DisplayCommand       string // original command before QCode's sandbox wrapper
-	Dir                  string
-	DirFile              *os.File
-	SessionID            string
-	LinkedTaskID         string
-	ThreadID             string // owner thread lease (N5)
-	TurnID               string
-	CallID               string
-	Rows                 uint16
-	Cols                 uint16
-	Env                  []string
-	PTY                  bool
-	Timeout              time.Duration
-	Sandbox              sandbox.Backend
-	RequireSandbox       bool
-	WorkspaceReadOnly    bool
-	WorkspaceWritePaths  []string
-	DenyNetwork          bool
-	SessionProxyPort     uint16
-	Network              io.Closer
-	TrustedRuntimeHelper bool
+	Command                string
+	DisplayCommand         string // original command before QCode's sandbox wrapper
+	Dir                    string
+	DirFile                *os.File
+	SessionID              string
+	LinkedTaskID           string
+	ThreadID               string // owner thread lease (N5)
+	TurnID                 string
+	CallID                 string
+	Rows                   uint16
+	Cols                   uint16
+	Env                    []string
+	PTY                    bool
+	Timeout                time.Duration
+	Sandbox                sandbox.Backend
+	RequireSandbox         bool
+	WorkspaceReadOnly      bool
+	WorkspaceWritePaths    []string
+	DenyNetwork            bool
+	SessionProxyPort       uint16
+	SessionProxyCredential string
+	Network                io.Closer
+	TrustedRuntimeHelper   bool
 	// OnClose runs exactly once when the session closes, on every close path
 	// (explicit Close, turn release, timeout, capacity eviction, CloseAll),
 	// after the process is gone and the network channel is shut down. It is
@@ -215,11 +216,12 @@ func (m *SessionManager) Create(
 	command, err := NewCommand(runCtx, Options{
 		Command: commandText, Dir: options.Dir, DirFile: options.DirFile,
 		Env: options.Env, Sandbox: options.Sandbox, PTY: options.PTY,
-		TrustedRuntimeHelper: options.TrustedRuntimeHelper,
-		RequireSandbox:       options.RequireSandbox,
-		WorkspaceReadOnly:    options.WorkspaceReadOnly,
-		DenyNetwork:          options.DenyNetwork,
-		SessionProxyPort:     options.SessionProxyPort,
+		TrustedRuntimeHelper:   options.TrustedRuntimeHelper,
+		RequireSandbox:         options.RequireSandbox,
+		WorkspaceReadOnly:      options.WorkspaceReadOnly,
+		DenyNetwork:            options.DenyNetwork,
+		SessionProxyPort:       options.SessionProxyPort,
+		SessionProxyCredential: options.SessionProxyCredential,
 		WorkspaceWritePaths: append(
 			[]string(nil), options.WorkspaceWritePaths...,
 		),

@@ -9,13 +9,15 @@
 ./bin/qcode --help
 ```
 
-随后启动 Web，并保留终端中的 Boot、Runtime 和 Shutdown 日志：
+日常通过桌面 App 启动；诊断时可直接运行 Runtime，保留终端中的 Boot、Runtime 和
+Shutdown 日志，再手动访问输出的完整 URL：
 
 ```bash
-./bin/qcode --config ./qcode.toml --workspace . --no-open
+./bin/qcode --config ./qcode.toml
 ```
 
 Web Settings 中的 Runtime Diagnostics 是当前能力、配置和恢复状态的权威展示。
+重新构建后需退出并重新打开 App；若复用的是终端启动的 Runtime，先在原终端停止它。
 
 ## Runtime 无法就绪
 

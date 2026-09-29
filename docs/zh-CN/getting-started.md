@@ -8,6 +8,7 @@
 | Git | 仓库工作流和 Worktree 隔离必需 |
 | Make | 推荐的统一构建入口 |
 | Node.js + npm | 仅重新构建 Web 前端时需要 |
+| Xcode Command Line Tools | 编译 Swift 桌面壳 |
 | macOS | 唯一支持的运行平台 |
 
 Linux 和 Windows 不再提供构建、发布与运行支持。发布产物仅为 macOS amd64/arm64。
@@ -17,32 +18,21 @@ Linux 和 Windows 不再提供构建、发布与运行支持。发布产物仅�
 ```bash
 git clone https://github.com/fwtllh-png/QCode.git
 cd QCode
-make install
-qcode
+make start
 ```
 
-`make install` 会依次安装 Web 依赖、构建静态资源和 Go 二进制，再原子安装到
-`~/.local/bin/qcode`。二进制包含 Web 静态资源，运行期间不依赖源码目录或独立
-前端服务。安装后在任意目录执行 `qcode`，只打开本机页面，不自动注册当前目录；无配置
-启动默认启用受 Guard 管理的内置工具，并使用 `auto` 审批姿态。
+`make start` 依次构建 Web 静态资源、Go Runtime 和 Swift 桌面壳，然后打开
+`dist/QCode.app`。也可用 `make desktop-app` 只构建，再把 App 复制到 `/Applications`。
+App 内嵌 Runtime 和 Web 资源，运行期间不依赖源码目录或独立前端服务。
+桌面壳无参数启动 Runtime，不自动注册当前目录；默认启用受 Guard 管理的内置工具，
+新 Session 使用 `auto` 审批姿态。
 
 同一用户只运行一个本机 Web Supervisor。通过页面 `Add workspace` 添加目录，
-或显式执行 `qcode --workspace /path/to/project`，命令会注册该目录并打开带 Workspace 定位参数的已有
-页面并正常退出。每个 Workspace 拥有独立 Runtime、Sandbox、Tool Registry、索引、
+桌面壳会复用已有 Supervisor。每个 Workspace 拥有独立 Runtime、Sandbox、Tool Registry、索引、
 后台调度器和事件投影；页面侧栏会同时展示所有已注册 Workspace 及其 Session。
 
-如果 `~/.local/bin` 不在 `PATH`，安装命令会输出需要加入 Shell 配置的路径。也可指定
-标准安装前缀：
-
-```bash
-make install PREFIX=/usr/local
-```
-
-源码开发和调试使用 `make start` 时同样没有默认 Workspace；需要指定项目时使用
-`make start START_WORKSPACE=/path/to/project`。该命令完成
-Web 和二进制构建后，会比较 Owner Lease 中的构建身份；若已有 Supervisor 来自旧构建，
-先等待其安全退出再启动新进程，避免继续提供旧的嵌入式 Web 资源。卸载使用
-`make uninstall`，并可通过相同的 `PREFIX` 指定安装位置。
+重新构建后需退出并重新打开 App，才能使用新 Runtime。若 App 复用的是终端启动的
+Runtime，先在原终端停止它；启动流程不会自动替换已有进程。
 
 ## 3. 首次引导
 
@@ -76,15 +66,17 @@ restart` 保存并设为默认连接（新 Session 的基线），列表中可�
 (provider, model)，不会被重置。Web 默认监听
 `127.0.0.1:6732`；同一用户重复执行 `qcode` 时复用已有 Supervisor。
 
-## 4. 直接运行二进制
+## 4. 独立 Runtime 调试
 
-已有安装产物时可显式打开目标项目：
+调试时可安装独立二进制，直接运行并手动访问终端输出的完整 URL：
 
 ```bash
-qcode --workspace /path/to/project
+make install
+qcode
 ```
 
-不传 `--workspace`，且未显式配置 `execution.workspace` 或 `QCODE_WORKSPACE` 时，
+默认安装位置为 `~/.local/bin/qcode`，可通过 `PREFIX` 修改，卸载使用 `make uninstall`。
+独立 Runtime 不自动打开浏览器。未显式配置 `execution.workspace` 或 `QCODE_WORKSPACE` 时，
 不会添加任何目录，也不会自动选中已有 Workspace。普通启动只恢复已添加的列表；
 移除最后一个 Workspace 后重启仍保持空列表。没有已保存的连接且未显式指定 Provider/Model
 时进入首次引导，不会选择默认路由。支持的启动参数见[Web 使用指南](./usage.md)；
@@ -92,15 +84,23 @@ qcode --workspace /path/to/project
 
 ## 5. 使用 Fixture
 
-无需凭证和网络即可启动真实 Runtime 与 Web Transport：
+无需凭证和网络即可启动真实 Runtime 与 Web Transport。将以下内容保存为
+`/tmp/qcode-fixture.toml`：
+
+```toml
+[execution]
+provider = "openai"
+model = "fixture-model"
+```
+
+启动后在页面中添加测试目录，使用独立数据目录避免复用日常运行的 Supervisor：
 
 ```bash
 ./bin/qcode \
+  --config /tmp/qcode-fixture.toml \
+  --data-dir /tmp/qcode-fixture-state \
   --provider-fixture ./testdata/providers/openai \
-  --provider openai \
-  --model gpt-fixture \
-  --workspace . \
-  --no-open
+  --port 0
 ```
 
 Fixture 使用确定性的已记录响应，但仍经过真实 Session、Operation、Event、Guard 和

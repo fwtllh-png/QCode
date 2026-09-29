@@ -19,7 +19,7 @@ func TestPublicBrowsingGateAdmitsOnlyPublicDestinations(t *testing.T) {
 		"localhost":        {"127.0.0.1"},
 	}
 	gate := &egress.Gate{
-		Enforce: true, AllowPublic: true,
+		AllowPublic: true,
 		LookupIP: func(_ context.Context, host string) ([]net.IP, error) {
 			addresses, ok := resolved[host]
 			if !ok {
@@ -77,7 +77,7 @@ func TestPublicBrowsingGateAdmitsOnlyPublicDestinations(t *testing.T) {
 }
 
 func TestAdoptScopeKeepsApprovedTargetsBeyondTheCall(t *testing.T) {
-	browser := &egress.Gate{Enforce: true, AllowPublic: true, LookupIP: fixedLookup("10.1.2.3")}
+	browser := &egress.Gate{AllowPublic: true, LookupIP: fixedLookup("10.1.2.3")}
 	target := egress.Target{
 		Host: "wiki.corp", Protocol: "https", Port: 443, Methods: []string{"CONNECT"},
 	}

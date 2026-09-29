@@ -8,7 +8,7 @@ import (
 	memorystore "github.com/fwtllh-png/QCode/internal/adapter/memory"
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
 	memorytool "github.com/fwtllh-png/QCode/internal/adapter/tool/memory"
-	"github.com/fwtllh-png/QCode/internal/testutil/tooltest"
+	"github.com/fwtllh-png/QCode/testutil/tooltest"
 )
 
 func TestRememberRegistersOnlyWithStoreAndWritesCanonicalResource(t *testing.T) {

@@ -5,14 +5,18 @@
 配置从低到高按以下顺序解析：
 
 ```text
-内置默认值 < TOML 文件 < QCODE_* 环境变量 < Web 启动参数
+内置默认值 < TOML 文件 < QCODE_* 环境变量 < Runtime 启动参数（仅保留数据目录覆盖）
 ```
 
 启动时通过 `--config` 指定文件；解析或校验失败会显示在 Web Boot Failure Surface：
 
 ```bash
-qcode --config ./qcode.toml --workspace . --open
+qcode --config ./qcode.toml
 ```
+
+日常使用桌面 App，无需启动参数；工作区与模型在界面中管理。独立 Runtime 只输出
+启动 URL，不自动打开浏览器。工具默认启用；TOML 的 `execution.tools` 或
+环境变量 `QCODE_TOOLS` 显式设置为 `false` 时仍会禁用工具。
 
 MCP Server 定义使用独立、严格且带版本的 JSON 文件，不属于 Runtime TOML 控制面。
 Web 通过 `--mcp-config` 传入，并在 Settings 中展示加载状态。该文件必须位于
@@ -226,10 +230,11 @@ Web 中的每个 Model 必须提交完整模型元数据，包括 Canonical ID�
 Context、Max Output、Capabilities 和可用的 Reasoning Efforts；元数据由连接探测
 自动填写或手动录入。该元数据以 `operator_config` 来源保存；只返回 Model ID 的
 `/models` 接口不能作为容量或能力来源。同名 Model 的 probe 结果按 Provider、
-Endpoint、Protocol 和 Adapter 组成的 Connection Identity 隔离。旧版缺少元数据
-来源的自定义 Setup Record 不会迁移为猜测值，而会重新进入 Setup Required；
-旧预设连接（OpenAI、DeepSeek、GLM）在加载时物化为显式连接，Keyring 凭证与
-已保存 Session 选择保持不变。
+Endpoint、Protocol 和 Adapter 组成的 Connection Identity 隔离。
+连接配置文件 `<data-dir>/web-setup/selection.json` 只接受 `version=3` 的显式连接集合：
+端点、协议和模型元数据必须完整，连接 ID 与 Provider 必须匹配端点摘要。
+缺少版本、旧格式或不完整的记录会明确报错，不自动迁移、丢弃或改写文件。
+需要重新配置时，停止 Runtime 后移走该文件，再启动并通过 Connection 设置录入。
 
 当前路由允许模型切换，且目录中存在其他连接的可用、可热切换模型时，Session 同时
 开放 `provider` 与 `model` 修改。切换目标必须命中已配置的完整路由；固定路由、
@@ -618,7 +623,8 @@ Credential Control 的最新引用，因此页面完成 Keychain 轮换后无需
 
 ## Mode、Posture 与验证
 
-Mode 写入 TOML；Posture 是 Web Host 启动决策，通过参数提供。二者互不替代。
+Mode 固定为 `act`；新 Session 的 Posture 默认为 `auto`，通过界面的 Approval
+或 Session 设置修改，不提供启动参数。二者互不替代。
 
 验证模式：
 

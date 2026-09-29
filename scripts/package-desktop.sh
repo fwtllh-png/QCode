@@ -37,9 +37,9 @@ COMMIT=${COMMIT:-$(git rev-parse --short HEAD 2>/dev/null || printf unknown)}
 BUILD_DATE=${BUILD_DATE:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}
 MODULE=github.com/fwtllh-png/QCode
 LDFLAGS="-s -w \
-	-X $MODULE/internal/buildinfo.Version=$VERSION \
-	-X $MODULE/internal/buildinfo.Commit=$COMMIT \
-	-X $MODULE/internal/buildinfo.Date=$BUILD_DATE"
+	-X $MODULE/internal.Version=$VERSION \
+	-X $MODULE/internal.Commit=$COMMIT \
+	-X $MODULE/internal.Date=$BUILD_DATE"
 
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/qcode-desktop-pkg.XXXXXX")
 trap 'rm -rf "$WORK"' EXIT

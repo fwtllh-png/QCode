@@ -52,7 +52,7 @@ func TestGrantPrivateFollowsGrantTimeResolution(t *testing.T) {
 func TestWebScopeDeniesHostnamesRebindingToHostLocal(t *testing.T) {
 	resolved := "10.1.2.3"
 	gate := &egress.Gate{
-		Enforce: true, UseCallScope: true,
+		UseCallScope: true,
 		LookupIP: func(context.Context, string) ([]net.IP, error) {
 			return []net.IP{net.ParseIP(resolved)}, nil
 		},

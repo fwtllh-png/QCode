@@ -10,7 +10,7 @@ import (
 	"github.com/fwtllh-png/QCode/internal/observability/verify"
 	"github.com/fwtllh-png/QCode/internal/platform/process"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
-	"github.com/fwtllh-png/QCode/internal/testutil/tooltest"
+	"github.com/fwtllh-png/QCode/testutil/tooltest"
 )
 
 func verificationRegistry(t *testing.T) (*tool.Registry, string) {

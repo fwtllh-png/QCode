@@ -11,6 +11,7 @@ import (
 	"github.com/fwtllh-png/QCode/internal/security/authority"
 	"github.com/fwtllh-png/QCode/internal/security/controlmatrix"
 	"github.com/fwtllh-png/QCode/internal/security/policy"
+	securityresource "github.com/fwtllh-png/QCode/internal/security/resource"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
 )
 
@@ -226,13 +227,13 @@ func requiredControls(invocation Invocation) authority.RequiredControls {
 	if invocation.Binding.SandboxRequirement == tool.SandboxStrong {
 		var hasNetworkTargets, allowLoopback bool
 		for _, resource := range invocation.Resources {
-			if resource.Access == tool.AccessWrite &&
-				isPathKind(resource.Kind) {
+			if resource.Access.Writes() &&
+				securityresource.IsPathKind(resource.Kind) {
 				required.FilesystemWrite = controlmatrix.FilesystemWriteExactPaths
 				required.PathIdentity = controlmatrix.PathIdentityDescriptorRelative
 			}
 			if resource.Kind == "host" || resource.Kind == "url" {
-				if resource.Kind == "host" && resource.Protocol == "loopback" {
+				if securityresource.IsLoopback(resource.Kind, resource.Protocol) {
 					allowLoopback = true
 				} else {
 					hasNetworkTargets = true

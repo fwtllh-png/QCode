@@ -9,8 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/fwtllh-png/QCode/internal"
 	skillruntime "github.com/fwtllh-png/QCode/internal/adapter/skill"
-	"github.com/fwtllh-png/QCode/internal/buildinfo"
 	"github.com/fwtllh-png/QCode/internal/persist/extensioncontrol"
 	extensionapp "github.com/fwtllh-png/QCode/internal/runtime/app/extension"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"

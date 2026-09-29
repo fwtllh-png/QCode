@@ -6,8 +6,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	envcontract "github.com/fwtllh-png/QCode/internal/environment"
 )
 
 func TestPrepareMergesPlatformPATH(t *testing.T) {
@@ -16,7 +14,7 @@ func TestPrepareMergesPlatformPATH(t *testing.T) {
 		t.Fatal(err)
 	}
 	prepared, err := Prepare(t.Context(), Options{
-		Contract: envcontract.ContractV1, Profile: envcontract.ProfileNative,
+		Contract: ContractV1, Profile: ProfileNative,
 		WorkspaceRoot: t.TempDir(), SandboxHome: t.TempDir(),
 		SourceEnv: []string{"HOME=" + t.TempDir(), "LANG=C", "PATH=" + extra},
 	})
@@ -31,7 +29,7 @@ func TestPrepareMergesPlatformPATH(t *testing.T) {
 	for _, request := range prepared.Spec.Requests {
 		if request.Name == "path-dir:"+extra {
 			foundSourceDir = true
-			if request.Namespace != envcontract.NamespaceHostToolchain {
+			if request.Namespace != NamespaceHostToolchain {
 				t.Fatalf("path dir namespace = %s", request.Namespace)
 			}
 		}
@@ -45,7 +43,7 @@ func TestPrepareIsolatedRewritesHomeAndPrivateTemp(t *testing.T) {
 	home := t.TempDir()
 	sandboxHome := t.TempDir()
 	prepared, err := Prepare(t.Context(), Options{
-		Contract: envcontract.ContractV1, Profile: envcontract.ProfileIsolated,
+		Contract: ContractV1, Profile: ProfileIsolated,
 		WorkspaceRoot: t.TempDir(), SandboxHome: sandboxHome,
 		SourceEnv: []string{"HOME=" + home, "LANG=C", "PATH=/usr/bin"},
 	})
@@ -65,7 +63,7 @@ func TestPrepareNativeKeepsHostHomeAndPrivateTemp(t *testing.T) {
 	home := t.TempDir()
 	sandboxHome := t.TempDir()
 	prepared, err := Prepare(t.Context(), Options{
-		Contract: envcontract.ContractV1, Profile: envcontract.ProfileNative,
+		Contract: ContractV1, Profile: ProfileNative,
 		WorkspaceRoot: t.TempDir(), SandboxHome: sandboxHome,
 		SourceEnv: []string{"HOME=" + home, "LANG=C"},
 	})
@@ -88,7 +86,7 @@ func TestPrepareSharedUserTempSetsSystemTemp(t *testing.T) {
 	home := t.TempDir()
 	sandboxHome := t.TempDir()
 	prepared, err := Prepare(t.Context(), Options{
-		Contract: envcontract.ContractV1, Profile: envcontract.ProfileNative,
+		Contract: ContractV1, Profile: ProfileNative,
 		SharedUserTemp: true, WorkspaceRoot: t.TempDir(), SandboxHome: sandboxHome,
 		SourceEnv: []string{"HOME=" + home, "LANG=C"},
 	})
@@ -111,7 +109,7 @@ func TestPrepareGenericToolUsesOnlyDeclaredResources(t *testing.T) {
 		t.Fatal(err)
 	}
 	prepared, err := Prepare(t.Context(), Options{
-		Contract: envcontract.ContractV1, Profile: envcontract.ProfileNative,
+		Contract: ContractV1, Profile: ProfileNative,
 		SharedUserTemp: true, WorkspaceRoot: t.TempDir(), SandboxHome: sandboxHome,
 		SourceEnv:   []string{"HOME=" + t.TempDir(), "LANG=C"},
 		Discoverers: []Discoverer{genericTool{config: configFile}},
@@ -144,17 +142,17 @@ func TestPrepareUserDeclarationsWorkWithoutDiscoverers(t *testing.T) {
 		t.Fatal(err)
 	}
 	prepared, err := Prepare(t.Context(), Options{
-		Contract: envcontract.ContractV1, Profile: envcontract.ProfileNative,
+		Contract: ContractV1, Profile: ProfileNative,
 		WorkspaceRoot: t.TempDir(), SandboxHome: sandboxHome,
 		SourceEnv: []string{"HOME=" + t.TempDir(), "LANG=C"},
-		Declarations: []envcontract.ResourceRequest{
+		Declarations: []ResourceRequest{
 			{
-				Name: "tool-config", Namespace: envcontract.NamespaceHostConfig,
-				Access: envcontract.AccessRead, Path: configFile,
+				Name: "tool-config", Namespace: NamespaceHostConfig,
+				Access: AccessRead, Path: configFile,
 			},
 			{
-				Name: "tool-cache", Namespace: envcontract.NamespaceCache,
-				Access: envcontract.AccessWrite, Path: "sandbox-home/cache/declared",
+				Name: "tool-cache", Namespace: NamespaceCache,
+				Access: AccessWrite, Path: "sandbox-home/cache/declared",
 				Env: "DECLARED_CACHE", Tree: true,
 			},
 		},
@@ -167,11 +165,11 @@ func TestPrepareUserDeclarationsWorkWithoutDiscoverers(t *testing.T) {
 		!containsPath(prepared.ReadPaths, configFile) {
 		t.Fatalf("declaration prepare env=%v read=%v", prepared.Env, prepared.ReadPaths)
 	}
-	byName := map[string]envcontract.ResourceRequest{}
+	byName := map[string]ResourceRequest{}
 	for _, request := range prepared.Spec.Requests {
 		byName[request.Name] = request
 	}
-	if byName["tool-config"].Source != envcontract.SourceUserDeclaration {
+	if byName["tool-config"].Source != SourceUserDeclaration {
 		t.Fatalf("declaration source = %+v", byName["tool-config"])
 	}
 	if envLookup(prepared.Env, "GOMODCACHE") != "" {
@@ -189,12 +187,12 @@ func TestPrepareUserDeclarationsOverrideDiscovererNames(t *testing.T) {
 		}
 	}
 	prepared, err := Prepare(t.Context(), Options{
-		Contract: envcontract.ContractV1, Profile: envcontract.ProfileNative,
+		Contract: ContractV1, Profile: ProfileNative,
 		WorkspaceRoot: t.TempDir(), SandboxHome: sandboxHome,
 		SourceEnv: []string{"HOME=" + t.TempDir(), "LANG=C"},
-		Declarations: []envcontract.ResourceRequest{{
-			Name: "generic-config", Namespace: envcontract.NamespaceHostConfig,
-			Access: envcontract.AccessRead, Path: userFile,
+		Declarations: []ResourceRequest{{
+			Name: "generic-config", Namespace: NamespaceHostConfig,
+			Access: AccessRead, Path: userFile,
 		}},
 		Discoverers: []Discoverer{genericTool{config: adapterFile}},
 	})
@@ -209,7 +207,7 @@ func TestPrepareUserDeclarationsOverrideDiscovererNames(t *testing.T) {
 
 func TestPrepareRejectsSharedTempOnIsolated(t *testing.T) {
 	_, err := Prepare(t.Context(), Options{
-		Contract: envcontract.ContractV1, Profile: envcontract.ProfileIsolated,
+		Contract: ContractV1, Profile: ProfileIsolated,
 		SharedUserTemp: true, WorkspaceRoot: t.TempDir(),
 	})
 	if err == nil {
@@ -224,16 +222,16 @@ func (genericTool) Name() string { return "generic-test-tool" }
 func (g genericTool) Discover(
 	_ context.Context,
 	_ DiscoverInput,
-) ([]envcontract.ResourceRequest, []envcontract.Fact, error) {
-	return []envcontract.ResourceRequest{
+) ([]ResourceRequest, []Fact, error) {
+	return []ResourceRequest{
 		{
-			Name: "generic-config", Namespace: envcontract.NamespaceHostConfig,
-			Access: envcontract.AccessRead, Path: g.config,
+			Name: "generic-config", Namespace: NamespaceHostConfig,
+			Access: AccessRead, Path: g.config,
 			Source: "test-declaration", Required: true, Lifecycle: "source_version",
 		},
 		{
-			Name: "generic-cache", Namespace: envcontract.NamespaceCache,
-			Access: envcontract.AccessWrite, Path: "sandbox-home/cache/generic",
+			Name: "generic-cache", Namespace: NamespaceCache,
+			Access: AccessWrite, Path: "sandbox-home/cache/generic",
 			Env: "GENERIC_CACHE", Tree: true, Source: "test-declaration",
 			Required: true, Lifecycle: "workspace",
 		},

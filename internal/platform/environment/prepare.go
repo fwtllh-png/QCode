@@ -7,13 +7,12 @@ import (
 	"sort"
 	"strings"
 
-	envcontract "github.com/fwtllh-png/QCode/internal/environment"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
 )
 
 type Discoverer interface {
 	Name() string
-	Discover(context.Context, DiscoverInput) ([]envcontract.ResourceRequest, []envcontract.Fact, error)
+	Discover(context.Context, DiscoverInput) ([]ResourceRequest, []Fact, error)
 }
 
 type DiscoverInput struct {
@@ -32,17 +31,17 @@ type Options struct {
 	WorkspaceRoot  string
 	WorkspaceID    string
 	SandboxHome    string
-	Declarations   []envcontract.ResourceRequest
+	Declarations   []ResourceRequest
 	Discoverers    []Discoverer
 }
 
 type PreparedEnvironment struct {
-	Spec        envcontract.EnvironmentSpec
-	Compiled    []envcontract.CompiledResource
+	Spec        EnvironmentSpec
+	Compiled    []CompiledResource
 	Env         []string
 	ReadPaths   []string
 	WritePaths  []string
-	Facts       []envcontract.Fact
+	Facts       []Fact
 	UserTemp    string
 	SandboxHome string
 }
@@ -52,7 +51,7 @@ func UserTempDir() (string, error) {
 }
 
 func Prepare(ctx context.Context, options Options) (PreparedEnvironment, error) {
-	if err := envcontract.ValidatePosture(options.Profile, options.SharedUserTemp); err != nil {
+	if err := ValidatePosture(options.Profile, options.SharedUserTemp); err != nil {
 		return PreparedEnvironment{}, err
 	}
 	sourceEnv := append([]string(nil), options.SourceEnv...)
@@ -72,9 +71,9 @@ func Prepare(ctx context.Context, options Options) (PreparedEnvironment, error) 
 	}
 	requests := coreRequests(options, sourceEnv, userTemp)
 	for _, declaration := range options.Declarations {
-		requests = append(requests, envcontract.StampDeclaration(declaration))
+		requests = append(requests, StampDeclaration(declaration))
 	}
-	var facts []envcontract.Fact
+	var facts []Fact
 	for _, discoverer := range options.Discoverers {
 		if discoverer == nil {
 			continue
@@ -91,7 +90,7 @@ func Prepare(ctx context.Context, options Options) (PreparedEnvironment, error) 
 		requests = append(requests, discovered...)
 		facts = append(facts, extra...)
 	}
-	spec := envcontract.EnvironmentSpec{
+	spec := EnvironmentSpec{
 		ID:       "workspace-environment",
 		Version:  options.Source,
 		Contract: options.Contract,
@@ -100,7 +99,7 @@ func Prepare(ctx context.Context, options Options) (PreparedEnvironment, error) 
 		Requests: dedupeRequests(requests),
 	}
 	if spec.Contract == "" {
-		spec.Contract = envcontract.ContractV1
+		spec.Contract = ContractV1
 	}
 	if spec.Version == "" {
 		spec.Version = "startup"
@@ -111,7 +110,7 @@ func Prepare(ctx context.Context, options Options) (PreparedEnvironment, error) 
 	if spec.ID == "" {
 		spec.ID = "workspace-environment"
 	}
-	compiled, err := envcontract.CompileSpec(spec, envcontract.BindContext{
+	compiled, err := CompileSpec(spec, BindContext{
 		WorkspaceRoot:       options.WorkspaceRoot,
 		WorkspaceID:         options.WorkspaceID,
 		WorkspaceGeneration: 1,
@@ -136,56 +135,56 @@ func Prepare(ctx context.Context, options Options) (PreparedEnvironment, error) 
 	return prepared, nil
 }
 
-func coreRequests(options Options, sourceEnv []string, userTemp string) []envcontract.ResourceRequest {
-	requests := []envcontract.ResourceRequest{
+func coreRequests(options Options, sourceEnv []string, userTemp string) []ResourceRequest {
+	requests := []ResourceRequest{
 		{
-			Name: "locale", Namespace: envcontract.NamespaceHostConfig,
-			Access: envcontract.AccessRead, Path: "env:LANG", Env: "LANG",
+			Name: "locale", Namespace: NamespaceHostConfig,
+			Access: AccessRead, Path: "env:LANG", Env: "LANG",
 			Value: envValue(sourceEnv, "LANG"), Source: "startup-env",
 			Lifecycle: "source_version",
 		},
 		{
-			Name: "home-value", Namespace: envcontract.NamespaceHostConfig,
-			Access: envcontract.AccessRead, Path: "env:HOME", Env: "HOME",
+			Name: "home-value", Namespace: NamespaceHostConfig,
+			Access: AccessRead, Path: "env:HOME", Env: "HOME",
 			Value: envValue(sourceEnv, "HOME"), Source: "startup-env",
 			Lifecycle: "source_version",
 			Purpose:   "record home variable; does not authorize the directory",
 		},
 	}
 	if options.SandboxHome != "" {
-		requests = append(requests, envcontract.ResourceRequest{
-			Name: "sandbox-home", Namespace: envcontract.NamespaceSandboxHome,
-			Access: envcontract.AccessWrite, Path: ".", Tree: true,
+		requests = append(requests, ResourceRequest{
+			Name: "sandbox-home", Namespace: NamespaceSandboxHome,
+			Access: AccessWrite, Path: ".", Tree: true,
 			Source: "workspace-state", Required: true, Lifecycle: "workspace",
 		})
 	}
 	if options.SharedUserTemp && userTemp != "" {
-		requests = append(requests, envcontract.ResourceRequest{
-			Name: "shared-user-temp", Namespace: envcontract.NamespaceSharedUserTemp,
-			Access: envcontract.AccessWrite, Shared: true, Tree: true,
+		requests = append(requests, ResourceRequest{
+			Name: "shared-user-temp", Namespace: NamespaceSharedUserTemp,
+			Access: AccessWrite, Shared: true, Tree: true,
 			Source: "platform-user-temp", Lifecycle: "shared",
 			Env: "TMPDIR",
 		})
 	}
 	if pathValue, pathDirs := effectivePATH(sourceEnv); pathValue != "" {
-		requests = append(requests, envcontract.ResourceRequest{
-			Name: "path-value", Namespace: envcontract.NamespaceHostConfig,
-			Access: envcontract.AccessRead, Path: "env:PATH", Env: "PATH",
+		requests = append(requests, ResourceRequest{
+			Name: "path-value", Namespace: NamespaceHostConfig,
+			Access: AccessRead, Path: "env:PATH", Env: "PATH",
 			Value: pathValue, Source: "platform-path", Lifecycle: "source_version",
 		})
 		for _, directory := range pathDirs {
-			requests = append(requests, envcontract.ResourceRequest{
-				Name: "path-dir:" + directory,
-				Namespace: envcontract.NamespaceHostToolchain,
-				Access:    envcontract.AccessRead, Path: directory,
+			requests = append(requests, ResourceRequest{
+				Name:      "path-dir:" + directory,
+				Namespace: NamespaceHostToolchain,
+				Access:    AccessRead, Path: directory,
 				Source: "platform-path", Lifecycle: "source_version",
 			})
 		}
 	}
 	for _, file := range discoveredCertificateFiles(options.WorkspaceRoot) {
-		requests = append(requests, envcontract.ResourceRequest{
+		requests = append(requests, ResourceRequest{
 			Name:      "certificate:" + filepath.Base(file),
-			Namespace: envcontract.NamespaceHostConfig, Access: envcontract.AccessRead,
+			Namespace: NamespaceHostConfig, Access: AccessRead,
 			Path: file, Source: "openssl-version-d", Lifecycle: "source_version",
 		})
 	}
@@ -214,9 +213,9 @@ func materialize(prepared *PreparedEnvironment, options Options) {
 	for _, item := range prepared.Compiled {
 		if !item.Bindable {
 			if item.Request.Required {
-				prepared.Facts = append(prepared.Facts, envcontract.Fact{
-					Source:         envcontract.SourcePreparer,
-					Category:       envcontract.CategoryEnvironmentResourceUnavailable,
+				prepared.Facts = append(prepared.Facts, Fact{
+					Source:         SourcePreparer,
+					Category:       CategoryEnvironmentResourceUnavailable,
 					RequiredAction: actionFor(item.Request),
 					Resource:       item.Request.Name,
 				})
@@ -226,7 +225,7 @@ func materialize(prepared *PreparedEnvironment, options Options) {
 		path := materializedPath(item, options)
 		if path != "" {
 			switch item.Request.Access {
-			case envcontract.AccessWrite:
+			case AccessWrite:
 				prepared.WritePaths = append(prepared.WritePaths, path)
 				prepared.ReadPaths = append(prepared.ReadPaths, path)
 			default:
@@ -243,7 +242,7 @@ func materialize(prepared *PreparedEnvironment, options Options) {
 			env[envName] = item.Request.Value
 		}
 	}
-	if options.Profile == envcontract.ProfileIsolated && options.SandboxHome != "" {
+	if options.Profile == ProfileIsolated && options.SandboxHome != "" {
 		env["HOME"] = options.SandboxHome
 	}
 	if options.SharedUserTemp && prepared.UserTemp != "" {
@@ -258,7 +257,7 @@ func materialize(prepared *PreparedEnvironment, options Options) {
 	prepared.Env = flattenEnv(env)
 }
 
-func materializedPath(item envcontract.CompiledResource, options Options) string {
+func materializedPath(item CompiledResource, options Options) string {
 	switch item.Resource.Namespace {
 	case "cache", "sandbox_home":
 		if options.SandboxHome == "" {
@@ -286,27 +285,27 @@ func materializedPath(item envcontract.CompiledResource, options Options) string
 	return ""
 }
 
-func optionsUserTemp(_ Options, item envcontract.CompiledResource) string {
+func optionsUserTemp(_ Options, item CompiledResource) string {
 	if item.Resource.ID != "" && filepath.IsAbs(item.Resource.ID) {
 		return item.Resource.ID
 	}
 	return ""
 }
 
-func actionFor(request envcontract.ResourceRequest) string {
+func actionFor(request ResourceRequest) string {
 	switch request.Namespace {
-	case envcontract.NamespaceHostConfig:
-		return envcontract.ActionApproveHostConfig
-	case envcontract.NamespaceSharedUserTemp:
-		return envcontract.ActionEnableSharedUserTemp
-	case envcontract.NamespaceCredential:
-		return envcontract.ActionBindCredential
+	case NamespaceHostConfig:
+		return ActionApproveHostConfig
+	case NamespaceSharedUserTemp:
+		return ActionEnableSharedUserTemp
+	case NamespaceCredential:
+		return ActionBindCredential
 	default:
 		return ""
 	}
 }
 
-func envIdentity(request envcontract.ResourceRequest) string {
+func envIdentity(request ResourceRequest) string {
 	if name := strings.TrimSpace(request.Env); name != "" {
 		return name
 	}
@@ -411,9 +410,9 @@ func pathContains(parent, child string) bool {
 		!strings.HasPrefix(relative, ".."+string(filepath.Separator))
 }
 
-func dedupeRequests(requests []envcontract.ResourceRequest) []envcontract.ResourceRequest {
+func dedupeRequests(requests []ResourceRequest) []ResourceRequest {
 	seen := make(map[string]bool, len(requests))
-	out := make([]envcontract.ResourceRequest, 0, len(requests))
+	out := make([]ResourceRequest, 0, len(requests))
 	for _, request := range requests {
 		if seen[request.Name] {
 			continue

@@ -9,13 +9,15 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/fwtllh-png/QCode/internal/security/egress"
 )
 
 func TestGateDeniesUntilGranted(t *testing.T) {
-	gate := &egress.Gate{Enforce: true}
+	gate := &egress.Gate{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = io.WriteString(w, "ok")
 	}))
@@ -53,61 +55,172 @@ func TestGateDeniesUntilGranted(t *testing.T) {
 	}
 }
 
-func TestGateOpenWhenNotEnforcing(t *testing.T) {
-	gate := &egress.Gate{Enforce: false}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = io.WriteString(w, "ok")
+func TestNilGateDeniesEveryRequest(t *testing.T) {
+	var hits atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		hits.Add(1)
 	}))
 	t.Cleanup(server.Close)
-	client := egress.WrapClient(&http.Client{}, gate)
-	resp, err := client.Get(server.URL)
-	if err != nil {
-		t.Fatal(err)
+	var gate *egress.Gate
+	resp, err := egress.WrapClient(&http.Client{}, gate).Get(server.URL)
+	if err == nil {
+		resp.Body.Close()
 	}
-	resp.Body.Close()
+	if !errors.Is(err, egress.ErrDenied) || hits.Load() != 0 {
+		t.Fatalf("nil gate: error=%v hits=%d, want denied before connecting", err, hits.Load())
+	}
+	if gate.Allowed("127.0.0.1", "http") {
+		t.Fatal("nil gate reported a host as allowed")
+	}
+	request, _ := http.NewRequest(http.MethodGet, server.URL, nil)
+	if err := gate.Check(request); !errors.Is(err, egress.ErrDenied) {
+		t.Fatalf("nil gate Check() = %v, want ErrDenied", err)
+	}
 }
 
-func TestNilGateLeavesClientOpen(t *testing.T) {
+func TestGateRefusesTransportItCannotPin(t *testing.T) {
+	gate := &egress.Gate{}
+	gate.Allow("origin.test", "https")
+	called := false
+	base := roundTripFunc(func(*http.Request) (*http.Response, error) {
+		called = true
+		return &http.Response{StatusCode: http.StatusOK, Body: http.NoBody}, nil
+	})
+	resp, err := (&http.Client{Transport: gate.RoundTripper(base)}).Get("https://origin.test/")
+	if err == nil {
+		resp.Body.Close()
+	}
+	if !errors.Is(err, egress.ErrDenied) || called {
+		t.Fatalf("error=%v called=%t, want refusal before the base transport runs", err, called)
+	}
+}
+
+func TestGatePinsResolvedAddressOverBaseDialer(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = io.WriteString(w, "ok")
+		_, _ = io.WriteString(w, "pinned")
 	}))
 	t.Cleanup(server.Close)
-	client := egress.WrapClient(&http.Client{}, nil)
-	resp, err := client.Get(server.URL)
+	_, port, _ := net.SplitHostPort(server.Listener.Addr().String())
+	gate := &egress.Gate{
+		LookupIP: func(context.Context, string) ([]net.IP, error) {
+			return []net.IP{net.ParseIP("127.0.0.1")}, nil
+		},
+	}
+	gate.AllowURL("http://pinned.test:" + port)
+	baseDialed := false
+	base := &http.Transport{
+		DialContext: func(context.Context, string, string) (net.Conn, error) {
+			baseDialed = true
+			return nil, errors.New("base dialer must not run")
+		},
+	}
+	resp, err := (&http.Client{Transport: gate.RoundTripper(base)}).Get("http://pinned.test:" + port + "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if string(body) != "pinned" || baseDialed {
+		t.Fatalf("body=%q baseDialed=%t", body, baseDialed)
+	}
+}
+
+func TestGateCancellationClosesRequestWithBody(t *testing.T) {
+	canceled := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.(http.Flusher).Flush()
+		<-r.Context().Done()
+		close(canceled)
+	}))
+	t.Cleanup(server.Close)
+	gate := &egress.Gate{}
+	gate.AllowURL(server.URL)
+	ctx, cancel := context.WithCancel(t.Context())
+	request, _ := http.NewRequestWithContext(ctx, http.MethodPost, server.URL, strings.NewReader(`{}`))
+	resp, err := egress.WrapClient(&http.Client{}, gate).Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	cancel()
+	select {
+	case <-canceled:
+	case <-time.After(5 * time.Second):
+		server.CloseClientConnections()
+		t.Fatal("canceling the request left the upstream connection open")
+	}
+}
+
+func TestGateReleasesPinnedConnectionAfterBodyClose(t *testing.T) {
+	closed := make(chan struct{}, 1)
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "ok")
+	}))
+	server.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+		if state == http.StateClosed {
+			closed <- struct{}{}
+		}
+	}
+	server.Start()
+	t.Cleanup(server.Close)
+	gate := &egress.Gate{}
+	gate.AllowURL(server.URL)
+	resp, err := egress.WrapClient(&http.Client{}, gate).Get(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	select {
+	case <-closed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("pinned per-request connection stayed pooled after the body closed")
+	}
+}
+
+type pinnedRecorder struct{ addresses []net.IP }
+
+func (*pinnedRecorder) RoundTrip(*http.Request) (*http.Response, error) {
+	return nil, errors.New("unpinned RoundTrip must not run")
+}
+
+func (r *pinnedRecorder) RoundTripPinned(req *http.Request, addresses []net.IP) (*http.Response, error) {
+	r.addresses = addresses
+	return &http.Response{StatusCode: http.StatusOK, Body: http.NoBody, Request: req}, nil
+}
+
+func TestGateHandsApprovedAddressesToPinnedTransport(t *testing.T) {
+	gate := &egress.Gate{
+		LookupIP: func(context.Context, string) ([]net.IP, error) {
+			return []net.IP{net.ParseIP("93.184.216.34")}, nil
+		},
+	}
+	gate.Allow("origin.test", "https")
+	base := &pinnedRecorder{}
+	resp, err := (&http.Client{Transport: gate.RoundTripper(base)}).Get("https://origin.test/")
 	if err != nil {
 		t.Fatal(err)
 	}
 	resp.Body.Close()
+	if len(base.addresses) != 1 || !base.addresses[0].Equal(net.ParseIP("93.184.216.34")) {
+		t.Fatalf("pinned addresses = %v", base.addresses)
+	}
 }
 
 func TestRedirectToUngrantedHostIsDenied(t *testing.T) {
-	gate := &egress.Gate{Enforce: true}
-	gate.Allow("origin.test", "https")
-
-	var sawOther bool
-	base := roundTripFunc(func(req *http.Request) (*http.Response, error) {
-		switch req.URL.Hostname() {
-		case "origin.test":
-			return &http.Response{
-				StatusCode: http.StatusFound,
-				Header:     http.Header{"Location": []string{"https://other.test/path"}},
-				Body:       http.NoBody,
-				Request:    req,
-			}, nil
-		case "other.test":
-			sawOther = true
-			return &http.Response{
-				StatusCode: http.StatusOK,
-				Body:       http.NoBody,
-				Request:    req,
-			}, nil
-		default:
-			t.Fatalf("unexpected host %q", req.URL.Hostname())
-			return nil, nil
-		}
-	})
-	client := &http.Client{Transport: gate.RoundTripper(base)}
-	resp, err := client.Get("https://origin.test/")
+	var sawOther atomic.Bool
+	other := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		sawOther.Store(true)
+	}))
+	t.Cleanup(other.Close)
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, other.URL+"/path", http.StatusFound)
+	}))
+	t.Cleanup(origin.Close)
+	gate := &egress.Gate{}
+	gate.AllowURL(origin.URL)
+	resp, err := egress.WrapClient(&http.Client{}, gate).Get(origin.URL + "/")
 	if err == nil {
 		resp.Body.Close()
 		t.Fatal("expected redirect target to be denied")
@@ -115,7 +228,7 @@ func TestRedirectToUngrantedHostIsDenied(t *testing.T) {
 	if !errors.Is(err, egress.ErrDenied) {
 		t.Fatalf("error = %v, want ErrDenied", err)
 	}
-	if sawOther {
+	if sawOther.Load() {
 		t.Fatal("RoundTrip reached the ungranted host")
 	}
 }
@@ -168,14 +281,13 @@ func TestGateAccumulatesMethodAndPrivateGrants(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			for _, reverse := range []bool{false, true} {
 				for _, private := range []bool{false, true} {
-					ip := net.ParseIP("203.0.113.1")
+					ip := net.ParseIP("93.184.216.34")
 					expected := test.public
 					if private {
 						ip = net.ParseIP("10.0.0.1")
 						expected = test.private
 					}
 					gate := &egress.Gate{
-						Enforce: true,
 						LookupIP: func(context.Context, string) ([]net.IP, error) {
 							return []net.IP{ip}, nil
 						},
@@ -211,7 +323,7 @@ func TestGateAccumulatesMethodAndPrivateGrants(t *testing.T) {
 }
 
 func TestGateGrantDoesNotEscapeOriginOrOmitMethod(t *testing.T) {
-	gate := &egress.Gate{Enforce: true}
+	gate := &egress.Gate{}
 	methods := []string{"GET"}
 	gate.AllowTarget(egress.Target{
 		Host: "127.0.0.1", Protocol: "http", Port: 8080,
@@ -242,7 +354,7 @@ func TestGateGrantDoesNotEscapeOriginOrOmitMethod(t *testing.T) {
 }
 
 func TestGateConcurrentGrantsPreserveExistingAccess(t *testing.T) {
-	gate := &egress.Gate{Enforce: true}
+	gate := &egress.Gate{}
 	target := egress.Target{Host: "127.0.0.1", Protocol: "http", AllowPrivate: true}
 	target.Methods = []string{"GET"}
 	gate.AllowTarget(target)
@@ -267,7 +379,7 @@ func TestGateConcurrentGrantsPreserveExistingAccess(t *testing.T) {
 }
 
 func TestAuthorizeDeniedReceiptCarriesEnvironmentCategory(t *testing.T) {
-	gate := &egress.Gate{Enforce: true}
+	gate := &egress.Gate{}
 	_, err := gate.Authorize(t.Context(), egress.Target{
 		Host: "code.byted.org", Protocol: "https", Port: 443,
 		Methods: []string{http.MethodConnect},
@@ -289,7 +401,6 @@ func TestAuthorizeDeniedReceiptCarriesEnvironmentCategory(t *testing.T) {
 	}
 
 	gate = &egress.Gate{
-		Enforce: true,
 		LookupIP: func(context.Context, string) ([]net.IP, error) {
 			return nil, errors.New("nxdomain")
 		},

@@ -15,6 +15,7 @@ import (
 	"github.com/fwtllh-png/QCode/internal/platform/process"
 	"github.com/fwtllh-png/QCode/internal/security/artifactbroker"
 	"github.com/fwtllh-png/QCode/internal/security/authority"
+	"github.com/fwtllh-png/QCode/internal/security/effect"
 	"github.com/fwtllh-png/QCode/internal/security/policy"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
 )
@@ -97,7 +98,7 @@ func TestRunCommandSettlesNonZeroExitAsFailure(t *testing.T) {
 			WorkspaceID: workspaceID, WorkspaceGeneration: 1,
 			Subject: subject, Executable: "/bin/sh",
 			Args: []string{"-c", "exit 7"}, WorkingDirectory: workspace,
-			Effect: authority.ManagedProcessEffect(policy.RiskLow),
+			Effect: authority.ManagedProcessEffect(effect.RiskLow),
 		},
 	)
 	if err != nil {
@@ -223,9 +224,9 @@ func newFixture(t *testing.T) brokerFixture {
 	preliminary, err := authority.BuildExecutionOperation(authority.OperationInput{
 		WorkspaceRoot: workspace, WorkspaceGeneration: 1,
 		Invocation: invocation,
-		Effect: policy.Effect{
-			Kind: policy.EffectProcessReadOnly, Risk: policy.RiskHigh,
-			Reversibility: "bounded",
+		Effect: effect.Effect{
+			Kind: effect.ProcessReadOnly, Risk: effect.RiskHigh,
+			Reversibility: effect.Bounded,
 		},
 		HostReadRoots: []string{workspace},
 	})
@@ -248,9 +249,9 @@ func newFixture(t *testing.T) brokerFixture {
 	operation, err := authority.BuildExecutionOperation(authority.OperationInput{
 		WorkspaceRoot: workspace, WorkspaceID: preliminary.WorkspaceID,
 		WorkspaceGeneration: 1, Invocation: invocation,
-		Effect: policy.Effect{
-			Kind: policy.EffectProcessReadOnly, Risk: policy.RiskHigh,
-			Reversibility: "bounded",
+		Effect: effect.Effect{
+			Kind: effect.ProcessReadOnly, Risk: effect.RiskHigh,
+			Reversibility: effect.Bounded,
 		},
 		Artifact: &authority.ArtifactIntent{
 			ManifestDigest: snapshot.Manifest.Digest,

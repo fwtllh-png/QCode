@@ -7,7 +7,7 @@ import (
 
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
 	"github.com/fwtllh-png/QCode/internal/security/controlmatrix"
-	"github.com/fwtllh-png/QCode/internal/security/policy"
+	"github.com/fwtllh-png/QCode/internal/security/effect"
 )
 
 type ManagedProcessInput struct {
@@ -157,10 +157,10 @@ func BuildManagedProcessProfile(
 	return profile, profile.Validate()
 }
 
-func ManagedProcessEffect(risk policy.RiskLevel) EffectContract {
+func ManagedProcessEffect(risk effect.Risk) EffectContract {
 	return EffectContract{
-		Kind:          policy.EffectProcessReadOnly,
-		Reversibility: ReversibilityBounded,
+		Kind:          effect.ProcessReadOnly,
+		Reversibility: effect.Bounded,
 		Risk:          risk, WorkspaceTransaction: WorkspaceTransactionNone,
 	}
 }

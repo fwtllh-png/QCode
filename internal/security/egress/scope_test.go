@@ -10,8 +10,8 @@ import (
 )
 
 func TestCallScopePermissions(t *testing.T) {
-	gate := &egress.Gate{Enforce: true, UseCallScope: true}
-	target := egress.Target{Host: "203.0.113.10", Protocol: "https", Methods: []string{"GET"}}
+	gate := &egress.Gate{UseCallScope: true}
+	target := egress.Target{Host: "93.184.216.34", Protocol: "https", Methods: []string{"GET"}}
 	gate.AllowTarget(target)
 	assertAccess := func(ctx context.Context, target egress.Target, allowed bool) {
 		t.Helper()
@@ -87,7 +87,7 @@ func TestCallScopePermissions(t *testing.T) {
 		assertAccess(ctx, invalid, false)
 	})
 	t.Run("provider and process gates ignore web scope", func(t *testing.T) {
-		other := &egress.Gate{Enforce: true}
+		other := &egress.Gate{}
 		other.AllowTarget(target)
 		ctx, closeScope := egress.WithScope(t.Context())
 		closeScope()

@@ -10,6 +10,7 @@ import {tmpdir} from "node:os";
 import path from "node:path";
 import type {Readable} from "node:stream";
 import {fileURLToPath} from "node:url";
+import {writeFixtureConfig} from "./fixture-config";
 
 const repositoryRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -46,14 +47,10 @@ test.beforeEach(async () => {
   server = spawn(
     binary,
     [
-      "--workspace", workspaceDir,
+      "--config", await writeFixtureConfig(path.join(dataDir, "runtime.toml"), workspaceDir, false),
       "--data-dir", dataDir,
       "--provider-fixture", path.join(repositoryRoot, "testdata/providers/openai"),
-      "--provider", "openai",
-      "--model", "fixture-model",
-      "--enable-tools=false",
-      "--port", "0",
-      "--no-open"
+      "--port", "0"
     ],
     {
       cwd: repositoryRoot,
@@ -278,7 +275,7 @@ test("groups Sessions by Workspace and reveals row actions on demand", async ({p
 // 不再自动关闭，搜索框计数断言过时。
 test("shows and switches the Workspace Git branch", async ({page}) => {
   // Managed git execution 依赖受 Guard 管理的工具层；共享 fixture server 以
-  // --enable-tools=false 启动，结构性不可用。本用例自起带工具的 server。
+  // tools = false 配置启动，结构性不可用。本用例自起带工具的 server。
   const gitDataDir = await mkdtemp(path.join(tmpdir(), "qcode-web-e2e-git-"));
   const gitWorkspace = await mkdtemp(path.join(tmpdir(), "qcode-web-e2e-git-ws-"));
   await writeFile(path.join(gitWorkspace, "README.md"), "# Git fixture\n");
@@ -292,13 +289,10 @@ test("shows and switches the Workspace Git branch", async ({page}) => {
   ], {cwd: gitWorkspace});
   execFileSync("git", ["branch", "feature"], {cwd: gitWorkspace});
   const gitServer = spawn(binary, [
-    "--workspace", gitWorkspace,
+    "--config", await writeFixtureConfig(path.join(gitDataDir, "runtime.toml"), gitWorkspace),
     "--data-dir", gitDataDir,
     "--provider-fixture", path.join(repositoryRoot, "testdata/providers/openai"),
-    "--provider", "openai",
-    "--model", "fixture-model",
-    "--port", "0",
-    "--no-open"
+    "--port", "0"
   ], {cwd: repositoryRoot, stdio: ["ignore", "pipe", "pipe"]});
   try {
   const gitBase = await runtimeURL(gitServer);
@@ -342,14 +336,10 @@ test("adds a second Workspace and keeps its Sessions isolated", async ({page}) =
     execFileSync("git", ["init", "-q"], {cwd: secondary});
     execFileSync("git", ["add", "README.md"], {cwd: secondary});
     execFileSync(binary, [
-      "--workspace", secondary,
+      "--config", await writeFixtureConfig(path.join(dataDir, "secondary.toml"), secondary, false),
       "--data-dir", dataDir,
       "--provider-fixture", path.join(repositoryRoot, "testdata/providers/openai"),
-      "--provider", "openai",
-      "--model", "fixture-model",
-      "--enable-tools=false",
-      "--port", "0",
-      "--no-open"
+      "--port", "0"
     ], {cwd: repositoryRoot});
     await page.goto(baseURL);
 
@@ -920,7 +910,7 @@ function runtimeURL(
 }
 
 // The printed ready URL carries the one-time launch code and, because the
-// fixture passes --workspace, the Workspace selection. The anonymous
+// fixture config declares a Workspace, the Workspace selection. The anonymous
 // bootstrap no longer exposes the catalog, so the URL is used as printed.
 async function workspaceURL(printed: string): Promise<string> {
   const target = new URL(printed);

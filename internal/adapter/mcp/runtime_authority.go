@@ -13,7 +13,8 @@ import (
 	"github.com/fwtllh-png/QCode/internal/platform/process"
 	"github.com/fwtllh-png/QCode/internal/security/authority"
 	"github.com/fwtllh-png/QCode/internal/security/controlmatrix"
-	"github.com/fwtllh-png/QCode/internal/security/policy"
+	"github.com/fwtllh-png/QCode/internal/security/effect"
+	"github.com/fwtllh-png/QCode/internal/security/pathpolicy"
 	"github.com/fwtllh-png/QCode/internal/security/processbroker"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
 )
@@ -139,7 +140,7 @@ func (r *RuntimeAuthority) Start(
 			Subject:             subject, Executable: config.Command,
 			Args: config.Args, WorkingDirectory: directory,
 			Environment: environment,
-			Effect:      authority.ManagedProcessEffect(policy.RiskHigh),
+			Effect:      authority.ManagedProcessEffect(effect.RiskHigh),
 			Required:    required,
 		},
 	)
@@ -263,9 +264,7 @@ func mcpNetworkTargets(profile *PermissionProfile) []string {
 
 func mcpHiddenPaths(workspace string) []string {
 	var paths []string
-	for _, name := range []string{
-		".agents", ".qcode", ".qcode-worktree", ".codex", ".git",
-	} {
+	for _, name := range pathpolicy.ControlPlaneNames() {
 		path := filepath.Join(workspace, name)
 		if _, err := os.Lstat(path); err == nil {
 			paths = append(paths, path)

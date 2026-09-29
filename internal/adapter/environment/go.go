@@ -14,7 +14,6 @@ import (
 	"strconv"
 	"strings"
 
-	envcontract "github.com/fwtllh-png/QCode/internal/environment"
 	platformenv "github.com/fwtllh-png/QCode/internal/platform/environment"
 	"github.com/fwtllh-png/QCode/internal/security/goproxy"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
@@ -43,13 +42,13 @@ func HostProxyEnv(ctx context.Context, sourceEnv []string) (string, error) {
 func (Go) Discover(
 	ctx context.Context,
 	input platformenv.DiscoverInput,
-) ([]envcontract.ResourceRequest, []envcontract.Fact, error) {
+) ([]platformenv.ResourceRequest, []platformenv.Fact, error) {
 	executable, err := lookPathFromEnv(input.SourceEnv, "go")
 	if err != nil {
-		return nil, []envcontract.Fact{{
-			Source:         envcontract.SourcePreparer,
-			Category:       envcontract.CategoryEnvironmentResourceUnavailable,
-			RequiredAction: envcontract.ActionApproveHostConfig,
+		return nil, []platformenv.Fact{{
+			Source:         platformenv.SourcePreparer,
+			Category:       platformenv.CategoryEnvironmentResourceUnavailable,
+			RequiredAction: platformenv.ActionApproveHostConfig,
 			Resource:       "go",
 			Detail:         "go executable is not on PATH",
 		}}, nil
@@ -66,17 +65,17 @@ func (Go) Discover(
 	if err != nil {
 		return nil, nil, err
 	}
-	requests := []envcontract.ResourceRequest{
+	requests := []platformenv.ResourceRequest{
 		{
-			Name: "go-executable", Namespace: envcontract.NamespaceHostToolchain,
-			Access: envcontract.AccessRead, Path: executable,
+			Name: "go-executable", Namespace: platformenv.NamespaceHostToolchain,
+			Access: platformenv.AccessRead, Path: executable,
 			Source: "path", Required: true, Lifecycle: "source_version",
 		},
 	}
 	if strings.TrimSpace(goroot) != "" {
-		requests = append(requests, envcontract.ResourceRequest{
-			Name: "go-root", Namespace: envcontract.NamespaceHostToolchain,
-			Access: envcontract.AccessRead, Path: strings.TrimSpace(goroot),
+		requests = append(requests, platformenv.ResourceRequest{
+			Name: "go-root", Namespace: platformenv.NamespaceHostToolchain,
+			Access: platformenv.AccessRead, Path: strings.TrimSpace(goroot),
 			Env: "GOROOT", Source: "go-env-GOROOT", Required: true,
 			Lifecycle: "source_version",
 		})
@@ -88,37 +87,37 @@ func (Go) Discover(
 		if key == "GOPROXY" {
 			value = redactProxyUserinfo(value)
 		}
-		requests = append(requests, envcontract.ResourceRequest{
+		requests = append(requests, platformenv.ResourceRequest{
 			Name:      "go-env-" + strings.ToLower(key),
-			Namespace: envcontract.NamespaceHostConfig, Access: envcontract.AccessRead,
+			Namespace: platformenv.NamespaceHostConfig, Access: platformenv.AccessRead,
 			Path: "env:" + key, Env: key, Value: value,
 			Source: "go-env-json", Required: true, Lifecycle: "source_version",
 		})
 	}
 	if path := strings.TrimSpace(goenv); path != "" && path != "off" && filepath.IsAbs(path) {
-		requests = append(requests, envcontract.ResourceRequest{
-			Name: "go-env-file", Namespace: envcontract.NamespaceHostConfig,
-			Access: envcontract.AccessRead, Path: path, Env: "GOENV",
+		requests = append(requests, platformenv.ResourceRequest{
+			Name: "go-env-file", Namespace: platformenv.NamespaceHostConfig,
+			Access: platformenv.AccessRead, Path: path, Env: "GOENV",
 			Value: path, Source: "go-env-GOENV", Lifecycle: "live_host_file",
 		})
 	}
 	if input.SandboxHome != "" {
 		requests = append(requests,
-			envcontract.ResourceRequest{
-				Name: "go-mod-cache", Namespace: envcontract.NamespaceCache,
-				Access: envcontract.AccessWrite, Path: "sandbox-home/cache/go-mod",
+			platformenv.ResourceRequest{
+				Name: "go-mod-cache", Namespace: platformenv.NamespaceCache,
+				Access: platformenv.AccessWrite, Path: "sandbox-home/cache/go-mod",
 				Env: "GOMODCACHE", Tree: true, Source: "workspace-state",
 				Required: true, Lifecycle: "workspace",
 			},
-			envcontract.ResourceRequest{
-				Name: "go-build-cache", Namespace: envcontract.NamespaceCache,
-				Access: envcontract.AccessWrite, Path: "sandbox-home/cache/go-build",
+			platformenv.ResourceRequest{
+				Name: "go-build-cache", Namespace: platformenv.NamespaceCache,
+				Access: platformenv.AccessWrite, Path: "sandbox-home/cache/go-build",
 				Env: "GOCACHE", Tree: true, Source: "workspace-state",
 				Required: true, Lifecycle: "workspace",
 			},
-			envcontract.ResourceRequest{
-				Name: "go-tmp", Namespace: envcontract.NamespaceCache,
-				Access: envcontract.AccessWrite, Path: "sandbox-home/cache/go-tmp",
+			platformenv.ResourceRequest{
+				Name: "go-tmp", Namespace: platformenv.NamespaceCache,
+				Access: platformenv.AccessWrite, Path: "sandbox-home/cache/go-tmp",
 				Env: "GOTMPDIR", Tree: true, Source: "workspace-state",
 				Required: true, Lifecycle: "workspace",
 			},
@@ -130,7 +129,7 @@ func (Go) Discover(
 	return requests, facts, nil
 }
 
-func goproxyNetwork(raw string) ([]envcontract.ResourceRequest, []envcontract.Fact) {
+func goproxyNetwork(raw string) ([]platformenv.ResourceRequest, []platformenv.Fact) {
 	items := goproxy.SplitProxyList(redactProxyUserinfo(raw))
 	if len(items) == 0 {
 		return nil, nil
@@ -154,22 +153,22 @@ func goproxyNetwork(raw string) ([]envcontract.ResourceRequest, []envcontract.Fa
 			port = uint16(value)
 		}
 	}
-	requests := []envcontract.ResourceRequest{{
-		Name: "goproxy-first", Namespace: envcontract.NamespaceNetwork,
-		Access: envcontract.AccessRead, Host: parsed.Hostname(), Port: port,
+	requests := []platformenv.ResourceRequest{{
+		Name: "goproxy-first", Namespace: platformenv.NamespaceNetwork,
+		Access: platformenv.AccessRead, Host: parsed.Hostname(), Port: port,
 		Protocol: parsed.Scheme, Methods: []string{"CONNECT"},
 		Source: "goproxy-first-item", Required: true, Lifecycle: "grant_version",
 	}, {
-		Name: "goproxy-credential", Namespace: envcontract.NamespaceCredential,
-		Access: envcontract.AccessUse, Host: parsed.Hostname(),
+		Name: "goproxy-credential", Namespace: platformenv.NamespaceCredential,
+		Access: platformenv.AccessUse, Host: parsed.Hostname(),
 		Source: "adapter-declared-auth", Required: true, Lifecycle: "provider_rotation",
 	}}
-	var facts []envcontract.Fact
+	var facts []platformenv.Fact
 	if strings.Contains(remainder, "direct") {
-		facts = append(facts, envcontract.Fact{
-			Source:         envcontract.SourcePreparer,
-			Category:       envcontract.CategoryNetworkTargetUnapproved,
-			RequiredAction: envcontract.ActionApproveNetworkTarget,
+		facts = append(facts, platformenv.Fact{
+			Source:         platformenv.SourcePreparer,
+			Category:       platformenv.CategoryNetworkTargetUnapproved,
+			RequiredAction: platformenv.ActionApproveNetworkTarget,
 			Resource:       "goproxy-direct-fallback",
 			Detail:         "GOPROXY |direct fallback is not auto-granted",
 		})
@@ -285,7 +284,7 @@ var goManifestSkips = map[string]bool{
 // not fail discovery: GOTOOLCHAIN=auto fetches the required toolchain
 // through GOPROXY at build time. The fact tells the model that path exists,
 // so it does not hand-download toolchains into $TMPDIR.
-func toolchainFacts(workspace string, values map[string]string) []envcontract.Fact {
+func toolchainFacts(workspace string, values map[string]string) []platformenv.Fact {
 	required, toolchain := moduleGoRequirement(workspace)
 	if required == "" {
 		return nil
@@ -311,11 +310,11 @@ func toolchainFacts(workspace string, values map[string]string) []envcontract.Fa
 	action := ""
 	if strings.EqualFold(strings.TrimSpace(values["GOTOOLCHAIN"]), "local") {
 		detail += " GOTOOLCHAIN=local on this host disables auto-switching."
-		action = envcontract.ActionApproveHostConfig
+		action = platformenv.ActionApproveHostConfig
 	}
-	return []envcontract.Fact{{
-		Source:         envcontract.SourcePreparer,
-		Category:       envcontract.CategoryEnvironmentResourceUnavailable,
+	return []platformenv.Fact{{
+		Source:         platformenv.SourcePreparer,
+		Category:       platformenv.CategoryEnvironmentResourceUnavailable,
 		Resource:       "go-toolchain",
 		Detail:         detail,
 		RequiredAction: action,

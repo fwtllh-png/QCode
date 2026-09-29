@@ -29,7 +29,7 @@ func TestManagedProxyForwardsOnlyGrantedHTTPMethod(t *testing.T) {
 	portValue, _ := strconv.ParseUint(targetURL.Port(), 10, 16)
 	port := uint16(portValue)
 
-	gate := &egress.Gate{Enforce: true}
+	gate := &egress.Gate{}
 	gate.AllowTarget(egress.Target{
 		Host: targetURL.Hostname(), Protocol: "http", Port: port,
 		Methods: []string{http.MethodGet}, AllowPrivate: true,
@@ -96,7 +96,7 @@ func TestManagedProxyDeniedResponseIsStructured(t *testing.T) {
 	t.Cleanup(upstream.Close)
 	targetURL, _ := url.Parse(upstream.URL)
 
-	gate := &egress.Gate{Enforce: true}
+	gate := &egress.Gate{}
 	proxy, err := egress.StartManagedNetworkProxy(gate)
 	if err != nil {
 		t.Fatal(err)
@@ -155,7 +155,7 @@ func TestManagedProxyCONNECTUsesApprovedResolvedAddress(t *testing.T) {
 	targetURL, _ := url.Parse(upstream.URL)
 	_, rawPort, _ := net.SplitHostPort(targetURL.Host)
 	port, _ := strconv.ParseUint(rawPort, 10, 16)
-	gate := &egress.Gate{Enforce: true}
+	gate := &egress.Gate{}
 	gate.AllowTarget(egress.Target{
 		Host: targetURL.Hostname(), Protocol: "https", Port: uint16(port),
 		Methods: []string{http.MethodConnect}, AllowPrivate: true,
@@ -185,7 +185,6 @@ func TestManagedProxyCONNECTUsesApprovedResolvedAddress(t *testing.T) {
 
 func TestGateBlocksPrivateDNSResolutionWithoutExplicitGrant(t *testing.T) {
 	gate := &egress.Gate{
-		Enforce: true,
 		LookupIP: func(context.Context, string) ([]net.IP, error) {
 			return []net.IP{net.ParseIP("169.254.169.254")}, nil
 		},
@@ -225,7 +224,7 @@ func TestManagedProxyRechecksRedirectTarget(t *testing.T) {
 	t.Cleanup(origin.Close)
 	originURL, _ := url.Parse(origin.URL)
 	port, _ := strconv.ParseUint(originURL.Port(), 10, 16)
-	gate := &egress.Gate{Enforce: true}
+	gate := &egress.Gate{}
 	gate.AllowTarget(egress.Target{
 		Host: originURL.Hostname(), Protocol: "http", Port: uint16(port),
 		Methods: []string{http.MethodGet}, AllowPrivate: true,

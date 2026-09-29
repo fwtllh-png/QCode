@@ -17,7 +17,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/fwtllh-png/QCode/internal/environment"
+	"github.com/fwtllh-png/QCode/internal/platform/environment"
+	"github.com/fwtllh-png/QCode/internal/security/netpolicy"
 )
 
 const Source = "auth_service"
@@ -413,7 +414,12 @@ func sameUpstreamEndpoint(candidate, upstream *url.URL) bool {
 	if !strings.EqualFold(candidate.Hostname(), upstream.Hostname()) {
 		return false
 	}
-	if effectivePort(candidate) != effectivePort(upstream) {
+	candidatePort, err := netpolicy.URLPort(candidate)
+	if err != nil {
+		return false
+	}
+	upstreamPort, err := netpolicy.URLPort(upstream)
+	if err != nil || candidatePort != upstreamPort {
 		return false
 	}
 	return isTLS(candidate) == isTLS(upstream)
@@ -423,28 +429,18 @@ func isTLS(value *url.URL) bool {
 	return strings.EqualFold(value.Scheme, "https")
 }
 
-func effectivePort(value *url.URL) string {
-	if port := value.Port(); port != "" {
-		return port
-	}
-	if strings.EqualFold(value.Scheme, "http") {
-		return "80"
-	}
-	return "443"
-}
-
 // defaultSumdbName is the Go toolchain's documented public checksum
 // database. Sumdb proxying is limited to it and to the bound upstream's own
 // database name until a configuration field declares private databases.
 const defaultSumdbName = "sum.golang.org"
 
 func allowedSumdbName(name, upstreamHost string) bool {
-	name = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(name), "."))
+	name = netpolicy.NormalizeHost(name)
 	if name == defaultSumdbName {
 		return true
 	}
 	return upstreamHost != "" &&
-		name == strings.ToLower(strings.TrimSuffix(strings.TrimSpace(upstreamHost), "."))
+		name == netpolicy.NormalizeHost(upstreamHost)
 }
 
 func (s *Service) roundTrip(request *http.Request, secret string) (*http.Response, error) {

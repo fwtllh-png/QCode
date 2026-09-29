@@ -8,7 +8,7 @@ import (
 
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
 	"github.com/fwtllh-png/QCode/internal/security/controlmatrix"
-	"github.com/fwtllh-png/QCode/internal/security/policy"
+	"github.com/fwtllh-png/QCode/internal/security/effect"
 )
 
 type ManagedFileInput struct {
@@ -20,7 +20,7 @@ type ManagedFileInput struct {
 	Subject             Subject
 	Paths               []string
 	MutationDigest      string
-	Risk                policy.RiskLevel
+	Risk                effect.Risk
 }
 
 func BuildManagedFileOperation(
@@ -72,8 +72,8 @@ func BuildManagedFileOperation(
 		WorkspaceGeneration: input.WorkspaceGeneration,
 		Subject:             input.Subject,
 		Effect: EffectContract{
-			Kind:                   policy.EffectWorkspaceEdit,
-			Reversibility:          ReversibilityReversible,
+			Kind:                   effect.WorkspaceEdit,
+			Reversibility:          effect.Reversible,
 			Risk:                   input.Risk,
 			WorkspaceTransaction:   WorkspaceTransactionBeforeImage,
 			RequireReadBeforeWrite: true,

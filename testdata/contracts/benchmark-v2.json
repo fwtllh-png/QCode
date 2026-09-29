@@ -6,28 +6,28 @@
       "lane": "platform-capability",
       "capabilities": ["strong_sandbox"],
       "evidence": ["testdata/benchmarks/edit-transaction-multi-file/task.json"],
-      "command": "go test -tags=capability -run '^TestCodingBenchmarkSuite$' ./internal/host/bench"
+      "command": "go test -tags=capability -run '^TestCodingBenchmarkSuite$' ./internal/host/intergration_test"
     },
     {
       "id": "test_selection",
       "lane": "platform-capability",
       "capabilities": ["strong_sandbox"],
       "evidence": ["testdata/benchmarks/related-tests-affected/task.json"],
-      "command": "go test -tags=capability -run '^TestCodingBenchmarkSuite$' ./internal/host/bench"
+      "command": "go test -tags=capability -run '^TestCodingBenchmarkSuite$' ./internal/host/intergration_test"
     },
     {
       "id": "approval",
       "lane": "platform-capability",
       "capabilities": ["strong_sandbox"],
       "evidence": ["testdata/benchmarks/single-file-fix/task.json"],
-      "command": "go test -tags=capability -run '^TestCodingBenchmarkSuite$' ./internal/host/bench"
+      "command": "go test -tags=capability -run '^TestCodingBenchmarkSuite$' ./internal/host/intergration_test"
     },
     {
       "id": "budget",
       "lane": "platform-capability",
       "capabilities": ["strong_sandbox"],
       "evidence": ["testdata/benchmarks/budget-exhaustion/task.json"],
-      "command": "go test -tags=capability -run '^TestCodingBenchmarkSuite$' ./internal/host/bench"
+      "command": "go test -tags=capability -run '^TestCodingBenchmarkSuite$' ./internal/host/intergration_test"
     },
     {
       "id": "crash_recovery",
@@ -40,15 +40,15 @@
       "id": "host_replay",
       "lane": "integration",
       "capabilities": [],
-      "evidence": ["internal/host/runtimeapi/web/server_test.go"],
-      "command": "go test -run '^TestWebSocketDownlinkConcurrencyAndShutdown$' ./internal/host/runtimeapi/web"
+      "evidence": ["internal/host/server_test.go"],
+      "command": "go test -run '^TestWebSocketDownlinkConcurrencyAndShutdown$' ./internal/host"
     },
     {
       "id": "web_capacity",
       "lane": "integration",
       "capabilities": [],
-      "evidence": ["internal/host/runtimeapi/web/capacity_integration_test.go"],
-      "command": "go test -run '^TestWeb(Socket(ReplaysTenThousandEvents|CapsBrowserConnectionsAtSixteen|DisconnectStormReleasesSlotsGoroutinesAndDescriptors)|SessionCapacity(AllowsThirtyTwoAndPreservesIdempotentRetry|IsAtomicUnderConcurrentCreate))$' ./internal/host/runtimeapi/web"
+      "evidence": ["internal/host/capacity_test.go"],
+      "command": "go test -run '^TestWeb(Socket(ReplaysTenThousandEvents|CapsBrowserConnectionsAtSixteen|DisconnectStormReleasesSlotsGoroutinesAndDescriptors)|SessionCapacity(AllowsThirtyTwoAndPreservesIdempotentRetry|IsAtomicUnderConcurrentCreate))$' ./internal/host"
     },
     {
       "id": "web_browser_durability",
@@ -68,8 +68,8 @@
       "id": "web_streaming_soak",
       "lane": "release",
       "capabilities": [],
-      "evidence": ["internal/host/runtimeapi/web/streaming_soak_test.go"],
-      "command": "QCODE_WEB_STREAMING_SOAK_DURATION=1h go test -count=1 -timeout 70m -run '^TestWebSocketSustainedStreamingSoak$' ./internal/host/runtimeapi/web"
+      "evidence": ["internal/host/server_test.go"],
+      "command": "QCODE_WEB_STREAMING_SOAK_DURATION=1h go test -count=1 -timeout 70m -run '^TestWebSocketSustainedStreamingSoak$' ./internal/host"
     }
   ]
 }

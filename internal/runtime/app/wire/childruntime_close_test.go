@@ -13,7 +13,7 @@ import (
 	"github.com/fwtllh-png/QCode/internal/adapter/tool/handle"
 	"github.com/fwtllh-png/QCode/internal/orchestration/subagent"
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
-	"github.com/fwtllh-png/QCode/internal/testutil/tooltest"
+	"github.com/fwtllh-png/QCode/testutil/tooltest"
 )
 
 func TestCloseAgentSettlesAndReleasesRunningChild(t *testing.T) {

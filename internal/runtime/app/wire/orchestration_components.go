@@ -50,6 +50,9 @@ func buildChildOrchestration(
 		state.config.skillPaths,
 	)
 	output.childToolsets.environment = execution.Environment
+	output.childToolsets.managedProxyCredential = sandbox.BackendManagedProxyCredential(
+		state.platform.backend,
+	)
 	output.childToolsets.bindParentSandbox(state.platform.backend)
 	session.childTools = output.childToolsets
 	chatRoot := filepath.Join(childRoot, "chats")

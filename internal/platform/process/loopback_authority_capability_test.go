@@ -48,7 +48,7 @@ func TestRealLoopbackAuthorityWithAndWithoutManagedProxy(t *testing.T) {
 		Host: targetURL.Hostname(), Protocol: "http", Port: uint16(port),
 		Methods: []string{http.MethodGet}, AllowPrivate: true,
 	}
-	gate := &egress.Gate{Enforce: true}
+	gate := &egress.Gate{}
 	gate.AllowTarget(target)
 	proxy, err := egress.StartManagedNetworkProxy(gate)
 	if err != nil {
@@ -60,6 +60,7 @@ func TestRealLoopbackAuthorityWithAndWithoutManagedProxy(t *testing.T) {
 		t.Run("proxy-"+strconv.Itoa(int(proxyPort)), func(t *testing.T) {
 			backend, err := sandbox.NewPlatformBackend(sandbox.Options{
 				WorkspaceRoot: t.TempDir(), ManagedProxyPort: proxyPort,
+				ManagedProxyCredential: proxy.Credential(),
 			})
 			if err != nil {
 				t.Fatal(err)

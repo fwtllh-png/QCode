@@ -17,7 +17,7 @@ import (
 	"github.com/fwtllh-png/QCode/internal/config"
 	"github.com/fwtllh-png/QCode/internal/runtime/app"
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
-	"github.com/fwtllh-png/QCode/internal/testutil/tooltest"
+	"github.com/fwtllh-png/QCode/testutil/tooltest"
 )
 
 func TestChatWorkspacesProvisionMergeAndRestore(t *testing.T) {

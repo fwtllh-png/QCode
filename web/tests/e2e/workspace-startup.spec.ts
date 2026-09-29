@@ -5,6 +5,7 @@ import {tmpdir} from "node:os";
 import path from "node:path";
 import type {Readable} from "node:stream";
 import {fileURLToPath} from "node:url";
+import {writeFixtureConfig} from "./fixture-config";
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 let server: ChildProcessByStdio<null, Readable, Readable>;
@@ -16,10 +17,10 @@ test.beforeEach(async () => {
   dataDir = await mkdtemp(path.join(tmpdir(), "qcode-empty-startup-state-"));
   workspaceDir = await mkdtemp(path.join(tmpdir(), "qcode-explicit-workspace-"));
   server = spawn(process.env.QCODE_E2E_BINARY || path.join(repositoryRoot, "bin/qcode"), [
+    "--config", await writeFixtureConfig(path.join(dataDir, "runtime.toml")),
     "--data-dir", dataDir,
     "--provider-fixture", path.join(repositoryRoot, "testdata/providers/web-visual"),
-    "--provider", "openai", "--model", "fixture-model",
-    "--enable-tools", "--posture", "suggest", "--port", "0", "--no-open"
+    "--port", "0"
   ], {cwd: repositoryRoot, stdio: ["ignore", "pipe", "pipe"]});
   baseURL = await new Promise<string>((resolve, reject) => {
     let output = "";

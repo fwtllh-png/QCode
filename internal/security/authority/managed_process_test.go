@@ -3,7 +3,7 @@ package authority
 import (
 	"testing"
 
-	"github.com/fwtllh-png/QCode/internal/security/policy"
+	"github.com/fwtllh-png/QCode/internal/security/effect"
 )
 
 func TestManagedProcessProfileDropsProxyForDeniedNetwork(t *testing.T) {
@@ -21,7 +21,7 @@ func TestManagedProcessProfileDropsProxyForDeniedNetwork(t *testing.T) {
 		ID: "fixture", Tool: "fixture",
 		WorkspaceID:         "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 		WorkspaceGeneration: 1, Subject: subject, Executable: "/bin/sh",
-		WorkingDirectory: t.TempDir(), Effect: ManagedProcessEffect(policy.RiskLow),
+		WorkingDirectory: t.TempDir(), Effect: ManagedProcessEffect(effect.RiskLow),
 	})
 	if err != nil {
 		t.Fatal(err)

@@ -10,6 +10,7 @@ import {tmpdir} from "node:os";
 import path from "node:path";
 import type {Readable} from "node:stream";
 import {fileURLToPath} from "node:url";
+import {writeFixtureConfig} from "./fixture-config";
 
 const repositoryRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -50,16 +51,11 @@ test.beforeEach(async () => {
   server = spawn(
     process.env.QCODE_E2E_BINARY || path.join(repositoryRoot, "bin/qcode"),
     [
-      "--workspace", workspaceDir,
+      "--config", await writeFixtureConfig(path.join(dataDir, "runtime.toml"), workspaceDir),
       "--data-dir", dataDir,
       "--provider-fixture",
       path.join(repositoryRoot, "testdata/providers/web-visual"),
-      "--provider", "openai",
-      "--model", "fixture-model",
-      "--enable-tools",
-      "--posture", "suggest",
-      "--port", "0",
-      "--no-open"
+      "--port", "0"
     ],
     {
       cwd: repositoryRoot,
@@ -1470,6 +1466,7 @@ async function createSession(page: Page): Promise<void> {
   await page.locator(".workspaceHeader[data-active] .workspaceCreateAction button").click();
   await expect(sessions).toHaveCount(count + 1);
   await expect(page.getByPlaceholder("Ask QCode")).toBeEnabled();
+  await page.getByLabel("Approval").selectOption("suggest");
 }
 
 async function enableAutomaticPlanApproval(page: Page): Promise<void> {
@@ -1580,7 +1577,7 @@ function runtimeURL(
 }
 
 // The printed ready URL carries the one-time launch code and, because the
-// fixture passes --workspace, the Workspace selection. The anonymous
+// fixture config declares a Workspace, the Workspace selection. The anonymous
 // bootstrap no longer exposes the catalog, so the URL is used as printed.
 async function workspaceURL(printed: string): Promise<string> {
   const target = new URL(printed);

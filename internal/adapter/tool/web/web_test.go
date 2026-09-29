@@ -232,7 +232,7 @@ func TestParseDuckDuckGoSearchHTML(t *testing.T) {
 }
 
 func TestEgressDeniedClassified(t *testing.T) {
-	gate := &egress.Gate{Enforce: true}
+	gate := &egress.Gate{}
 	client := egress.WrapClient(&http.Client{}, gate)
 	result, err := boundTool(t, &Tool{kind: "web_fetch", httpClient: client}).Execute(
 		t.Context(), json.RawMessage(`{"url":"https://example.com/page"}`),

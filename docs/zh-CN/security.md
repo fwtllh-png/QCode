@@ -70,7 +70,8 @@ Web Markdown 不执行原始 HTML 或危险 URL。同源图片可以直接显示
   配置文件（`~/.gitconfig` 或 `~/.config/git/config`），不暴露
   `.git-credentials`、`.netrc` 或 `~/.ssh`。宿主 `go env GOPROXY` 已有的 userinfo 或宿主
   `~/.netrc` 由 runtime 在进程外认证服务上使用，并改写沙箱 `GOPROXY` 为
-  Session loopback；凭证不进进程环境，`.netrc` 也不进入 Seatbelt。
+  loopback 代理通道（URL 中只带该通道的临时凭据）；宿主凭证不进进程环境，`.netrc`
+  也不进入 Seatbelt。
   可信配置里的 `[[execution.environment.auth_services]]` 覆盖该宿主绑定。
   不能把 token 写进 `$TMPDIR/.netrc`。
   子 Agent 仍 isolated，看不到宿主 git 配置。
@@ -93,6 +94,15 @@ Web Markdown 不执行原始 HTML 或危险 URL。同源图片可以直接显示
   无权威事实的失败保持 `unknown`。
   `[[execution.environment.auth_services]]` 只接受可信配置中的 `goproxy`，
   凭证引用不得写入配置值或进程环境。
+- 受保护的控制面目录名与宿主凭据位置只在 `internal/security/pathpolicy` 定义一次，
+  控制面分类、File Broker、Authority 的写拒绝根、MCP 隐藏路径、Seatbelt Profile
+  与注入根校验都从这里读取。凭据位置按路径段、大小写不敏感匹配（`~/.config/ghostty`
+  不会被当成 `~/.config/gh`）。Seatbelt 对 home 下每个凭据位置同时拒绝读写：
+  `~/.ssh`、`~/.gnupg`、`~/.aws`、`~/Library/Keychains`、`~/.kube`、`~/.docker`、
+  `~/.azure`、`~/.gcloud`、`~/.config/gh`，以及 home 下的 `credentials`、`secrets`、
+  `keychains`。宿主注入根不能是 home 本身，也不能包含上述任一位置（例如
+  `~/Library`、`~/.config`）；`.netrc`、`.git-credentials`、`.npmrc`、SSH 私钥等凭据
+  文件无论在何处都不能注入。
 - Tool Contract 要求时先读后写。
 - Tool Catalog 将模型可见的 `ExternalDescriptor` 与 Registry 可信的
   `TrustedBinding` 分开冻结。MCP 等外部来源只能提交
@@ -217,8 +227,12 @@ Web Markdown 不执行原始 HTML 或危险 URL。同源图片可以直接显示
   适配器发现的 GOPROXY 主机不自动获得 CONNECT。
 - 测试 Fixture 或本地开发服务必须绑定并连接临时 Localhost 端口时，
   `exec_command` 可声明 `allow_loopback`。
-  该能力默认关闭；Strong Sandbox 内仅包含精确 Localhost Grant 且没有 Workspace
-  写入的调用按有界 Network Read 评估，`suggest` 要求审批，`auto` 自动 Review。
+  该能力默认关闭。Seatbelt 只能按“本机任意端口”放行，无法限定到 Fixture 端口，
+  因此 Loopback Grant 如实建模为可连接本机任意端口：它同样能连到其他本地服务，
+  以及其他 Session 和 Workspace 的代理通道。Strong Sandbox 内仅包含 Localhost
+  Grant 且没有 Workspace 写入的调用仍归类为 Network Read，但 `suggest` 和 `auto`
+  都必须人工审批，`auto` 不会自动 Review。代理通道之间的隔离不依赖端口不可达，
+  而依赖各通道的独立凭据，见“网络与服务暴露”一节。
   macOS Profile 只增加 Localhost Inbound/Outbound Seatbelt Rule；非 Loopback
   流量仍必须声明精确 Proxy Target。Loopback-only Effective Profile 不绑定托管
   代理端口；执行器不得因为 enclosing sandbox 仍持有 Runtime Proxy 而拒绝已批准的
@@ -258,6 +272,9 @@ Web Markdown 不执行原始 HTML 或危险 URL。同源图片可以直接显示
     即使获授权也不能解析进这类地址。
   - 已知限制：通过代理的 `ws://` 以 CONNECT 发起，本地开发服务的 WebSocket（如 HMR）
     不匹配 `http://` 授权，会被拒绝；页面本身仍可加载。
+  - 已知残余风险：Chromium 的 `--proxy-server` 无法携带代理凭据，浏览器代理通道
+    不做凭据认证。浏览器运行期间，获批 `allow_loopback` 的命令可以经该通道使用
+    浏览器 Gate（公网目标和本次浏览器会话已授权的目标）。
 - 权限规则保留原始 Resource。文件资源使用 Guard 解析出的规范化路径匹配，主机、
   URL 等 ID 资源使用原值匹配；通配工具或同时涉及文件和网络的工具也遵循该区分。
   相对文件规则继续拒绝 `..` 逃逸并解析符号链接，不根据名称是否含点猜测资源类型。
@@ -343,7 +360,7 @@ Runtime 切换前先把暂存 Intent 推进到已提交，激活失败时恢复�
 连接必须完成激活才算成功。
 
 Web Host 的暂存 → 激活 → 提交只由一个事务类型 `credentialRotation`
-（`internal/host/web/credential_rotation.go`）驱动。Launcher、无 Workspace 配置、
+（`internal/host/credential_rotation.go`）驱动。Launcher、无 Workspace 配置、
 Runtime 重建和 `connection/add` 四处都复用它：
 
 - 阶段只前进，未激活不得提交；
@@ -398,10 +415,23 @@ make secret-leak-test
     照常可用。解析失败时不授予私网权限。
   - Web Gate 在每次请求时重新解析。未直接写明回环或链路本地地址的主机，即使
     解析到这类地址也会被拒绝，因此 DNS 重绑定不能进入本机服务。
+  - 地址分类只在 `internal/security/netpolicy` 实现一次，分为本机（回环、未指定、
+    `0.0.0.0/8`、链路本地及链路范围组播）、私网（RFC 1918、`100.64/10`、ULA）、
+    其他非公网保留段、公网四类；IPv4 映射、IPv4 兼容、NAT64 `64:ff9b::/96` 与
+    6to4 形式按内嵌的 IPv4 地址分类。判断"主机名是否直接指向本机"用的也是这套分类，
+    所以 `::ffff:127.0.0.1`、`64:ff9b::7f00:1` 与 `127.0.0.1` 一样需要人工审批。
   - 已知残余风险：在 `auto` 下，解析到内网地址的外部域名仍会获得内网访问权限。
     需要隔离内网时应使用 `suggest` Posture。
   Darwin 上每个 Process Session 绑定独立 loopback 端口和 Session Gate；兄弟命令、
   子 Agent 和 Workspace 共享端口不能消费该 Session 的目标。
+  每个代理通道（Workspace 通道和每个 Session 通道）在创建时生成独立的随机凭据，
+  只注入该通道所属命令的 `HTTP_PROXY`/`HTTPS_PROXY`/`GOPROXY` URL userinfo，
+  不写入 Receipt 或 Journal，通道关闭即失效。CONNECT 与 absolute-form 请求必须以
+  `Proxy-Authorization: Basic` 出示本通道凭据，否则返回 407；GOPROXY 的
+  origin-form 请求可用 `Authorization` 或 `Proxy-Authorization` 出示，否则返回
+  401，认证头在交给认证服务前移除。持有 `allow_loopback` 的命令能连上任意通道端口，
+  但拿不到其他通道的凭据。命令自身可以读取并输出自己的代理 URL，该凭据只对本通道和本
+  Gate 有效。
   取消或关闭 Session 会停止 listen 并回收已 hijack 的 CONNECT。
 - Native/Web Search Result 仍是不可信内容。
 - 可记录 Endpoint Inventory，但不能记录 Credential。

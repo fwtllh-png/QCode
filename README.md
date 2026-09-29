@@ -8,7 +8,7 @@
 **一个使用 Go 实现的、本地运行、受控执行的 AI Coding Agent Runtime。**
 
 QCode 将仓库理解、模型调用、受治理工具、审批、验证、持久化会话与 Subagent
-协作统一放在一套 Runtime 协议之后，并通过本机 Web 这一产品入口服务交互式使用。
+协作统一放在一套 Runtime 协议之后，以 macOS 桌面应用为主要入口，加载本机 Web 界面。
 
 > 项目状态：初始开发版本。首次公开稳定发布前，接口和持久化格式仍可能调整。
 
@@ -37,6 +37,7 @@ QCode 将仓库理解、模型调用、受治理工具、审批、验证、持�
 - Go 1.26 或更高版本
 - Git
 - Node.js 和 npm（`make build` 会先生成并嵌入 Web 前端）
+- Xcode Command Line Tools（编译 Swift 桌面壳）
 
 目前仅支持 macOS（amd64/arm64）；Linux 和 Windows 不再提供构建、发布与运行支持。
 
@@ -47,14 +48,13 @@ QCode 将仓库理解、模型调用、受治理工具、审批、验证、持�
 ```bash
 git clone https://github.com/fwtllh-png/QCode.git
 cd QCode
-make install
-qcode
+make start
 ```
 
-`make install` 默认把完整的自包含二进制安装到 `~/.local/bin/qcode`。安装后可在
-任意目录运行 `qcode`，只打开本机页面，不自动添加或选中当前目录。没有默认 Workspace；
-用户通过 `Add workspace` 选择目录，或显式运行 `qcode --workspace /path/to/project`。
-已有 Web Supervisor 运行时，显式目录会注册到已有进程，无需启动第二个 Web 服务。
+`make start` 构建并打开 `dist/QCode.app`；之后可直接打开该 App，也可复制到
+`/Applications`。桌面壳无参数启动内嵌 Runtime，不自动添加或选中当前目录。
+没有默认 Workspace，用户通过 `Add workspace` 选择目录。
+已有 Web Supervisor 运行时，桌面壳复用该进程，无需启动第二个 Web 服务。
 普通启动只恢复已添加的列表，删除最后一个 Workspace 后重启仍保持空列表。
 首次进入时不会预选 Provider 或 Model。所有连接统一为 OpenAI-Compatible 形态，
 用户必须在页面中填写 Base URL、Protocol、Model ID 与 API Key 四项要素；模型
@@ -63,14 +63,12 @@ Runtime 不猜测模型限制。API Key 由操作系统 Keyring 加密保存，�
 元数据由 Runtime 管理；无需创建或编辑配置文件。Session 可跨全部已配置连接
 （不同 Base URL）切换已验证模型；新增未知模型需要从 Connection 设置提交其元数据。
 
-源码开发时仍可使用 `make start`。自定义安装位置使用
-`make install PREFIX=/usr/local`，卸载使用 `make uninstall`。
-无配置运行 `qcode` 时默认启用受 Guard 管理的内置工具，并使用 `auto`
-审批姿态。
+重新构建后，退出 App 并重新打开以使用新 Runtime；若复用的是终端启动的进程，
+需先在原终端停止它。内置工具默认启用并受 Guard 管理，新 Session 默认使用
+`auto` 审批姿态；显式的 `execution.tools` / `QCODE_TOOLS` 配置仍生效。
 
-Web 只监听 `127.0.0.1:6732`。同一用户后续启动会复用已有 Supervisor，
-终端会分别输出页面开始监听和
-Runtime 完成恢复的 URL。
+Web 默认监听 `127.0.0.1:6732`。调试时可通过 `make install` 安装独立 Runtime
+到 `~/.local/bin/qcode`；直接运行只输出启动 URL，不自动打开浏览器。
 
 安装、初始配置、凭证、持久化和 Web 使用方式见
 [快速开始](./docs/zh-CN/getting-started.md)。
@@ -79,20 +77,20 @@ Runtime 完成恢复的 URL。
 
 | 入口 | 命令或路径 | 主要用途 |
 | --- | --- | --- |
-| 本机 Web | `qcode` | 覆盖会话、审批、变更、Subagent 与运行状态 |
-| macOS 桌面应用 | `make desktop-app` → `dist/QCode.app` | WKWebView 壳，与本机 Web 共享同一 Runtime 与数据 |
+| macOS 桌面应用 | `make start` 或打开 `dist/QCode.app` | 日常入口，覆盖会话、审批、变更、Subagent 与运行状态 |
+| 独立 Runtime | `qcode` | 开发调试，输出本机 Web 地址供手动访问 |
 
 ## 一分钟理解安全模型
 
 Agent 固定使用 `act`，按需规划并执行用户请求，不提供模式切换。
 
-`--posture` 描述工具决策方式：
+界面中的 `Approval` 描述工具决策方式：
 
 - `never`：只读
 - `suggest`：风险操作请求用户审批
 - `auto`：按策略自动判断，不被允许的操作直接拒绝
 
-日常交互推荐 `suggest`。凭证应保存为环境变量、文件或系统 Keyring 的引用，TOML 中
+默认使用 `auto`，需要逐项审批时可切换为 `suggest`。凭证应保存为环境变量、文件或系统 Keyring 的引用，TOML 中
 不应出现原始密钥。
 
 ## 仓库结构

@@ -1,6 +1,13 @@
 # Coding Benchmark 任务集
 
-每个子目录是一个任务，由 `internal/host/bench` 驱动真实 Runtime 执行。整套用例**完全 hermetic**：不联网、不需要 API key、不调用真实模型，模型行为由 fixture provider 回放。因此结果可跨机器比较，可用作发布门禁（`make bench`）。
+每个子目录是一个任务，由 `internal/host/intergration_test/benchmark_test.go` 驱动真实 Runtime
+执行。任务使用本机 Fixture Provider 回放，不访问外网、不需要 API Key、不调用真实模型。
+涉及命令执行的场景仍依赖真实 Strong Sandbox。
+
+驱动、统计和辅助代码全部位于 `_test.go`。默认 `go test ./internal/host/intergration_test`
+验证任务清单与报告统计，并运行 Runtime/Web 共享行为测试。`make bench` 使用
+`capability` 标签，只运行 Coding Benchmark、Token Efficiency 和断言失效检查三个入口，
+可用作发布门禁。
 
 ## 目录结构
 

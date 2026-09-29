@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/fwtllh-png/QCode/internal/security/pathpolicy"
 	"github.com/fwtllh-png/QCode/internal/security/policy"
 )
 
@@ -57,9 +58,9 @@ func Load(workspace, userHome string) (Bundle, error) {
 	}
 	userPath := ""
 	if userHome != "" {
-		userPath = filepath.Join(userHome, ".qcode", FileName)
+		userPath = filepath.Join(userHome, pathpolicy.StateDir, FileName)
 	}
-	repoPath := filepath.Join(workspace, ".qcode", FileName)
+	repoPath := filepath.Join(workspace, pathpolicy.StateDir, FileName)
 
 	var userDoc, repoDoc Document
 	userPresent, err := readOptional(userPath, &userDoc)
@@ -79,8 +80,14 @@ func Load(workspace, userHome string) (Bundle, error) {
 		return Bundle{Status: status}, nil
 	}
 
-	userRules := compile(userDoc, "user")
-	repoRules := compile(repoDoc, "repo")
+	userRules, err := compile(userDoc, "user")
+	if err != nil {
+		return Bundle{}, fmt.Errorf("user constitution %s: %w", userPath, err)
+	}
+	repoRules, err := compile(repoDoc, "repo")
+	if err != nil {
+		return Bundle{}, fmt.Errorf("repo constitution %s: %w", repoPath, err)
+	}
 	// Repo first so equal-priority ties prefer repository constitution.
 	rules := append(append([]policy.Rule{}, repoRules...), userRules...)
 
@@ -163,12 +170,15 @@ func readOptional(path string, doc *Document) (bool, error) {
 	return true, nil
 }
 
-func compile(doc Document, source string) []policy.Rule {
+func compile(doc Document, source string) ([]policy.Rule, error) {
 	rules := make([]policy.Rule, 0, len(doc.DenyWriteGlobs)+len(doc.HoldTools)+len(doc.DenyTools))
 	for _, glob := range doc.DenyWriteGlobs {
-		resource := normalizeGlob(glob)
-		if resource == "" {
+		if strings.TrimSpace(glob) == "" {
 			continue
+		}
+		resource, err := normalizeGlob(glob)
+		if err != nil {
+			return nil, fmt.Errorf("deny_write_globs entry %q: %w", glob, err)
 		}
 		// Write holds match every tool's write-access resources instead of a
 		// hand-maintained tool list. A list cannot cover builtin writers added
@@ -200,14 +210,22 @@ func compile(doc Document, source string) []policy.Rule {
 			Code: "constitution_deny:" + source,
 		})
 	}
-	return rules
+	return rules, nil
 }
 
-func normalizeGlob(glob string) string {
+// normalizeGlob accepts a path or a directory with a trailing "/", "/*", or
+// "/**"; each protects the whole subtree. Rules match by path prefix, so any
+// other wildcard would never match and silently leave the path unprotected.
+func normalizeGlob(glob string) (string, error) {
 	glob = strings.TrimSpace(filepath.ToSlash(glob))
 	glob = strings.TrimPrefix(glob, "./")
 	glob = strings.TrimSuffix(glob, "/**")
 	glob = strings.TrimSuffix(glob, "/*")
 	glob = strings.TrimSuffix(glob, "/")
-	return filepath.ToSlash(filepath.Clean(glob))
+	if strings.ContainsAny(glob, "*?[]{}") {
+		return "", errors.New(
+			`wildcards are unsupported; name a path or a directory ending in "/"`,
+		)
+	}
+	return filepath.ToSlash(filepath.Clean(glob)), nil
 }

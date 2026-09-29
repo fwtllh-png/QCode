@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fwtllh-png/QCode/internal/environment"
+	"github.com/fwtllh-png/QCode/internal/platform/environment"
 )
 
 func TestEmptyCacheInfoFetchUsesBoundUpstream(t *testing.T) {

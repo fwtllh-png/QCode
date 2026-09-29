@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/fwtllh-png/QCode/internal/security/pathpolicy"
 )
 
 type StateLayout struct {
@@ -48,7 +50,7 @@ func CanonicalStateDirectory(stateDirectory string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("resolve Runtime state directory: %w", err)
 	}
-	stateDirectory, err = evalSymlinksAllowMissing(stateDirectory)
+	stateDirectory, err = pathpolicy.CanonicalAllowMissing(stateDirectory)
 	if err != nil {
 		return "", fmt.Errorf("resolve Runtime state directory links: %w", err)
 	}

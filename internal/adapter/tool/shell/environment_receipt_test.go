@@ -3,15 +3,15 @@ package shell
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync/atomic"
 	"testing"
 
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
-	"github.com/fwtllh-png/QCode/internal/environment"
+	"github.com/fwtllh-png/QCode/internal/platform/environment"
 	"github.com/fwtllh-png/QCode/internal/platform/process"
 	"github.com/fwtllh-png/QCode/internal/security/egress"
 	"github.com/fwtllh-png/QCode/internal/security/goproxy"
@@ -100,7 +100,7 @@ func TestFailedExecCommandWithoutFactsIsUnknown(t *testing.T) {
 }
 
 func TestFailedExecCommandUsesSessionGateReceipts(t *testing.T) {
-	gate := &egress.Gate{Enforce: true}
+	gate := &egress.Gate{}
 	_, _ = gate.Authorize(t.Context(), egress.Target{
 		Host: "code.byted.org", Protocol: "https", Port: 443,
 		Methods: []string{"CONNECT"},
@@ -292,7 +292,7 @@ func TestOpenProcessNetworkInheritsDeclaredGrant(t *testing.T) {
 	if !sandbox.SupportsManagedNetworkProxy() {
 		t.Skip("session channels are unsupported")
 	}
-	workspace := &egress.Gate{Enforce: true}
+	workspace := &egress.Gate{}
 	proxy, err := egress.StartManagedNetworkProxy(workspace)
 	if err != nil {
 		t.Fatal(err)
@@ -338,9 +338,8 @@ func TestBackgroundProcessCannotAskAfterItsCallReturns(t *testing.T) {
 		t.Skip("session channels are unsupported")
 	}
 	gate := &egress.Gate{
-		Enforce: true,
 		LookupIP: func(context.Context, string) ([]net.IP, error) {
-			return []net.IP{net.ParseIP("203.0.113.10")}, nil
+			return []net.IP{net.ParseIP("93.184.216.34")}, nil
 		},
 	}
 	manager := process.NewSessionManager(4096)
@@ -404,7 +403,7 @@ func TestOpenProcessNetworkBindsSessionGate(t *testing.T) {
 	if !sandbox.SupportsManagedNetworkProxy() {
 		t.Skip("session channels are unsupported")
 	}
-	workspace := &egress.Gate{Enforce: true}
+	workspace := &egress.Gate{}
 	proxy, err := egress.StartManagedNetworkProxy(workspace)
 	if err != nil {
 		t.Fatal(err)
@@ -436,7 +435,7 @@ func TestOpenProcessNetworkOpensLoopbackSessionForAuthService(t *testing.T) {
 	if !sandbox.SupportsManagedNetworkProxy() {
 		t.Skip("session channels are unsupported")
 	}
-	workspace := &egress.Gate{Enforce: true}
+	workspace := &egress.Gate{}
 	proxy, err := egress.StartManagedNetworkProxy(workspace)
 	if err != nil {
 		t.Fatal(err)
@@ -467,7 +466,7 @@ func TestExecCommandRewritesGoproxyToSessionAndKeepsSecretOut(t *testing.T) {
 	if !sandbox.SupportsManagedNetworkProxy() {
 		t.Skip("session channels are unsupported")
 	}
-	workspace := &egress.Gate{Enforce: true}
+	workspace := &egress.Gate{}
 	proxy, err := egress.StartManagedNetworkProxy(workspace)
 	if err != nil {
 		t.Fatal(err)
@@ -505,8 +504,13 @@ func TestExecCommandRewritesGoproxyToSessionAndKeepsSecretOut(t *testing.T) {
 			rewritten = entry
 		}
 	}
-	if !strings.HasPrefix(rewritten, "GOPROXY=http://127.0.0.1:") {
+	endpoint, err := url.Parse(strings.TrimPrefix(rewritten, "GOPROXY="))
+	if err != nil || endpoint.Scheme != "http" || endpoint.Hostname() != "127.0.0.1" ||
+		endpoint.User.Username() != sandbox.ManagedProxyUser {
 		t.Fatalf("GOPROXY = %q env=%v", rewritten, backend.env)
+	}
+	if password, _ := endpoint.User.Password(); password == "" {
+		t.Fatalf("GOPROXY carries no session channel credential: %q", rewritten)
 	}
 	if strings.Contains(rewritten, "secret-token") ||
 		strings.Contains(rewritten, "|direct") ||
@@ -606,6 +610,7 @@ type stubProcessSession struct {
 }
 
 func (s stubProcessSession) Port() uint16       { return 1 }
+func (s stubProcessSession) Credential() string { return "" }
 func (s stubProcessSession) Gate() *egress.Gate { return s.gate }
 func (s stubProcessSession) Close() error       { return nil }
 
@@ -617,7 +622,7 @@ func TestExecCommandRoutesGoproxyToStableWorkspaceChannel(t *testing.T) {
 	manager := process.NewSessionManager(4096)
 	t.Cleanup(manager.CloseAll)
 	backend, err := egress.NewManagedBackend(
-		&egress.Gate{Enforce: true},
+		&egress.Gate{},
 		sandbox.Options{
 			WorkspaceRoot: root, PrivateTemp: t.TempDir(),
 			SkipPATHReadRoots: true,
@@ -662,8 +667,8 @@ func TestExecCommandRoutesGoproxyToStableWorkspaceChannel(t *testing.T) {
 	if result.IsError {
 		t.Fatalf("result = %+v", result)
 	}
-	want := fmt.Sprintf("http://127.0.0.1:%d", workspacePort)
-	if result.Content != want {
+	want := sandbox.ManagedProxyURL(workspacePort, sandbox.BackendManagedProxyCredential(backend))
+	if result.Content != want || !strings.Contains(want, "@") {
 		t.Fatalf("GOPROXY = %q, want %q", result.Content, want)
 	}
 }

@@ -100,6 +100,7 @@ def file_manifest(root: Path) -> dict[str, str]:
 
 def run_previous(
     binary: str,
+    config: str,
     workspace: str,
     fixture: str,
     data_dir: str,
@@ -109,19 +110,14 @@ def run_previous(
     previous = subprocess.Popen(
         [
             binary,
-            "--workspace",
-            workspace,
+            "--config",
+            config,
             "--data-dir",
             data_dir,
             "--provider-fixture",
             fixture,
-            "--provider",
-            "openai",
-            "--model",
-            "fixture-model",
             "--port",
             "0",
-            "--no-open",
         ],
         cwd=workspace,
         text=True,
@@ -178,22 +174,23 @@ def main() -> None:
     with tempfile.TemporaryDirectory(prefix="qcode-release-drill-") as temp:
         root = Path(temp)
         data = root / "data"
+        config = root / "runtime.toml"
+        config.write_text(
+            "[execution]\n"
+            f"workspace = {json.dumps(workspace)}\n"
+            'provider = "openai"\nmodel = "fixture-model"\ntools = true\n'
+        )
         current = subprocess.Popen(
             [
                 args.current_binary,
-                "--workspace",
-                workspace,
+                "--config",
+                str(config),
                 "--data-dir",
                 str(data),
                 "--provider-fixture",
                 args.fixture,
-                "--provider",
-                "openai",
-                "--model",
-                "fixture-model",
                 "--port",
                 "0",
-                "--no-open",
             ],
             cwd=workspace,
             text=True,
@@ -275,6 +272,7 @@ def main() -> None:
             database.close()
         latest, event_count, recovery_turn_id = run_previous(
             args.previous_binary,
+            str(config),
             workspace,
             args.fixture,
             str(restored),

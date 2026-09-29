@@ -9,7 +9,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
-	"github.com/fwtllh-png/QCode/internal/testutil/tooltest"
+	"github.com/fwtllh-png/QCode/testutil/tooltest"
 )
 
 func readTruncationRegistry(t *testing.T, files map[string]string) *tool.Registry {

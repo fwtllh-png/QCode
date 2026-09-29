@@ -7,15 +7,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
 	"github.com/fwtllh-png/QCode/internal/security/controlmatrix"
+	"github.com/fwtllh-png/QCode/internal/security/netpolicy"
+	"github.com/fwtllh-png/QCode/internal/security/pathpolicy"
 	"github.com/fwtllh-png/QCode/internal/security/policy"
+	securityresource "github.com/fwtllh-png/QCode/internal/security/resource"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
 )
 
@@ -185,24 +186,23 @@ func compileResources(profile *EffectivePermissionProfile, invocation policy.Inv
 				profile.Filesystem.WritePaths = append(profile.Filesystem.WritePaths, value)
 			}
 		case "host", "url":
-			if resource.Kind == "host" && resource.Protocol == "loopback" {
+			if securityresource.IsLoopback(resource.Kind, resource.Protocol) {
 				profile.Network.Loopback = true
 				profile.Network.Targets = append(
-					profile.Network.Targets,
-					"loopback://localhost:0",
+					profile.Network.Targets, securityresource.LoopbackTarget,
 				)
 				continue
 			}
-			target, ok := policy.ParseNetworkTarget(value)
+			target, err := netpolicy.ParseTarget(value)
 			if resource.Kind == "host" && resource.Protocol != "" {
-				target = policy.NetworkTarget{
-					Host: resource.ID, Protocol: resource.Protocol,
+				target = netpolicy.Target{
+					Scheme: resource.Protocol, Host: resource.ID,
 					Port: resource.Port,
 				}
-				ok = true
+				err = nil
 			}
-			if ok {
-				profile.Network.Targets = append(profile.Network.Targets, networkKey(target))
+			if err == nil {
+				profile.Network.Targets = append(profile.Network.Targets, target.Key())
 			}
 		case "process":
 			profile.Process.Allowed = true
@@ -213,13 +213,6 @@ func compileResources(profile *EffectivePermissionProfile, invocation policy.Inv
 		invocation.Sandbox == tool.SandboxStrong {
 		profile.Process.Allowed = true
 	}
-}
-
-func networkKey(target policy.NetworkTarget) string {
-	return target.Protocol + "://" + net.JoinHostPort(
-		target.Host,
-		strconv.Itoa(int(target.Port)),
-	)
 }
 
 func compileSandboxCeiling(profile *EffectivePermissionProfile, input CompileInput) {
@@ -246,9 +239,7 @@ func compileSandboxCeiling(profile *EffectivePermissionProfile, input CompileInp
 		profile.Filesystem.ReadRoots,
 		policyValue.HostReadFiles...,
 	)
-	for _, name := range []string{
-		".agents", ".qcode", ".qcode-worktree", ".git",
-	} {
+	for _, name := range pathpolicy.ControlPlaneNames() {
 		profile.Filesystem.DeniedWriteRoots = append(
 			profile.Filesystem.DeniedWriteRoots,
 			filepath.Join(policyValue.WorkspaceRoot, name),
@@ -256,7 +247,7 @@ func compileSandboxCeiling(profile *EffectivePermissionProfile, input CompileInp
 	}
 	hasNetworkTargets := false
 	for _, target := range profile.Network.Targets {
-		if !strings.HasPrefix(target, "loopback://") {
+		if !securityresource.IsLoopbackTarget(target) {
 			hasNetworkTargets = true
 			break
 		}

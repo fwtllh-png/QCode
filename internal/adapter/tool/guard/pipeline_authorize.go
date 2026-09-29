@@ -8,7 +8,9 @@ import (
 	"time"
 
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
+	"github.com/fwtllh-png/QCode/internal/security/pathpolicy"
 	"github.com/fwtllh-png/QCode/internal/security/policy"
+	securityresource "github.com/fwtllh-png/QCode/internal/security/resource"
 )
 
 var errWorkspaceUnchanged = errors.New("workspace edit produces no changes")
@@ -128,8 +130,8 @@ func (g *Guard) authorize(
 
 func (g *Guard) checkControlPlaneWrites(resources []tool.Resource) error {
 	for _, resource := range resources {
-		if resource.Access != tool.AccessWrite ||
-			!isPathKind(resource.Kind) ||
+		if !resource.Access.Writes() ||
+			!securityresource.IsPathKind(resource.Kind) ||
 			resource.Path == "" {
 			continue
 		}
@@ -141,7 +143,7 @@ func (g *Guard) checkControlPlaneWrites(resources []tool.Resource) error {
 			}
 			classification, protected, classifyErr :=
 				g.controlPlane.Classify(resource.Path)
-			if classifyErr == nil && protected && classification.Root == ".git" {
+			if classifyErr == nil && protected && classification.Root == pathpolicy.GitDir {
 				return tool.WithRecoveryHint(decision, tool.RecoveryHint{
 					ErrorCategory:  "control_plane_protected",
 					RequiredAction: "use_git_tool",

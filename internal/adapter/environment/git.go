@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	envcontract "github.com/fwtllh-png/QCode/internal/environment"
 	platformenv "github.com/fwtllh-png/QCode/internal/platform/environment"
 )
 
@@ -19,13 +18,13 @@ func (Git) Name() string { return "git" }
 func (Git) Discover(
 	_ context.Context,
 	_ platformenv.DiscoverInput,
-) ([]envcontract.ResourceRequest, []envcontract.Fact, error) {
-	var requests []envcontract.ResourceRequest
+) ([]platformenv.ResourceRequest, []platformenv.Fact, error) {
+	var requests []platformenv.ResourceRequest
 	for _, path := range gitUserConfigFiles() {
-		requests = append(requests, envcontract.ResourceRequest{
+		requests = append(requests, platformenv.ResourceRequest{
 			Name:      "git-config:" + filepath.Base(path),
-			Namespace: envcontract.NamespaceHostConfig,
-			Access:    envcontract.AccessRead,
+			Namespace: platformenv.NamespaceHostConfig,
+			Access:    platformenv.AccessRead,
 			Path:      path,
 			Source:    "git-config-locations",
 			Lifecycle: "source_version",

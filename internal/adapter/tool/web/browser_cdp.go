@@ -51,7 +51,7 @@ func newChromeBrowser(binary string) BrowserRuntime {
 }
 
 func newBrowserGate() *egress.Gate {
-	return &egress.Gate{Enforce: true, AllowPublic: true}
+	return &egress.Gate{AllowPublic: true}
 }
 
 // chromeArguments pins Chrome to the proxy: loopback is not implicitly
@@ -115,7 +115,7 @@ func (b *chromeBrowser) ensureStarted(ctx context.Context) error {
 	if b.connection != nil {
 		return nil
 	}
-	proxy, err := egress.StartManagedNetworkProxy(b.gate)
+	proxy, err := egress.StartUnauthenticatedNetworkProxy(b.gate)
 	if err != nil {
 		return fmt.Errorf("start browser egress proxy: %w", err)
 	}

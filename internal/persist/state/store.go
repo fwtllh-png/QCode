@@ -6,7 +6,7 @@
 //   - Append / AppendEvents — durable eventlog + event_index / reservations
 //     only. They MUST NOT mutate relational thread metadata (title, status,
 //     parent_thread_id, …). Lifecycle projection of events may still bump
-//     threads.updated_at via host/runtimeapi, but that is not this API.
+//     threads.updated_at via host, but that is not this API.
 //   - PatchThreadMeta — relational thread fields only. It MUST NOT append to
 //     the eventlog or advance event sequences.
 //

@@ -1,12 +1,13 @@
 # 桌面应用
 
-QCode 提供 macOS 桌面应用（QCode.app）：一个原生 WKWebView 壳，加载本机
+QCode 以 macOS 桌面应用（QCode.app）为主要启动方式：原生 WKWebView 壳加载本机
 Web Supervisor 的页面。桌面应用与本机 Web 共享同一 Runtime、同一数据目录与
 同一套安全语义，不引入第二条产品入口逻辑。
 
 ## 构建与安装
 
 ```bash
+make start              # 构建并打开桌面 App
 make desktop-app        # 开发构建，产出 dist/QCode.app（adhoc 签名）
 VERSION=0.1.0 RELEASE_STAGE=experimental make package-app   # 发布打包
 ```
@@ -27,10 +28,15 @@ QCode.app/Contents/MacOS/qcode-runtime  内嵌的 qcode Runtime 二进制
 
 1. 先扫描默认数据目录（`~/.qcode/v1`）下的 Supervisor lease 文件，逐个用
    `/healthz` 探活；存在可用 Supervisor 时直接**收养**（不新起进程）。
-2. 收养失败时拉起内嵌的 `qcode-runtime --no-open`，等待 `/healthz` 返回
+2. 收养失败时无参数拉起内嵌的 `qcode-runtime`，等待 `/healthz` 返回
    `ready` 或 `setup_required` 后在窗口中加载页面。
 3. 若拉起失败但 `127.0.0.1:6732` 上已有合法 QCode 服务（例如 CLI 使用了
    自定义 `--data-dir` 启动），兜底收养该进程。
+
+Runtime 固定监听 `127.0.0.1`，默认端口为 `6732`，不负责打开浏览器。
+工作区、模型和审批姿态通过界面管理。内置工具默认启用，新 Session 默认使用 `auto`。
+独立 Runtime 的开发调试参数见[使用指南](./usage.md)。
+重新构建后需退出并重新打开 App；若复用了终端启动的 Runtime，先在原终端停止它。
 
 退出语义：
 
@@ -107,8 +113,8 @@ QCode 需要在用户工作区执行任意 CLI 工具与 `sandbox-exec`，因此
 
 1. 冷启动：无 Supervisor 时窗口出现并进入引导/工作区页面。
 2. 先 `qcode` 后开 App：App 收养现有 Supervisor，原进程不退出。
-3. App 先启动，终端再执行 `qcode --workspace <路径>`：CLI 注册成功，
-   App 内出现该 Workspace。
+3. App 先启动，终端再执行 `qcode`：输出已有 Supervisor 的启动 URL 并正常退出；
+   在 App 中通过 `Add workspace` 添加目录后，侧栏出现该 Workspace。
 4. ⌘Q：App 退出且自己拉起的 Runtime 完成 drain 后退出。
 5. 通知：后台会话触发审批时收到系统通知，点击后聚焦并跳转。
 6. WebKit 兼容性：流式渲染与打字光标动效、剪贴板复制、附件选择、删除/重命名/

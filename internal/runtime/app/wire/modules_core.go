@@ -86,7 +86,7 @@ func (platformModule) Build(_ context.Context, state *buildState) error {
 	}
 	session.processes = processes
 	state.platform.processes = processes
-	state.platform.processEgress = &egress.Gate{Enforce: true}
+	state.platform.processEgress = &egress.Gate{}
 	state.platform.leaseAuthority = newLeaseAuthority()
 	backend, prepareFacts, err := newWorkspaceSandbox(state)
 	if err != nil {
@@ -131,7 +131,7 @@ func (platformModule) Build(_ context.Context, state *buildState) error {
 	if search := state.config.snapshot.Config.Web.SearchBackend; search != "" {
 		webOptions.SearchBackend = search
 	}
-	state.platform.webEgress = &egress.Gate{Enforce: true, UseCallScope: true}
+	state.platform.webEgress = &egress.Gate{UseCallScope: true}
 	grantWebBackendHosts(state.platform.webEgress, webOptions)
 	webOptions.HTTP = egress.WrapClient(&http.Client{}, state.platform.webEgress)
 	state.platform.web = webOptions

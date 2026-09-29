@@ -7,13 +7,17 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/fwtllh-png/QCode/internal/security/controlmatrix"
+	"github.com/fwtllh-png/QCode/internal/security/pathpolicy"
 )
 
 const policyVersion = 2
@@ -35,6 +39,29 @@ func BackendManagedProxyPort(backend Backend) uint16 {
 	return policy.ManagedProxyPort
 }
 
+func BackendManagedProxyCredential(backend Backend) string {
+	policy, ok := BackendPolicy(backend)
+	if !ok {
+		return ""
+	}
+	return policy.ManagedProxyCredential
+}
+
+// ManagedProxyUser is the fixed user name in a managed proxy credential; the
+// per-channel secret is the password.
+const ManagedProxyUser = "qcode"
+
+// ManagedProxyURL is the loopback proxy URL a sandboxed command is given.
+// The credential travels as URL userinfo, which HTTP clients send as Basic
+// Proxy-Authorization (proxy form) or Authorization (origin form).
+func ManagedProxyURL(port uint16, credential string) string {
+	endpoint := &url.URL{Scheme: "http", Host: net.JoinHostPort("127.0.0.1", strconv.Itoa(int(port)))}
+	if credential != "" {
+		endpoint.User = url.UserPassword(ManagedProxyUser, credential)
+	}
+	return endpoint.String()
+}
+
 type Options struct {
 	WorkspaceRoot string
 	HostReadRoots []string
@@ -45,6 +72,8 @@ type Options struct {
 	// ubomcli can reach their APIs.
 	AllowNetwork     bool
 	ManagedProxyPort uint16
+	// ManagedProxyCredential authenticates commands to ManagedProxyPort.
+	ManagedProxyCredential string
 	// SkipPATHReadRoots disables inheriting absolute PATH directories as
 	// HostReadRoots. Default (false) lets user-installed tools run (e.g.
 	// ~/.local/bin/ubomcli) without opening the entire home directory.
@@ -96,7 +125,10 @@ type Policy struct {
 	HostWriteRoots      []string                   `json:"host_write_roots,omitempty"`
 	EnvironmentNetwork  []EnvironmentNetworkTarget `json:"environment_network,omitempty"`
 	EnvironmentValues   []string                   `json:"environment_values,omitempty"`
-	ownsPrivateTemp     bool
+	// ManagedProxyCredential is a secret: it is excluded from the policy
+	// identity and from every serialized form.
+	ManagedProxyCredential string `json:"-"`
+	ownsPrivateTemp        bool
 }
 
 func BuildPolicy(options Options) (Policy, error) {
@@ -280,6 +312,9 @@ func BuildPolicy(options Options) (Policy, error) {
 		EnvironmentNetwork:  normalizeEnvironmentNetwork(options.EnvironmentNetwork),
 		EnvironmentValues:   normalizeEnvironmentValues(options.EnvironmentValues),
 		ownsPrivateTemp:     ownsPrivateTemp,
+	}
+	if policy.ManagedProxyPort != 0 {
+		policy.ManagedProxyCredential = options.ManagedProxyCredential
 	}
 	hashInput := policy
 	hashInput.ID = ""
@@ -469,6 +504,7 @@ func CommandNetworkPolicy(policy Policy, command Command) Policy {
 	if command.DenyNetwork || command.LoopbackOnly {
 		policy.AllowNetwork = false
 		policy.ManagedProxyPort = 0
+		policy.ManagedProxyCredential = ""
 	}
 	return policy
 }
@@ -481,6 +517,7 @@ func ApplySessionProxyPort(policy Policy, command Command) Policy {
 	policy = CommandNetworkPolicy(policy, command)
 	if command.SessionProxyPort != 0 && policy.ManagedProxyPort != 0 {
 		policy.ManagedProxyPort = command.SessionProxyPort
+		policy.ManagedProxyCredential = command.SessionProxyCredential
 	}
 	return policy
 }
@@ -626,14 +663,8 @@ func validateInjectedHostFile(path, workspace string) error {
 		return err
 	}
 	parent := filepath.Dir(path)
-	home, _ := os.UserHomeDir()
-	if home != "" {
-		if resolved, err := filepath.EvalSymlinks(home); err == nil {
-			home = resolved
-		}
-		if parent == filepath.Clean(home) {
-			return nil
-		}
+	if home := resolvedUserHome(); home != "" && parent == filepath.Clean(home) {
+		return nil
 	}
 	return validateInjectedRoot(parent, workspace)
 }
@@ -642,20 +673,14 @@ func validateInjectedRoot(root, workspace string) error {
 	if isFilesystemRoot(root) {
 		return errors.New("filesystem root is forbidden")
 	}
-	home, _ := os.UserHomeDir()
-	if home != "" {
-		// Keep the lexical home when resolution fails (mirroring
-		// validateInjectedHostFile): swallowing the error to "" would
-		// silently disable every home-below protection.
-		if resolved, err := filepath.EvalSymlinks(home); err == nil {
-			home = resolved
+	if home := resolvedUserHome(); home != "" {
+		if root == filepath.Clean(home) {
+			return errors.New("home root is forbidden")
 		}
-		if root == filepath.Clean(home) ||
-			pathContains(root, filepath.Join(home, ".ssh")) ||
-			pathContains(root, filepath.Join(home, ".aws")) ||
-			pathContains(root, filepath.Join(home, ".gnupg")) ||
-			pathContains(root, filepath.Join(home, "Library", "Keychains")) {
-			return errors.New("home, SSH, and keychain roots are forbidden")
+		for _, store := range pathpolicy.HomeCredentialRoots(home) {
+			if pathContains(root, store) {
+				return errors.New("roots containing a credential store are forbidden")
+			}
 		}
 	}
 	parent := filepath.Dir(workspace)
@@ -665,34 +690,31 @@ func validateInjectedRoot(root, workspace string) error {
 	return validateSensitivePath(root)
 }
 
-// sensitiveCredentialFiles and sensitiveCredentialSegments are the denylist
-// for injected host paths. They are deliberately a denylist (unknown files
-// stay declarable as host_config): these are the well-known credential
-// stores a sandboxed command must never read through an accidental grant.
-var sensitiveCredentialFiles = []string{
-	".git-credentials", ".netrc", ".netrc.gpg", ".npmrc", ".wgetrc",
-	"id_rsa", "id_ed25519", "id_ecdsa", "id_dsa",
-}
-
-var sensitiveCredentialSegments = []string{
-	"/.ssh", "/.gnupg", "/keychains", "/credentials", "/secrets",
-	"/.kube", "/.docker", "/.azure", "/.gcloud", "/.config/gh",
-}
-
+// validateSensitivePath rejects credential files and anything inside a
+// credential store. The table is deliberately a denylist: unknown files stay
+// declarable as host_config.
 func validateSensitivePath(path string) error {
-	cleanLower := strings.ToLower(filepath.ToSlash(path))
-	base := strings.ToLower(filepath.Base(path))
-	for _, name := range sensitiveCredentialFiles {
-		if base == name {
-			return errors.New("sensitive credential file is forbidden")
-		}
+	if pathpolicy.IsCredentialFileName(filepath.Base(path)) {
+		return errors.New("sensitive credential file is forbidden")
 	}
-	for _, sensitive := range sensitiveCredentialSegments {
-		if strings.Contains(cleanLower, sensitive) {
-			return errors.New("sensitive credential root is forbidden")
-		}
+	if pathpolicy.InCredentialLocation(path, resolvedUserHome()) {
+		return errors.New("sensitive credential root is forbidden")
 	}
 	return nil
+}
+
+// resolvedUserHome keeps the lexical home when symlink resolution fails:
+// collapsing the error to "" would silently disable every home-anchored
+// protection.
+func resolvedUserHome() string {
+	home, _ := os.UserHomeDir()
+	if home == "" {
+		return ""
+	}
+	if resolved, err := filepath.EvalSymlinks(home); err == nil {
+		return resolved
+	}
+	return home
 }
 
 // injectedRootOverlappingTemp returns the first injected path that equals,

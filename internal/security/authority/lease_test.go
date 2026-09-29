@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/fwtllh-png/QCode/internal/security/controlmatrix"
-	"github.com/fwtllh-png/QCode/internal/security/policy"
+	"github.com/fwtllh-png/QCode/internal/security/effect"
 )
 
 func TestExecutionLeaseLifecycleIsSingleUse(t *testing.T) {
@@ -198,9 +198,9 @@ func fixtureLeaseInputs(
 	operation, err := BuildExecutionOperation(OperationInput{
 		WorkspaceRoot: root, WorkspaceGeneration: 9,
 		Invocation: fixturePreparedInvocation(root),
-		Effect: policy.Effect{
-			Kind: policy.EffectProcessReadOnly, Risk: policy.RiskLow,
-			Reversibility: "reversible",
+		Effect: effect.Effect{
+			Kind: effect.ProcessReadOnly, Risk: effect.RiskLow,
+			Reversibility: effect.Reversible,
 		},
 		Required: RequiredControls{
 			FilesystemRead: controlmatrix.FilesystemReadDeclaredRoots,

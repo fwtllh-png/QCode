@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fwtllh-png/QCode/internal/environment"
+	"github.com/fwtllh-png/QCode/internal/platform/environment"
 )
 
 func TestSuccessfulResponsesReplayFromCache(t *testing.T) {

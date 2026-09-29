@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
+	"github.com/fwtllh-png/QCode/internal/security/netpolicy"
 )
 
 type Grant struct {
@@ -130,11 +131,11 @@ func normalizedGrantResources(
 			continue
 		}
 		if network {
-			target, ok := ParseNetworkTarget(value)
-			if resource.Kind != "host" && resource.Kind != "url" || !ok {
+			target, err := netpolicy.ParseTarget(value)
+			if resource.Kind != "host" && resource.Kind != "url" || err != nil {
 				continue
 			}
-			value = target.Protocol + "://" + target.Host
+			value = target.Scheme + "://" + target.Host
 		} else {
 			canonical := cleanGrantPath(value)
 			value = resource.Kind + ":" + canonical + ":" + string(resource.Access)

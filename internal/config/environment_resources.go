@@ -3,32 +3,32 @@ package config
 import (
 	"strings"
 
-	envcontract "github.com/fwtllh-png/QCode/internal/environment"
+	platformenv "github.com/fwtllh-png/QCode/internal/platform/environment"
 )
 
-func (e ExecutionEnvironment) DeclaredRequests() []envcontract.ResourceRequest {
+func (e ExecutionEnvironment) DeclaredRequests() []platformenv.ResourceRequest {
 	if len(e.Resources) == 0 {
 		return nil
 	}
-	requests := make([]envcontract.ResourceRequest, 0, len(e.Resources))
+	requests := make([]platformenv.ResourceRequest, 0, len(e.Resources))
 	for _, resource := range e.Resources {
 		requests = append(requests, resource.Request())
 	}
 	return requests
 }
 
-func (r EnvironmentResource) Request() envcontract.ResourceRequest {
+func (r EnvironmentResource) Request() platformenv.ResourceRequest {
 	required := true
 	if r.Required != nil {
 		required = *r.Required
 	}
-	access := envcontract.Access(strings.TrimSpace(r.Access))
+	access := platformenv.Access(strings.TrimSpace(r.Access))
 	if access == "" {
-		access = defaultDeclarationAccess(envcontract.Namespace(r.Namespace))
+		access = defaultDeclarationAccess(platformenv.Namespace(r.Namespace))
 	}
-	return envcontract.StampDeclaration(envcontract.ResourceRequest{
+	return platformenv.StampDeclaration(platformenv.ResourceRequest{
 		Name:      r.Name,
-		Namespace: envcontract.Namespace(r.Namespace),
+		Namespace: platformenv.Namespace(r.Namespace),
 		Access:    access,
 		Path:      r.Path,
 		Host:      r.Host,
@@ -45,15 +45,15 @@ func (r EnvironmentResource) Request() envcontract.ResourceRequest {
 	})
 }
 
-func defaultDeclarationAccess(namespace envcontract.Namespace) envcontract.Access {
+func defaultDeclarationAccess(namespace platformenv.Namespace) platformenv.Access {
 	switch namespace {
-	case envcontract.NamespaceCredential:
-		return envcontract.AccessUse
-	case envcontract.NamespaceCache, envcontract.NamespaceSandboxHome,
-		envcontract.NamespaceSharedUserTemp:
-		return envcontract.AccessWrite
+	case platformenv.NamespaceCredential:
+		return platformenv.AccessUse
+	case platformenv.NamespaceCache, platformenv.NamespaceSandboxHome,
+		platformenv.NamespaceSharedUserTemp:
+		return platformenv.AccessWrite
 	default:
-		return envcontract.AccessRead
+		return platformenv.AccessRead
 	}
 }
 

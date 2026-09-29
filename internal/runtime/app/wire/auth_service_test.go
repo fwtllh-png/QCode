@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	"github.com/fwtllh-png/QCode/internal/config"
-	"github.com/fwtllh-png/QCode/internal/environment"
+	"github.com/fwtllh-png/QCode/internal/platform/environment"
 	"github.com/fwtllh-png/QCode/internal/security/goproxy"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
 )

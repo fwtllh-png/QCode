@@ -8,38 +8,35 @@ import (
 	"fmt"
 
 	"github.com/fwtllh-png/QCode/internal/security/controlmatrix"
+	"github.com/fwtllh-png/QCode/internal/security/effect"
 )
 
-type EffectKind string
-
-const (
-	EffectWorkspaceRead    EffectKind = "workspace.read"
-	EffectWorkspaceEdit    EffectKind = "workspace.edit"
-	EffectProcessReadOnly  EffectKind = "process.read_only"
-	EffectProcessMutating  EffectKind = "process.mutating"
-	EffectNetworkRead      EffectKind = "network.read"
-	EffectNetworkMutating  EffectKind = "network.mutating"
-	EffectSessionMutation  EffectKind = "session.mutation"
-	EffectAgentMessage     EffectKind = "agent.message"
-	EffectAgentLifecycle   EffectKind = "agent.lifecycle"
-	EffectExternalMutation EffectKind = "external.mutation"
+type (
+	EffectKind    = effect.Kind
+	RiskLevel     = effect.Risk
+	Reversibility = effect.Reversibility
 )
 
-type RiskLevel string
-
 const (
-	RiskLow      RiskLevel = "low"
-	RiskMedium   RiskLevel = "medium"
-	RiskHigh     RiskLevel = "high"
-	RiskCritical RiskLevel = "critical"
-)
+	EffectWorkspaceRead    = effect.WorkspaceRead
+	EffectWorkspaceEdit    = effect.WorkspaceEdit
+	EffectProcessReadOnly  = effect.ProcessReadOnly
+	EffectProcessMutating  = effect.ProcessMutating
+	EffectNetworkRead      = effect.NetworkRead
+	EffectNetworkMutating  = effect.NetworkMutating
+	EffectSessionMutation  = effect.SessionMutation
+	EffectAgentMessage     = effect.AgentMessage
+	EffectAgentLifecycle   = effect.AgentLifecycle
+	EffectExternalMutation = effect.ExternalMutation
 
-type Reversibility string
+	RiskLow      = effect.RiskLow
+	RiskMedium   = effect.RiskMedium
+	RiskHigh     = effect.RiskHigh
+	RiskCritical = effect.RiskCritical
 
-const (
-	Reversible   Reversibility = "reversible"
-	Bounded      Reversibility = "bounded"
-	Irreversible Reversibility = "irreversible"
+	Reversible   = effect.Reversible
+	Bounded      = effect.Bounded
+	Irreversible = effect.Irreversible
 )
 
 type EffectMode string
@@ -277,8 +274,7 @@ func (e EffectContract) Validate() error {
 			return errors.New("derived effect cannot carry a fixed classification")
 		}
 	case EffectFixed:
-		if !validEffectKind(e.Kind) || !validRisk(e.Risk) ||
-			!validReversibility(e.Reversibility) {
+		if !e.Kind.Valid() || !e.Risk.Valid() || !e.Reversibility.Valid() {
 			return errors.New("fixed effect classification is invalid")
 		}
 	default:
@@ -299,36 +295,6 @@ func (e EffectContract) Validate() error {
 		return fmt.Errorf("approval policy %q is invalid", e.Approval)
 	}
 	return nil
-}
-
-func validEffectKind(value EffectKind) bool {
-	switch value {
-	case EffectWorkspaceRead, EffectWorkspaceEdit, EffectProcessReadOnly,
-		EffectProcessMutating, EffectNetworkRead, EffectNetworkMutating,
-		EffectSessionMutation, EffectAgentMessage, EffectAgentLifecycle,
-		EffectExternalMutation:
-		return true
-	default:
-		return false
-	}
-}
-
-func validRisk(value RiskLevel) bool {
-	switch value {
-	case RiskLow, RiskMedium, RiskHigh, RiskCritical:
-		return true
-	default:
-		return false
-	}
-}
-
-func validReversibility(value Reversibility) bool {
-	switch value {
-	case Reversible, Bounded, Irreversible:
-		return true
-	default:
-		return false
-	}
 }
 
 func cloneResourceResolver(value ResourceResolver) ResourceResolver {

@@ -4,10 +4,10 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/fwtllh-png/QCode/internal"
 	"github.com/fwtllh-png/QCode/internal/adapter/skill"
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
 	skilltool "github.com/fwtllh-png/QCode/internal/adapter/tool/skill"
-	"github.com/fwtllh-png/QCode/internal/buildinfo"
 )
 
 type skillContributor struct {

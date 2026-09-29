@@ -4,8 +4,8 @@ import Foundation
 //
 // 1. 先尝试“收养”已有 Supervisor：扫描默认 dataDir（~/.qcode/v1）下的
 //    leases/interactive-*.lock，跳过 1 个保留字节解析 JSON 元数据，
-//    用 /healthz 探活（与 internal/host/web/launcher.go 的复用语义一致）。
-// 2. 收养失败则拉起 .app 内嵌的 qcode-runtime（--no-open，默认端口 6732），
+//    用 /healthz 探活（与 internal/host/launcher.go 的复用语义一致）。
+// 2. 收养失败则无参数拉起 .app 内嵌的 qcode-runtime（默认端口 6732），
 //    解析 stdout 的就绪行，轮询 healthz。
 // 3. 若拉起失败但 6732 已有合法 QCode Supervisor（例如 CLI 用了自定义
 //    --data-dir 启动），兜底收养该进程。
@@ -229,7 +229,7 @@ final class SupervisorSession {
 
         let process = Process()
         process.executableURL = binary
-        process.arguments = ["--no-open"]
+        process.arguments = []
         process.standardInput = FileHandle.nullDevice
         process.environment = ProcessInfo.processInfo.environment
 

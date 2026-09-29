@@ -9,27 +9,43 @@ import (
 	"net"
 	"net/http"
 	"strconv"
-	"strings"
 	"sync"
 
+	"github.com/fwtllh-png/QCode/internal/security/netpolicy"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
 )
 
 type ManagedNetworkProxy struct {
-	workspace *proxyChannel
-	protocol  http.Handler
-	mu        sync.Mutex
-	sessions  map[uint16]*processSession
+	workspace     *proxyChannel
+	protocol      http.Handler
+	authenticated bool
+	mu            sync.Mutex
+	sessions      map[uint16]*processSession
 }
 
+// StartManagedNetworkProxy starts the proxy for sandboxed processes. The
+// workspace channel and every session channel require their own credential.
 func StartManagedNetworkProxy(gate *Gate) (*ManagedNetworkProxy, error) {
-	channel, err := listenProxyChannel(gate, nil)
+	return startNetworkProxy(gate, true)
+}
+
+// StartUnauthenticatedNetworkProxy starts a proxy whose channels accept any
+// local client. Only the browser uses it: Chrome's --proxy-server cannot
+// carry a credential, so any process allowed to reach local ports can also
+// use this channel under the browser Gate while the browser runs.
+func StartUnauthenticatedNetworkProxy(gate *Gate) (*ManagedNetworkProxy, error) {
+	return startNetworkProxy(gate, false)
+}
+
+func startNetworkProxy(gate *Gate, authenticated bool) (*ManagedNetworkProxy, error) {
+	channel, err := listenProxyChannel(gate, nil, authenticated)
 	if err != nil {
 		return nil, err
 	}
 	return &ManagedNetworkProxy{
-		workspace: channel,
-		sessions:  make(map[uint16]*processSession),
+		workspace:     channel,
+		authenticated: authenticated,
+		sessions:      make(map[uint16]*processSession),
 	}, nil
 }
 
@@ -69,6 +85,7 @@ func NewManagedBackend(
 	}
 	options.AllowNetwork = false
 	options.ManagedProxyPort = sandbox.ManagedNetworkProxyPort(proxy.Port())
+	options.ManagedProxyCredential = proxy.Credential()
 	backend, err := build(options)
 	if err != nil {
 		_ = proxy.Close(context.Background())
@@ -105,11 +122,20 @@ func (b *managedBackend) Close() error {
 	return errors.Join(sandbox.CloseBackend(b.Backend), b.proxy.Close(context.Background()))
 }
 
+// URL is the workspace channel's proxy URL, with its credential as userinfo.
 func (p *ManagedNetworkProxy) URL() string {
 	if p == nil || p.workspace == nil || p.workspace.listener == nil {
 		return ""
 	}
-	return "http://" + p.workspace.listener.Addr().String()
+	return sandbox.ManagedProxyURL(p.workspace.port(), p.workspace.credential)
+}
+
+// Credential authenticates clients to the workspace channel.
+func (p *ManagedNetworkProxy) Credential() string {
+	if p == nil || p.workspace == nil {
+		return ""
+	}
+	return p.workspace.credential
 }
 
 func (p *ManagedNetworkProxy) Port() uint16 {
@@ -127,14 +153,14 @@ func (p *ManagedNetworkProxy) OpenSession(targets []Target) (ProcessSession, err
 	if p == nil {
 		return nil, ErrProcessSessionUnsupported
 	}
-	gate := &Gate{Enforce: true}
+	gate := &Gate{}
 	for _, target := range targets {
 		gate.AllowTarget(target)
 	}
 	p.mu.Lock()
 	handler := p.protocol
 	p.mu.Unlock()
-	channel, err := listenProxyChannel(gate, handler)
+	channel, err := listenProxyChannel(gate, handler, p.authenticated)
 	if err != nil {
 		return nil, err
 	}
@@ -215,35 +241,18 @@ func dialResolved(ctx context.Context, ips []net.IP, port uint16) (net.Conn, err
 	return nil, errors.Join(failures...)
 }
 
-func splitAuthority(value string, fallback uint16) (string, uint16, error) {
-	host, rawPort, err := net.SplitHostPort(value)
-	if err != nil {
-		if strings.Contains(err.Error(), "missing port") {
-			return strings.Trim(value, "[]"), fallback, nil
-		}
-		return "", 0, err
-	}
-	port, err := strconv.ParseUint(rawPort, 10, 16)
-	if err != nil || port == 0 {
-		return "", 0, errors.New("invalid authority port")
-	}
-	return strings.Trim(host, "[]"), uint16(port), nil
-}
-
 func sameAuthority(header, target, protocol string) bool {
-	left, leftPort, err := splitAuthority(header, defaultPort(protocol))
+	fallback, known := netpolicy.DefaultPort(protocol)
+	if !known {
+		return false
+	}
+	left, leftPort, err := netpolicy.SplitAuthority(header, fallback)
 	if err != nil {
 		return false
 	}
-	right, rightPort, err := splitAuthority(target, defaultPort(protocol))
-	return err == nil && strings.EqualFold(left, right) && leftPort == rightPort
-}
-
-func defaultPort(protocol string) uint16 {
-	if strings.EqualFold(protocol, "http") {
-		return 80
-	}
-	return 443
+	right, rightPort, err := netpolicy.SplitAuthority(target, fallback)
+	return err == nil && netpolicy.NormalizeHost(left) == netpolicy.NormalizeHost(right) &&
+		leftPort == rightPort
 }
 
 type deniedPayload struct {

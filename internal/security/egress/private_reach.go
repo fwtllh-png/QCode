@@ -3,9 +3,8 @@ package egress
 import (
 	"context"
 	"net"
-	"strings"
 
-	"github.com/fwtllh-png/QCode/internal/security/policy"
+	"github.com/fwtllh-png/QCode/internal/security/netpolicy"
 )
 
 // GrantPrivate decides private reach for an approved URL target, as it
@@ -19,12 +18,12 @@ func GrantPrivate(
 	lookup func(context.Context, string) ([]net.IP, error),
 	host string,
 ) bool {
-	host = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")
-	if policy.NamesHostLocal(host) {
+	host = netpolicy.NormalizeHost(host)
+	if netpolicy.NamesHostLocal(host) {
 		return true
 	}
-	if ip := net.ParseIP(strings.Trim(host, "[]")); ip != nil {
-		return nonPublicIP(ip)
+	if ip := net.ParseIP(host); ip != nil {
+		return netpolicy.Classify(ip) != netpolicy.Public
 	}
 	if host == "" {
 		return false
@@ -40,17 +39,11 @@ func GrantPrivate(
 	}
 	private := false
 	for _, ip := range ips {
-		if hostLocalIP(ip) {
+		reach := netpolicy.Classify(ip)
+		if reach == netpolicy.HostLocal {
 			return false
 		}
-		private = private || nonPublicIP(ip)
+		private = private || reach != netpolicy.Public
 	}
 	return private
-}
-
-// hostLocalIP covers addresses that reach this machine or its link. Cloud
-// metadata (169.254.169.254) is link-local.
-func hostLocalIP(ip net.IP) bool {
-	return ip == nil || ip.IsUnspecified() || ip.IsLoopback() ||
-		ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast()
 }

@@ -2,6 +2,11 @@ package egress
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/subtle"
+	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -12,7 +17,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/fwtllh-png/QCode/internal/environment"
+	"github.com/fwtllh-png/QCode/internal/platform/environment"
+	"github.com/fwtllh-png/QCode/internal/security/netpolicy"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
 )
 
@@ -35,9 +41,10 @@ const (
 	maxChannelWrapperDepth = 8
 )
 
-// ProcessSession is one Process Session's loopback port and Gate.
+// ProcessSession is one Process Session's loopback port, credential, and Gate.
 type ProcessSession interface {
 	Port() uint16
+	Credential() string
 	Gate() *Gate
 	Close() error
 }
@@ -60,6 +67,13 @@ func (s *processSession) Port() uint16 {
 	return s.port
 }
 
+func (s *processSession) Credential() string {
+	if s == nil || s.channel == nil {
+		return ""
+	}
+	return s.channel.credential
+}
+
 func (s *processSession) Gate() *Gate {
 	if s == nil || s.channel == nil {
 		return nil
@@ -79,10 +93,14 @@ func (s *processSession) Close() error {
 }
 
 type proxyChannel struct {
-	gate     *Gate
-	listener net.Listener
-	server   *http.Server
-	done     chan struct{}
+	gate *Gate
+	// credential is the channel's Basic password. Any local process can reach
+	// the loopback port, so reachability grants nothing without it. Empty
+	// only on the browser channel, whose client cannot present one.
+	credential string
+	listener   net.Listener
+	server     *http.Server
+	done       chan struct{}
 	// protocol serves origin-form requests (the GOPROXY auth service). It
 	// is an atomic pointer because the workspace channel is already
 	// serving when the service is bound after startup.
@@ -91,17 +109,29 @@ type proxyChannel struct {
 	conns    map[net.Conn]struct{}
 }
 
-func listenProxyChannel(gate *Gate, protocol http.Handler) (*proxyChannel, error) {
-	if gate == nil || !gate.Enforce {
-		return nil, errors.New("process session proxy requires an enforcing egress gate")
+func listenProxyChannel(
+	gate *Gate,
+	protocol http.Handler,
+	authenticated bool,
+) (*proxyChannel, error) {
+	if gate == nil {
+		return nil, errors.New("process session proxy requires an egress gate")
+	}
+	credential := ""
+	if authenticated {
+		var secret [32]byte
+		if _, err := rand.Read(secret[:]); err != nil {
+			return nil, fmt.Errorf("generate proxy channel credential: %w", err)
+		}
+		credential = hex.EncodeToString(secret[:])
 	}
 	listener, err := net.Listen("tcp4", "127.0.0.1:0")
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrProcessSessionUnsupported, err)
 	}
 	channel := &proxyChannel{
-		gate: gate, listener: listener, done: make(chan struct{}),
-		conns: make(map[net.Conn]struct{}),
+		gate: gate, credential: credential, listener: listener,
+		done: make(chan struct{}), conns: make(map[net.Conn]struct{}),
 	}
 	channel.setProtocol(protocol)
 	channel.server = &http.Server{
@@ -188,14 +218,62 @@ func (c *proxyChannel) serveHTTP(
 	request *http.Request,
 ) {
 	if request.Method == http.MethodConnect {
+		if !c.authenticate(writer, request, "Proxy-Authorization") {
+			return
+		}
 		c.serveConnect(writer, request)
 		return
 	}
 	if handler := c.protocolHandler(); handler != nil && isOriginForm(request) {
+		// Origin-form clients (GOPROXY) send the URL userinfo as
+		// Authorization; the header is ours and never reaches the service.
+		if !c.authenticate(writer, request, "Authorization", "Proxy-Authorization") {
+			return
+		}
+		request.Header.Del("Authorization")
+		request.Header.Del("Proxy-Authorization")
 		handler.ServeHTTP(writer, request)
 		return
 	}
+	if !c.authenticate(writer, request, "Proxy-Authorization") {
+		return
+	}
 	c.serveForward(writer, request)
+}
+
+// authenticate accepts the channel credential as Basic auth in any of the
+// named headers and otherwise answers the matching challenge.
+func (c *proxyChannel) authenticate(
+	writer http.ResponseWriter,
+	request *http.Request,
+	headers ...string,
+) bool {
+	if c.credential == "" {
+		return true
+	}
+	want := []byte(sandbox.ManagedProxyUser + ":" + c.credential)
+	for _, header := range headers {
+		scheme, encoded, ok := strings.Cut(strings.TrimSpace(request.Header.Get(header)), " ")
+		if !ok || !strings.EqualFold(scheme, "Basic") {
+			continue
+		}
+		decoded, err := base64.StdEncoding.DecodeString(strings.TrimSpace(encoded))
+		if err == nil && subtle.ConstantTimeCompare(decoded, want) == 1 {
+			return true
+		}
+	}
+	status, challenge := http.StatusProxyAuthRequired, "Proxy-Authenticate"
+	if headers[0] == "Authorization" {
+		status, challenge = http.StatusUnauthorized, "WWW-Authenticate"
+	}
+	writer.Header().Set(challenge, `Basic realm="qcode-process-proxy"`)
+	writer.Header().Set("Content-Type", "application/json")
+	writer.WriteHeader(status)
+	_ = json.NewEncoder(writer).Encode(deniedPayload{
+		Error: ErrDenied.Error(), Source: environment.SourceProcessProxy,
+		Reason: "process proxy credential is missing or invalid",
+	})
+	return false
 }
 
 type boundOrigin interface {
@@ -209,13 +287,8 @@ func boundProtocolHost(handler http.Handler) string {
 	return ""
 }
 
-// normalizeConnectHost applies the Gate's host normalization (case-fold,
-// trim, strip the FQDN trailing dot) so an authority spelling like
-// "proxy.example.:443" cannot sidestep the bound-origin denial.
-func normalizeConnectHost(host string) string {
-	return strings.ToLower(strings.TrimSuffix(strings.TrimSpace(host), "."))
-}
-
+// denyBoundOrigin compares hosts under the Gate's normalization so an
+// authority spelling like "proxy.example.:443" cannot sidestep the denial.
 func (c *proxyChannel) denyBoundOrigin(
 	writer http.ResponseWriter,
 	host, protocol string,
@@ -223,8 +296,8 @@ func (c *proxyChannel) denyBoundOrigin(
 	method string,
 ) bool {
 	handler := c.protocolHandler()
-	bound := normalizeConnectHost(boundProtocolHost(handler))
-	host = normalizeConnectHost(host)
+	bound := netpolicy.NormalizeHost(boundProtocolHost(handler))
+	host = netpolicy.NormalizeHost(host)
 	if bound == "" || host == "" || host != bound {
 		return false
 	}
@@ -262,7 +335,7 @@ func (c *proxyChannel) serveConnect(
 	writer http.ResponseWriter,
 	request *http.Request,
 ) {
-	host, port, err := splitAuthority(request.Host, 443)
+	host, port, err := netpolicy.SplitAuthority(request.Host, 443)
 	if err != nil {
 		http.Error(writer, "invalid CONNECT target", http.StatusBadRequest)
 		return
@@ -319,7 +392,7 @@ func (c *proxyChannel) serveForward(
 		http.Error(writer, "proxy host mismatch", http.StatusBadRequest)
 		return
 	}
-	port, err := requestPort(request.URL)
+	port, err := netpolicy.URLPort(request.URL)
 	if err != nil {
 		http.Error(writer, "invalid target port", http.StatusBadRequest)
 		return
@@ -349,6 +422,7 @@ func (c *proxyChannel) serveForward(
 		DialContext:       pinnedDialer(ips, request.URL.Hostname(), port),
 		ForceAttemptHTTP2: false,
 	}
+	defer transport.CloseIdleConnections()
 	response, err := transport.RoundTrip(outbound)
 	if err != nil {
 		http.Error(writer, "managed egress upstream failed", http.StatusBadGateway)

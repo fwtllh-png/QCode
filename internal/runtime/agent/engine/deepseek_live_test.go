@@ -146,7 +146,7 @@ func deepSeekEngineLiveRuntime(
 	if err != nil {
 		t.Skipf("DeepSeek credential is unavailable: %v", err)
 	}
-	gate := &egress.Gate{Enforce: true}
+	gate := &egress.Gate{}
 	if !gate.AllowURL(route.Endpoint()) {
 		t.Fatalf("cannot grant DeepSeek endpoint %q", route.Endpoint())
 	}

@@ -13,7 +13,7 @@ import (
 
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
 	"github.com/fwtllh-png/QCode/internal/adapter/tool/typed"
-	"github.com/fwtllh-png/QCode/internal/environment"
+	"github.com/fwtllh-png/QCode/internal/platform/environment"
 	"github.com/fwtllh-png/QCode/internal/platform/process"
 	"github.com/fwtllh-png/QCode/internal/platform/tokenestimate"
 	"github.com/fwtllh-png/QCode/internal/security/controlmatrix"
@@ -594,8 +594,9 @@ func (p *commandProtocol) execCommand(
 		return tool.Result{}, err
 	}
 	var sessionPort uint16
+	var sessionCredential string
 	if network != nil {
-		sessionPort = network.Port()
+		sessionPort, sessionCredential = network.Port(), network.Credential()
 		defer network.Gate().BindRuntimeApprover(egress.RuntimeApproverFrom(ctx))()
 	}
 	if authService != nil {
@@ -605,9 +606,10 @@ func (p *commandProtocol) execCommand(
 		// allow_loopback (and its approval) onto otherwise offline-shaped
 		// commands. The per-command session port remains the fallback where
 		// no managed channel exists.
-		proxyListen := sessionPort
+		proxyListen, proxyCredential := sessionPort, sessionCredential
 		if managed := sandbox.BackendManagedProxyPort(sandboxBackend); managed != 0 {
 			proxyListen = managed
+			proxyCredential = sandbox.BackendManagedProxyCredential(sandboxBackend)
 		}
 		if proxyListen == 0 {
 			if result, ok := unsupportedSessionNetworkResult(fmt.Errorf(
@@ -620,33 +622,34 @@ func (p *commandProtocol) execCommand(
 		}
 		env = authService.RewriteProcessEnv(
 			env,
-			fmt.Sprintf("http://127.0.0.1:%d", proxyListen),
+			sandbox.ManagedProxyURL(proxyListen, proxyCredential),
 		)
 	}
 	id, err := p.manager.Create(
 		context.WithoutCancel(ctx),
 		process.SessionOptions{
-			Command:             command,
-			DisplayCommand:      input.Command,
-			Dir:                 directory,
-			DirFile:             directoryFile,
-			Env:                 env,
-			ThreadID:            threadID,
-			TurnID:              identity.TurnID,
-			CallID:              identity.CallID,
-			Rows:                input.Rows,
-			Cols:                input.Cols,
-			PTY:                 input.TTY,
-			Timeout:             timeout,
-			Sandbox:             sandboxBackend,
-			RequireSandbox:      requireStrong,
-			WorkspaceReadOnly:   true,
-			WorkspaceWritePaths: writePaths,
-			DenyNetwork:         denyNetwork,
-			SessionProxyPort:    sessionPort,
-			Network:             network,
-			DetachFromCaller:    true,
-			OnClose:             p.reclaimAbandonedExecution,
+			Command:                command,
+			DisplayCommand:         input.Command,
+			Dir:                    directory,
+			DirFile:                directoryFile,
+			Env:                    env,
+			ThreadID:               threadID,
+			TurnID:                 identity.TurnID,
+			CallID:                 identity.CallID,
+			Rows:                   input.Rows,
+			Cols:                   input.Cols,
+			PTY:                    input.TTY,
+			Timeout:                timeout,
+			Sandbox:                sandboxBackend,
+			RequireSandbox:         requireStrong,
+			WorkspaceReadOnly:      true,
+			WorkspaceWritePaths:    writePaths,
+			DenyNetwork:            denyNetwork,
+			SessionProxyPort:       sessionPort,
+			SessionProxyCredential: sessionCredential,
+			Network:                network,
+			DetachFromCaller:       true,
+			OnClose:                p.reclaimAbandonedExecution,
 		},
 	)
 	if err != nil {

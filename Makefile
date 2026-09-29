@@ -2,7 +2,6 @@ GO ?= go
 NPM ?= npm
 BINARY := bin/qcode
 MODULE := github.com/fwtllh-png/QCode
-START_WORKSPACE ?=
 PREFIX ?= $(HOME)/.local
 BINDIR ?= $(PREFIX)/bin
 INSTALL_BINARY := $(BINDIR)/qcode
@@ -10,9 +9,9 @@ VERSION ?= dev
 COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || printf unknown)
 BUILD_DATE ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 LDFLAGS := -s -w \
-	-X $(MODULE)/internal/buildinfo.Version=$(VERSION) \
-	-X $(MODULE)/internal/buildinfo.Commit=$(COMMIT) \
-	-X $(MODULE)/internal/buildinfo.Date=$(BUILD_DATE)
+	-X $(MODULE)/internal.Version=$(VERSION) \
+	-X $(MODULE)/internal.Commit=$(COMMIT) \
+	-X $(MODULE)/internal.Date=$(BUILD_DATE)
 WEB_BUILD_TAG := webbundle
 
 .PHONY: start install uninstall fmt verify test test-hermetic test-platform-capability reliability-gate test-integration \
@@ -54,7 +53,7 @@ stress-nightly:
 PROTOCOL_SCHEMA := docs/protocol/runtime-protocol.schema.json
 WEB_HOST_CONTRACT := docs/protocol/web-host.contract.json
 WEB_HOST_TYPES := web/src/protocol/web-host.generated.ts
-WEB_HOST_ROUTES_GO := internal/host/runtimeapi/web/unary_routes.generated.go
+WEB_HOST_ROUTES_GO := internal/host/unary_routes.generated.go
 WEB_STREAMING_SOAK_DURATION ?= 1h
 WEB_STREAMING_SOAK_TIMEOUT ?= 70m
 WEB_STREAMING_SOAK_ALLOW_SHORT ?= 0
@@ -155,7 +154,7 @@ test-integration:
 		-- $(MAKE) integration-gate
 
 integration-gate: build
-	$(GO) test -count=1 ./internal/host/runtimeapi/web ./internal/host/web
+	$(GO) test -count=1 ./internal/host ./internal/host/intergration_test
 	$(GO) test -tags=webbundle -count=1 ./web
 
 test-release: release-baseline-check
@@ -193,10 +192,8 @@ build: web-build
 	$(GO) build -tags '$(WEB_BUILD_TAG)' -trimpath \
 		-ldflags '$(LDFLAGS)' -o $(BINARY) ./cmd/qcode
 
-start:
-	$(MAKE) web-install
-	$(MAKE) build
-	./$(BINARY) $(if $(strip $(START_WORKSPACE)),--workspace '$(START_WORKSPACE)') --enable-tools --posture suggest --replace-owner --open
+start: desktop-app
+	open '$(DESKTOP_APP)'
 
 install:
 	$(MAKE) web-install
@@ -305,7 +302,7 @@ web-streaming-soak:
 		QCODE_WEB_STREAMING_SOAK_ALLOW_SHORT=$(WEB_STREAMING_SOAK_ALLOW_SHORT) \
 		$(GO) test -count=1 -timeout $(WEB_STREAMING_SOAK_TIMEOUT) \
 		-run '^TestWebSocketSustainedStreamingSoak$$' \
-		./internal/host/runtimeapi/web
+		./internal/host
 
 cross-build: web-build
 	@set -e; tmp=$$(mktemp -d); \
@@ -342,9 +339,7 @@ web-experience-check:
 	$(GO) run ./scripts/webexperiencecheck
 
 host-journey-contract:
-	$(GO) test -count=1 ./internal/host/runtimeapi/runtimecontract
-	$(GO) test -count=1 ./internal/host/runtimeapi/web
-	$(GO) test -count=1 ./internal/host/web
+	$(GO) test -count=1 ./internal/host/intergration_test ./internal/host
 	$(NPM) --prefix web test
 
 script-test:
@@ -356,7 +351,7 @@ brand-check:
 
 security-test:
 	$(MAKE) security-side-effect-check
-	$(GO) test -race ./internal/security/... ./internal/adapter/mcp/... ./internal/adapter/tool/guard/... ./internal/adapter/tool/shell/... ./internal/host/web/... ./internal/runtime/agent/engine/... ./internal/runtime/app/...
+	$(GO) test -race ./internal/security/... ./internal/adapter/mcp/... ./internal/adapter/tool/guard/... ./internal/adapter/tool/shell/... ./internal/host ./internal/host/intergration_test ./internal/runtime/agent/engine/... ./internal/runtime/app/...
 	$(GO) test -race ./internal/platform/process/... -run 'Test(RunUsesInjectedStrongSandboxBackend|RunFailsClosedWithoutStrongSandbox|RunSanitizesRegularAndPTYEnvironments|RunPinsWorkingDirectoryToDescriptor|SanitizedEnvironment)'
 
 sandbox-attack-test:
@@ -376,10 +371,10 @@ security-side-effect-check:
 	$(GO) run ./scripts/securityeffects -root .
 
 web-host-smoke:
-	$(GO) test -race -count=1 ./internal/host/web/...
+	$(GO) test -race -count=1 ./internal/host ./internal/host/intergration_test
 
 protocol-contract:
-	$(GO) test -count=1 -v ./internal/runtime/app/... ./internal/host/runtimeapi/web/...
+	$(GO) test -count=1 -v ./internal/runtime/app/... ./internal/host ./internal/host/intergration_test
 
 # protocol-schema regenerates the published protocol shapes. The drift test in
 # internal/runtime/protocol fails when the committed copy is stale.
@@ -401,7 +396,8 @@ web-protocol-check:
 # Set BENCH_REPORT to write the JSON report for tracking across runs.
 bench:
 	QCODE_BENCH_REPORT='$(BENCH_REPORT)' $(GO) test -tags=capability \
-		-count=1 -v ./internal/host/bench/...
+		-count=1 -v -run '^Test(CodingBenchmarkSuite|TokenEfficiencyBenchmark|BenchmarkAssertionsFail)$$' \
+		./internal/host/intergration_test
 
 benchmark-v2-check:
 	$(GO) test -count=1 ./scripts/benchmarkv2
@@ -410,11 +406,11 @@ benchmark-v2-check:
 benchmark-v2: benchmark-v2-check bench
 	$(GO) test -count=1 -run 'Recovery' ./internal/persist/workspacejournal
 	$(GO) test -count=1 -run '^TestWebSocketDownlinkConcurrencyAndShutdown$$' \
-		./internal/host/runtimeapi/web
+		./internal/host
 	$(GO) test -count=1 -run '^TestRunContextStartsAndStopsWebHost$$' \
-		./internal/host/web
+		./internal/host
 	$(GO) test -count=1 -run '^TestWeb(Socket(ReplaysTenThousandEvents|CapsBrowserConnectionsAtSixteen|DisconnectStormReleasesSlotsGoroutinesAndDescriptors)|SessionCapacity(AllowsThirtyTwoAndPreservesIdempotentRetry|IsAtomicUnderConcurrentCreate))$$' \
-		./internal/host/runtimeapi/web
+		./internal/host
 	$(NPM) --prefix web run test:e2e -- visual.spec.ts --grep 'reloads|frozen'
 	$(NPM) --prefix web test -- --testNamePattern \
 		'windows 500-turn transcripts to 200 projected rows with automatic history scrolling'

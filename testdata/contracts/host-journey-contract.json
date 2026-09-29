@@ -46,8 +46,10 @@
     "web": {
       "transport": "localhost HTTP and WebSocket",
       "evidence": [
-        "internal/host/runtimeapi/web/server_test.go",
-        "internal/host/web/launcher_test.go",
+        "internal/host/intergration_test/scenarios_test.go",
+        "internal/host/intergration_test/web_test.go",
+        "internal/host/server_test.go",
+        "internal/host/launcher_test.go",
         "web/src/runtime/client.test.ts"
       ]
     }

@@ -1,6 +1,10 @@
 package policy
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/fwtllh-png/QCode/internal/security/effect"
+)
 
 type Surface string
 
@@ -51,7 +55,7 @@ func (g Granular) postureFor(surface Surface) SurfacePosture {
 }
 
 func ApplySurfaceTightening(
-	decision Decision, surface Surface, granular Granular, effect Effect,
+	decision Decision, surface Surface, granular Granular, eff effect.Effect,
 ) Decision {
 	posture := granular.postureFor(surface)
 	if posture == SurfaceInherit || posture == SurfaceAllow ||
@@ -63,7 +67,7 @@ func ApplySurfaceTightening(
 		// low-risk probes (echo, ls, env) keep their frictionless allow so
 		// a tightened session does not turn exploration commands into
 		// approval stops. Explicit deny postures are never softened.
-		if effect.Kind == EffectProcessReadOnly && effect.Risk == RiskLow {
+		if eff.Kind == effect.ProcessReadOnly && eff.Risk == effect.RiskLow {
 			return decision
 		}
 		return Decision{Action: ActionAsk, Code: "granular_ask", Reason: "surface " + string(surface) + " requires approval"}

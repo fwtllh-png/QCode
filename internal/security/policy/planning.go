@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/fwtllh-png/QCode/internal/adapter/tool"
+	"github.com/fwtllh-png/QCode/internal/security/effect"
 )
 
 type PlanningPolicy string
@@ -91,11 +91,11 @@ func (r *Runtime) ResetPlanState() uint64 {
 func planningDecision(
 	r *Runtime,
 	invocation Invocation,
-	effect Effect,
+	eff effect.Effect,
 ) *Decision {
 	if r == nil ||
 		planningExemptTool(invocation.Tool) ||
-		!consequentialPlanningEffect(effect.Kind) {
+		!consequentialPlanningEffect(eff.Kind) {
 		return nil
 	}
 	if r.PlanningPolicy != PlanningOff &&
@@ -111,7 +111,7 @@ func planningDecision(
 	}
 	required := r.PlanningPolicy == PlanningRequired ||
 		(r.PlanningPolicy == PlanningAdaptive &&
-			adaptivePlanningRequired(effect, invocation))
+			adaptivePlanningRequired(eff, invocation))
 	if !required && !r.PlanSubmitted {
 		return nil
 	}
@@ -168,25 +168,25 @@ func validatePlanning(planning PlanningPolicy) error {
 	return nil
 }
 
-func consequentialPlanningEffect(kind EffectKind) bool {
+func consequentialPlanningEffect(kind effect.Kind) bool {
 	switch kind {
-	case EffectWorkspaceRead, EffectProcessReadOnly,
-		EffectSessionMutation, EffectAgentMessage:
+	case effect.WorkspaceRead, effect.ProcessReadOnly,
+		effect.SessionMutation, effect.AgentMessage:
 		return false
 	default:
 		return true
 	}
 }
 
-func adaptivePlanningRequired(effect Effect, invocation Invocation) bool {
+func adaptivePlanningRequired(eff effect.Effect, invocation Invocation) bool {
 	if readOnlySpawn(invocation) {
 		return false
 	}
-	return effect.Risk == RiskHigh || effect.Risk == RiskCritical ||
-		effect.Kind == EffectNetworkMutating ||
-		effect.Kind == EffectExternalMutation ||
-		effect.Kind == EffectAgentLifecycle ||
-		effect.Reversibility == string(tool.Irreversible)
+	return eff.Risk == effect.RiskHigh || eff.Risk == effect.RiskCritical ||
+		eff.Kind == effect.NetworkMutating ||
+		eff.Kind == effect.ExternalMutation ||
+		eff.Kind == effect.AgentLifecycle ||
+		eff.Reversibility == effect.Irreversible
 }
 
 func readOnlySpawn(invocation Invocation) bool {

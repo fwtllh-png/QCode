@@ -8,31 +8,6 @@ import (
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
 )
 
-func TestParseNetworkTarget(t *testing.T) {
-	cases := []struct {
-		raw  string
-		host string
-		ok   bool
-	}{
-		{"https://Example.COM/path", "example.com", true},
-		{"http://127.0.0.1:8080/x", "127.0.0.1", true},
-		{"example.com", "example.com", true},
-		{"localhost", "localhost", true},
-		{"hello", "", false},
-		{"golang docs", "", false},
-		{"", "", false},
-	}
-	for _, test := range cases {
-		target, ok := ParseNetworkTarget(test.raw)
-		if ok != test.ok {
-			t.Fatalf("%q ok=%v want %v", test.raw, ok, test.ok)
-		}
-		if ok && target.Host != test.host {
-			t.Fatalf("%q host=%q want %q", test.raw, target.Host, test.host)
-		}
-	}
-}
-
 func TestApprovalCacheHostScopedSessionReuse(t *testing.T) {
 	cache := NewApprovalCache()
 	now := time.Now()

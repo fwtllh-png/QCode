@@ -16,7 +16,7 @@ import (
 
 	"github.com/fwtllh-png/QCode/internal/platform/process"
 	"github.com/fwtllh-png/QCode/internal/security/authority"
-	"github.com/fwtllh-png/QCode/internal/security/policy"
+	"github.com/fwtllh-png/QCode/internal/security/effect"
 	"github.com/fwtllh-png/QCode/internal/security/processbroker"
 )
 
@@ -174,19 +174,19 @@ func (b *Broker) Mutate(
 	}
 	executable := process.GitExecutable()
 	arguments := process.ManagedGitArguments(mutation.Args)
-	effectKind := policy.EffectProcessMutating
-	reversibility := authority.ReversibilityBounded
-	risk := policy.RiskHigh
+	effectKind := effect.ProcessMutating
+	reversibility := effect.Bounded
+	risk := effect.RiskHigh
 	switch mutation.Kind {
 	case Fetch:
-		effectKind = policy.EffectNetworkRead
-		reversibility = authority.ReversibilityReversible
-		risk = policy.RiskMedium
+		effectKind = effect.NetworkRead
+		reversibility = effect.Reversible
+		risk = effect.RiskMedium
 	case Pull:
-		effectKind = policy.EffectNetworkMutating
+		effectKind = effect.NetworkMutating
 	case Push:
-		effectKind = policy.EffectExternalMutation
-		reversibility = authority.ReversibilityIrreversible
+		effectKind = effect.ExternalMutation
+		reversibility = effect.Irreversible
 	}
 	operation, err := authority.BuildManagedProcessOperation(
 		authority.ManagedProcessInput{

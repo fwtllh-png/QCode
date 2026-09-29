@@ -549,13 +549,12 @@ macOS 拿不到精确 errno 时保留退出状态和原始输出，标记 `unkno
 
 | Owner | 职责 |
 | --- | --- |
-| `internal/environment`（新增，仅合同） | `EnvironmentSpec`、`ResourceRequest`、编译到 `authority.Resource`；无生态名，不 import sandbox/process |
+| `internal/platform/environment` | `EnvironmentSpec`、`ResourceRequest`、编译到 `authority.Resource`、结构化失败事实，以及来源快照、准备、平台物化、`confstr`；无生态名 |
 | `internal/adapter/environment` | 可选翻译器；公开接口 → `ResourceRequest`。无适配器时准备器仍必须接受声明 |
 | `internal/security/authority`、`policy` | namespace、`AccessUse`、Grant、Lease 绑定、修订、撤销 |
 | `internal/security/sandbox` | 已批准资源 → OS 约束；报告真实能力；迁出 toolchains/certificates 的环境权威 |
 | `internal/security/egress` | Session 端口、Session Gate、结构化失败、CONNECT 回收 |
 | `internal/platform/process` | 消费 `PreparedEnvironment`；绑定进程树、PTY、生命周期 |
-| `internal/platform/environment`（新增） | 来源快照、准备、平台物化、`confstr`；无生态名 |
 | `internal/runtime/app/wire` | 构造；Skill 根仍从状态域解析 |
 | `internal/runtime/agent` | 消费缺失能力与 `required_action`；不新增循环 |
 | `internal/host`、Web | 展示 Posture、登记、失败事实；不探测、不认证 |
@@ -563,6 +562,10 @@ macOS 拿不到精确 errno 时保留退出状态和原始输出，标记 `unkno
 
 `internal/runtime/protocol` 继续不依赖实现包。回执字段放在 protocol，
 由仓库生成命令更新 Schema。
+
+环境契约与准备器同属一个包；Go/Git 适配器通过 `Discoverer` 接入，由 `wire`
+组装。EDS 夹具、基线观察和静态平台能力矩阵仅保留在该包的 `_test.go` 中，
+不进入生产包或作为真实平台能力探测结果。
 
 ### 13.1 必须删除的旧路径
 
@@ -637,7 +640,7 @@ Go 适配器是可选翻译器样例，不是
 `[[execution.environment.resources]]` 已进入准备链。`write_paths` 可指向已存在
 工作区子目录并授予树写；工作区根仍拒绝。P2b 已把这些树写接到隔离工作区结算。
 
-工作：`internal/environment` + 准备器；`AccessUse` 与新 namespace 的协议生成；
+工作：`internal/platform/environment` 中的环境契约与准备器；`AccessUse` 与新 namespace 的协议生成；
 声明接入（无生态名的 `ResourceRequest`）与可选的第一个 Go 翻译器；
 `native` / `shared_user_temp` 显式开关；证书发现迁入准备链；Skill 根回归；
 目录树写授权（不含三方结算）。
@@ -646,7 +649,7 @@ Go 适配器是可选翻译器样例，不是
 核心从未识别过名称的工具只靠声明读写配置/缓存/临时文件；核心无语言名分支；
 旧 HOME 重写在 `v1` 下不执行；去掉 Go 适配器后声明路径仍能准备。
 
-验证：`go test ./internal/environment ./internal/adapter/environment ./internal/security/sandbox ./internal/platform/environment`；
+验证：`go test ./internal/platform/environment ./internal/adapter/environment ./internal/security/sandbox`；
 现有 Skill sandbox 测试；按 Posture 拆分的临时区测试。
 
 ### P2b 隔离工作区结算
@@ -750,7 +753,7 @@ GOPROXY 认证。
 
 完成：无共享动态进程授权，无隐式环境路径，无双权威。默认切换见 P6。
 
-验证：`go test ./internal/environment ./internal/security/sandbox
+验证：`go test ./internal/platform/environment ./internal/security/sandbox
 ./internal/platform/process ./internal/adapter/tool/shell
 ./internal/runtime/app/wire`；`make docs-check`。
 
@@ -773,7 +776,7 @@ GOPROXY 认证。
 
 完成：默认合同可真实编译并跑指定测试；文档区分已交付默认与原 EDS 业务证据。
 
-验证：`go test ./internal/config ./internal/environment
+验证：`go test ./internal/config
 ./internal/platform/environment ./internal/runtime/app/wire
 ./internal/adapter/environment`；`make docs-check`。
 

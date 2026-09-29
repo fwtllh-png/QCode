@@ -38,11 +38,12 @@ type Options struct {
 	DenyNetwork          bool
 	// TrustedRuntimeHelper is reserved for QCode-owned helper processes.
 	// Arbitrary user commands never receive internal W3C trace context.
-	TrustedRuntimeHelper bool
-	NetworkHost          string
-	NetworkProtocol      string
-	NetworkPort          uint16
-	SessionProxyPort     uint16
+	TrustedRuntimeHelper   bool
+	NetworkHost            string
+	NetworkProtocol        string
+	NetworkPort            uint16
+	SessionProxyPort       uint16
+	SessionProxyCredential string
 	// OnOutput, when set, is called with each chunk as the process produces it,
 	// before the command finishes. A caller that only wants the final Result can
 	// leave it nil; a caller that has to show progress on a command that runs for
@@ -233,8 +234,9 @@ func NewCommand(ctx context.Context, options Options) (*exec.Cmd, error) {
 		AllowLoopback: authorityBound &&
 			executionAuthority.AllowLoopback &&
 			!options.DenyNetwork,
-		LoopbackOnly:     authorityBound && executionAuthority.LoopbackOnly(),
-		SessionProxyPort: options.SessionProxyPort,
+		LoopbackOnly:           authorityBound && executionAuthority.LoopbackOnly(),
+		SessionProxyPort:       options.SessionProxyPort,
+		SessionProxyCredential: options.SessionProxyCredential,
 	}
 	if authorityBound {
 		commandSpec.AuthorityDigest = executionAuthority.Digest
@@ -508,7 +510,7 @@ func applyManagedProxyEnvironment(
 		result = append(result, entry)
 	}
 	if policy.ManagedProxyPort != 0 && !denyNetwork {
-		proxyURL := "http://127.0.0.1:" + strconv.Itoa(int(policy.ManagedProxyPort))
+		proxyURL := sandbox.ManagedProxyURL(policy.ManagedProxyPort, policy.ManagedProxyCredential)
 		result = append(result,
 			"HTTP_PROXY="+proxyURL, "HTTPS_PROXY="+proxyURL,
 			"http_proxy="+proxyURL, "https_proxy="+proxyURL,

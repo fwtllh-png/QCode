@@ -19,6 +19,7 @@ import (
 
 	"github.com/fwtllh-png/QCode/internal/security/controlmatrix"
 	"github.com/fwtllh-png/QCode/internal/security/controlplane"
+	"github.com/fwtllh-png/QCode/internal/security/pathpolicy"
 )
 
 const ErrUnavailableCode = "sandbox_unavailable"
@@ -67,6 +68,8 @@ type Command struct {
 	// Workspace proxy. Prepare must write this exact port into Seatbelt and
 	// PreparedProxyPort; it must not keep the Workspace shared port.
 	SessionProxyPort uint16
+	// SessionProxyCredential authenticates the command to SessionProxyPort.
+	SessionProxyCredential string
 }
 
 type Backend interface {
@@ -462,7 +465,7 @@ func seatbeltProfileForCommand(
 		if pinned.kind != writePathTree {
 			continue
 		}
-		for _, name := range controlplane.ProtectedNames() {
+		for _, name := range pathpolicy.ControlPlaneNames() {
 			fmt.Fprintf(
 				&profile,
 				"(deny file-write* (subpath %s))\n",
@@ -487,10 +490,7 @@ func seatbeltProfileForCommand(
 		}
 	}
 	if home, err := os.UserHomeDir(); err == nil {
-		for _, sensitive := range []string{
-			filepath.Join(home, ".ssh"), filepath.Join(home, ".gnupg"),
-			filepath.Join(home, "Library", "Keychains"), filepath.Join(home, ".aws"),
-		} {
+		for _, sensitive := range pathpolicy.HomeCredentialRoots(home) {
 			fmt.Fprintf(&profile, "(deny file-read* file-write* (subpath %s))\n", seatbeltQuote(sensitive))
 		}
 	}
@@ -1131,7 +1131,7 @@ func validateWorkspaceLinks(ctx context.Context, workspace *Workspace) error {
 				if !filepath.IsAbs(target) {
 					target = filepath.Join(filepath.Dir(path), target)
 				}
-				resolved, err = evalSymlinksAllowMissing(target)
+				resolved, err = pathpolicy.CanonicalAllowMissing(target)
 			}
 			if err != nil {
 				return fmt.Errorf("workspace symbolic link %q is invalid: %w", path, err)
@@ -1188,27 +1188,4 @@ func validateWorkspaceLinks(ctx context.Context, workspace *Workspace) error {
 		}
 	}
 	return nil
-}
-
-func evalSymlinksAllowMissing(value string) (string, error) {
-	current := filepath.Clean(value)
-	var missing []string
-	for {
-		resolved, err := filepath.EvalSymlinks(current)
-		if err == nil {
-			for index := len(missing) - 1; index >= 0; index-- {
-				resolved = filepath.Join(resolved, missing[index])
-			}
-			return filepath.Clean(resolved), nil
-		}
-		if !errors.Is(err, os.ErrNotExist) {
-			return "", err
-		}
-		parent := filepath.Dir(current)
-		if parent == current {
-			return "", err
-		}
-		missing = append(missing, filepath.Base(current))
-		current = parent
-	}
 }

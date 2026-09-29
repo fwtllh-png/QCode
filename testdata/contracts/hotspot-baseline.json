@@ -167,7 +167,7 @@
         "provenance": "provenance.go"
       },
       "allowed_internal_imports": [
-        "internal/environment",
+        "internal/platform/environment",
         "internal/runtime/protocol"
       ],
       "required_test_assets": [

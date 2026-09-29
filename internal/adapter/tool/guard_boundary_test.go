@@ -30,12 +30,6 @@ func TestProductionToolExecutionHasNoGuardBypass(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			if strings.HasPrefix(
-				filepath.ToSlash(relative),
-				"internal/testutil/",
-			) {
-				return nil
-			}
 			fileSet := token.NewFileSet()
 			file, err := parser.ParseFile(fileSet, path, nil, 0)
 			if err != nil {
@@ -91,8 +85,7 @@ func TestProductionCodeCannotImportToolTestHelpers(t *testing.T) {
 				return walkErr
 			}
 			if entry.IsDir() || !strings.HasSuffix(path, ".go") ||
-				strings.HasSuffix(path, "_test.go") ||
-				strings.Contains(filepath.ToSlash(path), "/internal/testutil/") {
+				strings.HasSuffix(path, "_test.go") {
 				return nil
 			}
 			fileSet := token.NewFileSet()
@@ -105,7 +98,8 @@ func TestProductionCodeCannotImportToolTestHelpers(t *testing.T) {
 				if err != nil {
 					return err
 				}
-				if strings.Contains(name, "/internal/testutil/") {
+				if name == "github.com/fwtllh-png/QCode/testutil" ||
+					strings.HasPrefix(name, "github.com/fwtllh-png/QCode/testutil/") {
 					relative, _ := filepath.Rel(root, path)
 					t.Errorf("%s imports test-only helper %q", relative, name)
 				}

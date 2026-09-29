@@ -72,7 +72,8 @@ exec_command，不再提供独立 quality 工具"），以及 roadmap 明声的
   提案 M1–M4 主线，有独立索引与 LSP 支撑，不是 `search_text` 可替代的；
 - `revert_turn`（北极星第 5 条）、`turn_history`（agent-guide 合同）、
   verify/trace/usage/receipt（差异化卖点）、repoindex/symbols（规划核心）；
-- bench（`release-gate` 依赖）、desktop 壳（文档化交付物，活跃投入）；
+- Benchmark 场景（`release-gate` 依赖，驱动位于 `internal/host/intergration_test`）、
+  desktop 壳（文档化交付物，活跃投入）；
 - `persist` 的 profile 在线迁移与 turnstate 双写：活路径，删除破坏存量数据。
 
 ## 3. 主题一：死代码清扫（约 1,300 行，风险极低）
@@ -81,7 +82,6 @@ exec_command，不再提供独立 quality 工具"），以及 roadmap 明声的
 
 | 位置 | 内容 | 行数 |
 | --- | --- | --- |
-| `internal/evaluation/protocol/` | 整包零导入（含测试 305） | 305 |
 | `internal/persist/state/history_search.go` | `SearchHistory`/`HistoryHit` 整文件零调用 | 209 |
 | `internal/persist/state/store.go:418` | `PatchThreadMeta`+`ThreadMetaPatch`+`ErrEmptyMetaPatch` | ~65 |
 | `internal/persist/repoindex/related.go` | `TestMapper`（零实例化）、`Paths`（仅测试） | ~40 |
@@ -103,7 +103,6 @@ exec_command，不再提供独立 quality 工具"），以及 roadmap 明声的
 | repohost GitHub 4 工具 | `adapter/tool/repohost/` | ~260（+测试） | 被 usage.md 自己声明的"MCP/Skill 承接平台集成"边界否定；依赖宿主 gh CLI；git log 仅 2 次提交 |
 | dev 族 debug_run + dependency_resolve | `adapter/tool/dev/` | ~545 | usage.md 已确立"统一走 exec_command"的 quality 工具边界；debug_run（LLDB 批处理）极小众；激进方案含 format_code 共 -780 |
 | MCP OAuth（PKCE 全流程） | `adapter/mcp/oauth.go` | ~417 | 零文档的 speculative 生态面；roadmap 中期只承诺 MCP Provenance/Risk，未承诺 OAuth。**需负责人确认** |
-| legacy setup 目录迁移 | `host/web/legacy_setup_catalog.json` + setup.go 迁移段 | ~400 | 注释自述"一次性物化迁移"，服务未发布开发状态，违反 agent-guide 的 no-compat-migration 约束 |
 | providerdump | `observability/providerdump/` | ~179 | 环境变量门控的调试后门，单点消费（provider/httpclient/response.go）。可选项 |
 | Mermaid 前端渲染 | `web/src/ui/MermaidDiagram.tsx` + mermaid 依赖 | ~340 | usage.md 的 Markdown 支持清单不含 mermaid；web 最重依赖之一，虽已懒加载 |
 
@@ -170,7 +169,7 @@ exec_command，不再提供独立 quality 工具"），以及 roadmap 明声的
   `Reply/ToolCall/Streams` 三个 builder。只适用于完整流，断流/错误流
   测试保留手写。
 - 微型测试 helper（mustJSON×3、writeFile×3、runGit×4 等）提升到
-  `internal/testutil` 约 -100~150，但会造成测试对公共包耦合：**只在新增
+  根目录 `testutil` 约 -100~150，但会造成测试对公共包耦合：**只在新增
   时复用，不批量迁移**。
 
 ### 5.4 顺带修复的正确性问题（价值大于行数）
@@ -185,7 +184,7 @@ exec_command，不再提供独立 quality 工具"），以及 roadmap 明声的
 ### 5.5 明确不做的抽象（防止为行数压缩）
 
 - 分层场景测试（withdrawal 等在 engine/app/persistence/web 五层各有
-  ~130 行）不合并：断言对象不同，runtimecontract 已是跨 transport 的
+  ~130 行）不合并：断言对象不同，`internal/host/intergration_test` 已是跨 transport 的
   共享层，合并会降低失败定位能力；
 - 3,100 个测试函数不批量 table-driven 化；
 - `persist/state` 与 `runtime/app` 的 EventStore 双实现不统一（内存环形
@@ -201,13 +200,12 @@ exec_command，不再提供独立 quality 工具"），以及 roadmap 明声的
 ## 6. 主题四：测试与构建基础设施归位
 
 roadmap 已将"可重复的 Web Release Pipeline"列为近期目标，因此
-bench（`release-gate` 依赖）与 runtimecontract（不进二进制）**保留**。
+Benchmark 场景（`release-gate` 依赖）与 Runtime/Web 共享行为测试**保留**，
+驱动和统计统一位于 `internal/host/intergration_test`，全部为 `_test.go`。
 归位动作：
 
-- `provider/fixture` 因 bench 留在生产 import 图：移到 `internal/testutil`
-  lane 或加构建标签，让生产构建不再编译测试设施；
-- `internal/runtime/eventview`（167 行）是 bench 的唯一生产消费者，随
-  fixture 归位一并处理；
+- `provider/fixture` 的 Runtime 接入与 `internal/runtime/eventview` 的归属
+  另行评估；Benchmark 驱动已不再作为生产包存在；
 - `adapter/mcp/contract/` 目录只有 fixture_test.go，布局归位；
 - `extension.NoopEngine`（33 行）移入测试支持文件。
 
@@ -218,7 +216,7 @@ bench（`release-gate` 依赖）与 runtimecontract（不进二进制）**保留
 1. `web/src/ui/App.tsx`（4,232 行，App() 单函数约 2,240 行）：6 个自包含
    对话框/转录组件（ApprovalComposer、InputComposer、三个 Dialog、
    SessionRow、TurnTranscript 族）搬出，顺带消除 props 钻透中转；
-2. `host/runtimeapi/web/server.go`（2,797 行）：workspace 校验
+2. `host/server.go`（2,797 行）：workspace 校验
    （:1847-2160）、静态资源、中间件各自成文件；
 3. `engine` 的 `modelStep`（745 行）与 `Scope.Run`（约 1,167 行）：
    主题三去重后自然减半，再按重试/终局/修复分段；

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"io"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -64,9 +63,12 @@ func TestWiredNetworkGrantsIsolateProviderWebAndProcess(t *testing.T) {
 	if !ok || backendPolicy.ManagedProxyPort == 0 {
 		t.Fatal("workspace has no managed network proxy")
 	}
-	proxyURL := &url.URL{Scheme: "http", Host: net.JoinHostPort(
-		"127.0.0.1", strconv.Itoa(int(backendPolicy.ManagedProxyPort)),
-	)}
+	proxyURL, err := url.Parse(sandbox.ManagedProxyURL(
+		backendPolicy.ManagedProxyPort, backendPolicy.ManagedProxyCredential,
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
 	transport := providerServer.Client().Transport.(*http.Transport).Clone()
 	transport.Proxy = http.ProxyURL(proxyURL)
 	transport.DisableKeepAlives = true
@@ -169,21 +171,22 @@ func TestWiredNetworkGrantsIsolateProviderWebAndProcess(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = sessionB.Close() })
-	clientFor := func(port uint16) *http.Client {
+	clientFor := func(session egress.ProcessSession) *http.Client {
 		t.Helper()
+		sessionURL, err := url.Parse(sandbox.ManagedProxyURL(session.Port(), session.Credential()))
+		if err != nil {
+			t.Fatal(err)
+		}
 		cloned := transport.Clone()
-		cloned.Proxy = http.ProxyURL(&url.URL{
-			Scheme: "http",
-			Host:   net.JoinHostPort("127.0.0.1", strconv.Itoa(int(port))),
-		})
+		cloned.Proxy = http.ProxyURL(sessionURL)
 		client := &http.Client{Transport: cloned}
 		t.Cleanup(client.CloseIdleConnections)
 		return client
 	}
-	assertHTTP(clientFor(sessionA.Port()), http.MethodGet, providerServer.URL, http.StatusOK)
-	assertHTTP(clientFor(sessionA.Port()), http.MethodGet, webServer.URL, http.StatusForbidden)
-	assertHTTP(clientFor(sessionB.Port()), http.MethodGet, webServer.URL, http.StatusOK)
-	assertCONNECTDenied(clientFor(sessionB.Port()), providerServer.URL)
+	assertHTTP(clientFor(sessionA), http.MethodGet, providerServer.URL, http.StatusOK)
+	assertHTTP(clientFor(sessionA), http.MethodGet, webServer.URL, http.StatusForbidden)
+	assertHTTP(clientFor(sessionB), http.MethodGet, webServer.URL, http.StatusOK)
+	assertCONNECTDenied(clientFor(sessionB), providerServer.URL)
 	assertCONNECTDenied(processClient, providerServer.URL)
 
 	// A Guard call must not inherit either fixed backend or other call grants.

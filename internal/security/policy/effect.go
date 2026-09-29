@@ -4,59 +4,31 @@ import (
 	"strings"
 
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
+	"github.com/fwtllh-png/QCode/internal/security/effect"
+	"github.com/fwtllh-png/QCode/internal/security/netpolicy"
+	securityresource "github.com/fwtllh-png/QCode/internal/security/resource"
 )
 
-type EffectKind string
-
-const (
-	EffectWorkspaceRead    EffectKind = "workspace.read"
-	EffectWorkspaceEdit    EffectKind = "workspace.edit"
-	EffectProcessReadOnly  EffectKind = "process.read_only"
-	EffectProcessMutating  EffectKind = "process.mutating"
-	EffectNetworkRead      EffectKind = "network.read"
-	EffectNetworkMutating  EffectKind = "network.mutating"
-	EffectSessionMutation  EffectKind = "session.mutation"
-	EffectAgentMessage     EffectKind = "agent.message"
-	EffectAgentLifecycle   EffectKind = "agent.lifecycle"
-	EffectExternalMutation EffectKind = "external.mutation"
-)
-
-type RiskLevel string
-
-const (
-	RiskLow      RiskLevel = "low"
-	RiskMedium   RiskLevel = "medium"
-	RiskHigh     RiskLevel = "high"
-	RiskCritical RiskLevel = "critical"
-)
-
-type Effect struct {
-	Kind          EffectKind
-	Risk          RiskLevel
-	Reversibility string
-}
-
-func NormalizeEffect(invocation Invocation) Effect {
+func NormalizeEffect(invocation Invocation) effect.Effect {
 	if readOnlySpawn(invocation) {
-		return effect(EffectAgentLifecycle, RiskLow, "reversible")
+		return classified(effect.AgentLifecycle, effect.RiskLow, effect.Reversible)
 	}
 	if invocation.Effect.Mode == tool.EffectFixed {
-		return effect(
-			EffectKind(invocation.Effect.Kind),
-			RiskLevel(invocation.Effect.Risk),
-			string(invocation.Effect.Reversibility),
+		return classified(
+			invocation.Effect.Kind, invocation.Effect.Risk,
+			invocation.Effect.Reversibility,
 		)
 	}
 	if invocation.Access == "" || invocation.Sandbox == "" {
 		switch invocation.Capability {
 		case tool.CapabilityRead:
-			return effect(EffectWorkspaceRead, RiskLow, "reversible")
+			return classified(effect.WorkspaceRead, effect.RiskLow, effect.Reversible)
 		case tool.CapabilityWrite:
-			return effect(EffectExternalMutation, RiskMedium, "bounded")
+			return classified(effect.ExternalMutation, effect.RiskMedium, effect.Bounded)
 		case tool.CapabilityProcess, tool.CapabilityNetwork, tool.CapabilityExternal:
-			return effect(EffectExternalMutation, RiskHigh, "irreversible")
+			return classified(effect.ExternalMutation, effect.RiskHigh, effect.Irreversible)
 		default:
-			return effect(EffectExternalMutation, RiskCritical, "irreversible")
+			return classified(effect.ExternalMutation, effect.RiskCritical, effect.Irreversible)
 		}
 	}
 	var resources uint8
@@ -72,32 +44,32 @@ func NormalizeEffect(invocation Invocation) Effect {
 	}
 	switch {
 	case invocation.Capability == tool.CapabilityRead:
-		return effect(EffectWorkspaceRead, RiskLow, "reversible")
+		return classified(effect.WorkspaceRead, effect.RiskLow, effect.Reversible)
 	case resources == 16 && invocation.Capability == tool.CapabilityWrite:
-		return effect(EffectSessionMutation, RiskLow, "reversible")
+		return classified(effect.SessionMutation, effect.RiskLow, effect.Reversible)
 	case resources&8 != 0:
-		return effect(EffectAgentLifecycle, RiskHigh, "bounded")
+		return classified(effect.AgentLifecycle, effect.RiskHigh, effect.Bounded)
 	case strongProcessUsesOnlyLoopback(invocation):
-		// Local fixture servers stay inside the Strong Sandbox boundary. Treat
-		// their exact localhost grant like bounded network read so auto posture
-		// can review it without repeatedly asking for human approval.
-		return effect(EffectNetworkRead, RiskMedium, "bounded")
+		// Local fixture servers run inside the Strong Sandbox, but the
+		// loopback grant reaches every local port; auto posture never
+		// auto-reviews it (see targetsHostLocal).
+		return classified(effect.NetworkRead, effect.RiskMedium, effect.Bounded)
 	case invocation.Capability == tool.CapabilityNetwork || resources&4 != 0:
 		if invocation.Access == tool.AccessRead && resources&1 == 0 &&
 			!processEgressCanWrite(invocation) {
-			return effect(EffectNetworkRead, RiskMedium, "bounded")
+			return classified(effect.NetworkRead, effect.RiskMedium, effect.Bounded)
 		}
-		return effect(EffectNetworkMutating, RiskHigh, "irreversible")
+		return classified(effect.NetworkMutating, effect.RiskHigh, effect.Irreversible)
 	case invocation.Capability == tool.CapabilityProcess || resources&2 != 0:
 		if invocation.Sandbox == tool.SandboxStrong && resources&1 == 0 {
-			return effect(EffectProcessReadOnly, RiskLow, "reversible")
+			return classified(effect.ProcessReadOnly, effect.RiskLow, effect.Reversible)
 		}
-		return effect(EffectProcessMutating, RiskHigh, "bounded")
+		return classified(effect.ProcessMutating, effect.RiskHigh, effect.Bounded)
 	case invocation.Capability == tool.CapabilityWrite && resources&1 != 0 &&
 		invocation.Journaled:
-		return effect(EffectWorkspaceEdit, RiskLow, "reversible")
+		return classified(effect.WorkspaceEdit, effect.RiskLow, effect.Reversible)
 	default:
-		return effect(EffectExternalMutation, RiskHigh, "irreversible")
+		return classified(effect.ExternalMutation, effect.RiskHigh, effect.Irreversible)
 	}
 }
 
@@ -110,8 +82,8 @@ func strongProcessUsesOnlyLoopback(invocation Invocation) bool {
 	for _, resource := range invocation.Resources {
 		switch resource.Kind {
 		case "host", "url":
-			if resource.Protocol != "loopback" ||
-				resource.ID != "localhost" ||
+			if !securityresource.IsLoopback(resource.Kind, resource.Protocol) ||
+				resource.ID != securityresource.LoopbackHost ||
 				!resource.AllowPrivate {
 				return false
 			}
@@ -137,15 +109,15 @@ func processEgressCanWrite(invocation Invocation) bool {
 		protocol := resource.Protocol
 		switch resource.Kind {
 		case "host":
-			if protocol == "loopback" {
+			if securityresource.IsLoopback(resource.Kind, protocol) {
 				continue
 			}
 		case "url":
-			target, ok := ParseNetworkTarget(resource.ID)
-			if !ok {
+			target, err := netpolicy.ParseTarget(resource.ID)
+			if err != nil {
 				return true
 			}
-			protocol = target.Protocol
+			protocol = target.Scheme
 		default:
 			continue
 		}
@@ -163,6 +135,8 @@ func processEgressCanWrite(invocation Invocation) bool {
 	return false
 }
 
-func effect(kind EffectKind, risk RiskLevel, reversibility string) Effect {
-	return Effect{kind, risk, reversibility}
+func classified(
+	kind effect.Kind, risk effect.Risk, reversibility effect.Reversibility,
+) effect.Effect {
+	return effect.Effect{Kind: kind, Risk: risk, Reversibility: reversibility}
 }

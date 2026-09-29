@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/fwtllh-png/QCode/internal/security/controlmatrix"
+	"github.com/fwtllh-png/QCode/internal/security/resource"
 )
 
 type ExecutionAuthority struct {
@@ -83,7 +84,7 @@ func (a ExecutionAuthority) LoopbackOnly() bool {
 		return false
 	}
 	for _, target := range a.NetworkTargets {
-		if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(target)), "loopback://") {
+		if !resource.IsLoopbackTarget(target) {
 			return false
 		}
 	}

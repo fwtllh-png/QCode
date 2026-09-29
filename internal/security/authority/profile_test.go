@@ -10,6 +10,7 @@ import (
 
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
 	"github.com/fwtllh-png/QCode/internal/security/controlmatrix"
+	"github.com/fwtllh-png/QCode/internal/security/effect"
 	"github.com/fwtllh-png/QCode/internal/security/policy"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
 )
@@ -163,9 +164,9 @@ func TestLeaseRejectsInsufficientControls(t *testing.T) {
 		WorkspaceRoot:       input.SandboxPolicy.WorkspaceRoot,
 		WorkspaceGeneration: 1,
 		Invocation:          fixturePreparedInvocation(input.SandboxPolicy.WorkspaceRoot),
-		Effect: policy.Effect{
-			Kind: policy.EffectProcessReadOnly, Risk: policy.RiskLow,
-			Reversibility: "reversible",
+		Effect: effect.Effect{
+			Kind: effect.ProcessReadOnly, Risk: effect.RiskLow,
+			Reversibility: effect.Reversible,
 		},
 		Required: RequiredControls{
 			Network: controlmatrix.NetworkDenied,

@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	envcontract "github.com/fwtllh-png/QCode/internal/environment"
+	platformenv "github.com/fwtllh-png/QCode/internal/platform/environment"
 )
 
 var secretNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_./:@-]*$`)
@@ -638,14 +638,14 @@ func validateDeclaredEnvironmentResources(
 	seen := make(map[string]bool, len(environment.Resources))
 	for _, resource := range environment.Resources {
 		request := resource.Request()
-		if request.Namespace == envcontract.NamespaceWorkspace {
+		if request.Namespace == platformenv.NamespaceWorkspace {
 			return fieldError(
 				fieldEnvironmentResources,
 				provenance,
 				"workspace resources stay command-scoped; use write_paths",
 			)
 		}
-		if request.Namespace == envcontract.NamespaceSharedUserTemp &&
+		if request.Namespace == platformenv.NamespaceSharedUserTemp &&
 			!environment.SharedUserTemp {
 			return fieldError(
 				fieldEnvironmentResources,
@@ -653,7 +653,7 @@ func validateDeclaredEnvironmentResources(
 				"shared_user_temp resources require shared_user_temp=true",
 			)
 		}
-		if err := envcontract.ValidateRequest(request); err != nil {
+		if err := platformenv.ValidateRequest(request); err != nil {
 			return fieldError(fieldEnvironmentResources, provenance, err.Error())
 		}
 		if seen[request.Name] {

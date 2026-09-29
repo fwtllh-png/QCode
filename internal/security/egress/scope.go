@@ -19,7 +19,7 @@ type callScope struct {
 // all grants and keeps the context fail-closed, including retained child contexts.
 func WithScope(ctx context.Context) (context.Context, func()) {
 	ctx, cancel := context.WithCancel(ctx)
-	scope := &callScope{grants: &Gate{Enforce: true}}
+	scope := &callScope{grants: &Gate{}}
 	return context.WithValue(ctx, scopeKey{}, scope), func() {
 		cancel()
 		scope.mu.Lock()

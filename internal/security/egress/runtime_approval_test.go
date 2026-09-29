@@ -16,7 +16,7 @@ import (
 )
 
 func TestAuthorizeProbeDoesNotAskApprover(t *testing.T) {
-	gate := &egress.Gate{Enforce: true}
+	gate := &egress.Gate{}
 	gate.SetRuntimeApprover(func(context.Context, egress.Target) error {
 		t.Fatal("probe Authorize must not start an approval")
 		return nil
@@ -34,10 +34,9 @@ func TestAuthorizeAsksApproverBeforeResolve(t *testing.T) {
 	var resolved atomic.Int32
 	var asked atomic.Int32
 	gate := &egress.Gate{
-		Enforce: true,
 		LookupIP: func(context.Context, string) ([]net.IP, error) {
 			resolved.Add(1)
-			return []net.IP{net.ParseIP("203.0.113.10")}, nil
+			return []net.IP{net.ParseIP("93.184.216.34")}, nil
 		},
 	}
 	gate.SetRuntimeApprover(func(_ context.Context, target egress.Target) error {
@@ -63,10 +62,9 @@ func TestAuthorizeSettledDenialDoesNotAskAgain(t *testing.T) {
 	var asked atomic.Int32
 	var resolved atomic.Int32
 	gate := &egress.Gate{
-		Enforce: true,
 		LookupIP: func(context.Context, string) ([]net.IP, error) {
 			resolved.Add(1)
-			return []net.IP{net.ParseIP("203.0.113.10")}, nil
+			return []net.IP{net.ParseIP("93.184.216.34")}, nil
 		},
 	}
 	gate.SetRuntimeApprover(func(context.Context, egress.Target) error {
@@ -96,9 +94,8 @@ func TestAuthorizeSharesOneApprovalAcrossWaiters(t *testing.T) {
 	release := make(chan struct{})
 	var asked atomic.Int32
 	gate := &egress.Gate{
-		Enforce: true,
 		LookupIP: func(context.Context, string) ([]net.IP, error) {
-			return []net.IP{net.ParseIP("203.0.113.10")}, nil
+			return []net.IP{net.ParseIP("93.184.216.34")}, nil
 		},
 	}
 	gate.SetRuntimeApprover(func(context.Context, egress.Target) error {
@@ -141,7 +138,7 @@ func TestProcessSessionApprovesConnectBeforeDial(t *testing.T) {
 	}))
 	t.Cleanup(upstream.Close)
 
-	workspace := &egress.Gate{Enforce: true}
+	workspace := &egress.Gate{}
 	proxy, err := egress.StartManagedNetworkProxy(workspace)
 	if err != nil {
 		t.Fatal(err)
@@ -162,7 +159,7 @@ func TestProcessSessionApprovesConnectBeforeDial(t *testing.T) {
 		return nil
 	})
 
-	assertProxyBody(t, session.Port(), upstream.URL, http.StatusOK, "ok")
+	assertProxyBody(t, session, upstream.URL, http.StatusOK, "ok")
 	if asked.Load() != 1 {
 		t.Fatalf("asked = %d", asked.Load())
 	}
@@ -177,9 +174,8 @@ func TestProcessSessionApprovesConnectBeforeDial(t *testing.T) {
 
 func TestBoundRuntimeApproverEndsWithItsCall(t *testing.T) {
 	gate := &egress.Gate{
-		Enforce: true,
 		LookupIP: func(context.Context, string) ([]net.IP, error) {
-			return []net.IP{net.ParseIP("203.0.113.10")}, nil
+			return []net.IP{net.ParseIP("93.184.216.34")}, nil
 		},
 	}
 	waiting := make(chan struct{})
@@ -224,9 +220,8 @@ func TestBoundRuntimeApproverEndsWithItsCall(t *testing.T) {
 
 func TestOverlappingRuntimeApproverReleaseKeepsTheNewerCall(t *testing.T) {
 	gate := &egress.Gate{
-		Enforce: true,
 		LookupIP: func(context.Context, string) ([]net.IP, error) {
-			return []net.IP{net.ParseIP("203.0.113.10")}, nil
+			return []net.IP{net.ParseIP("93.184.216.34")}, nil
 		},
 	}
 	first := gate.BindRuntimeApprover(func(context.Context, egress.Target) error {
@@ -247,9 +242,8 @@ func TestOverlappingRuntimeApproverReleaseKeepsTheNewerCall(t *testing.T) {
 func TestApprovalDecisionIsMethodScoped(t *testing.T) {
 	var asked atomic.Int32
 	gate := &egress.Gate{
-		Enforce: true,
 		LookupIP: func(context.Context, string) ([]net.IP, error) {
-			return []net.IP{net.ParseIP("203.0.113.10")}, nil
+			return []net.IP{net.ParseIP("93.184.216.34")}, nil
 		},
 	}
 	gate.SetRuntimeApprover(func(_ context.Context, target egress.Target) error {
@@ -284,11 +278,10 @@ func TestApprovalDecisionIsMethodScoped(t *testing.T) {
 func TestApprovedPublicOriginCannotRebindToPrivate(t *testing.T) {
 	var lookups atomic.Int32
 	gate := &egress.Gate{
-		Enforce: true,
 		LookupIP: func(context.Context, string) ([]net.IP, error) {
 			// Public at approval time, private afterwards: a DNS rebinding.
 			if lookups.Add(1) == 1 {
-				return []net.IP{net.ParseIP("203.0.113.10")}, nil
+				return []net.IP{net.ParseIP("93.184.216.34")}, nil
 			}
 			return []net.IP{net.ParseIP("10.0.0.5")}, nil
 		},
@@ -313,7 +306,6 @@ func TestApprovedPublicOriginCannotRebindToPrivate(t *testing.T) {
 
 func TestApprovedPrivateTargetGrantsPrivateDialing(t *testing.T) {
 	gate := &egress.Gate{
-		Enforce: true,
 		LookupIP: func(context.Context, string) ([]net.IP, error) {
 			return []net.IP{net.ParseIP("10.0.0.5")}, nil
 		},

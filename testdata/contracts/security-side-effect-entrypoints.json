@@ -131,26 +131,7 @@
       "reason": "Guarded web transports and the isolated Chromium CDP process/profile lifecycle."
     },
     {
-      "path": "internal/host/bench",
-      "prefix": true,
-      "categories": [
-        "file"
-      ],
-      "owner": "benchmark host",
-      "reason": "Developer-invoked benchmark fixture materialization."
-    },
-    {
-      "path": "internal/host/runtimeapi/runtimecontract",
-      "prefix": true,
-      "categories": [
-        "process",
-        "file"
-      ],
-      "owner": "runtime contract fixture",
-      "reason": "Executable contract fixture retained outside production host wiring."
-    },
-    {
-      "path": "internal/host/runtimeapi/web/native_directory.go",
+      "path": "internal/host/native_directory.go",
       "categories": [
         "process"
       ],
@@ -158,7 +139,7 @@
       "reason": "Operator-initiated native directory picker."
     },
     {
-      "path": "internal/host/web",
+      "path": "internal/host",
       "prefix": true,
       "categories": [
         "process",

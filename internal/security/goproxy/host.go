@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/fwtllh-png/QCode/internal/security/pathpolicy"
 )
 
 const CredentialKindHost = "host"
@@ -72,7 +74,7 @@ func DefaultNetrcPath() string {
 	if err != nil || home == "" {
 		return ""
 	}
-	return filepath.Join(home, ".netrc")
+	return filepath.Join(home, pathpolicy.NetrcFile)
 }
 
 func firstProxyURL(raw string) (*url.URL, bool) {

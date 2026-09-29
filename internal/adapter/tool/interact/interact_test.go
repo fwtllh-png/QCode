@@ -21,7 +21,7 @@ import (
 	"github.com/fwtllh-png/QCode/internal/runtime/agent/turnkernel"
 	"github.com/fwtllh-png/QCode/internal/security/controlmatrix"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
-	"github.com/fwtllh-png/QCode/internal/testutil/tooltest"
+	"github.com/fwtllh-png/QCode/testutil/tooltest"
 )
 
 func TestRequestUserInputRejectsBlankAndDuplicateOptions(t *testing.T) {

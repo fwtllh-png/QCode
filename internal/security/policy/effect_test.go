@@ -5,38 +5,39 @@ import (
 	"testing"
 
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
+	"github.com/fwtllh-png/QCode/internal/security/effect"
 )
 
 func TestNormalizeEffectAndRisk(t *testing.T) {
 	tests := []struct {
 		name string
 		call Invocation
-		kind EffectKind
-		risk RiskLevel
+		kind effect.Kind
+		risk effect.Risk
 	}{
 		{
 			name: "journaled workspace edit",
 			call: effectInvocation("file_apply", CapabilityWrite, tool.AccessTree, tool.SandboxNone,
 				tool.Resource{Kind: "file", Path: "a.go", Access: tool.AccessWrite}),
-			kind: EffectWorkspaceEdit, risk: RiskLow,
+			kind: effect.WorkspaceEdit, risk: effect.RiskLow,
 		},
 		{
 			name: "strong sandbox read-only process",
 			call: effectInvocation("exec_command", CapabilityProcess, tool.AccessTree, tool.SandboxStrong,
 				tool.Resource{Kind: "process", ID: "workspace", Access: tool.AccessRead}),
-			kind: EffectProcessReadOnly, risk: RiskLow,
+			kind: effect.ProcessReadOnly, risk: effect.RiskLow,
 		},
 		{
 			name: "declared process write",
 			call: effectInvocation("exec_command", CapabilityProcess, tool.AccessRead, tool.SandboxStrong,
 				tool.Resource{Kind: "file", Path: "a.go", Access: tool.AccessWrite}),
-			kind: EffectProcessMutating, risk: RiskHigh,
+			kind: effect.ProcessMutating, risk: effect.RiskHigh,
 		},
 		{
 			name: "agent message",
 			call: effectInvocation("send_message", CapabilityWrite, tool.AccessWrite, tool.SandboxNone,
 				tool.Resource{Kind: "agent", ID: "agent-1", Access: tool.AccessWrite}),
-			kind: EffectAgentMessage, risk: RiskLow,
+			kind: effect.AgentMessage, risk: effect.RiskLow,
 		},
 		{
 			name: "session plan mutation",
@@ -49,26 +50,26 @@ func TestNormalizeEffectAndRisk(t *testing.T) {
 					Kind: "plan", ID: "session", Access: tool.AccessWrite,
 				},
 			),
-			kind: EffectSessionMutation, risk: RiskLow,
+			kind: effect.SessionMutation, risk: effect.RiskLow,
 		},
 		{
 			name: "agent followup",
 			call: effectInvocation("followup_task", CapabilityWrite, tool.AccessWrite, tool.SandboxNone,
 				tool.Resource{Kind: "agent", ID: "agent-1", Access: tool.AccessWrite}),
-			kind: EffectAgentLifecycle, risk: RiskMedium,
+			kind: effect.AgentLifecycle, risk: effect.RiskMedium,
 		},
 		{
 			name: "network read",
 			call: effectInvocation("web_fetch", CapabilityNetwork, tool.AccessRead, tool.SandboxNone,
 				tool.Resource{Kind: "host", ID: "example.com", Access: tool.AccessRead}),
-			kind: EffectNetworkRead, risk: RiskMedium,
+			kind: effect.NetworkRead, risk: effect.RiskMedium,
 		},
 		{
 			name: "process with method-unbounded network target",
 			call: effectInvocation("exec_command", CapabilityProcess, tool.AccessRead, tool.SandboxStrong,
 				tool.Resource{Kind: "process", ID: "workspace", Access: tool.AccessRead},
 				tool.Resource{Kind: "host", ID: "example.com", Access: tool.AccessWrite}),
-			kind: EffectNetworkMutating, risk: RiskHigh,
+			kind: effect.NetworkMutating, risk: effect.RiskHigh,
 		},
 		{
 			name: "process with https CONNECT tunnel",
@@ -78,7 +79,7 @@ func TestNormalizeEffectAndRisk(t *testing.T) {
 					Kind: "host", ID: "example.com", Access: tool.AccessWrite,
 					Protocol: "https", Port: 443, Methods: []string{"CONNECT"},
 				}),
-			kind: EffectNetworkMutating, risk: RiskHigh,
+			kind: effect.NetworkMutating, risk: effect.RiskHigh,
 		},
 		{
 			name: "runtime-discovered CONNECT",
@@ -91,7 +92,7 @@ func TestNormalizeEffectAndRisk(t *testing.T) {
 					Kind: "url", ID: "https://example.com:443/", Access: tool.AccessRead,
 					Methods: []string{"CONNECT"},
 				}),
-			kind: EffectNetworkMutating, risk: RiskHigh,
+			kind: effect.NetworkMutating, risk: effect.RiskHigh,
 		},
 		{
 			name: "process with read-only plaintext target",
@@ -101,7 +102,7 @@ func TestNormalizeEffectAndRisk(t *testing.T) {
 					Kind: "host", ID: "example.com", Access: tool.AccessWrite,
 					Protocol: "http", Port: 80, Methods: []string{"GET", "HEAD"},
 				}),
-			kind: EffectNetworkRead, risk: RiskMedium,
+			kind: effect.NetworkRead, risk: effect.RiskMedium,
 		},
 		{
 			name: "process with plaintext POST target",
@@ -110,7 +111,7 @@ func TestNormalizeEffectAndRisk(t *testing.T) {
 					Kind: "host", ID: "example.com", Access: tool.AccessWrite,
 					Protocol: "http", Port: 80, Methods: []string{"GET", "POST"},
 				}),
-			kind: EffectNetworkMutating, risk: RiskHigh,
+			kind: effect.NetworkMutating, risk: effect.RiskHigh,
 		},
 		{
 			name: "process with network and file mutation",
@@ -118,19 +119,19 @@ func TestNormalizeEffectAndRisk(t *testing.T) {
 				tool.Resource{Kind: "process", ID: "workspace", Access: tool.AccessRead},
 				tool.Resource{Kind: "host", ID: "example.com", Access: tool.AccessWrite},
 				tool.Resource{Kind: "file", Path: "result.json", Access: tool.AccessWrite}),
-			kind: EffectNetworkMutating, risk: RiskHigh,
+			kind: effect.NetworkMutating, risk: effect.RiskHigh,
 		},
 		{
 			name: "external high",
 			call: effectInvocation("external_call", CapabilityExternal, tool.AccessTree, tool.SandboxStrong),
-			kind: EffectExternalMutation, risk: RiskHigh,
+			kind: effect.ExternalMutation, risk: effect.RiskHigh,
 		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			effect := NormalizeEffect(test.call)
-			if effect.Kind != test.kind || effect.Risk != test.risk {
-				t.Fatalf("effect = %+v, want %s/%s", effect, test.kind, test.risk)
+			eff := NormalizeEffect(test.call)
+			if eff.Kind != test.kind || eff.Risk != test.risk {
+				t.Fatalf("effect = %+v, want %s/%s", eff, test.kind, test.risk)
 			}
 		})
 	}
@@ -211,7 +212,7 @@ func TestEffectRiskDrivesApprovalWithoutToolNameExceptions(t *testing.T) {
 			want: ActionDeny,
 		},
 		{
-			name:       "auto strong loopback fixture auto reviews",
+			name:       "auto strong loopback fixture asks",
 			permission: PermissionAuto,
 			call: effectInvocation(
 				"exec_command",
@@ -224,7 +225,7 @@ func TestEffectRiskDrivesApprovalWithoutToolNameExceptions(t *testing.T) {
 					AllowPrivate: true,
 				},
 			),
-			want: ActionAllow,
+			want: ActionAsk,
 		},
 		{
 			name: "external bypass allows", permission: PermissionBypass,
@@ -274,7 +275,7 @@ func TestNormalizeEffectReadOnlySpawnIsLowRisk(t *testing.T) {
 	)
 	review.Arguments = json.RawMessage(`{"role":"review"}`)
 	got := NormalizeEffect(review)
-	if got.Kind != EffectAgentLifecycle || got.Risk != RiskLow {
+	if got.Kind != effect.AgentLifecycle || got.Risk != effect.RiskLow {
 		t.Fatalf("review spawn effect = %+v", got)
 	}
 	writer := effectInvocation(
@@ -282,7 +283,7 @@ func TestNormalizeEffectReadOnlySpawnIsLowRisk(t *testing.T) {
 	)
 	writer.Arguments = json.RawMessage(`{"role":"implementer"}`)
 	got = NormalizeEffect(writer)
-	if got.Kind != EffectAgentLifecycle || got.Risk != RiskMedium {
+	if got.Kind != effect.AgentLifecycle || got.Risk != effect.RiskMedium {
 		t.Fatalf("implementer spawn effect = %+v", got)
 	}
 }

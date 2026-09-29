@@ -11,7 +11,7 @@ import (
 	adapterenv "github.com/fwtllh-png/QCode/internal/adapter/environment"
 	"github.com/fwtllh-png/QCode/internal/adapter/model"
 	"github.com/fwtllh-png/QCode/internal/adapter/provider/httpclient"
-	"github.com/fwtllh-png/QCode/internal/environment"
+	"github.com/fwtllh-png/QCode/internal/platform/environment"
 	"github.com/fwtllh-png/QCode/internal/platform/envprobe"
 	"github.com/fwtllh-png/QCode/internal/security/egress"
 	"github.com/fwtllh-png/QCode/internal/security/goproxy"

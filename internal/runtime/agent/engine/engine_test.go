@@ -38,6 +38,7 @@ import (
 	"github.com/fwtllh-png/QCode/internal/runtime/agent/turnkernel"
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
 	"github.com/fwtllh-png/QCode/internal/security/controlmatrix"
+	"github.com/fwtllh-png/QCode/internal/security/egress"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
 )
 
@@ -3465,7 +3466,10 @@ func testHTTPProvider(
 	if err != nil {
 		t.Fatal(err)
 	}
-	runtime, err := providerrouter.New(registry, routes, httpclient.New())
+	client := httpclient.New()
+	client.Egress = &egress.Gate{}
+	client.Egress.SetRuntimeApprover(func(context.Context, egress.Target) error { return nil })
+	runtime, err := providerrouter.New(registry, routes, client)
 	if err != nil {
 		t.Fatal(err)
 	}

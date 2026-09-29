@@ -8,17 +8,18 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
 	"github.com/fwtllh-png/QCode/internal/security/controlmatrix"
-	"github.com/fwtllh-png/QCode/internal/security/policy"
+	"github.com/fwtllh-png/QCode/internal/security/effect"
+	"github.com/fwtllh-png/QCode/internal/security/netpolicy"
+	"github.com/fwtllh-png/QCode/internal/security/pathpolicy"
+	securityresource "github.com/fwtllh-png/QCode/internal/security/resource"
 )
 
 const OperationSchemaVersion = 1
@@ -84,14 +85,6 @@ type Resource struct {
 	AllowPrivate   bool              `json:"allow_private,omitempty"`
 }
 
-type Reversibility string
-
-const (
-	ReversibilityReversible   Reversibility = "reversible"
-	ReversibilityBounded      Reversibility = "bounded"
-	ReversibilityIrreversible Reversibility = "irreversible"
-)
-
 type WorkspaceTransaction string
 
 const (
@@ -100,9 +93,9 @@ const (
 )
 
 type EffectContract struct {
-	Kind                   policy.EffectKind    `json:"kind"`
-	Reversibility          Reversibility        `json:"reversibility"`
-	Risk                   policy.RiskLevel     `json:"risk"`
+	Kind                   effect.Kind          `json:"kind"`
+	Reversibility          effect.Reversibility `json:"reversibility"`
+	Risk                   effect.Risk          `json:"risk"`
 	WorkspaceTransaction   WorkspaceTransaction `json:"workspace_transaction"`
 	RequireReadBeforeWrite bool                 `json:"require_read_before_write,omitempty"`
 }
@@ -151,7 +144,7 @@ type OperationInput struct {
 	WorkspaceID            string
 	WorkspaceGeneration    uint64
 	Invocation             tool.PreparedInvocation
-	Effect                 policy.Effect
+	Effect                 effect.Effect
 	Journaled              bool
 	RequireReadBeforeWrite bool
 	Required               RequiredControls
@@ -193,21 +186,21 @@ func BuildExecutionOperation(input OperationInput) (ExecutionOperation, error) {
 		resources = append(resources, resource)
 	}
 	resources = normalizeResources(resources)
-	effect := EffectContract{
+	contract := EffectContract{
 		Kind: input.Effect.Kind, Risk: input.Effect.Risk,
-		Reversibility:          Reversibility(input.Effect.Reversibility),
+		Reversibility:          input.Effect.Reversibility,
 		WorkspaceTransaction:   WorkspaceTransactionNone,
 		RequireReadBeforeWrite: input.RequireReadBeforeWrite,
 	}
 	if input.Journaled {
-		effect.WorkspaceTransaction = WorkspaceTransactionBeforeImage
+		contract.WorkspaceTransaction = WorkspaceTransactionBeforeImage
 	}
 	operation := ExecutionOperation{
 		SchemaVersion: OperationSchemaVersion,
 		ID:            input.Invocation.CallID, Tool: input.Invocation.Tool,
 		WorkspaceID:         input.WorkspaceID,
 		WorkspaceGeneration: input.WorkspaceGeneration,
-		Subject:             subject, Effect: effect, Required: input.Required,
+		Subject:             subject, Effect: contract, Required: input.Required,
 		Resources: resources, Artifact: cloneArtifactIntent(input.Artifact),
 	}
 	argumentsDigest, err := canonicalJSONDigest(input.Invocation.Arguments)
@@ -356,32 +349,15 @@ func (s Subject) Validate() error {
 }
 
 func (e EffectContract) Validate() error {
-	switch e.Reversibility {
-	case ReversibilityReversible, ReversibilityBounded, ReversibilityIrreversible:
-	default:
-		return errors.New("effect reversibility is invalid")
-	}
 	switch e.WorkspaceTransaction {
 	case WorkspaceTransactionNone, WorkspaceTransactionBeforeImage:
 	default:
 		return errors.New("workspace transaction is invalid")
 	}
-	if e.Kind == "" || e.Risk == "" {
-		return errors.New("effect contract is incomplete")
-	}
-	switch e.Kind {
-	case policy.EffectWorkspaceRead, policy.EffectWorkspaceEdit,
-		policy.EffectProcessReadOnly, policy.EffectProcessMutating,
-		policy.EffectNetworkRead, policy.EffectNetworkMutating,
-		policy.EffectSessionMutation, policy.EffectAgentMessage,
-		policy.EffectAgentLifecycle, policy.EffectExternalMutation:
-	default:
-		return errors.New("effect kind is invalid")
-	}
-	switch e.Risk {
-	case policy.RiskLow, policy.RiskMedium, policy.RiskHigh, policy.RiskCritical:
-	default:
-		return errors.New("effect risk is invalid")
+	if err := (effect.Effect{
+		Kind: e.Kind, Risk: e.Risk, Reversibility: e.Reversibility,
+	}).Validate(); err != nil {
+		return err
 	}
 	if e.RequireReadBeforeWrite &&
 		e.WorkspaceTransaction != WorkspaceTransactionBeforeImage {
@@ -530,7 +506,7 @@ func normalizeResource(
 		if err != nil {
 			return Resource{}, fmt.Errorf("resolve operation resource path: %w", err)
 		}
-		path, err = canonicalPathAllowMissing(path)
+		path, err = pathpolicy.CanonicalAllowMissing(path)
 		if err != nil {
 			return Resource{}, fmt.Errorf(
 				"canonicalize operation resource path: %w",
@@ -571,7 +547,7 @@ func authorizedHostRoot(path string, roots []string) (string, error) {
 		if strings.TrimSpace(candidate) == "" {
 			continue
 		}
-		root, err := canonicalPathAllowMissing(candidate)
+		root, err := pathpolicy.CanonicalAllowMissing(candidate)
 		if err != nil {
 			continue
 		}
@@ -592,67 +568,30 @@ func authorizedHostRoot(path string, roots []string) (string, error) {
 	return selected, nil
 }
 
-func canonicalPathAllowMissing(path string) (string, error) {
-	path = filepath.Clean(path)
-	current := path
-	var missing []string
-	for {
-		resolved, err := filepath.EvalSymlinks(current)
-		if err == nil {
-			for _, name := range missing {
-				resolved = filepath.Join(resolved, name)
-			}
-			return filepath.Clean(resolved), nil
-		}
-		if !errors.Is(err, os.ErrNotExist) {
-			return "", err
-		}
-		parent := filepath.Dir(current)
-		if parent == current {
-			return "", err
-		}
-		missing = append([]string{filepath.Base(current)}, missing...)
-		current = parent
-	}
-}
-
 func normalizeNetworkResource(
 	source tool.Resource,
 ) (string, string, uint16, error) {
-	protocol := strings.ToLower(strings.TrimSpace(source.Protocol))
-	host := strings.TrimSpace(source.ID)
-	port := source.Port
-	if source.Protocol == "loopback" {
-		return "loopback://localhost:0", "loopback", 0, nil
+	if source.Protocol == securityresource.LoopbackProtocol {
+		return securityresource.LoopbackTarget, securityresource.LoopbackProtocol, 0, nil
+	}
+	target := netpolicy.Target{
+		Scheme: strings.ToLower(strings.TrimSpace(source.Protocol)),
+		Host:   netpolicy.NormalizeHost(source.ID),
+		Port:   source.Port,
 	}
 	if source.Kind == "url" {
-		parsed, err := url.Parse(host)
-		if err != nil || parsed.User != nil || parsed.Scheme == "" ||
-			parsed.Hostname() == "" {
+		parsed, err := url.Parse(strings.TrimSpace(source.ID))
+		if err != nil || parsed.User != nil || parsed.Scheme == "" {
 			return "", "", 0, errors.New("operation URL resource is invalid")
 		}
-		protocol = strings.ToLower(parsed.Scheme)
-		host = strings.ToLower(parsed.Hostname())
-		if parsed.Port() != "" {
-			value, parseErr := strconv.ParseUint(parsed.Port(), 10, 16)
-			if parseErr != nil || value == 0 {
-				return "", "", 0, errors.New("operation URL port is invalid")
-			}
-			port = uint16(value)
-		} else if protocol == "https" {
-			port = 443
-		} else if protocol == "http" {
-			port = 80
+		if target, err = netpolicy.URLTarget(parsed); err != nil {
+			return "", "", 0, fmt.Errorf("operation URL resource is invalid: %w", err)
 		}
 	}
-	if protocol == "" || host == "" {
+	if target.Scheme == "" || target.Host == "" {
 		return "", "", 0, errors.New("operation network target is incomplete")
 	}
-	return protocol + "://" +
-			net.JoinHostPort(strings.ToLower(host), strconv.Itoa(int(port))),
-		protocol,
-		port,
-		nil
+	return target.Key(), target.Scheme, target.Port, nil
 }
 
 func fileIdentity(path string) string {

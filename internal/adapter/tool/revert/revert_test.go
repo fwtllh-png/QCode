@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
-	"github.com/fwtllh-png/QCode/internal/testutil/tooltest"
+	"github.com/fwtllh-png/QCode/testutil/tooltest"
 )
 
 type fakeReverter struct {

@@ -7,7 +7,7 @@ import (
 
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
 	"github.com/fwtllh-png/QCode/internal/security/controlmatrix"
-	"github.com/fwtllh-png/QCode/internal/security/policy"
+	"github.com/fwtllh-png/QCode/internal/security/effect"
 )
 
 func TestExecutionOperationNormalizesResourcesAndArguments(t *testing.T) {
@@ -16,9 +16,9 @@ func TestExecutionOperationNormalizesResourcesAndArguments(t *testing.T) {
 	input := OperationInput{
 		WorkspaceRoot: root, WorkspaceGeneration: 3,
 		Invocation: invocation,
-		Effect: policy.Effect{
-			Kind: policy.EffectProcessReadOnly, Risk: policy.RiskLow,
-			Reversibility: "reversible",
+		Effect: effect.Effect{
+			Kind: effect.ProcessReadOnly, Risk: effect.RiskLow,
+			Reversibility: effect.Reversible,
 		},
 		Required: RequiredControls{
 			FilesystemRead: controlmatrix.FilesystemReadDeclaredRoots,
@@ -58,9 +58,9 @@ func TestExecutionOperationDigestRejectsMutation(t *testing.T) {
 	operation, err := BuildExecutionOperation(OperationInput{
 		WorkspaceRoot: root, WorkspaceGeneration: 1,
 		Invocation: fixturePreparedInvocation(root),
-		Effect: policy.Effect{
-			Kind: policy.EffectProcessReadOnly, Risk: policy.RiskLow,
-			Reversibility: "reversible",
+		Effect: effect.Effect{
+			Kind: effect.ProcessReadOnly, Risk: effect.RiskLow,
+			Reversibility: effect.Reversible,
 		},
 	})
 	if err != nil {
@@ -82,9 +82,9 @@ func TestExecutionOperationRejectsTraversalResource(t *testing.T) {
 	_, err := BuildExecutionOperation(OperationInput{
 		WorkspaceRoot: root, WorkspaceGeneration: 1,
 		Invocation: invocation,
-		Effect: policy.Effect{
-			Kind: policy.EffectWorkspaceRead, Risk: policy.RiskLow,
-			Reversibility: "reversible",
+		Effect: effect.Effect{
+			Kind: effect.WorkspaceRead, Risk: effect.RiskLow,
+			Reversibility: effect.Reversible,
 		},
 	})
 	if err == nil {
@@ -103,9 +103,9 @@ func TestExecutionOperationBindsAuthorizedHostRoot(t *testing.T) {
 	operation, err := BuildExecutionOperation(OperationInput{
 		WorkspaceRoot: workspace, WorkspaceGeneration: 1,
 		Invocation: invocation, HostReadRoots: []string{toolchain},
-		Effect: policy.Effect{
-			Kind: policy.EffectProcessReadOnly, Risk: policy.RiskLow,
-			Reversibility: "reversible",
+		Effect: effect.Effect{
+			Kind: effect.ProcessReadOnly, Risk: effect.RiskLow,
+			Reversibility: effect.Reversible,
 		},
 	})
 	if err != nil {
@@ -129,9 +129,9 @@ func TestExecutionOperationCanonicalizesNetworkTarget(t *testing.T) {
 	operation, err := BuildExecutionOperation(OperationInput{
 		WorkspaceRoot: root, WorkspaceGeneration: 1,
 		Invocation: invocation,
-		Effect: policy.Effect{
-			Kind: policy.EffectNetworkRead, Risk: policy.RiskMedium,
-			Reversibility: "bounded",
+		Effect: effect.Effect{
+			Kind: effect.NetworkRead, Risk: effect.RiskMedium,
+			Reversibility: effect.Bounded,
 		},
 	})
 	if err != nil {

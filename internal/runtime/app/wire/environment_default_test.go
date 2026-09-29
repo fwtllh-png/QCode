@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	"github.com/fwtllh-png/QCode/internal/config"
-	envcontract "github.com/fwtllh-png/QCode/internal/environment"
+	platformenv "github.com/fwtllh-png/QCode/internal/platform/environment"
 	"github.com/fwtllh-png/QCode/internal/platform/process"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
 )
@@ -21,7 +21,7 @@ func TestDefaultEnvironmentIsV1NativeWithoutSharedTempOrAuth(t *testing.T) {
 		len(defaults.AuthServices) != 0 {
 		t.Fatalf("product default = %+v", defaults)
 	}
-	if envcontract.ChildProfile(defaults.Profile) != envcontract.ProfileIsolated {
+	if platformenv.ChildProfile(defaults.Profile) != platformenv.ProfileIsolated {
 		t.Fatal("child profile must stay isolated after the default switch")
 	}
 }
@@ -113,13 +113,13 @@ func TestDefaultChildStaysIsolatedWhenParentIsNative(t *testing.T) {
 		WorkspaceRoot:       t.TempDir(),
 		PrivateTemp:         childHome,
 		EnvironmentContract: defaults.Contract,
-		EnvironmentProfile:  envcontract.ChildProfile(defaults.Profile),
+		EnvironmentProfile:  platformenv.ChildProfile(defaults.Profile),
 		SharedUserTemp:      false,
 	}, defaults, "", childHome)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if options.EnvironmentProfile != envcontract.ProfileIsolated || options.SharedUserTemp {
+	if options.EnvironmentProfile != platformenv.ProfileIsolated || options.SharedUserTemp {
 		t.Fatalf("child options = %+v", options)
 	}
 	if environmentEntryValue(options.EnvironmentValues, "HOME") != childHome {

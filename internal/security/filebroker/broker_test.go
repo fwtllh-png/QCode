@@ -14,7 +14,7 @@ import (
 
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
 	"github.com/fwtllh-png/QCode/internal/security/authority"
-	"github.com/fwtllh-png/QCode/internal/security/policy"
+	"github.com/fwtllh-png/QCode/internal/security/effect"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
 )
 
@@ -319,9 +319,9 @@ func testRequest(
 	operation, err := authority.BuildExecutionOperation(authority.OperationInput{
 		WorkspaceRoot: root, WorkspaceID: workspaceID,
 		WorkspaceGeneration: 1, Invocation: invocation,
-		Effect: policy.Effect{
-			Kind: policy.EffectWorkspaceEdit, Risk: policy.RiskMedium,
-			Reversibility: string(authority.ReversibilityReversible),
+		Effect: effect.Effect{
+			Kind: effect.WorkspaceEdit, Risk: effect.RiskMedium,
+			Reversibility: effect.Reversible,
 		},
 		Journaled: true, RequireReadBeforeWrite: true,
 		FileMutationDigest: plan.Digest,

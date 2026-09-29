@@ -74,9 +74,6 @@ func (c *Client) httpClient() *http.Client {
 	if base == nil {
 		base = http.DefaultClient
 	}
-	if c.Egress == nil {
-		return base
-	}
 	return egress.WrapClient(base, c.Egress)
 }
 func (c *Client) RouteCooldown(route model.ReadyRoute) time.Duration {

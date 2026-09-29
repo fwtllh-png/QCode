@@ -4,7 +4,7 @@ import (
 	"context"
 	"sync"
 
-	"github.com/fwtllh-png/QCode/internal/environment"
+	"github.com/fwtllh-png/QCode/internal/platform/environment"
 )
 
 type serviceKey struct{}

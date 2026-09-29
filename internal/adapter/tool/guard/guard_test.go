@@ -18,6 +18,7 @@ import (
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
 	"github.com/fwtllh-png/QCode/internal/security/authority"
 	"github.com/fwtllh-png/QCode/internal/security/controlmatrix"
+	"github.com/fwtllh-png/QCode/internal/security/effect"
 	"github.com/fwtllh-png/QCode/internal/security/egress"
 	"github.com/fwtllh-png/QCode/internal/security/policy"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
@@ -333,8 +334,8 @@ func TestActAutoProcessPausesForApprovalThenResumes(t *testing.T) {
 	if request.Tool != "exec_command" {
 		t.Fatalf("approval tool = %q, want exec_command", request.Tool)
 	}
-	if request.Effect != policy.EffectProcessMutating ||
-		request.Risk != policy.RiskHigh || request.ReasonCode == "" {
+	if request.Effect != effect.ProcessMutating ||
+		request.Risk != effect.RiskHigh || request.ReasonCode == "" {
 		t.Fatalf("approval presentation facts = %+v", request)
 	}
 	select {
@@ -1042,9 +1043,9 @@ func (e *egressRetryExecutor) Execute(ctx context.Context, _ json.RawMessage) (t
 		}, nil
 	}
 	gate := &egress.Gate{
-		Enforce: true, UseCallScope: true,
+		UseCallScope: true,
 		LookupIP: func(context.Context, string) ([]net.IP, error) {
-			return []net.IP{net.ParseIP("203.0.113.10")}, nil
+			return []net.IP{net.ParseIP("93.184.216.34")}, nil
 		},
 	}
 	if _, err := gate.Authorize(ctx, egress.Target{Host: "cdn.example", Protocol: "https"}, "test"); err != nil {
@@ -1503,8 +1504,8 @@ func TestAdditionalPermissionRequiresReapproval(t *testing.T) {
 		request.AllowedScopes[0] != policy.ApprovalOnce {
 		t.Fatalf("additional permission scopes = %v", request.AllowedScopes)
 	}
-	if request.Effect != policy.EffectExternalMutation ||
-		request.Risk != policy.RiskCritical {
+	if request.Effect != effect.ExternalMutation ||
+		request.Risk != effect.RiskCritical {
 		t.Fatalf("additional permission risk = %s/%s", request.Effect, request.Risk)
 	}
 	if err := guard.Decide(ApprovalDecision{RequestID: request.RequestID}); err != nil {

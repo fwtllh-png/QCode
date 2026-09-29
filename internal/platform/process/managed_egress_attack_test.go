@@ -40,7 +40,7 @@ func TestRealManagedProxyBlocksDirectEgress(t *testing.T) {
 	defer upstream.Close()
 	targetURL, _ := url.Parse(upstream.URL)
 	portValue, _ := strconv.ParseUint(targetURL.Port(), 10, 16)
-	gate := &egress.Gate{Enforce: true}
+	gate := &egress.Gate{}
 	gate.AllowTarget(egress.Target{
 		Host: targetURL.Hostname(), Protocol: "http", Port: uint16(portValue),
 		Methods: []string{http.MethodGet}, AllowPrivate: true,
@@ -53,6 +53,7 @@ func TestRealManagedProxyBlocksDirectEgress(t *testing.T) {
 	root := t.TempDir()
 	backend, err := sandbox.NewPlatformBackend(sandbox.Options{
 		WorkspaceRoot: root, ManagedProxyPort: proxy.Port(),
+		ManagedProxyCredential: proxy.Credential(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -153,7 +154,7 @@ func TestRealSessionProxyIsolatesSiblingPorts(t *testing.T) {
 	defer right.Close()
 	root := t.TempDir()
 	backend, err := egress.NewManagedBackend(
-		&egress.Gate{Enforce: true},
+		&egress.Gate{},
 		sandbox.Options{WorkspaceRoot: root},
 		sandbox.NewPlatformBackend,
 	)
@@ -193,7 +194,7 @@ func TestRealSessionProxyIsolatesSiblingPorts(t *testing.T) {
 		Command: shellQuote(curl) + " -fsS --noproxy '' " + shellQuote(left.URL),
 		Dir:     root, DirFile: pinned, Sandbox: backend,
 		RequireSandbox: true, WorkspaceReadOnly: true,
-		SessionProxyPort: sessionA.Port(),
+		SessionProxyPort: sessionA.Port(), SessionProxyCredential: sessionA.Credential(),
 	})
 	if err != nil || allowed.Stdout != "left-ok" {
 		t.Fatalf("session A granted request = %+v error=%v", allowed, err)
@@ -202,7 +203,7 @@ func TestRealSessionProxyIsolatesSiblingPorts(t *testing.T) {
 		Command: shellQuote(curl) + " -fsS --noproxy '' " + shellQuote(right.URL),
 		Dir:     root, DirFile: pinned, Sandbox: backend,
 		RequireSandbox: true, WorkspaceReadOnly: true,
-		SessionProxyPort: sessionA.Port(),
+		SessionProxyPort: sessionA.Port(), SessionProxyCredential: sessionA.Credential(),
 	})
 	if err != nil || crossed.ExitCode == 0 {
 		t.Fatalf("session A consumed sibling grant = %+v error=%v", crossed, err)
@@ -213,11 +214,70 @@ func TestRealSessionProxyIsolatesSiblingPorts(t *testing.T) {
 			" " + shellQuote(left.URL),
 		Dir: root, DirFile: pinned, Sandbox: backend,
 		RequireSandbox: true, WorkspaceReadOnly: true,
-		SessionProxyPort: sessionA.Port(),
+		SessionProxyPort: sessionA.Port(), SessionProxyCredential: sessionA.Credential(),
 	})
 	if err != nil || sibling.ExitCode == 0 {
 		t.Fatalf("session A reached sibling port = %+v error=%v", sibling, err)
 	}
+
+	// allow_loopback opens every local port, so the proxy channels
+	// themselves are reachable; only their credentials keep them apart.
+	loopbackCtx := sandboxedLoopbackContext(t, backend, root)
+	workspacePolicy, _ := sandbox.BackendPolicy(backend)
+	for name, proxyURL := range map[string]string{
+		"sibling session without credential": sandbox.ManagedProxyURL(sessionB.Port(), ""),
+		"sibling session with own credential": sandbox.ManagedProxyURL(
+			sessionB.Port(), sessionA.Credential(),
+		),
+		"workspace channel without credential": sandbox.ManagedProxyURL(
+			workspacePolicy.ManagedProxyPort, "",
+		),
+		"workspace channel with session credential": sandbox.ManagedProxyURL(
+			workspacePolicy.ManagedProxyPort, sessionA.Credential(),
+		),
+	} {
+		probe, err := process.Run(loopbackCtx, process.Options{
+			Command: shellQuote(curl) + " -sS -o /dev/null -w '%{http_code}' --noproxy '' -x " +
+				shellQuote(proxyURL) + " " + shellQuote(right.URL),
+			Dir: root, DirFile: pinned, Sandbox: backend,
+			RequireSandbox: true, WorkspaceReadOnly: true,
+		})
+		if err != nil || probe.Stdout != "407" {
+			t.Fatalf("%s: loopback command through proxy = %+v error=%v", name, probe, err)
+		}
+	}
+}
+
+func sandboxedLoopbackContext(t *testing.T, backend sandbox.Backend, root string) context.Context {
+	t.Helper()
+	sandboxPolicy, _ := sandbox.BackendPolicy(backend)
+	profile, err := authority.Compile(authority.CompileInput{
+		Runtime: policy.DefaultRuntime(policy.ModeAct, policy.PermissionSuggest),
+		Invocation: policy.Invocation{
+			CallID: "loopback-probe", Tool: "exec_command",
+			Arguments: json.RawMessage(`{"command":"curl"}`), Validated: true,
+			Capability: tool.CapabilityProcess, Access: tool.AccessRead,
+			Sandbox: tool.SandboxStrong,
+			Resources: []tool.Resource{
+				{Kind: "repo", Path: root, Access: tool.AccessRead, Tree: true},
+				{Kind: "host", ID: "localhost", Protocol: "loopback", Access: tool.AccessRead},
+			},
+		},
+		Authorized: true, Decision: policy.Decision{Action: policy.ActionAsk},
+		Revision: 1, Enforcement: "strong",
+		Capability: backend.Capability(), SandboxPolicy: sandboxPolicy,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	execution := profile.ExecutionAuthorityFor(authority.ExecutionOperation{
+		Required: authority.RequiredControls{Network: controlmatrix.NetworkLoopbackExact},
+	})
+	ctx, err := sandbox.WithExecutionAuthority(t.Context(), execution)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ctx
 }
 
 func sandboxedProxyContext(

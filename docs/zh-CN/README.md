@@ -44,7 +44,7 @@
 
 | 文档内容 | 代码事实来源 |
 | --- | --- |
-| Web 启动参数 | `internal/host/web` 与 `qcode --help` |
+| Web 启动参数 | `internal/host` 与 `qcode --help` |
 | TOML、环境变量与默认值 | `internal/config/schema.go`、`defaults.go`、`environment.go` |
 | Runtime 协议 | `docs/protocol/runtime-protocol.schema.json` |
 | 架构边界 | Import 图和 Architecture Test |

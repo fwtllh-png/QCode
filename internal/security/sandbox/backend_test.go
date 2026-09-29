@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/fwtllh-png/QCode/internal/security/controlmatrix"
+	"github.com/fwtllh-png/QCode/internal/security/pathpolicy"
 )
 
 func TestProbeReportsExplicitPlatformBackendAndControls(t *testing.T) {
@@ -219,9 +220,18 @@ func TestBackendProfilesNeverAdmitHostRoot(t *testing.T) {
 	if importIndex < 0 || networkDenyIndex < importIndex {
 		t.Fatalf("Seatbelt profile does not override imported network rules:\n%s", profile)
 	}
-	for _, sensitive := range []string{".ssh", ".gnupg", "Keychains", ".aws"} {
-		if !strings.Contains(profile, sensitive) {
-			t.Fatalf("Seatbelt profile does not explicitly deny %s", sensitive)
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stores := pathpolicy.HomeCredentialRoots(home)
+	if len(stores) == 0 {
+		t.Fatal("credential store table is empty")
+	}
+	for _, store := range stores {
+		deny := "(deny file-read* file-write* (subpath " + seatbeltQuote(store) + "))"
+		if !strings.Contains(profile, deny) {
+			t.Fatalf("Seatbelt profile does not explicitly deny %s", store)
 		}
 	}
 	if runtime.GOOS == "darwin" {
@@ -1328,8 +1338,21 @@ func TestSensitiveCredentialDenylistCoversCommonStores(t *testing.T) {
 			t.Fatalf("sensitive path %q was accepted", path)
 		}
 	}
-	if err := validateSensitivePath(filepath.Join(home, "ordinary.conf")); err != nil {
-		t.Fatalf("ordinary config rejected: %v", err)
+	for _, path := range []string{
+		filepath.Join(home, "ordinary.conf"),
+		filepath.Join(home, ".config", "ghostty", "config"),
+		filepath.Join(home, "src", "secrets-manager"),
+	} {
+		if err := validateSensitivePath(path); err != nil {
+			t.Fatalf("ordinary path %q rejected: %v", path, err)
+		}
+	}
+	for _, ancestor := range []string{
+		filepath.Join(home, "Library"), filepath.Join(home, ".config"),
+	} {
+		if err := validateInjectedRoot(ancestor, t.TempDir()); err == nil {
+			t.Fatalf("root %q containing a credential store was accepted", ancestor)
+		}
 	}
 }
 

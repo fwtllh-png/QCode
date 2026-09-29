@@ -22,12 +22,17 @@ type networkTransport func(*http.Request) (*http.Response, error)
 
 func (f networkTransport) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
+// The fixture never dials, so the Gate-approved addresses need no enforcement.
+func (f networkTransport) RoundTripPinned(r *http.Request, _ []net.IP) (*http.Response, error) {
+	return f(r)
+}
+
 func networkFixture(t *testing.T, rules []policy.Rule, base networkTransport) (*Guard, *egress.Gate) {
 	t.Helper()
 	gate := &egress.Gate{
-		Enforce: true, UseCallScope: true,
+		UseCallScope: true,
 		LookupIP: func(context.Context, string) ([]net.IP, error) {
-			return []net.IP{net.ParseIP("203.0.113.10")}, nil
+			return []net.IP{net.ParseIP("93.184.216.34")}, nil
 		},
 	}
 	registry := tool.NewRegistry(nil, nil)

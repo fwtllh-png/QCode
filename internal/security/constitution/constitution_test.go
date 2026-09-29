@@ -95,6 +95,14 @@ func TestConstitutionWriteHoldCoversEveryWriterTool(t *testing.T) {
 			held: true,
 		},
 		{
+			name: "tree-wide write into the protected tree", tool: "file_patch",
+			capability: policy.CapabilityWrite,
+			resources: []tool.Resource{
+				{Kind: "file", Path: "secrets/token", Access: tool.AccessTree},
+			},
+			held: true,
+		},
+		{
 			name: "file_read of a protected path", tool: "file_read",
 			capability: policy.CapabilityRead,
 			resources: []tool.Resource{
@@ -133,6 +141,40 @@ func TestConstitutionWriteHoldCoversEveryWriterTool(t *testing.T) {
 			}
 			if !test.held && strings.Contains(decision.Code, "constitution_hold") {
 				t.Fatalf("unexpected hold decision = %+v", decision)
+			}
+		})
+	}
+}
+
+func TestConstitutionRejectsUnsupportedWildcards(t *testing.T) {
+	for _, glob := range []string{"*.pem", "**/.env", "config/*.key", "secrets/[ab]", "a?b", "{x,y}"} {
+		t.Run(glob, func(t *testing.T) {
+			workspace := t.TempDir()
+			writeDoc(t, filepath.Join(workspace, ".qcode", "constitution.json"), constitution.Document{
+				Version: 1, DenyWriteGlobs: []string{"secrets/", glob},
+			})
+			_, err := constitution.Load(workspace, t.TempDir())
+			if err == nil || !strings.Contains(err.Error(), glob) {
+				t.Fatalf("Load error = %v, want rejection naming %q", err, glob)
+			}
+		})
+	}
+}
+
+func TestConstitutionDirectorySuffixesProtectSubtree(t *testing.T) {
+	for _, glob := range []string{"secrets", "secrets/", "secrets/*", "secrets/**", "./secrets/"} {
+		t.Run(glob, func(t *testing.T) {
+			workspace := t.TempDir()
+			writeDoc(t, filepath.Join(workspace, ".qcode", "constitution.json"), constitution.Document{
+				Version: 1, DenyWriteGlobs: []string{glob, "  "},
+			})
+			bundle, err := constitution.Load(workspace, t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(bundle.Rules) != 1 || bundle.Rules[0].Resource != "secrets" ||
+				!bundle.Rules[0].RequireWrite {
+				t.Fatalf("rules = %+v", bundle.Rules)
 			}
 		})
 	}

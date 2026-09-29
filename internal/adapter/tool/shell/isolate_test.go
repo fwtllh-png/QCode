@@ -19,7 +19,7 @@ import (
 	"github.com/fwtllh-png/QCode/internal/security/authority"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
 	"github.com/fwtllh-png/QCode/internal/security/workspacebroker"
-	"github.com/fwtllh-png/QCode/internal/testutil/tooltest"
+	"github.com/fwtllh-png/QCode/testutil/tooltest"
 )
 
 func TestExistingWriteTreesIgnoresFilesAndWorkspaceRoot(t *testing.T) {

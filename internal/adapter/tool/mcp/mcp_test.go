@@ -15,7 +15,7 @@ import (
 	toolguard "github.com/fwtllh-png/QCode/internal/adapter/tool/guard"
 	"github.com/fwtllh-png/QCode/internal/adapter/tool/toolsearch"
 	"github.com/fwtllh-png/QCode/internal/security/policy"
-	"github.com/fwtllh-png/QCode/internal/testutil/tooltest"
+	"github.com/fwtllh-png/QCode/testutil/tooltest"
 )
 
 type scriptedTransport struct {

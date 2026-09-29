@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -22,6 +23,7 @@ import (
 	"github.com/fwtllh-png/QCode/internal/observability/tracecontext"
 	sessionhistory "github.com/fwtllh-png/QCode/internal/persist/history"
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
+	"github.com/fwtllh-png/QCode/internal/security/egress"
 )
 
 func TestClientOpenAIRequestAndStream(t *testing.T) {
@@ -737,19 +739,9 @@ func TestClientClassifiesTransportErrors(t *testing.T) {
 	}
 	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
-			var attempts atomic.Int32
-			client := testClient()
-			client.HTTP = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
-				attempts.Add(1)
-				return nil, test.err
-			})}
-
-			_, err := client.Stream(t.Context(), testRequest(t, "https://provider.test", model.ProtocolOpenAIChat))
-			var problem *protocol.Problem
-			if !errors.As(err, &problem) ||
-				problem.Retryable != test.retryable ||
-				attempts.Load() != 1 {
-				t.Fatalf("error=%v attempts=%d", err, attempts.Load())
+			wrapped := &url.Error{Op: "Post", URL: "https://provider.test", Err: test.err}
+			if got := retryableTransportError(wrapped); got != test.retryable {
+				t.Fatalf("retryableTransportError(%v) = %t, want %t", wrapped, got, test.retryable)
 			}
 		})
 	}
@@ -1003,6 +995,8 @@ func TestClientStreamIdleTimeoutAndNonIdempotentRetry(t *testing.T) {
 func testClient() *Client {
 	client := New()
 	client.Credentials = staticCredentials("")
+	client.Egress = &egress.Gate{}
+	client.Egress.SetRuntimeApprover(func(context.Context, egress.Target) error { return nil })
 	return client
 }
 
@@ -1076,9 +1070,3 @@ func (s staticCredentials) Resolve(context.Context, model.CredentialRef) (string
 }
 
 var _ CredentialResolver = staticCredentials("")
-
-type roundTripFunc func(*http.Request) (*http.Response, error)
-
-func (f roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
-	return f(request)
-}

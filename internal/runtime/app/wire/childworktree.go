@@ -19,7 +19,6 @@ import (
 	interacttool "github.com/fwtllh-png/QCode/internal/adapter/tool/interact"
 	webtool "github.com/fwtllh-png/QCode/internal/adapter/tool/web"
 	"github.com/fwtllh-png/QCode/internal/config"
-	envcontract "github.com/fwtllh-png/QCode/internal/environment"
 	"github.com/fwtllh-png/QCode/internal/observability/diagnostics"
 	"github.com/fwtllh-png/QCode/internal/observability/verify"
 	"github.com/fwtllh-png/QCode/internal/orchestration/chatmerge"
@@ -27,6 +26,7 @@ import (
 	"github.com/fwtllh-png/QCode/internal/persist/contentstore"
 	"github.com/fwtllh-png/QCode/internal/persist/joblog"
 	"github.com/fwtllh-png/QCode/internal/persist/workspacejournal"
+	platformenv "github.com/fwtllh-png/QCode/internal/platform/environment"
 	"github.com/fwtllh-png/QCode/internal/platform/process"
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
 	"github.com/fwtllh-png/QCode/internal/security/egress"
@@ -347,16 +347,18 @@ type childToolsets struct {
 	diagnosticReadFiles []string
 	gitCommonDir        string
 	managedProxyPort    uint16
-	parentSandbox       sandbox.Backend
-	workspaceStateRoot  string
-	environment         config.ExecutionEnvironment
-	skillPaths          SkillPaths
-	agents              *subagent.AgentControl
-	agentSession        string
-	agentRelease        func(string)
-	interactionsBound   bool
-	interactionVision   interacttool.VisionClient
-	interactionPlan     func(interacttool.Plan) error
+	// managedProxyCredential authenticates to managedProxyPort.
+	managedProxyCredential string
+	parentSandbox          sandbox.Backend
+	workspaceStateRoot     string
+	environment            config.ExecutionEnvironment
+	skillPaths             SkillPaths
+	agents                 *subagent.AgentControl
+	agentSession           string
+	agentRelease           func(string)
+	interactionsBound      bool
+	interactionVision      interacttool.VisionClient
+	interactionPlan        func(interacttool.Plan) error
 
 	mu    sync.Mutex
 	built map[string]*childToolset
@@ -450,14 +452,15 @@ func (c *childToolsets) open(
 		return nil, fmt.Errorf("child state layout: %w", err)
 	}
 	options, _, err := bindEnvironmentSandbox(sandbox.Options{
-		WorkspaceRoot:       root,
-		PrivateTemp:         stateLayout.SandboxHome,
-		ManagedProxyPort:    c.managedProxyPort,
-		HostReadRoots:       hostReadRoots,
-		HostReadFiles:       c.diagnosticReadFiles,
-		EnvironmentContract: c.environment.Contract,
-		EnvironmentProfile:  envcontract.ChildProfile(c.environment.Profile),
-		SharedUserTemp:      false,
+		WorkspaceRoot:          root,
+		PrivateTemp:            stateLayout.SandboxHome,
+		ManagedProxyPort:       c.managedProxyPort,
+		ManagedProxyCredential: c.managedProxyCredential,
+		HostReadRoots:          hostReadRoots,
+		HostReadFiles:          c.diagnosticReadFiles,
+		EnvironmentContract:    c.environment.Contract,
+		EnvironmentProfile:     platformenv.ChildProfile(c.environment.Profile),
+		SharedUserTemp:         false,
 	}, c.environment, "", stateLayout.SandboxHome)
 	if err != nil {
 		return nil, fmt.Errorf("child environment: %w", err)

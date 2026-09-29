@@ -5,7 +5,6 @@ import (
 	"strings"
 	"testing"
 
-	envcontract "github.com/fwtllh-png/QCode/internal/environment"
 	platformenv "github.com/fwtllh-png/QCode/internal/platform/environment"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
 )
@@ -14,23 +13,23 @@ func TestApplyPreparedSandboxOptionsInheritsUserNetworkOnly(t *testing.T) {
 	options := sandbox.Options{
 		WorkspaceRoot:      t.TempDir(),
 		PrivateTemp:        t.TempDir(),
-		EnvironmentProfile: envcontract.ProfileIsolated,
+		EnvironmentProfile: platformenv.ProfileIsolated,
 	}
 	applyPreparedSandboxOptions(&options, platformenv.PreparedEnvironment{
 		Env: []string{"HOME=/sandbox-home", "TMPDIR=/sandbox-home"},
-		Compiled: []envcontract.CompiledResource{
+		Compiled: []platformenv.CompiledResource{
 			{
-				Request: envcontract.ResourceRequest{
-					Name: "user-proxy", Namespace: envcontract.NamespaceNetwork,
+				Request: platformenv.ResourceRequest{
+					Name: "user-proxy", Namespace: platformenv.NamespaceNetwork,
 					Host: "declared.example", Port: 443, Protocol: "https",
 					Methods: []string{"CONNECT"},
-					Source:  envcontract.SourceUserDeclaration,
+					Source:  platformenv.SourceUserDeclaration,
 				},
 				Bindable: true,
 			},
 			{
-				Request: envcontract.ResourceRequest{
-					Name: "goproxy-first", Namespace: envcontract.NamespaceNetwork,
+				Request: platformenv.ResourceRequest{
+					Name: "goproxy-first", Namespace: platformenv.NamespaceNetwork,
 					Host: "proxy.golang.org", Port: 443, Protocol: "https",
 					Methods: []string{"CONNECT"},
 					Source:  "goproxy-first-item",
@@ -38,18 +37,18 @@ func TestApplyPreparedSandboxOptionsInheritsUserNetworkOnly(t *testing.T) {
 				Bindable: true,
 			},
 			{
-				Request: envcontract.ResourceRequest{
-					Name: "go-root", Namespace: envcontract.NamespaceHostToolchain,
-					Env:  "GOROOT", Value: "/opt/go", Path: "/opt/go",
+				Request: platformenv.ResourceRequest{
+					Name: "go-root", Namespace: platformenv.NamespaceHostToolchain,
+					Env: "GOROOT", Value: "/opt/go", Path: "/opt/go",
 					Source: "go-env-GOROOT",
 				},
 				Bindable: true,
 			},
 			{
-				Request: envcontract.ResourceRequest{
-					Name: "http-proxy", Namespace: envcontract.NamespaceHostConfig,
-					Env:  "HTTP_PROXY", Value: "http://proxy.example",
-					Source: envcontract.SourceUserDeclaration,
+				Request: platformenv.ResourceRequest{
+					Name: "http-proxy", Namespace: platformenv.NamespaceHostConfig,
+					Env: "HTTP_PROXY", Value: "http://proxy.example",
+					Source: platformenv.SourceUserDeclaration,
 				},
 				Bindable: true,
 			},
@@ -77,13 +76,13 @@ func TestApplyPreparedSandboxOptionsIsolatedHomeBeatsHostValue(t *testing.T) {
 	options := sandbox.Options{
 		WorkspaceRoot:      t.TempDir(),
 		PrivateTemp:        sandboxHome,
-		EnvironmentProfile: envcontract.ProfileIsolated,
+		EnvironmentProfile: platformenv.ProfileIsolated,
 	}
 	applyPreparedSandboxOptions(&options, platformenv.PreparedEnvironment{
 		Env: []string{"HOME=" + sandboxHome, "TMPDIR=" + sandboxHome},
-		Compiled: []envcontract.CompiledResource{{
-			Request: envcontract.ResourceRequest{
-				Name: "home-value", Namespace: envcontract.NamespaceHostConfig,
+		Compiled: []platformenv.CompiledResource{{
+			Request: platformenv.ResourceRequest{
+				Name: "home-value", Namespace: platformenv.NamespaceHostConfig,
 				Env: "HOME", Value: "/host/home", Path: "env:HOME",
 				Source: "startup-env",
 			},
