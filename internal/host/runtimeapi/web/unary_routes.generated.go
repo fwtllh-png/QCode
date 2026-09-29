@@ -14,6 +14,8 @@ func unaryRouteHandler(path string) (unaryHandler, bool) {
 		return (*Server).agentPresetSave, true
 	case "agent/list":
 		return (*Server).agentList, true
+	case "auth/launch-code":
+		return (*Server).authLaunchCode, true
 	case "checkpoint/fork":
 		return (*Server).checkpointFork, true
 	case "checkpoint/get":

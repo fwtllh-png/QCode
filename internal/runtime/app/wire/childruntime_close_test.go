@@ -27,23 +27,21 @@ func TestCloseAgentSettlesAndReleasesRunningChild(t *testing.T) {
 		t.Fatal(err)
 	}
 	threadID := protocol.ThreadID(child.ThreadID)
-	session.children.mu.Lock()
-	running := session.children.turns[threadID]
-	session.children.mu.Unlock()
-	if running == nil {
+	running, tracked := session.children.Tracked(threadID)
+	if !tracked {
 		t.Fatal("child turn not tracked")
 	}
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 	select {
-	case <-running.startedSignal:
+	case <-running.Started:
 	case <-ctx.Done():
 		t.Fatal(ctx.Err())
 	}
 	registry := tool.NewRegistry(nil, nil)
 	if err := agenttool.Register(registry, agenttool.Options{
 		Control: session.subagents, Handles: handle.NewStore(),
-		OnRelease: session.children.release, SessionID: child.SessionID,
+		OnRelease: session.children.Release, SessionID: child.SessionID,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -63,7 +61,7 @@ func TestCloseAgentSettlesAndReleasesRunningChild(t *testing.T) {
 		}
 	}
 	select {
-	case <-running.terminalSignal:
+	case <-running.Terminal:
 	case <-ctx.Done():
 		t.Fatalf("closed child settlement did not finish: %v", ctx.Err())
 	}
@@ -74,15 +72,13 @@ func TestCloseAgentSettlesAndReleasesRunningChild(t *testing.T) {
 	if _, registered := session.threads.ChildSpecFor(threadID); registered {
 		t.Fatal("closed child retained its thread")
 	}
-	session.children.mu.Lock()
-	tracked, failures := len(session.children.turns), len(session.children.settlementErrors)
-	session.children.mu.Unlock()
-	if tracked != 0 || failures != 0 {
-		t.Fatalf("closed child left turns=%d settlementErrors=%d", tracked, failures)
+	remaining, failures := session.children.Outstanding()
+	if remaining != 0 || failures != 0 {
+		t.Fatalf("closed child left turns=%d settlementErrors=%d", remaining, failures)
 	}
-	spent := session.children.governor.Snapshot()
-	if spent.InFlight != 0 || spent.SpentTokens != result.Usage.Tokens() {
-		t.Fatalf("closed child budget = %+v, usage=%+v", spent, result.Usage)
+	ledger := session.subagents.SessionBudget(child.SessionID)
+	if ledger.ReservedSlots != 0 || ledger.SpentTokens != result.Usage.Tokens() {
+		t.Fatalf("closed child budget = %+v, usage=%+v", ledger, result.Usage)
 	}
 	messages := session.subagents.Mailbox().ReceiveSession(child.SessionID, subagent.SessionParentID)
 	if len(messages) != 1 || messages[0].Kind != subagent.MessageCompletion {
@@ -98,7 +94,7 @@ func TestCloseAgentSettlesAndReleasesRunningChild(t *testing.T) {
 	if err := session.subagents.CloseContext(ctx, next.ID); err != nil {
 		t.Fatalf("close immediately after acceptance: %v", err)
 	}
-	session.children.release(next.ID)
+	session.children.Release(next.ID)
 }
 
 type closeRetryGraph struct {
@@ -130,16 +126,14 @@ func TestCloseRetainsTurnDuringSettlementRetry(t *testing.T) {
 		t.Fatal(err)
 	}
 	threadID := protocol.ThreadID(child.ThreadID)
-	session.children.mu.Lock()
-	turn := session.children.turns[threadID]
-	session.children.mu.Unlock()
-	if turn == nil {
+	turn, tracked := session.children.Tracked(threadID)
+	if !tracked {
 		t.Fatal("child not tracked")
 	}
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 	select {
-	case <-turn.startedSignal:
+	case <-turn.Started:
 	case <-ctx.Done():
 		t.Fatal(ctx.Err())
 	}
@@ -152,7 +146,7 @@ func TestCloseRetainsTurnDuringSettlementRetry(t *testing.T) {
 	go func() {
 		err := session.subagents.CloseContext(ctx, child.ID)
 		if err == nil {
-			session.children.release(child.ID)
+			session.children.Release(child.ID)
 		}
 		closed <- err
 	}()
@@ -165,22 +159,19 @@ func TestCloseRetainsTurnDuringSettlementRetry(t *testing.T) {
 	if !ok || current.Closed || current.Result != nil || !subagent.OccupiesSlot(current.Status) {
 		t.Fatalf("failed settlement lost active agent: %+v", current)
 	}
-	session.children.mu.Lock()
-	tracked := session.children.turns[threadID] == turn
-	session.children.mu.Unlock()
-	if !tracked {
+	if retained, ok := session.children.Tracked(threadID); !ok || retained != turn {
 		t.Fatal("unsettled turn was removed from tracking")
 	}
 	if _, ok := session.threads.ChildSpecFor(threadID); !ok {
 		t.Fatal("thread released before settlement")
 	}
 	// Replayed terminal events must not create a second settlement worker.
-	spent := session.children.governor.Snapshot().SpentTokens
-	session.children.observe(protocol.Event{
-		ThreadID: threadID, TurnID: turn.turnID,
+	spent := session.subagents.SessionBudget(child.SessionID).SpentTokens
+	session.children.Observe(protocol.Event{
+		ThreadID: threadID, TurnID: turn.TurnID,
 		Data: &protocol.TurnCanceledData{Reason: protocol.CancelReasonHostInterrupted},
 	})
-	if got := session.children.governor.Snapshot().SpentTokens; got != spent {
+	if got := session.subagents.SessionBudget(child.SessionID).SpentTokens; got != spent {
 		t.Fatalf("duplicate terminal charged budget: %d -> %d", spent, got)
 	}
 	graph.failing.Store(false)
@@ -188,15 +179,18 @@ func TestCloseRetainsTurnDuringSettlementRetry(t *testing.T) {
 		t.Fatal(err)
 	}
 	select {
-	case <-turn.terminalSignal:
+	case <-turn.Terminal:
 	case <-ctx.Done():
 		t.Fatal("settlement retry did not complete")
 	}
-	session.children.mu.Lock()
-	remaining, failures := len(session.children.turns), len(session.children.settlementErrors)
-	session.children.mu.Unlock()
+	remaining, failures := session.children.Outstanding()
 	if remaining != 0 || failures != 0 {
 		t.Fatalf("settlement recovery left turns=%d errors=%d", remaining, failures)
+	}
+	if settled, ok := session.subagents.Result(child.ID); !ok ||
+		session.subagents.SessionBudget(child.SessionID).SpentTokens != settled.Usage.Tokens() {
+		t.Fatalf("retried settlement charged %+v for %+v",
+			session.subagents.SessionBudget(child.SessionID), settled.Usage)
 	}
 	if _, ok := session.threads.ChildSpecFor(threadID); ok {
 		t.Fatal("settled closed child retained its thread")

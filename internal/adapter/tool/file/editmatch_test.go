@@ -75,6 +75,72 @@ func TestReplaceNormalizedAdoptsSpanLineEndings(t *testing.T) {
 	}
 }
 
+func TestReplaceNormalizedMapsReplacementOntoFileIndentation(t *testing.T) {
+	content := "func f() {\n\tif x {\n\t\treturn 1\n\t}\n}\n"
+	old := "    if x {\n        return 1\n    }"
+	replacement := "    if y {\n        return 2\n    }\n    done()"
+	next, ok := replaceNormalized(content, old, replacement, 1)
+	if !ok {
+		t.Fatal("replaceNormalized rejected an indentation-only mismatch")
+	}
+	want := "func f() {\n\tif y {\n\t\treturn 2\n\t}\n\tdone()\n}\n"
+	if string(next) != want {
+		t.Fatalf("replaceNormalized = %q, want %q", next, want)
+	}
+}
+
+func TestReplaceNormalizedKeepsTextBeforeAMidLineSpan(t *testing.T) {
+	content := "\tvalue := “raw”\n"
+	next, ok := replaceNormalized(content, "  \"raw\"", "  \"cooked\"", 1)
+	if !ok {
+		t.Fatal("replaceNormalized rejected a mid-line fold")
+	}
+	if want := "\tvalue := \"cooked\"\n"; string(next) != want {
+		t.Fatalf("replaceNormalized = %q, want %q", next, want)
+	}
+}
+
+func TestReplaceExactStrippedCRLFViewKeepsIndentationAndEndings(t *testing.T) {
+	// file_read strips '\r', so a multi-line edit of a CRLF file arrives with
+	// '\n' separators and only matches through the folded fallback.
+	content := "\tone\r\n\ttwo\r\nend\r\n"
+	next, recovery, err := replaceExact([]byte(content), "\tone\n\ttwo", "\tONE\n\tTWO\n\tTHREE", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !recovery.normalized {
+		t.Fatalf("recovery = %+v, want normalized", recovery)
+	}
+	if want := "\tONE\r\n\tTWO\r\n\tTHREE\r\nend\r\n"; string(next) != want {
+		t.Fatalf("replaceExact = %q, want %q", next, want)
+	}
+}
+
+func TestReplacementAdoptsCRLFForSingleLineMatches(t *testing.T) {
+	content := "a\r\nsay “hi”\r\nb\r\n"
+	next, ok := replaceNormalized(content, "say \"hi\"", "say \"hi\"\nsay \"bye\"", 1)
+	if !ok {
+		t.Fatal("replaceNormalized rejected a single-line fold")
+	}
+	if want := "a\r\nsay \"hi\"\r\nsay \"bye\"\r\nb\r\n"; string(next) != want {
+		t.Fatalf("replaceNormalized = %q, want %q", next, want)
+	}
+	exact, _, err := replaceExact([]byte("a\r\nb\r\n"), "a", "a\nx", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "a\r\nx\r\nb\r\n"; string(exact) != want {
+		t.Fatalf("replaceExact = %q, want %q", exact, want)
+	}
+	lf, _, err := replaceExact([]byte("a\nb\n"), "a", "a\nx", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "a\nx\nb\n"; string(lf) != want {
+		t.Fatalf("LF replaceExact = %q, want %q", lf, want)
+	}
+}
+
 func TestReplaceNormalizedKeepsOccurrenceCountSemantics(t *testing.T) {
 	content := "tag “one”\ntag “two”\n"
 	if _, ok := replaceNormalized(content, "tag \"one\"", "X", 1); !ok {

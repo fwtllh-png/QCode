@@ -347,6 +347,22 @@ func runWeb(
 								targetURL += "?workspace=" + url.QueryEscape(workspaceID)
 							}
 						}
+						launchURL := func() string {
+							if held.Metadata.CapabilityToken == "" {
+								return targetURL
+							}
+							value, launchErr := ownerLaunchURL(
+								ctx,
+								held.Metadata.PublicURL,
+								held.Metadata.CapabilityToken,
+								targetURL,
+							)
+							if launchErr != nil {
+								_, _ = fmt.Fprintf(stderr, "qcode: launch code: %v\n", launchErr)
+								return targetURL
+							}
+							return value
+						}
 						readyLabel := "Runtime Ready"
 						if status == "setup_required" {
 							readyLabel = "Setup Ready"
@@ -355,10 +371,10 @@ func runWeb(
 							stdout,
 							"QCode %s: %s\n",
 							readyLabel,
-							targetURL,
+							launchURL(),
 						)
 						if options.open && !options.noOpen {
-							if openErr := openWebBrowser(targetURL); openErr != nil {
+							if openErr := openWebBrowser(launchURL()); openErr != nil {
 								_, _ = fmt.Fprintf(stderr, "qcode: open browser: %v\n", openErr)
 							}
 						}
@@ -554,8 +570,16 @@ func runWeb(
 		}
 	}
 
+	launchURL := func() string {
+		value, launchErr := server.LaunchURL(workspaceURL)
+		if launchErr != nil {
+			_, _ = fmt.Fprintf(stderr, "qcode: launch code: %v\n", launchErr)
+			return workspaceURL
+		}
+		return value
+	}
 	if options.open && !options.noOpen {
-		if err := openWebBrowser(workspaceURL); err != nil {
+		if err := openWebBrowser(launchURL()); err != nil {
 			_, _ = fmt.Fprintf(stderr, "qcode: open browser: %v\n", err)
 		}
 	}
@@ -597,15 +621,10 @@ func runWeb(
 		selectionPersisted := false
 		prepared, prepareErr := prepareWebRuntime(
 			ctx, options, candidate, candidateSelection, workspaceRoot,
-			workspaceIdentity, store, repositories, stderr, secret,
-			nil, credential.Reference{},
+			workspaceIdentity, store, repositories, stderr, secret, nil,
 		)
-		if prepareErr == nil && prepared.credentialActivate != nil {
-			value := prepared.credentialReference
-			if active := candidateSelection.Active(); active != nil {
-				active.Credential = &value
-			}
-			reference = value
+		if prepareErr == nil && prepared.credentials.bindTo(candidateSelection, "") {
+			reference = prepared.credentials.Reference()
 		}
 		if prepareErr == nil && persist {
 			prepareErr = saveWebSetupSelection(
@@ -625,7 +644,7 @@ func runWeb(
 			)
 		}
 		if prepareErr == nil {
-			prepareErr = prepared.activateCredential()
+			prepareErr = prepared.credentials.Activate()
 		}
 		if prepareErr == nil {
 			prepareErr = server.Activate(prepared.dependenciesWithDiagnostics(stderr))
@@ -641,21 +660,12 @@ func runWeb(
 			}
 			if prepared != nil {
 				prepared.close()
-				prepareErr = errors.Join(
-					prepareErr,
-					prepared.rollbackCredential(),
-				)
+				prepared.credentials.settle(&prepareErr, stderr)
 			}
 			workspaceManager.SetRoute(selection, routeReference)
 			return prepareErr
 		}
-		if commitErr := prepared.commitCredential(); commitErr != nil {
-			_, _ = fmt.Fprintf(
-				stderr,
-				"qcode: finalize credential rotation: %v\n",
-				commitErr,
-			)
-		}
+		prepared.credentials.commitOrReport(stderr)
 		workspaceManager.RegisterInitial(workspaceIdentity, prepared)
 		loaded = candidate
 		selection = candidateSelection
@@ -664,7 +674,7 @@ func runWeb(
 	}
 
 	if setupRequired {
-		_, _ = fmt.Fprintf(stdout, "QCode Setup Ready: %s\n", publicURL)
+		_, _ = fmt.Fprintf(stdout, "QCode Setup Ready: %s\n", launchURL())
 		for !workspaceManager.Configured() {
 			select {
 			case attempt := <-setupRequests:
@@ -707,7 +717,7 @@ func runWeb(
 		)
 	}
 	workspaceManager.ActivateRegistered(ctx)
-	_, _ = fmt.Fprintf(stdout, "QCode Runtime Ready: %s\n", publicURL)
+	_, _ = fmt.Fprintf(stdout, "QCode Runtime Ready: %s\n", launchURL())
 	return waitForWebShutdown(
 		ctx,
 		httpServer,
@@ -786,69 +796,99 @@ func registerWorkspaceWithOwner(
 	token string,
 	workspaceRoot string,
 ) (string, error) {
+	digest := sha256.Sum256([]byte(workspaceRoot))
+	var result webhost.WorkspaceAddResult
+	if err := callOwner(
+		ctx, rawURL, token, "workspace/add",
+		webhost.WorkspaceAddRequest{Path: workspaceRoot},
+		"workspace-register-"+hex.EncodeToString(digest[:]),
+		&result,
+	); err != nil {
+		return "", err
+	}
+	return result.Workspace.ID, nil
+}
+
+// ownerLaunchURL asks a running owner for a one-time launch code so the
+// browser opened by this invocation gets its own session cookie.
+func ownerLaunchURL(ctx context.Context, rawURL, token, targetURL string) (string, error) {
+	var result webhost.LaunchCodeResult
+	if err := callOwner(
+		ctx, rawURL, token, "auth/launch-code", struct{}{}, "", &result,
+	); err != nil {
+		return "", err
+	}
+	return webhost.WithLaunchCode(targetURL, result.Code)
+}
+
+func callOwner(
+	ctx context.Context,
+	rawURL, token, route string,
+	body any,
+	idempotencyKey string,
+	result any,
+) error {
 	if strings.TrimSpace(token) == "" {
-		return "", errors.New("owner capability token is required")
+		return errors.New("owner capability token is required")
 	}
 	requestContext, cancel := context.WithTimeout(ctx, 35*time.Second)
 	defer cancel()
 	target, err := url.Parse(rawURL)
 	if err != nil {
-		return "", err
+		return err
 	}
 	if target.Scheme != "http" || target.Hostname() != "127.0.0.1" ||
 		target.User != nil {
-		return "", errors.New("owner URL is not a trusted loopback HTTP endpoint")
+		return errors.New("owner URL is not a trusted loopback HTTP endpoint")
 	}
-	target.Path = "/api/v1/workspace/add"
+	target.Path = "/api/v1/" + route
 	target.RawPath = ""
 	target.RawQuery = ""
 	target.Fragment = ""
-	body, err := json.Marshal(webhost.WorkspaceAddRequest{Path: workspaceRoot})
+	encoded, err := json.Marshal(body)
 	if err != nil {
-		return "", err
+		return err
 	}
 	request, err := http.NewRequestWithContext(
 		requestContext,
 		http.MethodPost,
 		target.String(),
-		bytes.NewReader(body),
+		bytes.NewReader(encoded),
 	)
 	if err != nil {
-		return "", err
+		return err
 	}
 	request.Header.Set("Authorization", "Bearer "+token)
 	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("X-QCode-Request-ID", "workspace-register")
-	digest := sha256.Sum256([]byte(workspaceRoot))
-	request.Header.Set(
-		"Idempotency-Key",
-		"workspace-register-"+hex.EncodeToString(digest[:]),
-	)
+	request.Header.Set("X-QCode-Request-ID", "owner-"+strings.ReplaceAll(route, "/", "-"))
+	if idempotencyKey != "" {
+		request.Header.Set("Idempotency-Key", idempotencyKey)
+	}
 	client := &http.Client{
 		Transport: &http.Transport{Proxy: nil},
 		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
-			return errors.New("owner Workspace registration redirects are forbidden")
+			return errors.New("owner Web API redirects are forbidden")
 		},
 	}
 	response, err := client.Do(request)
 	if err != nil {
-		return "", err
+		return err
 	}
 	defer response.Body.Close()
-	var envelope struct {
-		Result  webhost.WorkspaceAddResult `json:"result"`
-		Problem *protocol.Problem          `json:"problem,omitempty"`
-	}
+	envelope := struct {
+		Result  any               `json:"result"`
+		Problem *protocol.Problem `json:"problem,omitempty"`
+	}{Result: result}
 	if err := json.NewDecoder(io.LimitReader(response.Body, 64<<10)).Decode(&envelope); err != nil {
-		return "", err
+		return err
 	}
 	if response.StatusCode != http.StatusOK {
 		if envelope.Problem != nil {
-			return "", errors.New(envelope.Problem.Message)
+			return errors.New(envelope.Problem.Message)
 		}
-		return "", fmt.Errorf("Workspace registration failed (HTTP %d)", response.StatusCode)
+		return fmt.Errorf("owner Web API %s failed (HTTP %d)", route, response.StatusCode)
 	}
-	return envelope.Result.Workspace.ID, nil
+	return nil
 }
 
 func loadWebConfig(options webCommandOptions) (config.Snapshot, error) {
@@ -859,20 +899,15 @@ func loadWebConfig(options webCommandOptions) (config.Snapshot, error) {
 }
 
 type preparedWebRuntime struct {
-	*preparedWebCredentials
+	credentials  *credentialRotation
 	application  *wire.Session
 	extensions   *wire.SkillControlHandle
 	dependencies webhost.Dependencies
 }
 
-type preparedWebCredentials struct {
-	credentialActivate  func() error
-	credentialCommit    func() error
-	credentialRollback  func() error
-	credentialControl   *credential.Control
-	credentialReference credential.Reference
-}
-
+// prepareWebRuntime builds a runtime for selection's active connection. With
+// inherited set, the runtime shares that rotation's Control and reference and
+// its own rotation stays idle: the inherited rotation's owner settles it.
 func prepareWebRuntime(
 	ctx context.Context,
 	options webCommandOptions,
@@ -884,26 +919,23 @@ func prepareWebRuntime(
 	repositories apppersistence.PersistentRepositories,
 	stderr io.Writer,
 	secret string,
-	stagedControl *credential.Control,
-	stagedReference credential.Reference,
+	inherited *credentialRotation,
 ) (_ *preparedWebRuntime, resultErr error) {
 	active := selection.Active()
 	if active == nil {
 		return nil, errors.New("no model connection is configured")
 	}
-	preparedCredentials, err := prepareWebCredentials(
-		ctx, loaded, selection, secret, stagedControl, stagedReference,
-	)
+	rotation, err := openCredentialRotation(ctx, loaded, selection, "", secret, inherited)
 	if err != nil {
 		return nil, err
 	}
 	defer func() {
 		if resultErr != nil {
-			resultErr = errors.Join(resultErr, preparedCredentials.rollbackCredential())
+			resultErr = errors.Join(resultErr, rotation.Rollback())
 		}
 	}()
-	credentialControl := preparedCredentials.credentialControl
-	effectiveCredential := preparedCredentials.credentialReference
+	credentialControl := rotation.Control()
+	effectiveCredential := rotation.Reference()
 
 	runtimeOverrides := webConfigOverrides(options)
 	runtimeOverrides.Provider = &loaded.Config.Execution.Provider
@@ -1019,8 +1051,8 @@ func prepareWebRuntime(
 		ModelMetadata: active.Metadata,
 	}
 	return &preparedWebRuntime{
-		preparedWebCredentials: preparedCredentials,
-		application:            application, extensions: extensions,
+		credentials: rotation,
+		application: application, extensions: extensions,
 		dependencies: webhost.Dependencies{
 			Runtime: application.Runtime, WorkspaceRoot: workspaceRoot,
 			WorkspaceIdentity: workspaceIdentity,
@@ -1038,31 +1070,18 @@ func prepareWebRuntime(
 	}, nil
 }
 
-func prepareWebCredentials(
+// openCredentialRotation 在指定连接（缺省为活动连接）的 provider 命名空间
+// 打开 Control 并暂存密钥；connection/add 用它定向到非默认连接。inherited
+// 非空时复用其 Control 与引用，不再打开新的命名空间。
+func openCredentialRotation(
 	ctx context.Context,
 	loaded config.Snapshot,
 	selection webSetupSelection,
-	secret string,
-	stagedControl *credential.Control,
-	stagedReference credential.Reference,
-) (*preparedWebCredentials, error) {
-	return prepareWebCredentialsFor(
-		ctx, loaded, selection, secret, "", stagedControl, stagedReference,
-	)
-}
-
-// prepareWebCredentialsFor 在指定连接（缺省为活动连接）的 provider 命名
-// 空间打开 Control 并暂存密钥；connection/add 用它定向到非默认连接。
-func prepareWebCredentialsFor(
-	ctx context.Context,
-	loaded config.Snapshot,
-	selection webSetupSelection,
-	secret string,
 	targetConnectionID string,
-	stagedControl *credential.Control,
-	stagedReference credential.Reference,
-) (*preparedWebCredentials, error) {
-	credentialControl := stagedControl
+	secret string,
+	inherited *credentialRotation,
+) (*credentialRotation, error) {
+	credentialControl := inherited.Control()
 	active := selection.Active()
 	if active == nil {
 		return nil, errors.New("no model connection is configured")
@@ -1073,7 +1092,7 @@ func prepareWebCredentialsFor(
 			target = connection
 		}
 	}
-	effectiveCredential := stagedReference
+	effectiveCredential := inherited.Reference()
 	if credentialControl == nil {
 		var err error
 		credentialControl, effectiveCredential, err = credential.OpenControl(
@@ -1104,56 +1123,7 @@ func prepareWebCredentialsFor(
 			return nil, fmt.Errorf("credential recovery: %w", err)
 		}
 	}
-	var credentialActivate, credentialCommit, credentialRollback func() error
-	if secret != "" {
-		previousCredential := effectiveCredential
-		setupCredentials := credential.New(
-			effectiveCredential,
-			credential.WithControl(credentialControl),
-			credential.WithLiveReload(),
-		)
-		status, setErr := setupCredentials.StageKeyring(ctx, secret)
-		if setErr != nil {
-			return nil, fmt.Errorf("store setup credential: %w", setErr)
-		}
-		effectiveCredential = status.Reference
-		credentialActivate = func() error {
-			return credentialControl.Activate(
-				context.Background(),
-				status.Reference,
-			)
-		}
-		credentialCommit = func() error {
-			return credentialControl.Commit(
-				context.Background(),
-				status.Reference,
-			)
-		}
-		credentialRollback = func() error {
-			return credentialControl.Restore(
-				context.Background(),
-				status.Reference,
-				previousCredential,
-			)
-		}
-	}
-
-	return &preparedWebCredentials{
-		credentialActivate:  credentialActivate,
-		credentialCommit:    credentialCommit,
-		credentialRollback:  credentialRollback,
-		credentialControl:   credentialControl,
-		credentialReference: effectiveCredential,
-	}, nil
-}
-
-func (p *preparedWebCredentials) activateCredential() error {
-	if p == nil || p.credentialActivate == nil {
-		return nil
-	}
-	activate := p.credentialActivate
-	p.credentialActivate = nil
-	return activate()
+	return stageCredentialRotation(ctx, credentialControl, effectiveCredential, secret)
 }
 
 func (p *preparedWebRuntime) dependenciesWithDiagnostics(
@@ -1172,28 +1142,6 @@ func (p *preparedWebRuntime) close() {
 		_ = p.extensions.Close()
 	}
 	closeWebRuntime(p.application)
-}
-
-func (p *preparedWebCredentials) commitCredential() error {
-	if p == nil || p.credentialCommit == nil {
-		return nil
-	}
-	commit := p.credentialCommit
-	p.credentialActivate = nil
-	p.credentialCommit = nil
-	p.credentialRollback = nil
-	return commit()
-}
-
-func (p *preparedWebCredentials) rollbackCredential() error {
-	if p == nil || p.credentialRollback == nil {
-		return nil
-	}
-	rollback := p.credentialRollback
-	p.credentialActivate = nil
-	p.credentialCommit = nil
-	p.credentialRollback = nil
-	return rollback()
 }
 
 func closeWebRuntime(application *wire.Session) {

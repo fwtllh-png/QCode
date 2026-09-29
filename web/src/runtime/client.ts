@@ -87,6 +87,8 @@ import {
 } from "../projection/conversation";
 import {projectTurnQueue} from "../projection/turnQueue";
 import {FrameNotifier} from "./notifier";
+import {reconnectDelay} from "./reconnect";
+import {RequestScope, ScopeSlot} from "./requestScope";
 
 function hydratePlanArtifact(
   artifact: SessionPlanArtifact | undefined
@@ -106,7 +108,8 @@ export type RuntimePhase =
   | "reconnecting"
   | "desynchronized"
   | "failed"
-  | "draining";
+  | "draining"
+  | "unauthenticated";
 
 export interface RuntimeSnapshot {
   phase: RuntimePhase;
@@ -144,8 +147,31 @@ export interface RuntimeSnapshot {
 
 type Listener = () => void;
 type BufferedEvent = {event: RuntimeEvent; sessionID: string};
+/**
+ * Link is the event-stream lifecycle. `start` enters starting, only a
+ * completed start enters live, and every retryable failure while the client
+ * runs enters waiting with one scheduled start; `stop`, terminal protocol
+ * states and non-retryable failures leave it idle.
+ */
+type Link =
+  | {kind: "idle"}
+  | {kind: "starting"; failures: number}
+  | {kind: "live"}
+  | {kind: "waiting"; failures: number; timer: number};
+
+type SelectionRestorePoint = {
+  snapshot: Pick<RuntimeSnapshot,
+    "selectedSessionID" | "events" | "conversation" | "queuedTurns" |
+    "historyMoreBefore" | "profile" | "tools" | "checkpoints" | "plan" |
+    "agents" | "usage" | "trace" | "tracePhase" | "traceProblem" |
+    "extensions" | "mergePlan" | "contextResources">;
+  projection: ConversationProjection;
+  traceTurns: Set<string>;
+  tracePending: Set<string>;
+  traceWatermark: number;
+};
+
 type Hydration = {
-  generation: number;
   sessionID: string;
   events: BufferedEvent[];
 };
@@ -227,7 +253,6 @@ function catalogHasActivatingWorkspace(
 }
 
 export class RuntimeClient {
-  private token = "";
   private cursor = 0;
   private socket?: WebSocket;
   private sessionRefreshQueued = false;
@@ -236,15 +261,15 @@ export class RuntimeClient {
     promise: Promise<void>;
     workspaceIDs?: ReadonlySet<string>;
   };
-  private reconnectTimer?: number;
+  private link: Link = {kind: "idle"};
+  private everLive = false;
   private bootTimer?: number;
-  private generation = 0;
-  private sessionListGeneration = 0;
-  private sessionListController?: AbortController;
+  private readonly boot = new ScopeSlot();
+  private readonly connection = new ScopeSlot();
+  private readonly sessionList = new ScopeSlot();
   private sessionListHydrationRequested = false;
   private sessionWorkspaceIDs = new Map<string, string>();
-  private selectionGeneration = 0;
-  private selectionController?: AbortController;
+  private readonly selection = new ScopeSlot();
   private progressRequest?: {
     controller: AbortController;
     promise: Promise<void>;
@@ -294,13 +319,20 @@ export class RuntimeClient {
   getSnapshot = (): RuntimeSnapshot => this.state;
 
   async start(): Promise<void> {
-    if (this.bootTimer !== undefined) {
-      window.clearTimeout(this.bootTimer);
-      this.bootTimer = undefined;
-    }
+    const failures = this.link.kind === "waiting" || this.link.kind === "starting"
+      ? this.link.failures : 0;
+    this.clearLinkTimers();
+    const scope = this.boot.renew();
+    this.link = {kind: "starting", failures};
     try {
       const bootstrap = await this.fetchBootstrap();
-      this.token = bootstrap.token;
+      if (!scope.live) return;
+      this.link = {kind: "idle"};
+      if (!bootstrap.authenticated) {
+        this.closeSocket("session required");
+        this.update({phase: "unauthenticated", problem: undefined});
+        return;
+      }
       if (bootstrap.draining) {
         this.update({phase: "draining", problem: bootstrap.problem});
         return;
@@ -353,8 +385,7 @@ export class RuntimeClient {
         return;
       }
       if (!selectedWorkspace) {
-        this.socket?.close(1000, "workspace selection required");
-        this.socket = undefined;
+        this.closeSocket("workspace selection required");
         this.update({
           phase: "ready",
           workspaceRoot: "",
@@ -372,8 +403,11 @@ export class RuntimeClient {
       }
       // 多 Workspace 激活是逐个进行的：supervisor 就绪不代表目标 Workspace
       // 已激活。选中前等待其就绪，避免启动竞态把“未就绪”变成永久错误。
-      await this.awaitWorkspaceReady(selectedWorkspaceID);
+      this.link = {kind: "starting", failures};
+      await this.awaitWorkspaceReady(selectedWorkspaceID, scope);
+      if (!scope.live) return;
       await this.restoreBrowserState(bootstrap, selectedWorkspaceID);
+      if (!scope.live) return;
       this.update({
         phase: "reconnecting",
         workspaceRoot: selectedWorkspace?.root ?? bootstrap.workspace_root ?? "",
@@ -381,37 +415,65 @@ export class RuntimeClient {
         selectedWorkspaceID,
         problem: undefined
       });
-      this.socket?.close(1000, "client reconnect");
+      this.closeSocket("client reconnect");
       await this.connect();
+      if (!scope.live) return;
       await this.refreshModelCatalog();
+      if (!scope.live) return;
       await this.refreshSessions();
+      if (!scope.live) return;
+      this.link = {kind: "live"};
+      this.everLive = true;
     } catch (error) {
-      if (this.state.phase !== "reconnecting" &&
-          this.state.phase !== "desynchronized") {
-        this.fail(error);
+      if (!scope.live) return;
+      if (this.state.phase === "desynchronized" || !retryable(error)) {
+        this.link = {kind: "idle"};
+        if (this.state.phase !== "desynchronized") this.fail(error);
+        return;
       }
+      this.scheduleReconnect(error, failures + 1);
     }
+  }
+
+  /**
+   * Ends the current start attempt and schedules the next one. A client that
+   * has been live stays mounted in the reconnecting phase; one that never
+   * reached live shows the failure while it keeps retrying.
+   */
+  private scheduleReconnect(error: unknown, failures: number): void {
+    if (this.link.kind === "waiting") return;
+    this.boot.renew();
+    this.fail(error, this.everLive ? "reconnecting" : "failed");
+    const timer = window.setTimeout(() => void this.start(), reconnectDelay(failures));
+    this.link = {kind: "waiting", failures, timer};
+  }
+
+  /** Closes the event stream deliberately; its close is not a disconnect. */
+  private closeSocket(reason: string): void {
+    this.connection.renew();
+    this.socket?.close(1000, reason);
+    this.socket = undefined;
+  }
+
+  private clearLinkTimers(): void {
+    if (this.link.kind === "waiting") window.clearTimeout(this.link.timer);
+    if (this.bootTimer !== undefined) window.clearTimeout(this.bootTimer);
+    this.bootTimer = undefined;
   }
 
   stop(): void {
     this.cancelSessionRefresh();
     this.sessionListHydrationRequested = false;
     this.cancelProgressRefresh();
-    this.selectionController?.abort();
-    this.selectionGeneration += 1;
+    this.selection.renew();
     this.cancelEarlierHistory();
     this.eventNotifier.flushNow();
     this.flushBrowserState();
-    this.generation += 1;
-    if (this.reconnectTimer !== undefined) {
-      window.clearTimeout(this.reconnectTimer);
-    }
-    if (this.bootTimer !== undefined) {
-      window.clearTimeout(this.bootTimer);
-    }
+    this.boot.renew();
+    this.clearLinkTimers();
+    this.link = {kind: "idle"};
     this.sessionRefreshQueued = false;
-    this.socket?.close(1000, "client stopped");
-    this.socket = undefined;
+    this.closeSocket("client stopped");
   }
 
   refreshSessions(
@@ -455,10 +517,7 @@ export class RuntimeClient {
     workspaceIDs?: ReadonlySet<string>
   ): Promise<void> {
     this.sessionListHydrationRequested ||= hydrate;
-    this.sessionListController?.abort();
-    const controller = new AbortController();
-    this.sessionListController = controller;
-    const generation = ++this.sessionListGeneration;
+    const scope = this.sessionList.renew();
     const searchQuery = query ?? this.state.sessionSearchQuery;
     const searching = Boolean(searchQuery.trim());
     const loadCatalog = query === undefined || !searching ||
@@ -479,7 +538,7 @@ export class RuntimeClient {
         query: value,
         include_archived: includeArchived,
         limit: 200
-      }, {workspaceID: workspace.id, signal: controller.signal});
+      }, {workspaceID: workspace.id, signal: scope.signal});
     const requests = workspaces.map(async (workspace) => {
       const [catalog, search] = await Promise.allSettled([
         loadCatalog ? list(workspace, "") : Promise.resolve(undefined),
@@ -488,7 +547,7 @@ export class RuntimeClient {
       return {workspace, catalog, search};
     });
     const lists = await Promise.all(requests);
-    if (controller.signal.aborted || generation !== this.sessionListGeneration) return;
+    if (!scope.live) return;
     // A newer background list may supersede the startup list, but it must
     // inherit the request to restore the selected session's full history.
     const hydrateSelected = this.sessionListHydrationRequested;
@@ -560,8 +619,7 @@ export class RuntimeClient {
   }
 
   private cancelSessionRefresh(): void {
-    this.sessionListController?.abort();
-    this.sessionListGeneration += 1;
+    this.sessionList.renew();
     this.sessionListRequest = undefined;
     this.sessionRefreshPending.clear();
   }
@@ -619,10 +677,8 @@ export class RuntimeClient {
     this.pendingSelectedEvents = [];
     this.hydration = undefined;
     this.cancelProgressRefresh();
-    this.selectionGeneration += 1;
-    this.generation += 1;
-    this.socket?.close(1000, "last workspace removed");
-    this.socket = undefined;
+    this.selection.renew();
+    this.closeSocket("last workspace removed");
     this.update({
       phase: "ready",
       workspaceRoot: "",
@@ -732,16 +788,14 @@ export class RuntimeClient {
     this.pendingSelectedEvents = [];
     this.hydration = undefined;
     this.cancelProgressRefresh();
-    this.selectionGeneration += 1;
-    this.generation += 1;
-    this.socket?.close(1000, "workspace changed");
-    this.socket = undefined;
+    this.selection.renew();
+    this.closeSocket("workspace changed");
     this.flushBrowserState();
     await this.storageWrite;
     await this.restoreBrowserState({
       protocol_version: this.protocolVersion,
       server_build: this.serverBuild,
-      token: this.token,
+      authenticated: true,
       ready: true,
       draining: false
     }, workspaceID);
@@ -842,7 +896,7 @@ export class RuntimeClient {
     }, {workspaceID: this.workspaceIDForSession(sessionID)});
     if (this.state.selectedSessionID === sessionID) {
       this.cancelProgressRefresh();
-      this.selectionGeneration += 1;
+      this.selection.renew();
       this.hydration = undefined;
       this.update({
         selectedSessionID: "",
@@ -876,21 +930,18 @@ export class RuntimeClient {
       await this.switchWorkspace(ownerWorkspace.id, false);
     }
     const workspaceID = ownerWorkspace?.id ?? this.state.selectedWorkspaceID;
+    const previous = this.selectionRestorePoint();
     this.cancelEarlierHistory();
     this.eventNotifier.cancel();
     this.pendingSelectedEvents = [];
-    const previousSessionID = this.state.selectedSessionID;
     this.cancelProgressRefresh();
-    const generation = ++this.selectionGeneration;
-    this.selectionController?.abort();
-    const controller = new AbortController();
-    this.selectionController = controller;
-    const options = {workspaceID, signal: controller.signal};
-    this.traceTurns.clear();
-    this.tracePending.clear();
+    const scope = this.selection.renew();
+    const options = {workspaceID, signal: scope.signal};
+    this.traceTurns = new Set();
+    this.tracePending = new Set();
     this.traceInFlight = undefined;
     this.traceWatermark = 0;
-    const hydration: Hydration = {generation, sessionID, events: []};
+    const hydration: Hydration = {sessionID, events: []};
     this.hydration = hydration;
     this.update({
       selectedSessionID: sessionID,
@@ -919,11 +970,11 @@ export class RuntimeClient {
       session_id: sessionID,
       thread_id: summary?.thread_id
     }, options);
-    if (generation !== this.selectionGeneration) return;
+    if (!scope.live) return;
     const snapshot = await this.call<PresentationSnapshot>("session/snapshot", {
       session_id: sessionID
     }, options);
-    if (generation !== this.selectionGeneration) return;
+    if (!scope.live) return;
     const snapshotEvents = snapshot.events ?? [];
     const liveEvents = hydration.events
       .filter(({event, sessionID: owner}) =>
@@ -964,8 +1015,7 @@ export class RuntimeClient {
       void this.refreshSessions(undefined, false);
     }
     this.traceWatermark = snapshot.through_sequence;
-    const current = () => generation === this.selectionGeneration &&
-      !controller.signal.aborted && sessionID === this.state.selectedSessionID;
+    const current = () => scope.live && sessionID === this.state.selectedSessionID;
     const detail = async <T>(
       route: WebRPCRoute, body: unknown, project: (value: T) => Partial<RuntimeSnapshot>
     ): Promise<void> => {
@@ -1013,18 +1063,50 @@ export class RuntimeClient {
       this.refreshTrace(sessionID)
     ]);
     } catch (error) {
-      if (generation !== this.selectionGeneration || this.hydration !== hydration) {
-        return;
-      }
-      if (this.hydration === hydration) {
-        this.hydration = undefined;
-        this.update({
-          selectedSessionID: previousSessionID,
-          hydratingSessionID: ""
-        });
-      }
+      if (!scope.live || this.hydration !== hydration) return;
+      this.hydration = undefined;
+      this.selection.renew();
+      this.restoreSelection(previous, hydration);
       throw error;
     }
+  }
+
+  /** Captures what a failed Session switch must put back. */
+  private selectionRestorePoint(): SelectionRestorePoint {
+    this.eventNotifier.flushNow();
+    const {
+      selectedSessionID, events, conversation, queuedTurns, historyMoreBefore,
+      profile, tools, checkpoints, plan, agents, usage, trace, tracePhase,
+      traceProblem, extensions, mergePlan, contextResources
+    } = this.state;
+    return {
+      snapshot: {
+        selectedSessionID, events, conversation, queuedTurns, historyMoreBefore,
+        profile, tools, checkpoints, plan, agents, usage, trace, tracePhase,
+        traceProblem, extensions, mergePlan, contextResources
+      },
+      projection: this.conversationProjection,
+      traceTurns: this.traceTurns,
+      tracePending: this.tracePending,
+      traceWatermark: this.traceWatermark
+    };
+  }
+
+  /**
+   * Puts the previous Session back after a failed switch, then replays the
+   * live events buffered while the switch was in flight.
+   */
+  private restoreSelection(previous: SelectionRestorePoint, hydration: Hydration): void {
+    this.conversationProjection = previous.projection;
+    this.traceTurns = previous.traceTurns;
+    this.tracePending = previous.tracePending;
+    this.traceWatermark = previous.traceWatermark;
+    this.update({...previous.snapshot, hydratingSessionID: ""});
+    const buffered = [...hydration.events]
+      .sort((left, right) => left.event.sequence - right.event.sequence);
+    for (const {event, sessionID} of buffered) this.applyEvent(event, sessionID);
+    const sessionID = previous.snapshot.selectedSessionID;
+    if (sessionID) void this.refreshProgress(sessionID);
   }
 
   async submitPrompt(prompt: string): Promise<OperationReceipt> {
@@ -1257,7 +1339,7 @@ export class RuntimeClient {
   async updateProfile(
     patch: Record<string, unknown>
   ): Promise<SessionProfileUpdateResult> {
-    const generation = this.selectionGeneration;
+    const scope = this.selection.current;
     const snapshot = this.state.profile;
     const profile = snapshot?.profile;
     const session = this.state.sessions.find(
@@ -1280,7 +1362,7 @@ export class RuntimeClient {
         session_id: session.session_id
       })
     ]);
-    if (generation !== this.selectionGeneration ||
+    if (!scope.live ||
         session.session_id !== this.state.selectedSessionID) {
       return result;
     }
@@ -1332,6 +1414,7 @@ export class RuntimeClient {
     );
     const profile = this.state.profile?.profile;
     if (!session || !profile) throw new Error("No active session");
+    const scope = this.selection.current;
     const result = await this.call<AgentPresetApplyResult>("agent-preset/apply", {
       session_id: session.session_id,
       thread_id: session.thread_id,
@@ -1346,7 +1429,9 @@ export class RuntimeClient {
         session_id: session.session_id
       })
     ]);
-    this.update({profile: authoritative, tools: catalog.tools ?? []});
+    if (scope.live && session.session_id === this.state.selectedSessionID) {
+      this.update({profile: authoritative, tools: catalog.tools ?? []});
+    }
     return result;
   }
 
@@ -1355,13 +1440,13 @@ export class RuntimeClient {
     this.eventNotifier.flushNow();
     const sessionID = this.requireSession();
     const workspaceID = this.state.selectedWorkspaceID;
-    const generation = this.selectionGeneration;
+    const scope = this.selection.current;
     const before = this.state.events[0]?.sequence;
     if (!before || !this.state.historyMoreBefore || this.hydration) return Promise.resolve(0);
     const request = {controller: new AbortController(), promise: Promise.resolve(0)};
     this.historyRequest = request;
     const current = () => !request.controller.signal.aborted &&
-      generation === this.selectionGeneration &&
+      scope.live &&
       workspaceID === this.state.selectedWorkspaceID &&
       sessionID === this.state.selectedSessionID;
     request.promise = (async () => {
@@ -1399,7 +1484,6 @@ export class RuntimeClient {
   }
 
   private cancelEarlierHistory(): void {
-    this.selectionController?.abort();
     this.historyRequest?.controller.abort();
     this.historyRequest = undefined;
   }
@@ -1530,7 +1614,6 @@ export class RuntimeClient {
     const response = await fetch(`/api/v1/content/${encodeURIComponent(handle)}`, {
       method: "GET",
       headers: {
-        "Authorization": `Bearer ${this.token}`,
         "X-QCode-Workspace-ID": this.state.selectedWorkspaceID
       },
       credentials: "same-origin"
@@ -1804,13 +1887,14 @@ export class RuntimeClient {
   }
 
   private async acceptModelCatalog(result: ModelCatalog): Promise<void> {
+    this.update({models: result.models ?? []});
+    const scope = this.selection.current;
     const sessionID = this.state.selectedSessionID;
-    const profile = sessionID
-      ? await this.call<SessionProfileSnapshot>("profile/get", {
-          session_id: sessionID
-        })
-      : undefined;
-    this.update({models: result.models ?? [], ...(profile ? {profile} : {})});
+    if (!sessionID) return;
+    const profile = await this.call<SessionProfileSnapshot>("profile/get", {
+      session_id: sessionID
+    }, {signal: scope.signal});
+    if (scope.live && sessionID === this.state.selectedSessionID) this.update({profile});
   }
 
   private async fetchBootstrap(): Promise<Bootstrap> {
@@ -1835,7 +1919,6 @@ export class RuntimeClient {
     } = {}
   ): Promise<T> {
     const headers: Record<string, string> = {
-      "Authorization": `Bearer ${this.token}`,
       "Content-Type": "application/json",
       "X-QCode-Request-ID": crypto.randomUUID()
     };
@@ -1859,7 +1942,8 @@ export class RuntimeClient {
       response = await fetch(`/api/v1/${route}`, {
         method: "POST",
         headers,
-        body: JSON.stringify(body)
+        body: JSON.stringify(body),
+        signal: options.signal
       });
     }
     const envelope = (await response.json()) as Envelope<T>;
@@ -1880,23 +1964,22 @@ export class RuntimeClient {
   }
 
   private connect(): Promise<void> {
-    const generation = ++this.generation;
+    const scope = this.connection.renew();
     const scheme = window.location.protocol === "https:" ? "wss:" : "ws:";
     const socket = new WebSocket(`${scheme}//${window.location.host}/api/v1/events`);
     this.socket = socket;
     return new Promise<void>((resolve, reject) => {
       let connected = false;
       socket.addEventListener("open", () => {
-        if (generation !== this.generation) return;
+        if (!scope.live) return;
         socket.send(JSON.stringify({
           type: "authenticate",
-          token: this.token,
           workspace_id: this.state.selectedWorkspaceID,
           cursor: this.cursor
         }));
       });
       socket.addEventListener("message", (message) => {
-        if (generation !== this.generation) return;
+        if (!scope.live) return;
         let frame: EventFrame;
         try {
           frame = decodeEventFrame(message.data);
@@ -1958,18 +2041,19 @@ export class RuntimeClient {
         }
       });
       socket.addEventListener("close", () => {
-        if (generation !== this.generation) {
+        if (!scope.live) {
           if (!connected) reject(new Error("Web event stream was superseded"));
           return;
         }
         if (this.state.phase === "desynchronized") {
+          this.link = {kind: "idle"};
           return;
         }
-        this.fail("Connection interrupted.");
+        this.scheduleReconnect("Connection interrupted.",
+          this.link.kind === "starting" ? this.link.failures + 1 : 0);
         if (!connected) {
           reject(new Error("Web event stream closed before readiness"));
         }
-        this.reconnectTimer = window.setTimeout(() => void this.start(), 700);
       });
       socket.addEventListener("error", () => {
         socket.close();
@@ -1982,7 +2066,7 @@ export class RuntimeClient {
     this.pendingSelectedEvents = [];
     this.commitCursor(0, true);
     this.cancelProgressRefresh();
-    this.selectionGeneration += 1;
+    this.selection.renew();
     this.hydration = undefined;
     this.update({
       events: [],
@@ -2054,7 +2138,9 @@ export class RuntimeClient {
     this.update({
       events: [...this.state.events, ...pending],
       conversation: this.conversationProjection.snapshot(),
-      queuedTurns: projectTurnQueue(this.state.queuedTurns, pending)
+      queuedTurns: pending.some((event) => event.data.queue_id)
+        ? projectTurnQueue(this.state.queuedTurns, pending)
+        : this.state.queuedTurns
     });
   }
 
@@ -2083,14 +2169,14 @@ export class RuntimeClient {
   }
 
   private async refreshUsage(sessionID: string): Promise<void> {
-    const generation = this.selectionGeneration;
+    const scope = this.selection.current;
     const result = await this.call<UsageQueryResult>("usage/query", {
       session_id: sessionID,
       include_children: true,
       limit: 100
     });
     if (
-      generation === this.selectionGeneration &&
+      scope.live &&
       sessionID === this.state.selectedSessionID
     ) {
       this.update({usage: result.rollup});
@@ -2103,7 +2189,7 @@ export class RuntimeClient {
       this.progressRequest.dirty = true;
       return this.progressRequest.promise;
     }
-    const generation = this.selectionGeneration;
+    const scope = this.selection.current;
     const workspaceID = this.state.selectedWorkspaceID;
     const request = {
       controller: new AbortController(),
@@ -2112,7 +2198,7 @@ export class RuntimeClient {
     };
     this.progressRequest = request;
     const current = () => this.progressRequest === request &&
-      generation === this.selectionGeneration &&
+      scope.live &&
       workspaceID === this.state.selectedWorkspaceID &&
       sessionID === this.state.selectedSessionID &&
       !request.controller.signal.aborted;
@@ -2164,15 +2250,15 @@ export class RuntimeClient {
       this.traceRefreshAgain = true;
       return this.traceInFlight;
     }
-    const generation = this.selectionGeneration;
+    const scope = this.selection.current;
     const workspaceID = this.state.selectedWorkspaceID;
-    const signal = this.selectionController?.signal;
+    const signal = scope.signal;
     if (this.tracePending.size === 0) {
       this.update({tracePhase: "ready", traceProblem: undefined});
       return;
     }
-    const current = () => generation === this.selectionGeneration &&
-      sessionID === this.state.selectedSessionID && !signal?.aborted;
+    const current = () => scope.live &&
+      sessionID === this.state.selectedSessionID;
     const request = (async () => {
       do {
         this.traceRefreshAgain = false;
@@ -2226,10 +2312,10 @@ export class RuntimeClient {
     if (this.sessionRefreshQueued || this.sessionListRequest ||
         this.sessionRefreshPending.size === 0) return;
     this.sessionRefreshQueued = true;
-    const generation = this.generation;
+    const scope = this.connection.current;
     queueMicrotask(() => {
       this.sessionRefreshQueued = false;
-      if (generation !== this.generation) return;
+      if (!scope.live) return;
       if (this.sessionListRequest || this.sessionRefreshPending.size === 0) return;
       const workspaceIDs = new Set(this.sessionRefreshPending);
       this.sessionRefreshPending.clear();
@@ -2255,21 +2341,24 @@ export class RuntimeClient {
   }
 
   private async refreshModelCatalog(): Promise<void> {
-    const [providers, models] = await Promise.all([
+    // One unavailable catalog must not fail a start attempt or hide the other.
+    const [providers, models] = await Promise.allSettled([
       this.call<ProviderCatalog>("provider/list", {}),
       this.call<ModelCatalog>("model/list", {})
     ]);
     this.update({
-      providers: providers.providers ?? [],
-      models: models.models ?? []
+      ...(providers.status === "fulfilled"
+        ? {providers: providers.value.providers ?? []} : {}),
+      ...(models.status === "fulfilled" ? {models: models.value.models ?? []} : {})
     });
   }
 
   private protocolVersion: number = webProtocolVersion;
   private serverBuild = "";
 
-  private async awaitWorkspaceReady(workspaceID: string): Promise<void> {
+  private async awaitWorkspaceReady(workspaceID: string, scope: RequestScope): Promise<void> {
     for (let attempt = 0; attempt < 50; attempt += 1) {
+      if (!scope.live) return;
       const catalog = await this.call<WorkspaceCatalog>(
         "workspace/list",
         {}
@@ -2387,7 +2476,7 @@ export class RuntimeClient {
       .catch(() => undefined);
   };
 
-  private fail(error: unknown): void {
+  private fail(error: unknown, phase: "failed" | "reconnecting" = "failed"): void {
     const problem =
       error instanceof RuntimeProblem
         ? error.problem
@@ -2397,7 +2486,7 @@ export class RuntimeClient {
             message: error instanceof Error ? error.message : String(error),
             retryable: true
           };
-    this.update({phase: "failed", socketConnected: false, problem});
+    this.update({phase, socketConnected: false, problem});
   }
 
   private requireSession(): string {
@@ -2409,6 +2498,10 @@ export class RuntimeClient {
     }
     return this.state.selectedSessionID;
   }
+}
+
+function retryable(error: unknown): boolean {
+  return !(error instanceof RuntimeProblem) || error.problem.retryable;
 }
 
 export class RuntimeProblem extends Error {

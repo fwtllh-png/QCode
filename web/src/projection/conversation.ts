@@ -184,14 +184,30 @@ export interface ConversationSnapshot {
   readonly pendingApproval?: RuntimeEvent;
   readonly pendingInput?: RuntimeEvent;
   readonly revision: number;
+  /**
+   * Advances when anything except the streamed content of existing nodes
+   * changes: node membership or order, a node's kind, turn activity or a
+   * pending request. Consumers that lay out the transcript follow this;
+   * a node's own renderer follows the node.
+   */
+  readonly structureRevision: number;
 }
+
+/** Events that only extend the content of an already projected node. */
+export const contentDeltaKinds: ReadonlySet<string> = new Set([
+  "output.delta",
+  "output.draft",
+  "reasoning.delta",
+  "tool.output"
+]);
 
 const emptyConversation: ConversationSnapshot = Object.freeze({
   order: Object.freeze([]),
   nodes: new Map(),
   activeTurnID: "",
   latestTurnID: "",
-  revision: 0
+  revision: 0,
+  structureRevision: 0
 });
 
 export function emptyConversationSnapshot(): ConversationSnapshot {
@@ -226,7 +242,10 @@ export class ConversationProjection {
   private readonly deliverablesByPath = new Map<string, Set<string>>();
   private readonly agentByThread = new Map<string, string>();
   private revision = 0;
+  private structureRevision = 0;
   private dirty = false;
+  private structureDirty = false;
+  private contentDelta = false;
   private current: ConversationSnapshot = emptyConversation;
 
   applyAll(events: readonly RuntimeEvent[]): void {
@@ -234,6 +253,15 @@ export class ConversationProjection {
   }
 
   apply(event: RuntimeEvent): void {
+    this.contentDelta = contentDeltaKinds.has(event.kind);
+    try {
+      this.applyEvent(event);
+    } finally {
+      this.contentDelta = false;
+    }
+  }
+
+  private applyEvent(event: RuntimeEvent): void {
     const data = event.data;
     const childAgentID = this.agentByThread.get(event.thread_id);
     if (childAgentID && !event.kind.startsWith("agent.")) {
@@ -468,6 +496,7 @@ export class ConversationProjection {
   snapshot(): ConversationSnapshot {
     if (!this.dirty) return this.current;
     this.revision += 1;
+    if (this.structureDirty) this.structureRevision += 1;
     const activeTurnID = [...this.activeTurns].at(-1) ?? "";
     this.current = Object.freeze({
       order: Object.freeze([...this.order]),
@@ -477,9 +506,11 @@ export class ConversationProjection {
       activeStatus: this.activities.get(activeTurnID),
       pendingApproval: [...this.approvals.values()].at(-1),
       pendingInput: [...this.inputs.values()].at(-1),
-      revision: this.revision
+      revision: this.revision,
+      structureRevision: this.structureRevision
     });
     this.dirty = false;
+    this.structureDirty = false;
     return this.current;
   }
 
@@ -1175,8 +1206,13 @@ export class ConversationProjection {
   }
 
   private put(node: ConversationNode): void {
-    if (!this.nodes.has(node.id)) this.order.push(node.id);
+    const previous = this.nodes.get(node.id);
+    if (!previous) this.order.push(node.id);
     this.nodes.set(node.id, Object.freeze(node));
+    if (this.contentDelta && previous?.kind === node.kind) {
+      this.dirty = true;
+      return;
+    }
     this.touch();
   }
 
@@ -1189,6 +1225,7 @@ export class ConversationProjection {
 
   private touch(): void {
     this.dirty = true;
+    this.structureDirty = true;
   }
 }
 

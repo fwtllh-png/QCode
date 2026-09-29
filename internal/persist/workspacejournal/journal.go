@@ -24,6 +24,8 @@ var (
 	ErrUnread        = errors.New("read-before-edit required")
 	ErrStale         = errors.New("file changed since last successful read")
 	ErrRetainedDraft = errors.New("workspace journal has a retained draft")
+
+	errWorkspaceRestoreInProgress = errors.New("workspace turn is already being restored")
 )
 
 // ReadValidationError identifies the exact workspace-relative path whose
@@ -304,6 +306,9 @@ type turnJournal struct {
 	order   []string
 	records map[string]*Record
 	started time.Time
+	// restoring is guarded by Manager.mu. While set, a Rollback or Revert
+	// owns the journal and no other operation may resume, keep, or restore it.
+	restoring bool
 }
 
 type Conflict struct {
@@ -678,6 +683,9 @@ func (m *Manager) KeepDraft(turnID string) error {
 	if journal == nil {
 		return nil
 	}
+	if journal.restoring {
+		return errWorkspaceRestoreInProgress
+	}
 	if err := m.ledger.append(entry{Phase: phaseCommit, TurnID: turnID}); err != nil {
 		return err
 	}
@@ -736,6 +744,9 @@ func (m *Manager) ResumeDraft(sourceTurnID, recoveryTurnID string) error {
 	if journal == nil {
 		return errors.New("workspace draft was not found")
 	}
+	if journal.restoring {
+		return errWorkspaceRestoreInProgress
+	}
 	if sourceTurnID == recoveryTurnID {
 		delete(m.drafts, sourceTurnID)
 		m.active = journal
@@ -786,13 +797,20 @@ func (m *Manager) Rollback(ctx context.Context, turnID string) (Receipt, error) 
 	} else {
 		journal = m.unresolved[turnID]
 	}
-	m.mu.Unlock()
 	if journal == nil {
+		m.mu.Unlock()
 		return Receipt{}, errors.New("workspace journal active turn does not match rollback")
 	}
+	if journal.restoring {
+		m.mu.Unlock()
+		return Receipt{}, errWorkspaceRestoreInProgress
+	}
+	journal.restoring = true
+	m.mu.Unlock()
 	receipt, err := m.restore(ctx, journal)
 	resolved := err == nil && len(receipt.Conflicts) == 0
 	m.mu.Lock()
+	journal.restoring = false
 	if !resolved {
 		m.unresolved[turnID] = journal
 	}
@@ -822,19 +840,29 @@ func (m *Manager) Revert(ctx context.Context, turnID string) (Receipt, error) {
 		journal = m.drafts[turnID]
 		draft = journal != nil
 	}
-	m.mu.Unlock()
 	if journal == nil {
+		m.mu.Unlock()
 		return Receipt{}, errors.New("committed workspace turn or draft was not found")
 	}
+	if journal.restoring {
+		m.mu.Unlock()
+		return Receipt{}, errWorkspaceRestoreInProgress
+	}
+	journal.restoring = true
+	m.mu.Unlock()
 	receipt, err := m.restore(ctx, journal)
-	if err == nil && len(receipt.Conflicts) == 0 {
-		m.mu.Lock()
+	resolved := err == nil && len(receipt.Conflicts) == 0
+	m.mu.Lock()
+	journal.restoring = false
+	if resolved {
 		if draft {
 			delete(m.drafts, turnID)
 		} else {
 			delete(m.committed, turnID)
 		}
-		m.mu.Unlock()
+	}
+	m.mu.Unlock()
+	if resolved {
 		m.release(journal)
 		if settleErr := m.ledger.append(entry{
 			Phase: phaseSettled, TurnID: turnID,
@@ -845,20 +873,27 @@ func (m *Manager) Revert(ctx context.Context, turnID string) (Receipt, error) {
 	return receipt, err
 }
 
-// restore serialises on restoreMu: it prunes the journal as it goes, so two
-// concurrent restores of the same journal would race over its records.
+// restore requires the caller to hold the journal's restoring claim. It prunes
+// restored records under mu so concurrent readers of the journal stay safe.
 func (m *Manager) restore(ctx context.Context, journal *turnJournal) (Receipt, error) {
 	m.restoreMu.Lock()
 	defer m.restoreMu.Unlock()
+	m.mu.Lock()
+	turnID := journal.id
+	records := make([]*Record, 0, len(journal.order))
+	for _, path := range journal.order {
+		records = append(records, journal.records[path])
+	}
+	m.mu.Unlock()
 	receipt := Receipt{
-		TurnID: journal.id, NonFileSideEffectsReverted: false,
+		TurnID: turnID, NonFileSideEffectsReverted: false,
 		NonFileSideEffectsNote: "only declared file resources are reverted; process, network, and other side effects are not rolled back",
 	}
-	for index := len(journal.order) - 1; index >= 0; index-- {
+	for index := len(records) - 1; index >= 0; index-- {
 		if err := ctx.Err(); err != nil {
 			return receipt, err
 		}
-		record := journal.records[journal.order[index]]
+		record := records[index]
 		current, _, _, err := Snapshot(record.Path)
 		if err != nil {
 			receipt.Conflicts = append(receipt.Conflicts, Conflict{
@@ -916,6 +951,7 @@ func (m *Manager) restoreRecord(ctx context.Context, record *Record) error {
 
 // forget drops a restored record and releases its before-image.
 func (m *Manager) forget(journal *turnJournal, record *Record) {
+	m.mu.Lock()
 	handle := record.BeforeHandle
 	record.BeforeHandle = ""
 	delete(journal.records, record.Path)
@@ -925,6 +961,7 @@ func (m *Manager) forget(journal *turnJournal, record *Record) {
 			break
 		}
 	}
+	m.mu.Unlock()
 	if handle != "" {
 		_ = m.store.Release(context.Background(), handle)
 	}

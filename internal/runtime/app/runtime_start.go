@@ -97,13 +97,14 @@ func prepareRuntime(
 	runtime.hub = newEventHub(runtimeContext, runtime)
 	runtime.terminal = eventhub.NewTerminalPublisher(runtime)
 	if recovery != nil {
-		runtime.restore(*recovery)
+		runtime.RecoveryService.restore(*recovery)
 	}
 	return runtime, nil
 }
 
 // Start activates a prepared Runtime exactly once. Durable projection and Turn
-// recovery complete before the Runtime is returned as ready.
+// recovery complete before the Runtime is returned as ready; a terminal outbox
+// that cannot be projected yet is left to the settlement retrier.
 func (r *Runtime) Start(ctx context.Context) error {
 	if r == nil {
 		return errors.New("runtime is required")
@@ -115,9 +116,9 @@ func (r *Runtime) Start(ctx context.Context) error {
 }
 func (r *Runtime) activate(ctx context.Context) error {
 	if r.durable {
-		if err := r.terminal.Recover(ctx); err != nil {
+		if err := r.terminal.Recover(ctx, r.TurnService.deferRecoveredTerminalProjection); err != nil {
 			go r.loop()
-			close(r.operations)
+			r.OperationService.shutdown(true)
 			return fmt.Errorf("recover terminal projections: %w", err)
 		}
 	}
@@ -127,18 +128,13 @@ func (r *Runtime) activate(ctx context.Context) error {
 		return errors.New("runtime is closed")
 	}
 	r.lifecycleMu.Unlock()
-	r.OperationService.mu.Lock()
-	r.OperationService.accepting = true
-	r.OperationService.mu.Unlock()
+	r.OperationService.open()
 	go r.loop()
 	if !r.durable {
 		return nil
 	}
 	if err := r.recoverPendingTurns(ctx); err != nil {
-		r.OperationService.mu.Lock()
-		r.OperationService.accepting = false
-		close(r.operations)
-		r.OperationService.mu.Unlock()
+		r.OperationService.shutdown(false)
 		startErr := fmt.Errorf("recover pending turns: %w", err)
 		<-r.done
 		return startErr

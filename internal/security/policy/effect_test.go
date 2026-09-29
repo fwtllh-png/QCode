@@ -64,11 +64,53 @@ func TestNormalizeEffectAndRisk(t *testing.T) {
 			kind: EffectNetworkRead, risk: RiskMedium,
 		},
 		{
-			name: "process with declared network target",
+			name: "process with method-unbounded network target",
 			call: effectInvocation("exec_command", CapabilityProcess, tool.AccessRead, tool.SandboxStrong,
 				tool.Resource{Kind: "process", ID: "workspace", Access: tool.AccessRead},
 				tool.Resource{Kind: "host", ID: "example.com", Access: tool.AccessWrite}),
+			kind: EffectNetworkMutating, risk: RiskHigh,
+		},
+		{
+			name: "process with https CONNECT tunnel",
+			call: effectInvocation("exec_command", CapabilityProcess, tool.AccessRead, tool.SandboxStrong,
+				tool.Resource{Kind: "process", ID: "workspace", Access: tool.AccessRead},
+				tool.Resource{
+					Kind: "host", ID: "example.com", Access: tool.AccessWrite,
+					Protocol: "https", Port: 443, Methods: []string{"CONNECT"},
+				}),
+			kind: EffectNetworkMutating, risk: RiskHigh,
+		},
+		{
+			name: "runtime-discovered CONNECT",
+			call: effectInvocation("exec_command", CapabilityProcess, tool.AccessRead, tool.SandboxStrong,
+				tool.Resource{
+					Kind: "host", ID: "example.com", Access: tool.AccessRead,
+					Protocol: "https", Port: 443, Methods: []string{"CONNECT"},
+				},
+				tool.Resource{
+					Kind: "url", ID: "https://example.com:443/", Access: tool.AccessRead,
+					Methods: []string{"CONNECT"},
+				}),
+			kind: EffectNetworkMutating, risk: RiskHigh,
+		},
+		{
+			name: "process with read-only plaintext target",
+			call: effectInvocation("exec_command", CapabilityProcess, tool.AccessRead, tool.SandboxStrong,
+				tool.Resource{Kind: "process", ID: "workspace", Access: tool.AccessRead},
+				tool.Resource{
+					Kind: "host", ID: "example.com", Access: tool.AccessWrite,
+					Protocol: "http", Port: 80, Methods: []string{"GET", "HEAD"},
+				}),
 			kind: EffectNetworkRead, risk: RiskMedium,
+		},
+		{
+			name: "process with plaintext POST target",
+			call: effectInvocation("exec_command", CapabilityProcess, tool.AccessRead, tool.SandboxStrong,
+				tool.Resource{
+					Kind: "host", ID: "example.com", Access: tool.AccessWrite,
+					Protocol: "http", Port: 80, Methods: []string{"GET", "POST"},
+				}),
+			kind: EffectNetworkMutating, risk: RiskHigh,
 		},
 		{
 			name: "process with network and file mutation",
@@ -289,6 +331,73 @@ func TestBoundedAutoReview(t *testing.T) {
 	runtime.DisableAutoReview = true
 	if reviewed := runtime.Evaluate(network); reviewed.Action != ActionAsk {
 		t.Fatalf("kill switch review = %+v", reviewed)
+	}
+}
+
+func TestAutoReviewNeverCoversProcessTunnels(t *testing.T) {
+	auto := DefaultRuntime(ModeAct, PermissionAuto)
+	tunnel := effectInvocation(
+		"exec_command", CapabilityProcess, tool.AccessRead, tool.SandboxStrong,
+		tool.Resource{
+			Kind: "host", ID: "uploads.example.com", Access: tool.AccessRead,
+			Protocol: "https", Port: 443, Methods: []string{"CONNECT"},
+			AllowPrivate: true,
+		},
+		tool.Resource{
+			Kind: "url", ID: "https://uploads.example.com:443/", Access: tool.AccessRead,
+			Methods: []string{"CONNECT"},
+		},
+	)
+	if reviewed := auto.Evaluate(tunnel); reviewed.Action != ActionAsk {
+		t.Fatalf("auto review of process CONNECT = %+v, want ask", reviewed)
+	}
+	read := effectInvocation(
+		"exec_command", CapabilityProcess, tool.AccessRead, tool.SandboxStrong,
+		tool.Resource{
+			Kind: "host", ID: "mirror.example.com", Access: tool.AccessRead,
+			Protocol: "http", Port: 80, Methods: []string{"GET"},
+		},
+	)
+	if reviewed := auto.Evaluate(read); reviewed.Action != ActionAllow ||
+		reviewed.Code != "auto_review_allowed" {
+		t.Fatalf("auto review of plaintext GET = %+v, want auto_review_allowed", reviewed)
+	}
+}
+
+func TestAutoReviewNeverCoversHostLocalTargets(t *testing.T) {
+	auto := DefaultRuntime(ModeAct, PermissionAuto)
+	for _, resource := range []tool.Resource{
+		{Kind: "url", ID: "http://127.0.0.1:6732/api/v1/bootstrap"},
+		{Kind: "url", ID: "http://169.254.169.254/latest/meta-data/"},
+		{Kind: "url", ID: "http://[::1]:8080/"},
+		{Kind: "url", ID: "http://[::ffff:127.0.0.1]/"},
+		{Kind: "url", ID: "http://0.0.0.0/"},
+		{Kind: "url", ID: "http://localhost:3000/"},
+		{Kind: "url", ID: "http://app.localhost/"},
+		{Kind: "host", ID: "localhost."},
+	} {
+		resource.Access = tool.AccessRead
+		call := effectInvocation(
+			"web_fetch", CapabilityNetwork, tool.AccessRead, tool.SandboxNone,
+			resource,
+		)
+		if reviewed := auto.Evaluate(call); reviewed.Action != ActionAsk {
+			t.Fatalf("auto review of %s = %+v", resource.ID, reviewed)
+		}
+	}
+	for _, resource := range []tool.Resource{
+		{Kind: "url", ID: "https://docs.example.com/guide"},
+		{Kind: "url", ID: "http://10.1.2.3/wiki"},
+	} {
+		resource.Access = tool.AccessRead
+		call := effectInvocation(
+			"web_fetch", CapabilityNetwork, tool.AccessRead, tool.SandboxNone,
+			resource,
+		)
+		if reviewed := auto.Evaluate(call); reviewed.Action != ActionAllow ||
+			reviewed.Code != "auto_review_allowed" {
+			t.Fatalf("auto review of %s = %+v", resource.ID, reviewed)
+		}
 	}
 }
 

@@ -27,7 +27,7 @@ test.beforeEach(async () => {
     server.stderr.on("data", (chunk: Buffer) => { diagnostics += chunk.toString(); });
     server.stdout.on("data", (chunk: Buffer) => {
       output += chunk.toString();
-      const match = output.match(/QCode Runtime Ready: (http:\/\/127\.0\.0\.1:\d+\/)/);
+      const match = output.match(/QCode Runtime Ready: (http:\/\/127\.0\.0\.1:\d+\/\S*)/);
       if (match) resolve(match[1]);
     });
     server.once("error", reject);

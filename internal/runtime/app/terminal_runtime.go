@@ -43,14 +43,24 @@ func (r *Runtime) StoreContextManifest(
 	r.contextManifests.Store(threadID, manifest)
 }
 
-func (r *Runtime) PublishTerminalProjection(
+func (r *EventService) PublishTerminalProjection(
+	ctx context.Context,
+	entry turnkernel.ProjectionOutboxEntry,
+	data protocol.EventData,
+) error {
+	err := r.publishTerminalProjection(ctx, entry, data)
+	r.dispatchObservers()
+	return err
+}
+
+func (r *EventService) publishTerminalProjection(
 	_ context.Context,
 	entry turnkernel.ProjectionOutboxEntry,
 	data protocol.EventData,
 ) error {
-	r.EventService.mu.Lock()
-	defer r.EventService.mu.Unlock()
-	return r.hub.PublishStable(protocol.EventMeta{
+	r.publishMu.Lock()
+	defer r.publishMu.Unlock()
+	return r.runtime.hub.PublishStable(protocol.EventMeta{
 		OperationID: entry.OperationID,
 		ThreadID:    entry.ThreadID,
 		TurnID:      entry.TurnID,
@@ -70,13 +80,19 @@ func (r *Runtime) PublishTerminalProjection(
 				nil,
 			)
 		}
+		var projectionErr error
+		if r.runtime.lifecycle != nil {
+			projectionErr = r.runtime.lifecycle.Project(context.Background(), event)
+		}
 		if protocol.IsTerminalEvent(event.Kind) {
+			r.mu.Lock()
 			r.terminals[event.TurnID] = event.Kind
 			r.clearPendingTurn(event.TurnID)
+			r.mu.Unlock()
 		}
-		if r.lifecycle != nil {
-			return r.lifecycle.Project(context.Background(), event)
+		if projectionErr != nil {
+			return projectionErr
 		}
-		return nil
+		return r.runtime.TurnQueueService.Apply(event)
 	})
 }

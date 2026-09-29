@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	threadstate "github.com/fwtllh-png/QCode/internal/host/runtimeapi/thread"
+	threadstate "github.com/fwtllh-png/QCode/internal/persist/thread"
 	usagestate "github.com/fwtllh-png/QCode/internal/observability/usage"
 	"github.com/fwtllh-png/QCode/internal/persist/state"
 	turnstate "github.com/fwtllh-png/QCode/internal/persist/state/turnstate"

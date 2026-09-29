@@ -467,6 +467,7 @@ func TestRuntimeDropsSlowSubscriberDeterministically(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitForProcessed(t, runtime, 1)
+	waitForSequence(t, runtime, 3)
 	deadline := time.After(time.Second)
 	for {
 		select {
@@ -513,6 +514,7 @@ func TestRuntimeReplayEventsPagesWithoutSubscribing(t *testing.T) {
 	t.Cleanup(func() { closeRuntime(t, runtime) })
 	submitEventually(t, runtime, startOperation(t, 1))
 	waitForProcessed(t, runtime, 1)
+	waitForSequence(t, runtime, 3)
 	head := runtime.Snapshot(t.Context()).LastSequence
 	if head < 3 {
 		t.Fatalf("last sequence = %d, want the turn's three events", head)
@@ -570,6 +572,7 @@ func TestRuntimeReplayEventsSurfacesCursorGap(t *testing.T) {
 	t.Cleanup(func() { closeRuntime(t, runtime) })
 	submitEventually(t, runtime, startOperation(t, 1))
 	waitForProcessed(t, runtime, 1)
+	waitForSequence(t, runtime, 3)
 
 	_, _, err := runtime.ReplayEvents(t.Context(), 0, 8)
 	var gap *CursorGapError
@@ -761,6 +764,19 @@ func waitForProcessed(t *testing.T, runtime *Runtime, count uint64) {
 	}
 }
 
+// waitForSequence waits until count events are committed. A processed
+// StartTurn has only been dispatched; its Turn publishes asynchronously.
+func waitForSequence(t *testing.T, runtime *Runtime, count protocol.Cursor) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for runtime.Snapshot(t.Context()).LastSequence < count {
+		if time.Now().After(deadline) {
+			t.Fatalf("runtime did not commit %d events", count)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 func TestRuntimeIdleTurnStarts(t *testing.T) {
 	runtime := NewRuntime(Options{
 		Engine: &testEngine{}, SubscriberBuffer: 8,
@@ -941,7 +957,7 @@ func mustFindKind(t *testing.T, events []protocol.Event, kind protocol.EventKind
 func TestRuntimeRestoreBackfillsOwnedItemMaps(t *testing.T) {
 	runtime := NewRuntime(Options{Engine: &testEngine{}})
 	t.Cleanup(func() { closeRuntime(t, runtime) })
-	runtime.restore(RecoveryState{
+	runtime.RecoveryService.restore(RecoveryState{
 		PendingApprovals: map[string]PendingApproval{
 			"req-a": {
 				RequestID: "req-a", TurnID: "turn-a", ItemID: "item-approval",

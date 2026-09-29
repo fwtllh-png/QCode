@@ -25,7 +25,10 @@ export function gitTotals(files: readonly GitChange[], staged?: boolean) {
 
 function Counts({files, staged}: {files: readonly GitChange[]; staged?: boolean}) {
   const totals = gitTotals(files, staged);
-  return <span className="gitCounts" aria-label={`${totals.added} additions, ${totals.removed} deletions`}>
+  const partial = staged !== true && files.some((file) => file.untracked && !file.unstaged);
+  return <span className="gitCounts"
+    title={partial ? "Partial totals: some new files have unavailable line counts." : undefined}
+    aria-label={`${totals.added} additions, ${totals.removed} deletions${partial ? " (partial)" : ""}`}>
     <span>+{totals.added}</span><span>-{totals.removed}</span>
   </span>;
 }
@@ -220,11 +223,11 @@ export function GitTools({client, workspace, session, busy, mutationDisabled, mo
             </button>
             {mutationDisabled && <p className="gitEmpty">{mutationDisabled}</p>}
             {!data.root && <p className="gitEmpty">Open the Git repository root to commit or push.</p>}
-            {data.files.some((file) => file.untracked) && <p className="gitEmpty">
-              {data.files.filter((file) => file.untracked).length} untracked files (excluded from line counts)
-            </p>}
             {data.files.some((file) => file.conflict) && <p className="gitProblem">Resolve merge conflicts before committing.</p>}
           </div>}
+          {data.files.some((file) => file.untracked && !file.unstaged) && <p className="gitEmpty">
+            New files with unavailable line counts: {data.files.filter((file) => file.untracked && !file.unstaged).length} (excluded from totals).
+          </p>}
           {view === "branches" && <div className="gitBranchView">
             <label className="gitSearch"><Search size={15} /><input autoFocus type="search" aria-label="Search Git branches"
               value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="Search branches" /></label>
@@ -266,7 +269,10 @@ export function GitTools({client, workspace, session, busy, mutationDisabled, mo
                   aria-current={path === file.path ? "true" : undefined} onClick={() => setPath(file.path)}>
                   <span className="gitFileStatus" data-conflict={file.conflict || undefined}>{file.conflict ? "!" : file.untracked ? "?" : staged ? file.index : file.worktree}</span>
                   <span>{file.path}</span>
-                  {file.untracked ? <small>New</small> : (staged ? file.staged : file.unstaged)?.binary ? <small>Binary</small> : <Counts files={[file]} staged={staged} />}
+                  {file.untracked && <small>New</small>}
+                  {(staged ? file.staged : file.unstaged)?.binary ? <small>Binary</small>
+                    : file.untracked && !file.unstaged ? <small>Lines unavailable</small>
+                    : <Counts files={[file]} staged={staged} />}
                 </button>)}
               </div>
               <section className="gitPatch" aria-label="Git file diff" aria-busy={Boolean(selectedFile && !patch && !patchError)}>

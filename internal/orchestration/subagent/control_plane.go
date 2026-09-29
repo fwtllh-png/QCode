@@ -490,6 +490,10 @@ func (c *AgentControl) IsDescendant(parentID, agentID string) bool {
 	return c.manager.IsDescendant(parentID, agentID)
 }
 
+func (c *AgentControl) SessionBudget(sessionID string) BudgetLedger {
+	return c.manager.SessionBudget(sessionID)
+}
+
 func (c *AgentControl) List(filter ListFilter) []Agent {
 	return c.manager.List(filter)
 }

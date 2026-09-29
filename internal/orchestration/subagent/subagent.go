@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
+	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
 )
 
 type Role string
@@ -142,12 +143,11 @@ type Manager struct {
 	worktrees     map[string]*Worktree
 	claims        map[string]string // workspace-relative path -> owning agent id
 	integrations  map[string]IntegrationCandidate
-	active        map[string]int
+	provisioning  map[string]*Agent // admitted spawns whose worktree is being created
 	graph         Graph
 	workspace     string
 	sessionID     string
 	nextID        int
-	ledgers       map[string]BudgetLedger
 	nextExecution uint64
 	executions    map[string]map[uint64]context.CancelFunc
 	closing       map[string]*agentCloseState
@@ -233,8 +233,7 @@ func Open(options Options) (*Manager, error) {
 		worktrees:    make(map[string]*Worktree),
 		claims:       make(map[string]string),
 		integrations: make(map[string]IntegrationCandidate),
-		active:       make(map[string]int),
-		ledgers:      make(map[string]BudgetLedger),
+		provisioning: make(map[string]*Agent),
 		executions:   make(map[string]map[uint64]context.CancelFunc),
 		closing:      make(map[string]*agentCloseState),
 		starting:     make(map[string]bool),
@@ -277,9 +276,49 @@ func (m *Manager) Spawn(parentID string, role Role, prompt string) (*Agent, erro
 	}, spec)
 }
 
+// spawn admits and reserves the Agent under the Manager lock, provisions its
+// worktree outside it, then commits. A git worktree can take minutes; holding
+// the lock across it would stall every other Agent's Wait, Settle, and tools.
 func (m *Manager) spawn(intent DelegationIntent, spec RoleSpec) (*Agent, error) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
+	draft, err := m.draftSpawnLocked(intent, spec)
+	if err != nil {
+		m.mu.Unlock()
+		return nil, err
+	}
+	if spec.Stance == StanceReadOnly {
+		// Read-only children share the host (or parent) workspace. A scratch or
+		// git worktree would be unused isolation cost and a leftover directory.
+		defer m.mu.Unlock()
+		return m.commitSpawnLocked(draft, Worktree{ID: draft.ID, Path: draft.ExecutionRoot}, false)
+	}
+	m.provisioning[draft.ID] = draft
+	m.mu.Unlock()
+
+	wt, err := m.provisionSpawn(draft, spec.Stance)
+
+	m.mu.Lock()
+	delete(m.provisioning, draft.ID)
+	if err != nil {
+		m.wait.Broadcast()
+		m.mu.Unlock()
+		return nil, err
+	}
+	agent, err := m.commitSpawnLocked(draft, wt, true)
+	m.mu.Unlock()
+	if err == nil {
+		return agent, nil
+	}
+	discardErr := m.trees.Discard(wt)
+	if discardErr == nil {
+		_ = m.clearWorktreeAllocation(draft.ID)
+	}
+	return nil, errors.Join(err, discardErr)
+}
+
+// draftSpawnLocked runs every admission check and assigns the Agent identity.
+// The draft counts toward max_total until it is committed or abandoned.
+func (m *Manager) draftSpawnLocked(intent DelegationIntent, spec RoleSpec) (*Agent, error) {
 	sessionID := strings.TrimSpace(intent.SessionID)
 	if sessionID == "" {
 		sessionID = m.sessionID
@@ -291,25 +330,20 @@ func (m *Manager) spawn(intent DelegationIntent, spec RoleSpec) (*Agent, error) 
 	depth := 0
 	parentPath := "/root"
 	executionRoot := m.workspace
-	var parent *Agent
-	if !IsSessionParent(intent.ParentID) {
-		var ok bool
-		parent, ok = m.agents[intent.ParentID]
-		if !ok || parent.Closed || m.closing[parent.ID] != nil {
-			return nil, errors.New("parent agent unavailable")
-		}
-		if parent.SessionID != sessionID {
-			return nil, errors.New("parent agent belongs to another session")
-		}
+	parent, err := m.spawnParentLocked(intent.ParentID, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	if parent != nil {
 		depth = parent.Depth + 1
 		parentPath = parent.Path
 	}
 	if depth > m.budget.MaxDepth {
 		return nil, fmt.Errorf("recursion depth %d exceeds limit %d", depth, m.budget.MaxDepth)
 	}
-	ledger := m.ledgers[sessionID]
-	if ledger.TotalSpawned >= m.budget.MaxTotal {
-		return nil, errors.New("subagent total spawn budget exhausted")
+	ledger := m.sessionBudgetLocked(sessionID)
+	if err := m.admitSpawnLocked(ledger, sessionID); err != nil {
+		return nil, err
 	}
 	requested, err := m.normalizeAgentBudgetLocked(
 		intent.Budget, spec.DefaultBudget, parent,
@@ -317,79 +351,40 @@ func (m *Manager) spawn(intent DelegationIntent, spec RoleSpec) (*Agent, error) 
 	if err != nil {
 		return nil, err
 	}
+	tree := treeScope(sessionID)
 	if intent.Budget.MaxTokens == 0 &&
 		spec.DefaultBudget.MaxTokens == 0 &&
 		m.budget.MaxTokens > 0 {
-		remaining := m.budget.MaxTokens -
-			min(m.budget.MaxTokens, ledger.SpentTokens+ledger.ReservedTokens)
-		if remaining == 0 {
-			return nil, errors.New("subagent token tree budget exhausted")
+		if err := m.admitTreeLocked(ledger, tree, 0, 0); err != nil {
+			return nil, err
 		}
-		requested.MaxTokens = min(requested.MaxTokens, remaining)
+		committed := ledger.SpentTokens + ledger.ReservedTokens
+		if committed >= m.budget.MaxTokens {
+			return nil, budgetExhausted(
+				protocol.BudgetResourceTokens, tree, committed, m.budget.MaxTokens, true,
+			)
+		}
+		requested.MaxTokens = min(requested.MaxTokens, m.budget.MaxTokens-committed)
 	}
-	reservedMicros := uint64(requested.MaxCostUSD * 1e6)
-	if m.budget.MaxTokens > 0 &&
-		ledger.SpentTokens+ledger.ReservedTokens+requested.MaxTokens >
-			m.budget.MaxTokens {
-		return nil, errors.New("subagent token reservation exceeds tree budget")
-	}
-	maxMicros := uint64(m.budget.MaxCostUSD * 1e6)
-	if maxMicros > 0 &&
-		ledger.SpentMicros+ledger.ReservedMicros+reservedMicros >
-			maxMicros {
-		return nil, errors.New("subagent cost reservation exceeds tree budget")
+	if err := m.admitTreeLocked(
+		ledger, tree, requested.MaxTokens, costMicrounits(requested.MaxCostUSD),
+	); err != nil {
+		return nil, err
 	}
 	m.nextID++
 	id := fmt.Sprintf("agent-%d", m.nextID)
-	path := m.nextPathLocked(intent.ParentID, intent.TaskName, id)
-	threadID := ThreadIDFor(id)
-	allocation := GraphEdge{
-		ParentID: intent.ParentID, ParentPath: parentPath,
-		ChildID: id, Path: path, Status: StatusRequested,
-		Workspace: m.workspace, SessionID: sessionID,
-		ExecutionRoot: executionRoot, ThreadID: threadID, Revision: 1,
-		Role: spec.Role, Profile: spec.Profile, Stance: spec.Stance,
-		Depth: depth, TaskName: strings.TrimSpace(intent.TaskName),
-		OwnedPaths: append([]string(nil), intent.OwnedPaths...),
-		Budget:     requested,
-	}
 	if spec.Stance == StanceReadOnly && parent != nil &&
 		strings.TrimSpace(parent.Worktree) != "" {
 		executionRoot = parent.Worktree
 	}
-	var wt Worktree
-	owned := false
-	if spec.Stance == StanceReadOnly {
-		// Read-only children share the host (or parent) workspace. A scratch or
-		// git worktree would be unused isolation cost and a leftover directory.
-		wt = Worktree{ID: id, Path: executionRoot}
-	} else {
-		if err := m.recordWorktreeAllocation(allocation); err != nil {
-			return nil, fmt.Errorf("record worktree allocation: %w", err)
-		}
-		// The stance decides what kind of directory the agent needs, so routing has
-		// to happen before provisioning: an explore child must not pay for a checkout.
-		provisioned, err := m.trees.Provision(id, spec.Stance)
-		if err != nil {
-			m.clearAllocationWithoutWorktree(id)
-			return nil, err
-		}
-		wt = provisioned
-		owned = true
-		if wt.Serialized {
-			_ = m.clearWorktreeAllocation(id)
-		}
-		executionRoot = wt.Path
-	}
-	agent := &Agent{
-		ID: id, Path: path,
+	return &Agent{
+		ID: id, Path: m.nextPathLocked(intent.ParentID, intent.TaskName, id),
 		ParentPath: parentPath,
 		Revision:   1, Workspace: m.workspace, ExecutionRoot: executionRoot,
 		SessionID: sessionID,
-		ThreadID:  threadID,
+		ThreadID:  ThreadIDFor(id),
 		Role:      spec.Role, Profile: spec.Profile, Stance: spec.Stance,
-		Depth: depth, Worktree: wt.Path, Isolated: wt.Isolated,
-		Serialized: wt.Serialized, BaseRev: wt.BaseRev,
+		Depth:  depth,
 		Parent: intent.ParentID, Status: StatusRequested,
 		TaskName:          strings.TrimSpace(intent.TaskName),
 		ExpectedOutput:    strings.TrimSpace(intent.ExpectedOutput),
@@ -398,27 +393,72 @@ func (m *Manager) spawn(intent DelegationIntent, spec RoleSpec) (*Agent, error) 
 		TraceParent:       intent.TraceParent, TraceState: intent.TraceState,
 		RoleInstructions: spec.Instructions,
 		Budget:           requested,
+	}, nil
+}
+
+func (m *Manager) spawnParentLocked(parentID, sessionID string) (*Agent, error) {
+	if IsSessionParent(parentID) {
+		return nil, nil
+	}
+	parent, ok := m.agents[parentID]
+	if !ok || parent.Closed || m.closing[parent.ID] != nil {
+		return nil, errors.New("parent agent unavailable")
+	}
+	if parent.SessionID != sessionID {
+		return nil, errors.New("parent agent belongs to another session")
+	}
+	return parent, nil
+}
+
+// provisionSpawn records the allocation before creating the worktree so a
+// crash in between is recovered at startup instead of leaking a checkout.
+// The stance decides what kind of directory the agent needs, so routing has
+// to happen before provisioning: an explore child must not pay for a checkout.
+func (m *Manager) provisionSpawn(draft *Agent, stance Stance) (Worktree, error) {
+	allocation := GraphEdge{
+		ParentID: draft.Parent, ParentPath: draft.ParentPath,
+		ChildID: draft.ID, Path: draft.Path, Status: StatusRequested,
+		Workspace: draft.Workspace, SessionID: draft.SessionID,
+		ExecutionRoot: draft.ExecutionRoot, ThreadID: draft.ThreadID, Revision: 1,
+		Role: draft.Role, Profile: draft.Profile, Stance: draft.Stance,
+		Depth: draft.Depth, TaskName: draft.TaskName,
+		OwnedPaths: append([]string(nil), draft.OwnedPaths...),
+		Budget:     draft.Budget,
+	}
+	if err := m.recordWorktreeAllocation(allocation); err != nil {
+		return Worktree{}, fmt.Errorf("record worktree allocation: %w", err)
+	}
+	wt, err := m.trees.Provision(draft.ID, stance)
+	if err != nil {
+		m.clearAllocationWithoutWorktree(draft.ID)
+		return Worktree{}, err
+	}
+	if wt.Serialized {
+		_ = m.clearWorktreeAllocation(draft.ID)
+	}
+	return wt, nil
+}
+
+// commitSpawnLocked re-validates what may have changed while the worktree was
+// provisioned, then records the Agent. On error the caller owns wt cleanup.
+func (m *Manager) commitSpawnLocked(draft *Agent, wt Worktree, owned bool) (*Agent, error) {
+	if _, err := m.spawnParentLocked(draft.Parent, draft.SessionID); err != nil {
+		return nil, err
+	}
+	agent := draft
+	agent.Worktree, agent.Isolated = wt.Path, wt.Isolated
+	agent.Serialized, agent.BaseRev = wt.Serialized, wt.BaseRev
+	if owned {
+		agent.ExecutionRoot = wt.Path
 	}
 	if err := m.recordSpawnLocked(agent); err != nil {
-		var discardErr error
-		if owned {
-			discardErr = m.trees.Discard(wt)
-			if discardErr == nil {
-				_ = m.clearWorktreeAllocation(id)
-			}
-		}
-		return nil, errors.Join(
-			fmt.Errorf("record agent spawn: %w", err),
-			discardErr,
-		)
+		return nil, fmt.Errorf("record agent spawn: %w", err)
 	}
-	_ = m.clearWorktreeAllocation(id)
-	m.agents[id] = agent
+	_ = m.clearWorktreeAllocation(agent.ID)
+	m.agents[agent.ID] = agent
 	if owned {
-		m.worktrees[id] = &wt
+		m.worktrees[agent.ID] = &wt
 	}
-	ledger.TotalSpawned++
-	m.ledgers[sessionID] = ledger
 	m.wait.Broadcast()
 	return agent, nil
 }

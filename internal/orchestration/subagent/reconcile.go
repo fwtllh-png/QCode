@@ -25,6 +25,10 @@ func (m *Manager) reconcileOrphanWorktrees() error {
 			continue
 		}
 		m.mu.Lock()
+		if _, provisioning := m.provisioning[entry.Name()]; provisioning {
+			m.mu.Unlock()
+			continue
+		}
 		if _, ok := m.agents[entry.Name()]; ok {
 			_ = m.clearWorktreeAllocation(entry.Name())
 			_ = m.clearWorktreeQuarantine(entry.Name())
@@ -85,13 +89,6 @@ func (m *Manager) reconcileOrphanWorktrees() error {
 		m.worktrees[agent.ID] = &Worktree{
 			ID: agent.ID, Path: path, Isolated: agent.Isolated,
 		}
-		ledger := m.ledgers[agent.SessionID]
-		m.active[agent.SessionID]++
-		ledger.ReservedSlots++
-		ledger.ReservedTokens += agent.ReservedTokens
-		ledger.ReservedMicros += agent.ReservedMicros
-		ledger.TotalSpawned++
-		m.ledgers[agent.SessionID] = ledger
 		reason := fmt.Sprintf(
 			"worktree %s survived without a durable Agent Node", path,
 		)

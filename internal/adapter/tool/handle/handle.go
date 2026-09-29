@@ -279,17 +279,20 @@ func (t *ReadTool) read(input readInput) (tool.Result, error) {
 	if mode == "query" && input.Query == "" {
 		return tool.Result{}, errors.New("query mode requires query")
 	}
-	excerpt, more, extras, err := project(body, mode, input.StartLine, input.MaxLines, input.Query, input.Offset, limit)
+	page, err := tool.ProjectPage(body, tool.PageRequest{
+		Mode: mode, StartLine: input.StartLine, MaxLines: input.MaxLines,
+		Query: input.Query, Offset: input.Offset, Limit: limit,
+	})
 	if err != nil {
-		return tool.Result{}, err
+		return tool.Result{}, fmt.Errorf("handle_read: %w", err)
 	}
-	for key, value := range extras {
+	for key, value := range page.Cursor {
 		metadata[key] = value
 	}
-	metadata["excerpt_bytes"] = len(excerpt)
-	metadata["truncated"] = more
+	metadata["excerpt_bytes"] = len(page.Excerpt)
+	metadata["truncated"] = page.More
 	return tool.Result{
-		Content: excerpt, Metadata: metadata, Truncated: more,
+		Content: page.Excerpt, Metadata: metadata, Truncated: page.More,
 		OriginalBytes: len(body),
 	}, nil
 }
@@ -322,152 +325,6 @@ func parseHandle(raw json.RawMessage) (VarHandle, error) {
 		return VarHandle{}, errors.New("handle requires session_id and name")
 	}
 	return handle, nil
-}
-
-func project(
-	body, mode string, startLine, maxLines int, query string, offset, limit int,
-) (string, bool, map[string]any, error) {
-	extras := map[string]any{}
-	switch mode {
-	case "summary":
-		excerpt, more := summarize(body, limit)
-		return excerpt, more, extras, nil
-	case "head":
-		excerpt, more := bound(body, 0, limit)
-		if more {
-			extras["next_offset"] = len(excerpt)
-		}
-		return excerpt, more, extras, nil
-	case "tail":
-		start := max(0, len(body)-limit)
-		excerpt := body[start:]
-		for !utf8.ValidString(excerpt) && len(excerpt) > 0 {
-			excerpt = excerpt[1:]
-		}
-		more := start > 0
-		if more {
-			extras["previous_offset"] = start
-		}
-		return excerpt, more, extras, nil
-	case "bytes":
-		excerpt, more := bound(body, offset, limit)
-		extras["offset"] = min(offset, len(body))
-		if more {
-			extras["next_offset"] = min(len(body), offset+len(excerpt))
-		}
-		return excerpt, more, extras, nil
-	case "lines":
-		if startLine == 0 {
-			startLine = 1
-		}
-		excerpt, more, nextLine, nextOffset := selectLines(body, startLine, maxLines, limit)
-		extras["start_line"] = startLine
-		if more {
-			if nextLine > 0 {
-				extras["next_start_line"] = nextLine
-			}
-			if nextOffset > 0 {
-				extras["next_offset"] = nextOffset
-			}
-		}
-		return excerpt, more, extras, nil
-	case "query":
-		excerpt, more, nextOffset := queryLines(body, query, offset, maxLines, limit)
-		extras["query"] = query
-		extras["offset"] = offset
-		if more {
-			extras["next_offset"] = nextOffset
-		}
-		return excerpt, more, extras, nil
-	default:
-		return "", false, nil, fmt.Errorf("unsupported handle_read mode %q", mode)
-	}
-}
-
-func summarize(body string, limit int) (string, bool) {
-	if len(body) <= limit {
-		return body, false
-	}
-	head := limit / 2
-	tail := limit - head
-	left, _ := bound(body, 0, head)
-	rightStart := max(0, len(body)-tail)
-	right := body[rightStart:]
-	for !utf8.ValidString(right) && len(right) > 0 {
-		right = right[1:]
-	}
-	return left + "\n…\n" + right, true
-}
-
-func bound(body string, offset, limit int) (string, bool) {
-	if offset < 0 {
-		offset = 0
-	}
-	if offset >= len(body) {
-		return "", false
-	}
-	end := min(len(body), offset+limit)
-	excerpt := body[offset:end]
-	for len(excerpt) > 0 && !utf8.ValidString(excerpt) {
-		excerpt = excerpt[:len(excerpt)-1]
-		end--
-	}
-	return excerpt, end < len(body)
-}
-
-func selectLines(body string, startLine, maxLines, limit int) (string, bool, int, int) {
-	lines := strings.SplitAfter(body, "\n")
-	if startLine > len(lines) {
-		return "", false, 0, 0
-	}
-	var builder strings.Builder
-	index := startLine - 1
-	emitted := 0
-	for index < len(lines) {
-		line := lines[index]
-		if maxLines > 0 && emitted >= maxLines {
-			return builder.String(), true, index + 1, 0
-		}
-		if builder.Len()+len(line) > limit && builder.Len() > 0 {
-			return builder.String(), true, index + 1, 0
-		}
-		if builder.Len()+len(line) > limit {
-			part, _ := bound(line, 0, limit-builder.Len())
-			builder.WriteString(part)
-			return builder.String(), true, index + 1, 0
-		}
-		builder.WriteString(line)
-		emitted++
-		index++
-	}
-	return builder.String(), false, 0, 0
-}
-
-func queryLines(body, query string, offset, maxLines, limit int) (string, bool, int) {
-	lines := strings.SplitAfter(body, "\n")
-	var builder strings.Builder
-	emitted := 0
-	next := -1
-	for index := offset; index < len(lines); index++ {
-		line := lines[index]
-		if !strings.Contains(line, query) {
-			continue
-		}
-		if maxLines > 0 && emitted >= maxLines {
-			next = index
-			break
-		}
-		if builder.Len()+len(line) > limit && builder.Len() > 0 {
-			next = index
-			break
-		}
-		builder.WriteString(line)
-		emitted++
-	}
-	if next < 0 {
-		return builder.String(), false, 0
-	}
-	return builder.String(), true, next
 }
 
 // Keys returns sorted session/name keys for tests.

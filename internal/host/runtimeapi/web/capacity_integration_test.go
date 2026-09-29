@@ -438,26 +438,7 @@ func runningWebServer(
 	httpServer := &http.Server{Handler: server.Handler()}
 	go func() { _ = httpServer.Serve(listener) }()
 	t.Cleanup(func() { _ = httpServer.Shutdown(context.Background()) })
-	origin := "http://" + host
-	request, err := http.NewRequestWithContext(
-		t.Context(),
-		http.MethodGet,
-		origin+"/api/v1/bootstrap",
-		nil,
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	response, err := http.DefaultClient.Do(request)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer response.Body.Close()
-	var bootstrap bootstrapResponse
-	if err := decodeJSON(response.Body, &bootstrap); err != nil {
-		t.Fatal(err)
-	}
-	return server, origin, bootstrap.Token
+	return server, "http://" + host, server.CapabilityToken()
 }
 
 func openWebSocket(
@@ -466,7 +447,12 @@ func openWebSocket(
 	cursor protocol.Cursor,
 ) *websocket.Conn {
 	t.Helper()
-	response, err := http.Get(origin + "/api/v1/bootstrap")
+	request, err := http.NewRequest(http.MethodGet, origin+"/api/v1/bootstrap", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Authorization", "Bearer "+token)
+	response, err := http.DefaultClient.Do(request)
 	if err != nil {
 		t.Fatal(err)
 	}

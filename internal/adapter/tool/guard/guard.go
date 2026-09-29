@@ -107,6 +107,9 @@ type Options struct {
 	// bind. They surface on failed process results so the model can
 	// attribute credential 401s on the first attempt.
 	AuthBindReport *goproxy.BindReport
+	// LookupIP resolves approved URL hosts when deciding private reach; nil
+	// uses the system resolver.
+	LookupIP func(context.Context, string) ([]net.IP, error)
 }
 
 type pending struct {
@@ -146,6 +149,7 @@ type Guard struct {
 	approvals             func(context.Context, ApprovalRequest) error
 	persistAllow          func(policy.Invocation) error
 	onNetworkAllow        NetworkAllow
+	lookupIP              func(context.Context, string) ([]net.IP, error)
 	now                   func() time.Time
 	approvalTTL           time.Duration
 	leaseTTL              time.Duration
@@ -248,6 +252,7 @@ func New(options Options) (*Guard, error) {
 		controlPlane: controlPlane,
 		approvals:    options.Approvals, persistAllow: options.PersistAllow,
 		onNetworkAllow: options.OnNetworkAllow,
+		lookupIP:       options.LookupIP,
 		now:            options.Now,
 		approvalTTL:    options.ApprovalTTL,
 		leaseTTL:       options.LeaseTTL,
@@ -1414,7 +1419,7 @@ func (g *Guard) grantNetworkHosts(ctx context.Context, invocation policy.Invocat
 				allow(egress.Target{
 					Host: target.Host, Protocol: target.Protocol, Port: target.Port,
 					Methods:      resource.Methods,
-					AllowPrivate: true,
+					AllowPrivate: egress.GrantPrivate(ctx, g.lookupIP, target.Host),
 				})
 			}
 		}

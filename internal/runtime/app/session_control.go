@@ -76,7 +76,7 @@ func (r *SessionService) CreateSession(
 	ctx context.Context,
 	request CreateSessionRequest,
 ) (SessionBinding, error) {
-	store, ok := r.sessionLifecycle.(sessionCreateStore)
+	store, ok := r.runtime.sessionLifecycle.(sessionCreateStore)
 	if !ok {
 		return SessionBinding{}, runtimeProblem(
 			protocol.CodeUnavailable,
@@ -98,8 +98,8 @@ func (r *SessionService) CreateSession(
 			nil,
 		)
 	}
-	if r.workspaceRoot != "" &&
-		!sameWorkspaceRoot(r.workspaceRoot, request.WorkspaceRoot) {
+	if r.runtime.workspaceRoot != "" &&
+		!sameWorkspaceRoot(r.runtime.workspaceRoot, request.WorkspaceRoot) {
 		return SessionBinding{}, runtimeProblem(
 			protocol.CodeConflict,
 			"session workspace does not match the Runtime binding",
@@ -113,13 +113,13 @@ func (r *SessionService) CreateSession(
 		request.Isolation = "shared"
 	}
 	if request.Provider == "" {
-		request.Provider = r.defaultProfile.Provider
+		request.Provider = r.runtime.defaultProfile.Provider
 	}
 	if request.Model == "" {
-		request.Model = r.defaultProfile.Model
+		request.Model = r.runtime.defaultProfile.Model
 	}
-	if request.Provider != r.defaultProfile.Provider ||
-		request.Model != r.defaultProfile.Model {
+	if request.Provider != r.runtime.defaultProfile.Provider ||
+		request.Model != r.runtime.defaultProfile.Model {
 		return SessionBinding{}, runtimeProblem(
 			protocol.CodeInvalidArgument,
 			"requested provider or model is unavailable in this Runtime",
@@ -198,14 +198,14 @@ func (r *SessionService) CreateSession(
 	}
 	provisioned := false
 	if seed.Isolation == SessionIsolationWorktree {
-		if r.sessionWorkspaces == nil {
+		if r.runtime.sessionWorkspaces == nil {
 			return SessionBinding{}, runtimeProblem(
 				protocol.CodeUnavailable,
 				"isolated session workspaces are unavailable",
 				nil,
 			)
 		}
-		if _, err := r.sessionWorkspaces.Provision(
+		if _, err := r.runtime.sessionWorkspaces.Provision(
 			ctx,
 			seed.SessionID,
 			seed.ThreadID,
@@ -216,7 +216,7 @@ func (r *SessionService) CreateSession(
 	}
 	if _, err := store.CreateLifecycle(ctx, seed); err != nil {
 		if provisioned {
-			_ = r.sessionWorkspaces.Discard(
+			_ = r.runtime.sessionWorkspaces.Discard(
 				context.Background(),
 				seed.SessionID,
 				seed.ThreadID,
@@ -229,7 +229,7 @@ func (r *SessionService) CreateSession(
 		}
 		return SessionBinding{}, err
 	}
-	if err := r.BindThreadSession(seed.ThreadID, seed.SessionID); err != nil {
+	if err := r.runtime.BindThreadSession(seed.ThreadID, seed.SessionID); err != nil {
 		return SessionBinding{}, err
 	}
 	if r.SessionProfilesAvailable() {
@@ -248,7 +248,7 @@ func (r *SessionService) existingCreateBinding(
 	ctx context.Context,
 	request CreateSessionRequest,
 ) (SessionBinding, bool) {
-	summary, err := r.sessionLifecycle.GetLifecycle(ctx, request.SessionID)
+	summary, err := r.runtime.sessionLifecycle.GetLifecycle(ctx, request.SessionID)
 	if err != nil {
 		return SessionBinding{}, false
 	}
@@ -271,7 +271,7 @@ func (r *SessionService) ActivateSession(
 ) (SessionBinding, error) {
 	r.mutationMu.Lock()
 	defer r.mutationMu.Unlock()
-	if r.OperationService.hasWorkspaceOperation() {
+	if r.runtime.OperationService.hasWorkspaceOperation() {
 		return SessionBinding{}, retryableProblem(protocol.CodeConflict, "Workspace context is being changed")
 	}
 	if strings.TrimSpace(request.SessionID) == "" {
@@ -297,7 +297,7 @@ func (r *SessionService) ActivateSession(
 	if threadID == "" {
 		threadID = summary.ThreadID
 	}
-	owner, err := r.sessionLifecycle.SessionForThread(ctx, threadID)
+	owner, err := r.runtime.sessionLifecycle.SessionForThread(ctx, threadID)
 	if err != nil {
 		return SessionBinding{}, err
 	}
@@ -309,14 +309,14 @@ func (r *SessionService) ActivateSession(
 		)
 	}
 	if summary.Isolation == SessionIsolationWorktree {
-		if r.sessionWorkspaces == nil {
+		if r.runtime.sessionWorkspaces == nil {
 			return SessionBinding{}, runtimeProblem(
 				protocol.CodeUnavailable,
 				"isolated session workspaces are unavailable",
 				nil,
 			)
 		}
-		if _, err := r.sessionWorkspaces.Restore(
+		if _, err := r.runtime.sessionWorkspaces.Restore(
 			ctx,
 			request.SessionID,
 			threadID,
@@ -324,7 +324,7 @@ func (r *SessionService) ActivateSession(
 			return SessionBinding{}, err
 		}
 	}
-	summary, err = r.sessionLifecycle.ActivateThread(
+	summary, err = r.runtime.sessionLifecycle.ActivateThread(
 		ctx,
 		request.SessionID,
 		threadID,
@@ -332,7 +332,7 @@ func (r *SessionService) ActivateSession(
 	if err != nil {
 		return SessionBinding{}, err
 	}
-	if err := r.BindThreadSession(threadID, request.SessionID); err != nil {
+	if err := r.runtime.BindThreadSession(threadID, request.SessionID); err != nil {
 		return SessionBinding{}, err
 	}
 	if r.SessionProfilesAvailable() {
@@ -351,22 +351,21 @@ func (r *SessionService) SessionForThread(
 	ctx context.Context,
 	threadID protocol.ThreadID,
 ) (string, error) {
-	if r.sessionLifecycle == nil {
+	if r.runtime.sessionLifecycle == nil {
 		return "", runtimeProblem(
 			protocol.CodeUnavailable,
 			"session lifecycle is unavailable",
 			nil,
 		)
 	}
-	return r.sessionLifecycle.SessionForThread(ctx, threadID)
+	return r.runtime.sessionLifecycle.SessionForThread(ctx, threadID)
 }
 
 func (r *OperationService) SubmitForSession(
 	ctx context.Context,
 	request SubmitSessionOperation,
 ) (OperationReceipt, error) {
-	r.SessionService.mutationMu.Lock()
-	defer r.SessionService.mutationMu.Unlock()
+	defer r.runtime.SessionService.lockMutations()()
 	if request.Payload == nil || request.Kind == "" {
 		return OperationReceipt{}, runtimeProblem(
 			protocol.CodeInvalidArgument,
@@ -381,7 +380,7 @@ func (r *OperationService) SubmitForSession(
 			nil,
 		)
 	}
-	summary, err := r.SessionStatus(ctx, request.SessionID)
+	summary, err := r.runtime.SessionStatus(ctx, request.SessionID)
 	if err != nil {
 		return OperationReceipt{}, err
 	}
@@ -456,7 +455,7 @@ func (r *OperationService) SubmitForSession(
 		}
 	}
 	if cancel, ok := request.Payload.(*protocol.CancelTurnPayload); ok {
-		active, found := r.active.LookupTurn(cancel.TurnID)
+		active, found := r.runtime.active.LookupTurn(cancel.TurnID)
 		if !found {
 			return OperationReceipt{}, turnNotActiveProblem()
 		}
@@ -550,10 +549,10 @@ func (r *OperationService) SubmitForSession(
 		return OperationReceipt{}, err
 	}
 	if start, ok := request.Payload.(*protocol.StartTurnPayload); ok {
-		r.prepareSessionTitle(ctx, summary, operation, start)
+		r.runtime.prepareSessionTitle(ctx, summary, operation, start)
 	}
 	if fork, ok := request.Payload.(*protocol.ForkThreadPayload); ok {
-		if err := r.BindThreadSession(
+		if err := r.runtime.BindThreadSession(
 			fork.NewThreadID,
 			request.SessionID,
 		); err != nil {
@@ -596,7 +595,7 @@ func (r *OperationService) bindPendingSessionRequest(
 	var threadID protocol.ThreadID
 	switch value := payload.(type) {
 	case *protocol.ApprovalDecisionPayload:
-		pending, ok := r.PendingApproval(value.RequestID)
+		pending, ok := r.runtime.PendingApproval(value.RequestID)
 		if !ok {
 			return nil
 		}
@@ -612,7 +611,7 @@ func (r *OperationService) bindPendingSessionRequest(
 		}
 		value.ThreadID, value.TurnID = pending.ThreadID, pending.TurnID
 	case *protocol.InputReplyPayload:
-		pending, ok := r.PendingInput(value.RequestID)
+		pending, ok := r.runtime.PendingInput(value.RequestID)
 		if !ok {
 			return nil
 		}
@@ -629,7 +628,7 @@ func (r *OperationService) requireSessionThread(
 	sessionID string,
 	threadID protocol.ThreadID,
 ) error {
-	owner, err := r.sessionLifecycle.SessionForThread(ctx, threadID)
+	owner, err := r.runtime.sessionLifecycle.SessionForThread(ctx, threadID)
 	if err != nil {
 		return err
 	}
@@ -703,10 +702,10 @@ func (r *SessionService) UpdateSessionLifecycle(
 ) (protocol.SessionLifecycleUpdate, error) {
 	r.mutationMu.Lock()
 	defer r.mutationMu.Unlock()
-	if r.OperationService.hasWorkspaceOperation() {
+	if r.runtime.OperationService.hasWorkspaceOperation() {
 		return protocol.SessionLifecycleUpdate{}, retryableProblem(protocol.CodeConflict, "a Workspace Git operation is active")
 	}
-	if r.sessionLifecycle == nil {
+	if r.runtime.sessionLifecycle == nil {
 		return protocol.SessionLifecycleUpdate{}, runtimeProblem(protocol.CodeUnavailable, "session lifecycle is unavailable", nil)
 	}
 	current, err := r.SessionStatus(ctx, sessionID)
@@ -718,7 +717,7 @@ func (r *SessionService) UpdateSessionLifecycle(
 			return protocol.SessionLifecycleUpdate{}, err
 		}
 	}
-	updated, err := r.sessionLifecycle.UpdateLifecycle(
+	updated, err := r.runtime.sessionLifecycle.UpdateLifecycle(
 		ctx,
 		sessionID,
 		expectedRevision,
@@ -760,30 +759,30 @@ func (r *SessionService) deleteSession(
 ) (protocol.SessionDeleteResult, error) {
 	r.mutationMu.Lock()
 	defer r.mutationMu.Unlock()
-	if r.OperationService.hasWorkspaceOperation() {
+	if r.runtime.OperationService.hasWorkspaceOperation() {
 		return protocol.SessionDeleteResult{}, retryableProblem(protocol.CodeConflict, "a Workspace Git operation is active")
 	}
-	if r.sessionLifecycle == nil {
+	if r.runtime.sessionLifecycle == nil {
 		return protocol.SessionDeleteResult{}, runtimeProblem(protocol.CodeUnavailable, "session lifecycle is unavailable", nil)
 	}
 	current, err := r.SessionStatus(ctx, sessionID)
 	if err != nil {
 		return protocol.SessionDeleteResult{}, err
 	}
-	threadIDs, err := r.sessionLifecycle.ThreadIDs(ctx, sessionID)
+	threadIDs, err := r.runtime.sessionLifecycle.ThreadIDs(ctx, sessionID)
 	if err != nil {
 		return protocol.SessionDeleteResult{}, err
 	}
 	if discard {
 		for _, threadID := range threadIDs {
-			if _, active := r.active.LookupThread(threadID); active {
+			if _, active := r.runtime.active.LookupThread(threadID); active {
 				return protocol.SessionDeleteResult{}, sessionBusyProblem(
 					"cannot discard session while a turn is active",
 					current,
 				)
 			}
 		}
-		if r.OperationService.hasPendingSession(sessionID) {
+		if r.runtime.OperationService.hasPendingSession(sessionID) {
 			return protocol.SessionDeleteResult{}, sessionBusyProblem(
 				"cannot discard session while a turn is recovering",
 				current,
@@ -796,10 +795,10 @@ func (r *SessionService) deleteSession(
 		return protocol.SessionDeleteResult{}, err
 	}
 	if current.Isolation == SessionIsolationWorktree {
-		if r.sessionWorkspaces == nil {
+		if r.runtime.sessionWorkspaces == nil {
 			return protocol.SessionDeleteResult{}, runtimeProblem(protocol.CodeUnavailable, "isolated Chat workspaces are unavailable", nil)
 		}
-		if _, err := r.sessionWorkspaces.Restore(
+		if _, err := r.runtime.sessionWorkspaces.Restore(
 			ctx,
 			current.SessionID,
 			current.ThreadID,
@@ -807,7 +806,7 @@ func (r *SessionService) deleteSession(
 			return protocol.SessionDeleteResult{}, err
 		}
 		if !discard {
-			plan, err := r.sessionWorkspaces.PlanMerge(
+			plan, err := r.runtime.sessionWorkspaces.PlanMerge(
 				ctx,
 				current.SessionID,
 				current.ThreadID,
@@ -826,7 +825,7 @@ func (r *SessionService) deleteSession(
 	}
 	var result protocol.SessionDeleteResult
 	if discard {
-		store, ok := r.sessionLifecycle.(sessionDiscardStore)
+		store, ok := r.runtime.sessionLifecycle.(sessionDiscardStore)
 		if !ok {
 			return protocol.SessionDeleteResult{}, runtimeProblem(
 				protocol.CodeUnavailable,
@@ -836,7 +835,7 @@ func (r *SessionService) deleteSession(
 		}
 		result, err = store.DiscardLifecycle(ctx, sessionID, expectedRevision)
 	} else {
-		result, err = r.sessionLifecycle.DeleteLifecycle(
+		result, err = r.runtime.sessionLifecycle.DeleteLifecycle(
 			ctx,
 			sessionID,
 			expectedRevision,
@@ -845,7 +844,7 @@ func (r *SessionService) deleteSession(
 	if err != nil {
 		return protocol.SessionDeleteResult{}, err
 	}
-	if manager, ok := r.engine.(*ThreadManager); ok && manager != nil {
+	if manager, ok := r.runtime.engine.(*ThreadManager); ok && manager != nil {
 		for _, threadID := range threadIDs {
 			manager.Release(threadID)
 		}
@@ -853,14 +852,14 @@ func (r *SessionService) deleteSession(
 	if discard {
 		r.clearSessionInteractions(threadIDs)
 	}
-	r.TurnQueueService.clearThreads(threadIDs)
+	r.runtime.TurnQueueService.clearThreads(threadIDs)
 	if current.Isolation == SessionIsolationWorktree {
-		if discardErr := r.sessionWorkspaces.Discard(
+		if discardErr := r.runtime.sessionWorkspaces.Discard(
 			ctx,
 			current.SessionID,
 			current.ThreadID,
 		); discardErr != nil {
-			r.logger.Error(
+			r.runtime.logger.Error(
 				"discard deleted Session worktree",
 				"session_id", current.SessionID,
 				"thread_id", current.ThreadID,
@@ -868,31 +867,14 @@ func (r *SessionService) deleteSession(
 			)
 		}
 	}
-	if maintenance, ok := r.sessionLifecycle.(interface{ Maintain(context.Context) error }); ok {
+	if maintenance, ok := r.runtime.sessionLifecycle.(interface{ Maintain(context.Context) error }); ok {
 		if err := maintenance.Maintain(ctx); err != nil {
-			r.logger.Error("maintain deleted Session storage", "session_id", current.SessionID, "error", err)
+			r.runtime.logger.Error("maintain deleted Session storage", "session_id", current.SessionID, "error", err)
 		}
 	}
 	return result, nil
 }
 
 func (r *SessionService) clearSessionInteractions(threadIDs []protocol.ThreadID) {
-	threads := make(map[protocol.ThreadID]struct{}, len(threadIDs))
-	for _, threadID := range threadIDs {
-		threads[threadID] = struct{}{}
-	}
-	r.EventService.mu.Lock()
-	defer r.EventService.mu.Unlock()
-	for requestID, approval := range r.approvals {
-		if _, ok := threads[approval.ThreadID]; ok {
-			delete(r.approvals, requestID)
-			delete(r.approvalItems, eventItemOwner(approval.TurnID, requestID))
-		}
-	}
-	for requestID, input := range r.inputs {
-		if _, ok := threads[input.ThreadID]; ok {
-			delete(r.inputs, requestID)
-			delete(r.inputItems, eventItemOwner(input.TurnID, requestID))
-		}
-	}
+	r.runtime.EventService.forgetThreadInteractions(threadIDs)
 }

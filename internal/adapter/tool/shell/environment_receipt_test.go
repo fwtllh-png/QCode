@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
@@ -322,6 +324,58 @@ func TestOpenProcessNetworkInheritsDeclaredGrant(t *testing.T) {
 		Methods: target.Methods, AllowPrivate: target.AllowPrivate,
 	}, "test"); err == nil {
 		t.Fatal("inherited grant leaked onto the workspace gate")
+	}
+}
+
+type fixedSessionOpener struct{ session egress.ProcessSession }
+
+func (o fixedSessionOpener) OpenProcessSession([]egress.Target) (egress.ProcessSession, error) {
+	return o.session, nil
+}
+
+func TestBackgroundProcessCannotAskAfterItsCallReturns(t *testing.T) {
+	if !sandbox.SupportsManagedNetworkProxy() {
+		t.Skip("session channels are unsupported")
+	}
+	gate := &egress.Gate{
+		Enforce: true,
+		LookupIP: func(context.Context, string) ([]net.IP, error) {
+			return []net.IP{net.ParseIP("203.0.113.10")}, nil
+		},
+	}
+	manager := process.NewSessionManager(4096)
+	t.Cleanup(manager.CloseAll)
+	registry := tool.NewRegistry(nil, nil)
+	backend := &envCaptureBackend{sessionOpeningPassthrough: sessionOpeningPassthrough{
+		opener: fixedSessionOpener{session: stubProcessSession{gate: gate}},
+	}}
+	if err := RegisterWithManagerAndBackend(registry, t.TempDir(), manager, backend); err != nil {
+		t.Fatal(err)
+	}
+	var asked atomic.Int32
+	ctx := egress.WithRuntimeApprover(t.Context(), func(context.Context, egress.Target) error {
+		asked.Add(1)
+		return nil
+	})
+	result := executeProcessToolContext(t, ctx, registry, processTestThread, "exec_command", map[string]any{
+		"command":       "sleep 5",
+		"yield_time_ms": 50,
+		"network_targets": []map[string]any{{
+			"host": "declared.example", "protocol": "https", "port": 443,
+			"methods": []string{"CONNECT"}, "allow_private": false,
+		}},
+	})
+	if result.Metadata["running"] != true {
+		t.Fatalf("fixture must outlive its call: %+v", result)
+	}
+	if _, err := gate.AuthorizeBeforeConnect(context.Background(), egress.Target{
+		Host: "exfil.example", Protocol: "https", Port: 443,
+		Methods: []string{"CONNECT"},
+	}, "test"); err == nil {
+		t.Fatal("background process gained a target after its call returned")
+	}
+	if asked.Load() != 0 {
+		t.Fatalf("approver asked %d times after the call returned", asked.Load())
 	}
 }
 

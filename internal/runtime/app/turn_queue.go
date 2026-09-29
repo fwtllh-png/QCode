@@ -6,12 +6,16 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
 )
 
+// TurnQueueService owns the queued-Turn projection and drain claims. Its mu is
+// a leaf lock: nothing else is acquired and no I/O runs while it is held.
 type TurnQueueService struct {
 	runtime *Runtime
+	mu      sync.Mutex
 	items   map[string]protocol.QueuedTurn
 	claims  map[protocol.OperationID]string
 }
@@ -72,8 +76,32 @@ func ApplyTurnQueueEvent(
 		if data.QueueID != "" {
 			delete(items, data.QueueID)
 		}
+	case *protocol.OperationRejectedData:
+		consumeFailedQueuedStart(items, event)
+	default:
+		if protocol.IsTerminalEvent(event.Kind) {
+			consumeFailedQueuedStart(items, event)
+		}
 	}
 	return nil
+}
+
+// consumeFailedQueuedStart removes the queue item whose drained StartTurn
+// settled before turn.started. Its prompt now belongs to the failed Turn;
+// keeping the item would redrain the same idempotent operation forever.
+func consumeFailedQueuedStart(
+	items map[string]protocol.QueuedTurn,
+	event protocol.Event,
+) {
+	for queueID, item := range items {
+		if item.ThreadID != event.ThreadID {
+			continue
+		}
+		if _, operationID := queuedTurnStart(queueID, item.ThreadID); operationID == event.OperationID {
+			delete(items, queueID)
+			return
+		}
+	}
 }
 
 func cloneWorkspaceIdentity(
@@ -87,6 +115,8 @@ func cloneWorkspaceIdentity(
 }
 
 func (s *TurnQueueService) Apply(event protocol.Event) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if err := ApplyTurnQueueEvent(s.items, event); err != nil {
 		return err
 	}
@@ -101,6 +131,10 @@ func (s *TurnQueueService) Apply(event protocol.Event) error {
 		}
 	case *protocol.OperationRejectedData:
 		delete(s.claims, event.OperationID)
+	default:
+		if protocol.IsTerminalEvent(event.Kind) {
+			delete(s.claims, event.OperationID)
+		}
 	}
 	return nil
 }
@@ -109,6 +143,8 @@ func (s *TurnQueueService) Restore(
 	items map[string]protocol.QueuedTurn,
 	pending map[protocol.OperationID]PendingOperation,
 ) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	for queueID, item := range items {
 		item.WorkspaceIdentity = cloneWorkspaceIdentity(item.WorkspaceIdentity)
 		item.Context = append([]protocol.EditorContextReference(nil), item.Context...)
@@ -141,7 +177,7 @@ func (s *TurnQueueService) List(
 	for _, threadID := range threadIDs {
 		allowed[threadID] = struct{}{}
 	}
-	s.runtime.EventService.mu.Lock()
+	s.mu.Lock()
 	items := make([]protocol.QueuedTurn, 0, len(s.items))
 	for _, item := range s.items {
 		if _, ok := allowed[item.ThreadID]; !ok {
@@ -151,7 +187,7 @@ func (s *TurnQueueService) List(
 		item.Context = append([]protocol.EditorContextReference(nil), item.Context...)
 		items = append(items, item)
 	}
-	s.runtime.EventService.mu.Unlock()
+	s.mu.Unlock()
 	sort.Slice(items, func(i, j int) bool {
 		if items[i].AddedSequence == items[j].AddedSequence {
 			return items[i].QueueID < items[j].QueueID
@@ -166,8 +202,8 @@ func (s *TurnQueueService) item(
 	threadID protocol.ThreadID,
 	queueID string,
 ) (protocol.QueuedTurn, bool) {
-	s.runtime.EventService.mu.Lock()
-	defer s.runtime.EventService.mu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	item, ok := s.items[queueID]
 	if !ok || item.ThreadID != threadID {
 		return protocol.QueuedTurn{}, false
@@ -178,8 +214,8 @@ func (s *TurnQueueService) item(
 }
 
 func (s *TurnQueueService) claimed(queueID string) bool {
-	s.runtime.EventService.mu.Lock()
-	defer s.runtime.EventService.mu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	for _, value := range s.claims {
 		if value == queueID {
 			return true
@@ -188,13 +224,15 @@ func (s *TurnQueueService) claimed(queueID string) bool {
 	return false
 }
 
-func (s *TurnQueueService) snapshotMap() map[string]protocol.QueuedTurn {
-	s.runtime.EventService.mu.Lock()
-	defer s.runtime.EventService.mu.Unlock()
-	return s.snapshotMapLocked()
+func (s *TurnQueueService) hasItems() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.items) != 0
 }
 
-func (s *TurnQueueService) snapshotMapLocked() map[string]protocol.QueuedTurn {
+func (s *TurnQueueService) snapshotMap() map[string]protocol.QueuedTurn {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	result := make(map[string]protocol.QueuedTurn, len(s.items))
 	for queueID, item := range s.items {
 		item.WorkspaceIdentity = cloneWorkspaceIdentity(item.WorkspaceIdentity)
@@ -205,8 +243,8 @@ func (s *TurnQueueService) snapshotMapLocked() map[string]protocol.QueuedTurn {
 }
 
 func (s *TurnQueueService) threads() []protocol.ThreadID {
-	s.runtime.EventService.mu.Lock()
-	defer s.runtime.EventService.mu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	seen := make(map[protocol.ThreadID]struct{}, len(s.items))
 	for _, item := range s.items {
 		seen[item.ThreadID] = struct{}{}
@@ -224,8 +262,8 @@ func (s *TurnQueueService) clearThreads(threadIDs []protocol.ThreadID) {
 	for _, threadID := range threadIDs {
 		removed[threadID] = struct{}{}
 	}
-	s.runtime.EventService.mu.Lock()
-	defer s.runtime.EventService.mu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	for queueID, item := range s.items {
 		if _, ok := removed[item.ThreadID]; ok {
 			delete(s.items, queueID)
@@ -240,9 +278,12 @@ func (s *TurnQueueService) clearThreads(threadIDs []protocol.ThreadID) {
 	}
 }
 
-func (s *TurnQueueService) next(threadID protocol.ThreadID) (protocol.QueuedTurn, bool) {
-	s.runtime.EventService.mu.Lock()
-	defer s.runtime.EventService.mu.Unlock()
+// claimNext selects the oldest unclaimed item of the Thread and claims it for
+// its derived StartTurn in the same critical section, so concurrent drains
+// cannot select the same item.
+func (s *TurnQueueService) claimNext(threadID protocol.ThreadID) (protocol.QueuedTurn, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	claimed := make(map[string]struct{}, len(s.claims))
 	for _, queueID := range s.claims {
 		claimed[queueID] = struct{}{}
@@ -263,39 +304,45 @@ func (s *TurnQueueService) next(threadID protocol.ThreadID) (protocol.QueuedTurn
 			found = true
 		}
 	}
+	if found {
+		candidate.WorkspaceIdentity = cloneWorkspaceIdentity(candidate.WorkspaceIdentity)
+		candidate.Context = append([]protocol.EditorContextReference(nil), candidate.Context...)
+		_, operationID := queuedTurnStart(candidate.QueueID, threadID)
+		s.claims[operationID] = candidate.QueueID
+	}
 	return candidate, found
 }
 
+func (s *TurnQueueService) releaseClaim(operationID protocol.OperationID) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.claims, operationID)
+}
+
 func (s *TurnQueueService) Drain(threadID protocol.ThreadID) {
-	s.runtime.OperationService.mu.Lock()
-	withdrawing := len(s.runtime.OperationService.withdrawing) != 0
-	s.runtime.OperationService.mu.Unlock()
-	if withdrawing {
+	if s.runtime.OperationService.withdrawalInProgress() {
 		return
 	}
 	if _, active := s.runtime.active.LookupThread(threadID); active {
 		return
 	}
-	item, ok := s.next(threadID)
+	item, ok := s.claimNext(threadID)
 	if !ok {
 		return
 	}
-	key := "turn-queue:" + item.QueueID
+	key, operationID := queuedTurnStart(item.QueueID, threadID)
 	turnID, err := sessionTurnID(key, threadID)
 	if err != nil {
+		s.releaseClaim(operationID)
 		s.logDrainError(item, err)
 		return
 	}
 	itemID, err := sessionItemID(key, protocol.OperationStartTurn, turnID)
 	if err != nil {
+		s.releaseClaim(operationID)
 		s.logDrainError(item, err)
 		return
 	}
-	operationID := protocol.OperationID(sessionDerivedID(
-		"op",
-		key,
-		string(protocol.OperationStartTurn)+":"+string(threadID),
-	))
 	operation, err := protocol.NewOperation(
 		&protocol.StartTurnPayload{
 			ThreadID: threadID, TurnID: turnID, ItemID: itemID,
@@ -306,19 +353,29 @@ func (s *TurnQueueService) Drain(threadID protocol.ThreadID) {
 		},
 	)
 	if err != nil {
+		s.releaseClaim(operationID)
 		s.logDrainError(item, err)
 		return
 	}
 	operation.ID = operationID
-	s.runtime.EventService.mu.Lock()
-	s.claims[operation.ID] = item.QueueID
-	s.runtime.EventService.mu.Unlock()
 	if err := s.runtime.SubmitWithKey(context.Background(), operation, key); err != nil {
-		s.runtime.EventService.mu.Lock()
-		delete(s.claims, operation.ID)
-		s.runtime.EventService.mu.Unlock()
+		s.releaseClaim(operationID)
 		s.logDrainError(item, err)
 	}
+}
+
+// queuedTurnStart derives the idempotency key and StartTurn operation ID a
+// queue item is drained with, so projections can recognize its outcome.
+func queuedTurnStart(
+	queueID string,
+	threadID protocol.ThreadID,
+) (string, protocol.OperationID) {
+	key := "turn-queue:" + queueID
+	return key, protocol.OperationID(sessionDerivedID(
+		"op",
+		key,
+		string(protocol.OperationStartTurn)+":"+string(threadID),
+	))
 }
 
 func (s *TurnQueueService) logDrainError(item protocol.QueuedTurn, err error) {

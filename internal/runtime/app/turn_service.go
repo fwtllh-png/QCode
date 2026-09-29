@@ -10,15 +10,55 @@ import (
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
 )
 
+type turnExecution func(context.Context, *protocol.StartTurnPayload, EngineSink) error
+
 func (s *TurnService) Start(operation protocol.Operation, payload *protocol.StartTurnPayload) OperationOutcome {
+	engine := s.runtime.engine
+	return s.start(operation, payload, func(
+		ctx context.Context,
+		payload *protocol.StartTurnPayload,
+		sink EngineSink,
+	) error {
+		return startTurnSafely(engine, ctx, payload, sink)
+	})
+}
+
+// SettleInterruptedStart closes a recovered StartTurn that was accepted but
+// never reached its engine. It commits a retryable failed terminal instead of
+// re-running a prompt the user may no longer expect to execute.
+func (s *TurnService) SettleInterruptedStart(
+	operation protocol.Operation,
+	payload *protocol.StartTurnPayload,
+) OperationOutcome {
+	return s.start(operation, payload, func(
+		context.Context,
+		*protocol.StartTurnPayload,
+		EngineSink,
+	) error {
+		return protocol.NewFault(
+			protocol.CodeUnavailable,
+			"turn was interrupted before it started; start it again",
+			true,
+			protocol.FaultMetadata{
+				Origin:      protocol.FaultOriginRuntime,
+				Disposition: protocol.FaultRetryTurn,
+				SideEffects: protocol.SideEffectNone,
+			},
+			nil,
+		)
+	})
+}
+
+func (s *TurnService) start(
+	operation protocol.Operation,
+	payload *protocol.StartTurnPayload,
+	execute turnExecution,
+) OperationOutcome {
 	r := s.runtime
 	if err := errors.Join(r.ArtifactService.PrepareStartPayload(r.ctx, r.workspaceRoot, payload), (StartTurnHandler{Runtime: r}).validateStart(payload)); err != nil {
 		return finishOutcome(err)
 	}
-	r.EventService.mu.Lock()
-	_, finished := r.terminals[payload.TurnID]
-	r.EventService.mu.Unlock()
-	if finished {
+	if _, finished := r.EventService.terminalKind(payload.TurnID); finished {
 		return finishOutcome(errors.New("turn already has a terminal event"))
 	}
 	turnContext, cancel := context.WithCancel(r.ctx)
@@ -32,8 +72,8 @@ func (s *TurnService) Start(operation protocol.Operation, payload *protocol.Star
 		cancel()
 		return finishOutcome(err)
 	}
-	r.workers.Add(1)
-	go s.run(turnContext, cancel, lease, operation, payload)
+	s.workers.Add(1)
+	go s.run(turnContext, cancel, lease, operation, payload, execute)
 	return OperationOutcome{
 		Kind: OutcomeAsync, CommitMode: CommitDeferred,
 		Async: &AsyncTurn{
@@ -49,9 +89,10 @@ func (s *TurnService) run(
 	lease ActiveTurnLease,
 	operation protocol.Operation,
 	payload *protocol.StartTurnPayload,
+	execute turnExecution,
 ) {
 	r := s.runtime
-	defer r.workers.Done()
+	defer s.workers.Done()
 	released := false
 	releaseActive := func() {
 		if released {
@@ -65,7 +106,7 @@ func (s *TurnService) run(
 	sink := &runtimeSink{
 		runtime: r, operation: operation, deferTerminal: true,
 	}
-	err := startTurnSafely(r.engine, turnContext, payload, sink)
+	err := execute(turnContext, payload, sink)
 	if r.lifecycle != nil && !sink.terminalCommitAttempted {
 		if !turnkernel.HasTerminalFacts(context.Background(), r.terminalStore, string(payload.TurnID)) &&
 			r.rejectResumableOperation(operation, err, releaseActive) {
@@ -76,10 +117,7 @@ func (s *TurnService) run(
 		}
 		if terminalErr := r.commitStartupTerminal(payload, sink, err); terminalErr != nil {
 			releaseActive()
-			err = errors.Join(err, terminalErr)
-			if rejectErr := r.reject(operation, err); rejectErr == nil {
-				r.commit(operation.ID)
-			}
+			r.rejectAndCommit(operation, errors.Join(err, terminalErr))
 			return
 		}
 	}
@@ -88,9 +126,7 @@ func (s *TurnService) run(
 		if err == nil {
 			err = errors.New("terminal envelope commit failed")
 		}
-		if rejectErr := r.reject(operation, err); rejectErr == nil {
-			r.commit(operation.ID)
-		}
+		r.rejectAndCommit(operation, err)
 		return
 	}
 	if errors.Is(turnContext.Err(), context.Canceled) {
@@ -100,15 +136,7 @@ func (s *TurnService) run(
 		// re-projection collide with its live event and silently strands the
 		// outbox (turn row stays active, queue never drains).
 		releaseActive()
-		if terminalErr := sink.publishTerminal(); terminalErr == nil {
-			r.ArtifactService.PersistTerminalArtifactForTurn(
-				context.Background(), payload.ThreadID, payload.TurnID,
-			)
-			sink.commitOperation()
-			r.TurnQueueService.Drain(payload.ThreadID)
-		} else if rejectErr := r.reject(operation, terminalErr); rejectErr == nil {
-			r.commit(operation.ID)
-		}
+		s.finishTerminal(sink, operation, payload)
 		return
 	}
 	if sink.terminal == nil {
@@ -116,21 +144,11 @@ func (s *TurnService) run(
 		if err == nil {
 			err = errors.New("turn engine returned without terminal material")
 		}
-		if rejectErr := r.reject(operation, err); rejectErr == nil {
-			r.commit(operation.ID)
-		}
+		r.rejectAndCommit(operation, err)
 		return
 	}
 	releaseActive()
-	if terminalErr := sink.publishTerminal(); terminalErr == nil {
-		r.ArtifactService.PersistTerminalArtifactForTurn(
-			context.Background(), payload.ThreadID, payload.TurnID,
-		)
-		sink.commitOperation()
-		r.TurnQueueService.Drain(payload.ThreadID)
-	} else if rejectErr := r.reject(operation, terminalErr); rejectErr == nil {
-		r.commit(operation.ID)
-	}
+	s.finishTerminal(sink, operation, payload)
 }
 
 func startTurnSafely(

@@ -57,7 +57,7 @@ func (r *SessionService) sessionProfileForRestore(
 	sessionID string,
 	threadID protocol.ThreadID,
 ) (protocol.SessionProfileSnapshot, error) {
-	if r.sessionLifecycle == nil {
+	if r.runtime.sessionLifecycle == nil {
 		return r.SessionProfile(ctx, sessionID)
 	}
 	current, err := r.SessionStatus(ctx, sessionID)
@@ -68,11 +68,11 @@ func (r *SessionService) sessionProfileForRestore(
 		current.Isolation != SessionIsolationWorktree {
 		return r.SessionProfile(ctx, sessionID)
 	}
-	if r.sessionWorkspaces == nil {
+	if r.runtime.sessionWorkspaces == nil {
 		return protocol.SessionProfileSnapshot{}, runtimeProblem(protocol.CodeUnavailable,
 			"isolated Chat workspaces are unavailable", nil)
 	}
-	if _, err := r.sessionWorkspaces.Restore(ctx,
+	if _, err := r.runtime.sessionWorkspaces.Restore(ctx,
 		current.SessionID, current.ThreadID); err != nil {
 		return protocol.SessionProfileSnapshot{}, err
 	}

@@ -158,37 +158,9 @@ func RestoreTurnCoordinator(
 	if err != nil {
 		return nil, err
 	}
-	if len(facts) == 0 {
-		return nil, errors.New("turn coordinator restore has no domain facts")
-	}
-	start := facts[0].Sequence
-	if start == 0 {
-		return nil, errors.New("domain fact sequence is invalid")
-	}
-	var restored State
-	for index, fact := range facts {
-		if fact.TurnID != turnID || fact.Sequence != start+uint64(index) {
-			return nil, fmt.Errorf("domain fact sequence is invalid at index %d", index)
-		}
-		if err := Validate(fact.State); err != nil {
-			return nil, fmt.Errorf("domain fact state %d: %w", index+1, err)
-		}
-		digest, digestErr := Digest(fact.State)
-		if digestErr != nil || digest != fact.StateDigest {
-			return nil, fmt.Errorf("domain fact digest mismatch at sequence %d", fact.Sequence)
-		}
-		restored = cloneState(fact.State)
-	}
-	// Cache the digest and encoding of the durable tail so the next
-	// transition can anchor its batch without re-reading stored facts. The
-	// loop above already verified this digest against the last fact.
-	lastDigest, lastEncoded, err := digestValidated(restored)
-	if err != nil || lastDigest != facts[len(facts)-1].StateDigest {
-		return nil, fmt.Errorf(
-			"restored state diverges from digest at sequence %d: %w",
-			facts[len(facts)-1].Sequence,
-			err,
-		)
+	restored, lastDigest, lastEncoded, err := replayDomainFacts(turnID, facts)
+	if err != nil {
+		return nil, err
 	}
 	coordinator := &TurnCoordinator{
 		turnID: turnID, state: restored, store: store,
@@ -214,6 +186,52 @@ func RestoreTurnCoordinator(
 		}
 	}
 	return coordinator, nil
+}
+
+// ValidateDomainFacts checks a Turn's durable fact chain with the same rules
+// RestoreTurnCoordinator applies. A chain rejected here can never be restored.
+func ValidateDomainFacts(turnID string, facts []DomainFact) error {
+	_, _, _, err := replayDomainFacts(turnID, facts)
+	return err
+}
+
+func replayDomainFacts(
+	turnID string,
+	facts []DomainFact,
+) (State, string, []byte, error) {
+	if len(facts) == 0 {
+		return State{}, "", nil, errors.New("turn coordinator restore has no domain facts")
+	}
+	start := facts[0].Sequence
+	if start == 0 {
+		return State{}, "", nil, errors.New("domain fact sequence is invalid")
+	}
+	var restored State
+	for index, fact := range facts {
+		if fact.TurnID != turnID || fact.Sequence != start+uint64(index) {
+			return State{}, "", nil, fmt.Errorf("domain fact sequence is invalid at index %d", index)
+		}
+		if err := Validate(fact.State); err != nil {
+			return State{}, "", nil, fmt.Errorf("domain fact state %d: %w", index+1, err)
+		}
+		digest, digestErr := Digest(fact.State)
+		if digestErr != nil || digest != fact.StateDigest {
+			return State{}, "", nil, fmt.Errorf("domain fact digest mismatch at sequence %d", fact.Sequence)
+		}
+		restored = cloneState(fact.State)
+	}
+	// Cache the digest and encoding of the durable tail so the next
+	// transition can anchor its batch without re-reading stored facts. The
+	// loop above already verified this digest against the last fact.
+	lastDigest, lastEncoded, err := digestValidated(restored)
+	if err != nil || lastDigest != facts[len(facts)-1].StateDigest {
+		return State{}, "", nil, fmt.Errorf(
+			"restored state diverges from digest at sequence %d: %w",
+			facts[len(facts)-1].Sequence,
+			err,
+		)
+	}
+	return restored, lastDigest, lastEncoded, nil
 }
 
 func (c *TurnCoordinator) Snapshot() State {

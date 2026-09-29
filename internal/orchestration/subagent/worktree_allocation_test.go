@@ -215,8 +215,5 @@ func allocationGraph(
 		) (IntegrationCandidate, bool, error) {
 			return IntegrationCandidate{}, false, nil
 		},
-		Budget: func(string) (BudgetLedger, error) {
-			return BudgetLedger{}, nil
-		},
 	}
 }

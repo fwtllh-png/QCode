@@ -10,7 +10,6 @@ import {tmpdir} from "node:os";
 import path from "node:path";
 import type {Readable} from "node:stream";
 import {fileURLToPath} from "node:url";
-import type {WorkspaceCatalog} from "../../src/protocol";
 
 const repositoryRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -97,7 +96,9 @@ test("boots the real Runtime with an accessible empty state", async ({page}) => 
 });
 
 test("requires Workspace selection on the bare Supervisor URL", async ({page}) => {
-  await page.goto(new URL("/", baseURL).toString());
+  const bare = new URL(baseURL);
+  bare.searchParams.delete("workspace");
+  await page.goto(bare.toString());
 
   await expect(page.getByRole("heading", {name: "Choose a workspace"}))
     .toBeVisible();
@@ -157,7 +158,7 @@ test("requires explicit connection fields during setup", async ({page}) => {
       body: JSON.stringify({
         protocol_version: 1,
         server_build: "setup-test",
-        token: "setup-token",
+        authenticated: true,
         ready: false,
         draining: false,
         setup_required: true,
@@ -918,14 +919,13 @@ function runtimeURL(
   });
 }
 
-async function workspaceURL(origin: string): Promise<string> {
-  const bootstrap = await fetch(new URL("/api/v1/bootstrap", origin));
-  const value = await bootstrap.json() as {
-    workspace_catalog: WorkspaceCatalog;
-  };
-  const workspaces = value.workspace_catalog.workspaces.filter((workspace) => workspace.ready);
-  if (workspaces.length !== 1) throw new Error("Expected one ready workspace in the isolated browser fixture");
-  const target = new URL(origin);
-  target.searchParams.set("workspace", workspaces[0].id);
+// The printed ready URL carries the one-time launch code and, because the
+// fixture passes --workspace, the Workspace selection. The anonymous
+// bootstrap no longer exposes the catalog, so the URL is used as printed.
+async function workspaceURL(printed: string): Promise<string> {
+  const target = new URL(printed);
+  if (!target.searchParams.get("launch") || !target.searchParams.get("workspace")) {
+    throw new Error(`Expected a launch URL for the isolated browser fixture: ${printed}`);
+  }
   return target.toString();
 }

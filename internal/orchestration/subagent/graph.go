@@ -93,7 +93,6 @@ type Graph interface {
 	LoadIntegrationResult(sessionID, agentID string) (Result, bool, error)
 	RecordIntegration(candidate IntegrationCandidate) error
 	LoadIntegration(sessionID, agentID, previewDigest string) (IntegrationCandidate, bool, error)
-	LoadBudget(sessionID string) (BudgetLedger, error)
 	Reconcile() error
 }
 
@@ -187,14 +186,6 @@ func (m *Manager) Hydrate() error {
 			return err
 		}
 		m.mailbox.Restore(messages)
-		ledger, err := graph.LoadBudget(sessionID)
-		if err != nil {
-			return err
-		}
-		m.mu.Lock()
-		m.ledgers[sessionID] = ledger
-		m.active[sessionID] = ledger.ReservedSlots
-		m.mu.Unlock()
 	}
 	return m.reconcileOrphanWorktrees()
 }
@@ -287,7 +278,6 @@ type DurableGraph struct {
 	IntegrationResult func(sessionID, agentID string) (Result, bool, error)
 	AppendIntegration func(IntegrationCandidate) error
 	Integration       func(sessionID, agentID, previewDigest string) (IntegrationCandidate, bool, error)
-	Budget            func(sessionID string) (BudgetLedger, error)
 	ReconcileGraph    func() error
 }
 
@@ -375,13 +365,6 @@ func (g DurableGraph) LoadIntegration(
 			fmt.Errorf("agent graph integration loader is required")
 	}
 	return g.Integration(sessionID, agentID, previewDigest)
-}
-
-func (g DurableGraph) LoadBudget(sessionID string) (BudgetLedger, error) {
-	if g.Budget == nil {
-		return BudgetLedger{}, fmt.Errorf("agent graph budget loader is required")
-	}
-	return g.Budget(sessionID)
 }
 
 func (g DurableGraph) Reconcile() error {

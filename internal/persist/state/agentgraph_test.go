@@ -259,12 +259,10 @@ func TestAgentGraphIsolatesSessionsWithinWorkspace(t *testing.T) {
 	}); len(got) != 1 || got[0].ID != firstAgent.ID {
 		t.Fatalf("session-a tree = %+v", got)
 	}
+	restarted := openControl("session-c")
 	for _, sessionID := range []string{"session-a", "session-b"} {
-		ledger, err := store.LoadAgentBudgetSession(
-			t.Context(), workspace, sessionID,
-		)
-		if err != nil || ledger.TotalSpawned != 1 {
-			t.Fatalf("%s ledger = %+v, err=%v", sessionID, ledger, err)
+		if ledger := restarted.SessionBudget(sessionID); ledger.TotalSpawned != 1 {
+			t.Fatalf("%s hydrated ledger = %+v", sessionID, ledger)
 		}
 	}
 }
@@ -337,11 +335,6 @@ func TestAgentTerminalCommitIsAtomicAndCASGuarded(t *testing.T) {
 	); err != nil || len(unpublished) != 0 {
 		t.Fatalf("unpublished live completions = %+v, err=%v", unpublished, err)
 	}
-	ledger, err := store.LoadAgentBudget(t.Context(), "/workspace/atomic")
-	if err != nil || ledger.ReservedSlots != 0 ||
-		ledger.SpentTokens != 21 || ledger.SpentMicros != 5 {
-		t.Fatalf("budget ledger = %+v, err=%v", ledger, err)
-	}
 	err = graph.RecordTransition(subagent.GraphTransition{
 		AgentID: agent.ID, Path: agent.Path, ExpectedRevision: 1,
 		Status: subagent.StatusFailed, OperationID: "stale",
@@ -367,6 +360,10 @@ func TestAgentTerminalCommitIsAtomicAndCASGuarded(t *testing.T) {
 	recovered, ok := restarted.Agent(agent.ID)
 	if !ok || recovered.SpentTokens != 21 || recovered.SpentMicros != 5 {
 		t.Fatalf("recovered Agent lifecycle spend = %+v, ok=%v", recovered, ok)
+	}
+	if ledger := restarted.SessionBudget(agent.SessionID); ledger.ReservedSlots != 0 ||
+		ledger.SpentTokens != 21 || ledger.SpentMicros != 5 || ledger.TotalSpawned != 1 {
+		t.Fatalf("hydrated tree ledger = %+v", ledger)
 	}
 	if _, err := restarted.SpawnSystem(
 		"still over budget", "", subagent.RoleExplore, "inspect", "report",

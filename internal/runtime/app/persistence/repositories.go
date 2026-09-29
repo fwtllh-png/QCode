@@ -10,7 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	threadstate "github.com/fwtllh-png/QCode/internal/host/runtimeapi/thread"
+	threadstate "github.com/fwtllh-png/QCode/internal/persist/thread"
 	tracestate "github.com/fwtllh-png/QCode/internal/observability/trace"
 	usagestate "github.com/fwtllh-png/QCode/internal/observability/usage"
 	"github.com/fwtllh-png/QCode/internal/persist/agentpreset"

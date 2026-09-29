@@ -101,7 +101,7 @@ func TestChildSkillsUseOwnCatalogAndRediscoverPrivateHome(t *testing.T) {
 			if fresh := listChildSkills(t, options.Tools)["installed"]; fresh.Handle != freshSelection[0].Handle {
 				t.Fatal("current tool catalog did not refresh with turn selection")
 			}
-			builder.childTools.release(root)
+			builder.childTools.Release(root)
 			child, err = builder.BuildChild(spec)
 			if err != nil {
 				t.Fatal(err)
@@ -207,7 +207,7 @@ func TestChildSkillsKeepOwnerLockAndRejectDrift(t *testing.T) {
 	if _, err := readChildSkill(t, registry, handle); !errors.Is(err, skill.ErrLockDrift) {
 		t.Fatalf("changed governed skill read = %v", err)
 	}
-	builder.childTools.release(root)
+	builder.childTools.Release(root)
 	child, err = builder.BuildChild(spec)
 	if err != nil {
 		t.Fatalf("lock drift blocked child runtime: %v", err)
@@ -226,7 +226,7 @@ func TestChildSkillsKeepOwnerLockAndRejectDrift(t *testing.T) {
 		t.Fatalf("child changed owner's lock: %v", err)
 	}
 	writeChildSkill(t, root, "governed", "Locked instructions.")
-	builder.childTools.release(root)
+	builder.childTools.Release(root)
 	child, err = builder.BuildChild(spec)
 	if err != nil {
 		t.Fatalf("rebuild after restoring locked content: %v", err)

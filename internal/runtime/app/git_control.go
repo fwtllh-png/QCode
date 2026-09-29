@@ -262,34 +262,7 @@ func (c *GitControl) calls(ctx context.Context, request GitRequest, state worksp
 }
 
 func (r *Runtime) beginWorkspaceOperation() (func(), error) {
-	r.SessionService.mutationMu.Lock()
-	defer r.SessionService.mutationMu.Unlock()
-	s := r.OperationService
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if !s.accepting {
-		return nil, ErrClosed
-	}
-	if s.workspaceOperation || len(s.withdrawing) != 0 || len(s.accepted) != 0 {
-		return nil, retryableProblem(protocol.CodeConflict, "finish pending work before changing Git state")
-	}
-	r.EventService.mu.Lock()
-	queued := len(r.TurnQueueService.items) != 0
-	r.EventService.mu.Unlock()
-	if queued {
-		return nil, retryableProblem(protocol.CodeConflict, "finish queued work before changing Git state")
-	}
-	release, err := r.active.acquireWorkspace()
-	if err != nil {
-		return nil, err
-	}
-	s.workspaceOperation = true
-	r.workers.Add(1)
-	return func() {
-		s.mu.Lock()
-		release()
-		s.workspaceOperation = false
-		s.mu.Unlock()
-		r.workers.Done()
-	}, nil
+	unlock := r.SessionService.lockMutations()
+	defer unlock()
+	return r.OperationService.beginWorkspaceOperation()
 }

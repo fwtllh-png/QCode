@@ -52,8 +52,24 @@ Web
 6. UI State 是 Projection，不是 Runtime 事实来源。
 7. 持久化写入在所属边界内使用事务或 Journal。
 8. Guard 授权后的副作用尝试必须绑定规范化 Execution Operation 和单次 Lease。
+9. 只有 `internal/host` 可以 Import `internal/host/...`。Runtime 需要的持久化属于
+   `internal/persist`，例如 Thread Repository 位于 `internal/persist/thread`。
+10. Host 不扫描 Event History 做业务校验。终端上下文引用的工具输出是否已在该
+    Thread 提交，以及 Workspace 诊断回执聚合，由 Runtime 的
+    `ToolOutputsIssued` / `EachThreadDiagnostic` 分页回放判定；Host 只保留
+    `EventsLimited` 作为流式传输。
+11. 子 Agent 的有状态运行时属于 `internal/orchestration/childrun`，只经
+    `Host`、`Threads`、`ToolPlanes` 三个窄接口连接 Session Runtime；`wire` 只负责
+    构造与 Bind，不驱动子 Agent 生命周期。
+12. 子 Agent 预算只有一个权威：`subagent.Manager`。Session Agent Tree 的账本
+    （活跃槽位、预留、花费、累计 Spawn）每次都由 Agent 状态折叠得到，不维护
+    手工计数器；`childrun` 不做准入或记账。Manager 不在持锁时创建或删除
+    Worktree。
 
-Architecture Test 会检查重要 Import 限制。需要违反这些规则的设计必须先进行显式架构
+Architecture Test 会检查重要 Import 限制：第 9 条由 `TestOnlyHostsImportHostPackages`
+检查，第 10 条由 `TestWebHostDoesNotScanEventHistory` 检查，第 11 条由
+`TestWireOnlyConstructsChildRunner` 检查，第 12 条由
+`TestManagerIsTheOnlyChildBudgetOwner` 检查。需要违反这些规则的设计必须先进行显式架构
 调整，不能用局部捷径绕过。
 
 ## Runtime 组合根
@@ -74,7 +90,7 @@ config -> provider -> persistence -> platform -> builtin tools
 Runtime、Engine 和
 Session Service 都不得持有 `buildState`。Persistence 拥有 Content、Job Log 和
 SQLite 基础；Platform 拥有 Process、Sandbox 与 Repository Index；Orchestration
-拥有 Subagent、Admission/Budget、Child Worktree/Toolset、Chat Merge
+拥有 Subagent、Admission/Budget、Child Runner、Child Worktree/Toolset、Chat Merge
 与 Exec Settle 构造。
 Provider 显式输出 Provider/Model Catalog，Security 显式输出 Permission Store 与
 Guard Factory。
@@ -121,7 +137,9 @@ Broker 副作用统一经过 `authority` 的 `RunSettled` 事务骨架：消费�
 Runtime 构造具有 Prepared 状态。`RuntimeModule` 只构造 Facade 并恢复静态 Durable
 State，不接受 Operation；`BackgroundModule` 依次执行 MCP 初次 Refresh、启动 Runtime
 的 Terminal Outbox/Pending Turn Recovery，再启动 MCP Prewarm。任一步失败都会终止
-构造并由 ResourceStack 回滚；Runtime Recovery 成功前不会接受 Operation。
+构造并由 ResourceStack 回滚；Runtime Recovery 成功前不会接受 Operation。MCP Prewarm
+的生命周期归 Session 所有、由 `Session.Close` 停止，不随发起构造的请求 Context 结束，
+因此构造请求返回后后台刷新仍会继续。
 
 当 Web 启动时没有显式或已保存的 Provider/Model，Host 先进入受限 Setup 状态，不构造
 默认 Runtime。该状态只暴露受同源 Capability Token 保护的 `setup/apply`；用户提交的
@@ -134,7 +152,9 @@ Supervisor；普通 `qcode` 启动不把当前目录、安装目录或源码目�
 仅恢复 Registry，空列表也是合法状态。启动器按配置 Provenance 区分 Runtime 内部默认值
 与用户显式指定的 Workspace。只有 `--workspace`、显式配置或用户添加目录时，
 才通过 Lease 中仅对当前用户可读的 Capability Token 调用已有 Host 的 `workspace/add`，
-不会启动第二套控制面。连接配置和凭证生命周期属于 Supervisor，零 Workspace 时
+不会启动第二套控制面。浏览器不接触该 Token：启动器用同一 Token 调用
+`auth/launch-code` 申请一次性启动码，浏览器凭启动码换取 HttpOnly 会话 Cookie
+（见 [安全模型](security.md) 的“网络与服务暴露”）。连接配置和凭证生命周期属于 Supervisor，零 Workspace 时
 不构造替代 Runtime 或授予目录访问权限；每次添加目录仍校验其与 State Root 不重叠。每个
 Workspace 单独拥有 `wire.Session`、Sandbox、Tool Registry、Repository Index 和
 MCP 生命周期。共享 SQLite 中的 Session、Event Recovery 与 Terminal Outbox
@@ -177,10 +197,12 @@ eventview + Web Projection -> 仅负责 Host Presentation
 | Exec Settle | `internal/orchestration/execsettle` | 命令级隔离工作区、写树三方结算 |
 | Operation Service | `internal/runtime/app` | Queue、Idempotency、Typed Dispatch 与 Operation Commit/Reject |
 | Turn Service | `internal/runtime/app` | Active Lease、Control、Cancel Provenance 与 Turn goroutine 生命周期 |
-| Event/Recovery Service | `internal/runtime/app` | Event Projection 索引、Observer 与 Durable Recovery |
+| Event/Recovery Service | `internal/runtime/app` | Event Projection 索引、Observer、History Evidence 查询与 Durable Recovery |
 | Turn Coordinator/Scope | `internal/runtime/agent` | Reducer Authority、Effect、Control 与 Turn-local State |
 | Event Hub/Terminal Publisher | `internal/runtime/app/eventhub`、`internal/runtime/app` | Sequence/Fanout 与 Atomic Terminal Publication |
-| Subagent Control | `internal/orchestration/subagent`、`internal/orchestration/admission` | Agent Graph、Budget、Concurrency 与 Worktree Authority |
+| Subagent Control | `internal/orchestration/subagent` | Agent Graph、唯一的 Budget/Concurrency 权威与 Worktree Authority |
+| Child Runner | `internal/orchestration/childrun` | Child Turn 提交、驻留、墙钟租约与终态结算；不做预算准入或记账 |
+| Thread Repository | `internal/persist/thread` | Thread 元数据与生命周期的 SQLite 持久化 |
 | Skill Control | `internal/runtime/app/extension`、`internal/adapter/skill` | Skill 状态、Lock、控制操作与 Receipt |
 | Trace/Usage Plane | `internal/observability/trace`、`internal/observability/usage` | Span、Latency、Token、Cost 与查询投影 |
 | Session/Artifact/Trace Service | `internal/runtime/app` | Runtime-owned Port 上的 Host-facing Query 行为 |
@@ -282,8 +304,17 @@ Web Client 使用 Runtime Snapshot 完成 Hydration，再按当前 Workspace 的
 Event。持久层 Sequence 在 Supervisor 内全局严格单调，浏览器则按 Workspace 分别保存
 Cursor；只有对应 Runtime 明确报告 Retention Gap 时才进入 Desync。
 Snapshot 与加载期间缓冲的 Live Event 合并后立即显示正文，Profile、队列与辅助面板
-独立更新；Profile 和队列未成功就绪前仍禁止提交会话操作。切换 Session 时取消旧加载，
-并用选择代次拒绝迟到结果，旧辅助查询不能覆盖已经由实时事件刷新的面板。
+独立更新；Profile 和队列未成功就绪前仍禁止提交会话操作。客户端的异步工作都运行在
+`web/src/runtime/requestScope.ts` 的 Request Scope 中：连接、启动尝试、Session
+选择与 Session 列表各有一个 `ScopeSlot`，开启新一轮工作即结束上一轮 Scope，
+中止其在途请求，并让其迟到结果不再写回；不再使用分散的代次计数器。切换 Session
+时取消旧加载，旧辅助查询、模型目录刷新后的 Profile 回读和 Agent Preset 应用结果
+都不能覆盖新选择。切换失败时恢复原 Session 的正文、Profile 与面板，并重放切换期间
+缓冲的实时事件，而不是留下空白页面。
+事件流连接由显式状态机管理（idle、starting、live、waiting）：已上线的客户端在
+意外断开或重启尝试失败后进入 waiting 并按退避重试，期间保持 `reconnecting` 阶段
+与工作台挂载；从未上线的客户端显示失败页，但同样继续重试。Desync、会话过期与
+不可重试的问题会终止重试。退避参数见 `usage.md`。
 计划与 Agent 进度的初次加载和事件刷新共用一条单次在途查询链，两个查询并行执行。
 查询期间收到的进度或终态事件合并为后续刷新，已失效的响应不写回面板；
 单项失败保留该项最后成功的结果，其他成功结果仍可更新。切换 Session、Workspace、
@@ -294,7 +325,11 @@ Composer 草稿在输入事件中立即写入当前 Workspace/Session 的浏览�
 加载目标 Workspace 期间继续输入的文本仍保存到原 Workspace。发送成功清空草稿，
 提交失败保留原文。
 浏览器 Conversation Projection 对高频 Delta 按动画帧合并发布，并保持未变化业务节点
-的引用稳定。Chat 的终态、用量和刷新水位使用独立的非 Delta 事件视图，追加流式文本
+的引用稳定。Projection 区分 `revision` 与 `structureRevision`：输出、推理和工具输出
+Delta 只扩展已有节点内容时不推进后者。工作台通过 `useWorkbenchSnapshot` 订阅
+Snapshot，只扩展内容的帧保持原视图，整个工作台不参与协调；Transcript 条目通过
+`useLiveNode` 订阅自己的节点，Trajectory 与 Inspect 面板通过 `useRuntimeEvents`
+订阅完整事件日志，底部跟随由 Transcript 的 ResizeObserver 完成。Chat 的终态、用量和刷新水位使用独立的非 Delta 事件视图，追加流式文本
 不重建这些统计；切换 Session、替换 Snapshot 或加载较早历史时重新建立该视图。
 历史消息的反馈回调与 Markdown 渲染保持稳定引用，避免每帧重复解析已完成回答。
 流式 Markdown 使用 React Deferred 更新让出高优先级输入，终态直接使用完整权威正文，
@@ -347,11 +382,52 @@ Application Runtime 是显式 Owner 组成的 Facade：
   持久化的 Start Operation ID。Pending-work Phase 来自权威 Turn Kernel Snapshot。
 - `eventhub.Hub` 独占 Sequence 分配、Append、Replay、Subscriber Fanout、Slow
   Consumer Policy 与 Close。
+- `EventService` 的 Observer（例如子 Agent 状态同步）在发布锁释放后按事件序号依次
+  调用，因此 Observer 可以再发布事件；嵌套发布的事件排在当前事件之后投递。
+  同一时刻只有一个调用方在分发，Observer 不会并发执行。
 - `TerminalPublisher` 独占 Atomic Terminal Commit、Deterministic Outbox Publish
   Identity、Event Hub Projection 与 Restart Recovery。
 - `SessionService` 拥有 Lifecycle、Profile 与 Tool Catalog；`ArtifactService` 拥有
   Checkpoint、Plan、Turn Recovery 与 Persistence。Runtime 直接暴露窄化的 Host
   Query Method，不再保留平行的 Interface-only Package。
+
+Facade 是单向的：`Runtime` 嵌入各 Service 以暴露方法，Service 只通过具名
+`runtime` 字段引用 Runtime，不反向嵌入 `*Runtime`。每个 Service 独占自己的状态，
+其他代码只能调用 Owner 的窄方法：
+
+| Owner | 独占状态 | 对外窄方法（示例） |
+| --- | --- | --- |
+| `SessionService` | Session mutation lock、命名任务表与命名 worker | `lockMutations`、`waitTitleWorkers` |
+| `OperationService` | 准入开关、分发通道、已接受/已提交 Operation、待结算表、Git 与撤回独占 | `open`/`shutdown`/`serve`、`commit`/`rejectAndCommit`、`beginWorkspaceOperation`、`beginWithdrawal`、`enqueueRecovered`、`restore` |
+| `EventService` | 发布锁、终态/审批/输入索引、Item 映射与 Observer 队列 | `PendingApproval`、`pendingCounts`、`terminalKind`、`forgetThreadInteractions`、`recoveryState`、`restore` |
+| `TurnQueueService` | 排队 Turn 投影与 drain claim（自有叶子锁） | `Apply`、`claimNext`、`hasItems`、`snapshotMap` |
+| `TurnService` | Turn worker 生命周期与延迟终态投影 | `trackWorker`、`waitWorkers` |
+
+`ActiveTurnRegistry` 自带锁并只通过方法共享，因此各 Service 可直接调用它。
+`TestRuntimeServicesOwnTheirState` 静态解析选择器的实际类型（包括经 Runtime 或
+嵌入 Runtime 的 Handler 提升的字段、局部别名），非 Owner 访问上述状态即失败；
+`TestRuntimeServicesDoNotEmbedRuntime` 禁止 Service 重新嵌入 `*Runtime`。
+
+Runtime 锁顺序（外层在前，只能按此方向嵌套，同级互不嵌套）：
+
+```text
+SessionService.mutationMu
+  > OperationService.mu
+  > EventService.publishMu > Hub.publishMu
+  > EventService.mu | TurnQueueService.mu > Hub.mu
+  > EventService.observerMu | SessionService.titleMu
+```
+
+`EventService.publishMu` 串行化完整发布（身份与终态去重、持久追加、同步投影），
+是唯一跨 I/O 持有的 Runtime 锁，读路径从不获取它。`EventService.mu` 与
+`TurnQueueService.mu` 只包住内存 Map 读写，持有期间不做 I/O、不调用回调、不发布
+或提交 Operation，也不进入其他 Owner。投影保持同步，以便排队 drain 等路径能读到
+自己刚写入的状态；Observer 在发布锁释放后按序异步分发。`TurnQueueService` 的选取与
+claim 在同一临界区内完成，并发 drain 不会选中同一条目。`OperationService` 待结算表与
+`TurnService` 延迟终态投影表各有一把叶子锁，只包住登记与摘取，重试在锁外执行。
+`TestRuntimeLockContractNestingFollowsDocumentedOrder` 静态检查同一函数体内的嵌套
+方向与状态锁下的禁止调用，`event_publish_lock_test.go` 在投影阻塞时验证
+Snapshot、待审批/输入与队列查询仍能返回；跨函数死锁由 `go test` 默认超时兜底。
 
 ## Turn 数据流
 
@@ -458,11 +534,70 @@ Control State。Cancel、Steer、Approval、Input 统一进入 `ControlPort`；�
 20. Engine 只在该 Commit 成功后幂等 Apply Session Delta；Commit 失败不修改 Session
     内存。
 21. 重启时 Runtime 扫描 Pending Terminal Projection，以稳定 Event ID 逐条 Append，
-    成功后再将对应 Entry 标记为 Published。
-22. accepted StartTurn 仅在存在对应非终态 Domain Fact 时自动恢复；Coordinator requeue
-    Running Effect，Engine 从 Durable Payload 接续 Provider、Tool 或 Journal 执行。
+    成功后再将对应 Entry 标记为 Published。某个 Turn 的 Outbox 投影失败只推迟该 Turn，
+    其余 Turn 继续恢复，Runtime 照常启动；只有 Outbox 本身不可读才中止启动。
+    Terminal 与 Operation Receipt 已原子提交但在线投影失败时，不再追加与已提交终态
+    矛盾的 `operation.rejected`；该 Turn 留在 Outbox 中，由结算重试器投影，成功后再
+    持久化产物并推进队列，崩溃后仍由重启 Recovery 补发。
+22. accepted StartTurn 仅在存在对应非终态 Domain Fact 且 Fact 链可还原时自动恢复；
+    Coordinator requeue Running Effect，Engine 从 Durable Payload 接续 Provider、Tool
+    或 Journal 执行。启动时 Recovery 用与 Coordinator 还原相同的规则
+    （`turnkernel.ValidateDomainFacts`：序号连续、状态合法、摘要一致）校验 Fact 链；
+    读取失败或校验失败的 Turn 经终态存储的 `QuarantineActiveTurn` 隔离为 failed 并
+    删除遗留 Coordinator Lease，其 Operation 以 `operation.rejected`（Fault
+    `origin=kernel`、`retry_turn`、副作用未知）结算，不进入 Engine、不阻断启动，
+    也不会在之后每次重启时重复尝试；用户可从该 Turn 发起恢复。
+    没有任何 Domain Fact 的非排队 StartTurn 说明崩溃发生在 Engine 开始之前：Recovery
+    不重新执行该 Prompt，而是为其提交一个可恢复的 `turn.failed`（Fault
+    `retry_turn`，无副作用）并结算 Operation，释放 Accept 时占用的 Active Turn 行，
+    用户可从该 Turn 重试。排队来源的 StartTurn 仍按原逻辑自动继续。
+    StartTurn 以外仍处于 accepted 的 Operation（Cancel、Steer、队列操作、Approval、
+    Input、Compact、Fork、Revert）在重启后不隐式重放：Recovery 以
+    `operation.rejected`（`unavailable`、可重试、Fault `reject`、
+    `retry_owner=host`）结算，由客户端决定是否重新提交；Compact、Fork、Revert 可能
+    已部分生效，副作用标为未知，其余标为无。
+    排队 Prompt 由确定性的 Operation ID 与幂等键启动；若它在 `turn.started` 之前就以
+    终态或 `operation.rejected` 结束，该队列项与其启动占用一并消费（Prompt 归属失败
+    的 Turn），在线投影与重启 Recovery 使用同一规则。队列随后继续推进下一项，不会因
+    重放同一幂等 Operation 而永久报告 “queued turn is already starting”。
 23. Approval/Input 恢复在接续执行前预装原 Request ID，Host 只回放一个 Wait，不会收到
     替代请求。
+24. 已接受的 Operation 必须最终 commit 或 reject。结果确定后，结算按顺序追加
+    `operation.rejected` 或已提交 Outcome 事件，再写 Commit Receipt，最后推进队列；
+    任一步失败（日志写 IO 错误、投影失败、Receipt 写失败）都把剩余步骤登记到
+    `OperationService` 的待结算表，Operation 保持 accepted，不会记录日志后丢失。
+    结算事件使用由 Operation ID 推导的稳定 Event ID（`eventhub.SettlementEventID`），
+    追加成功但投影失败后的重试会重新投影原事件而不重复追加；Lifecycle Commit 对已提交
+    Operation 幂等。只有 `OperationService.advance` 写 Commit Receipt、只有
+    `operationRejection` 构造拒绝事件，由 `TestAcceptedOperationsSettleThroughOneOwner`
+    静态保证。
+25. 待结算 Operation 与延迟终态投影都在分发循环上重试：每个 Operation 分发前重试一次；
+    仍有积压时按 `Options.SettlementRetry` 定时重试，无需新请求。持久化 Runtime 取
+    SQLite 实际生效的 `state.busy_timeout`：一次写入失败说明存储在整个锁等待窗口内
+    持续不可写，按同一窗口重试，不另设阈值。该值为零（非持久化 Runtime）时只在下一次
+    分发前重试。
+26. `Scope.Run` 只做准入（Workspace Gate、Journal Draft、Kernel、Terminal Emitter），
+    随后把 Turn 交给 `engine/turn_run.go` 的 `turnRun`：`execute` 依次走恢复终态、
+    打开会话、接续挂起工具与逐 Sample 的 `sampleStep`，`settle` 是唯一收尾。每个终态
+    副作用只有一个所有者步骤：`stageContext` 暂存 SessionDelta，`finalizeKernel`
+    提交 Kernel 终态，`finalizeStaged` 在终态提交失败时丢弃已暂存的 completed
+    历史（改为按失败重新暂存），`settle` 发出 Terminal；
+    `TestTurnTerminalEffectsHaveOneOwnerStep` 以 AST 锁定这一映射。暂存的历史与
+    Journal 结论使用同一规则 `turnkernel.CancelSuspendsDraft`：只有
+    `user_interrupted` 取消挂起草稿并保留部分历史，其他取消回滚 Journal 且不提交该
+    Turn 历史。
+27. Steer 与 Cancel 使用 Scope 中两个独立的取消槽：Steer 只中断在途 Sample，排队的
+    引导在当前 Sample 的正文之后追加，不中止正在执行的工具批次或等待中的 Approval；
+    Cancel 同时中断 Sample 与工具（`TestSteerNeverCancelsTheToolBatch`）。Turn 进入
+    收尾时关闭 Steering：完成步骤若发现 Mailbox 中仍有引导，则让出完成并继续同一
+    Turn；关闭后到达的 Steer 以 `turn is finishing and no longer accepts steering`
+    显式拒绝，关闭后到达的 Mailbox 输入转入 Engine 的待处理 Mailbox，交给下一个
+    Turn，两者都不会被静默丢弃。
+28. `result_get` 与 `handle_read` 共用 `internal/adapter/tool/page.go` 的
+    `ProjectPage`，两者的 summary、head、tail、bytes、lines、query 分页行为一致
+    （`TestHandleReadAndResultGetPageIdentically`）。字节页从 UTF-8 字符边界开始，
+    `next_offset` 始终等于本页起点加本页字节数；行页遇到超长行时仍推进游标；查询页
+    遵守字节上限；`limit` 至少为 4 字节（一个完整 UTF-8 字符），游标不会原地停滞。
 
 Engine 始终提交完整逻辑模型请求。只有模型显式广告能力、请求属性不变且输入严格扩展
 已提交 Response Chain 时，Provider Adapter 才能将该请求投影为 Incremental
@@ -615,7 +750,8 @@ SQLite 连接使用 WAL + `synchronous=FULL`：CAS、领域事实、内容归属
 事件日志与状态存储的读路径与追加并发执行：锁内固定已提交高水位和不可变的偏移
 证据，锁外读取、校验和解码日志；独立的读取生命周期锁保证关闭文件前等待读取完成，
 追加不获取这把锁。日常已提交区域只追加，维护时独占读取生命周期锁；失败回滚只影响上一个已提交末尾之后
-的字节。`EventByID` 经 `event_index` 的偏移证据直达读取日志记录，不重放日志前缀。
+的字节。若回滚截断本身失败，日志把尾部记为未知：之后每次追加先截断回已提交末尾并
+fsync，仍失败则返回不确定追加错误，绝不在残留的半截记录之后继续写入。`EventByID` 经 `event_index` 的偏移证据直达读取日志记录，不重放日志前缀。
 Turn 恢复、终态 Checkpoint 与 Plan 绑定经 `event_index_turn_sequence` 按 `turn_id`
 定位后直达读取对应记录，空或未知 Turn 如实返回空，不回退成全量日志重放。
 Continue 解包嵌套恢复 Prompt 时，对提示中声明的祖先 Turn 逐个做同样的索引读取。
@@ -651,8 +787,11 @@ Workspace，保留其他 Workspace 的列表和筛选结果。请求期间的新
 Persistent Runtime Wiring 在创建 Engine 前注入 SQLite Turn Coordinator Store。每个
 已接受 Transition 都在 State Commit 或 Effect Dispatch 前追加 Domain Fact。热路径恢复
 只从最近一份 Snapshot 加重放后续 Delta，不把整条 Fact 历史读进内存。启动恢复
-使用可续租的 Active Turn Lease；无法还原的 Active Turn 被隔离为 failed，不阻断
-Runtime 启动。重复恢复同一已跟踪 Coordinator 仍 Fail Closed。
+使用可续租的 Active Turn Lease；生产启动路径中 Runtime Recovery 经
+`WorkspaceTerminalStore` 的 `QuarantineActiveTurn` 把 Fact 链无法还原的 Active Turn
+隔离为 failed 并删除遗留 Lease，不阻断 Runtime 启动，也不再占用该 Thread 唯一的
+Active Turn 位置；隔离幂等，重复启动不会失败。重复恢复同一已跟踪 Coordinator 仍
+Fail Closed。
 
 Session Checkpoint 与 Plan Artifact 复用 Snapshot Index 和 CAS。Checkpoint 只保存
 经过校验的 Context Manifest 与 Profile Snapshot；Manifest 将 History 拆为 Base/Tail，
@@ -704,7 +843,11 @@ Turn 或待处理 Operation 时拒绝切换。Session 列表聚合同时保存
 Git 悬浮窗通过只读 `workspace/git-status` 与 `workspace/git-diff` 查询当前 Workspace：
 使用 NUL 分隔的 porcelain/numstat 记录，路径按字面值匹配，不以显示文本解析文件名；
 Diff 禁用外部驱动和 textconv。忽略与跳过路径不进入可预览清单，未跟踪文件内容沿用
-Workspace Resource 的常规文件和编码检查。每条 Git 查询的公开字节上限
+Workspace Resource 的常规文件、编码与单文件大小检查。未跟踪文本的完整行数作为
+Unstaged 新增行数返回，末行无换行符仍计一行；二进制返回独立标记。受读取边界限制的
+文件保留条目但不返回行数，界面明确标注这些排除项与部分总计，不能用零冒充。
+统计直接读取 Git 已枚举的字面路径，不为每个新增文件重复遍历仓库。
+每条 Git 查询的公开字节上限
 `workspacequery.GitInspectMaxBytes` 继承 Resource 的 1 MiB 限制，截断直接报告错误，
 不把部分统计当作完整结果。查询显式绑定 Workspace，切换或关闭窗口时取消旧请求，
 不写入 Git Index、Session 或 Turn 历史。`workspace/git-action` 将结构化 Git 命令交给
@@ -902,6 +1045,9 @@ Durable Workspace Journal、Process Job Journal 与 Job Log 位于
 Journal 按 Workspace 加锁，不按 Session 隔离；删除 Session 必须先回滚该 Session
 拥有的 retained draft，否则其他 Session 无法 `Begin`。已删除 Session 留下的孤儿
 草稿可由任意剩余 Session 的 Continue 接管或 Retry 回滚。
+Rollback 与 Revert 在 Journal 锁内先认领草稿再恢复文件：恢复进行中时，同一草稿的
+Keep、Resume 或第二次回滚会被拒绝，恢复完成后才从草稿表移除，避免并发请求在文件
+尚未还原时接管或丢失草稿。
 同一 Workspace Identity 下的 `control`、`sandbox-home` 和 `artifacts` 是互不重叠的
 状态域；只有 `sandbox-home` 可以作为 Sandbox 写目录。
 Execution Receipt 会保留每次 Verification Attempt、命令推导原因、失败分类、Repair

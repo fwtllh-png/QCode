@@ -16,6 +16,8 @@ import (
 
 	webhost "github.com/fwtllh-png/QCode/internal/host/runtimeapi/web"
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
+	"github.com/fwtllh-png/QCode/internal/security/credential"
+	"github.com/fwtllh-png/QCode/internal/security/keyring"
 )
 
 func startWorkspaceSupervisor(t *testing.T, args []string, readyPrefix string) (string, func()) {
@@ -55,9 +57,14 @@ func startWorkspaceSupervisor(t *testing.T, args []string, readyPrefix string) (
 	return waitForOutputURL(t, lines, readyPrefix), stop
 }
 
-func assertNoWorkspaceBootstrap(t *testing.T, url string, ready bool) {
+func assertNoWorkspaceBootstrap(t *testing.T, url, dataDir string, ready bool) {
 	t.Helper()
-	response, err := http.Get(url + "api/v1/bootstrap")
+	request, err := http.NewRequest(http.MethodGet, url+"api/v1/bootstrap", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Authorization", "Bearer "+fetchSupervisorToken(t, dataDir))
+	response, err := http.DefaultClient.Do(request)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,7 +99,7 @@ func TestSupervisorDoesNotRegisterCWDOrRestoreRemovedWorkspace(t *testing.T) {
 		"--enable-tools=false", "--port", "0", "--no-open",
 	}
 	url, stop := startWorkspaceSupervisor(t, args, "QCode Runtime Ready: ")
-	assertNoWorkspaceBootstrap(t, url, true)
+	assertNoWorkspaceBootstrap(t, url, dataDir, true)
 	var stdout, stderr bytes.Buffer
 	if code := RunContext(t.Context(), args, &stdout, &stderr); code != 0 {
 		t.Fatalf("owner reuse exit=%d stderr=%s", code, stderr.String())
@@ -100,9 +107,9 @@ func TestSupervisorDoesNotRegisterCWDOrRestoreRemovedWorkspace(t *testing.T) {
 	if strings.Contains(stdout.String(), "?workspace=") {
 		t.Fatal("plain startup selected a Workspace")
 	}
-	assertNoWorkspaceBootstrap(t, url, true)
+	assertNoWorkspaceBootstrap(t, url, dataDir, true)
 	root := t.TempDir()
-	token := fetchSupervisorToken(t, url)
+	token := fetchSupervisorToken(t, dataDir)
 	id, err := registerWorkspaceWithOwner(t.Context(), url, token, root)
 	if err != nil {
 		t.Fatal(err)
@@ -113,7 +120,7 @@ func TestSupervisorDoesNotRegisterCWDOrRestoreRemovedWorkspace(t *testing.T) {
 	}
 	stop()
 	url, stop = startWorkspaceSupervisor(t, args, "QCode Runtime Ready: ")
-	token = fetchSupervisorToken(t, url)
+	token = fetchSupervisorToken(t, dataDir)
 	catalog = fetchWorkspaceCatalog(t, url, token)
 	if len(catalog.Workspaces) != 1 || catalog.Workspaces[0].ID != id || !catalog.Workspaces[0].Ready {
 		t.Fatalf("explicit Workspace was not restored: %+v", catalog)
@@ -121,15 +128,15 @@ func TestSupervisorDoesNotRegisterCWDOrRestoreRemovedWorkspace(t *testing.T) {
 	removeWorkspace(t, url, token, id)
 	stop()
 	url, _ = startWorkspaceSupervisor(t, args, "QCode Runtime Ready: ")
-	assertNoWorkspaceBootstrap(t, url, true)
+	assertNoWorkspaceBootstrap(t, url, dataDir, true)
 }
 
 func TestSupervisorSetupWithoutWorkspacePersistsConnection(t *testing.T) {
 	dataDir := t.TempDir()
 	args := []string{"--data-dir", dataDir, "--port", "0", "--no-open"}
 	url, stop := startWorkspaceSupervisor(t, args, "QCode Setup Ready: ")
-	assertNoWorkspaceBootstrap(t, url, false)
-	token := fetchSupervisorToken(t, url)
+	assertNoWorkspaceBootstrap(t, url, dataDir, false)
+	token := fetchSupervisorToken(t, dataDir)
 	request, err := http.NewRequest(http.MethodPost, url+"api/v1/setup/apply", strings.NewReader(
 		`{"model":"local-model","api_key":"secret-value",`+
 			`"base_url":"http://127.0.0.1:1/v1","protocol":"openai_chat",`+
@@ -153,17 +160,17 @@ func TestSupervisorSetupWithoutWorkspacePersistsConnection(t *testing.T) {
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("setup HTTP status=%d", response.StatusCode)
 	}
-	assertNoWorkspaceBootstrap(t, url, true)
+	assertNoWorkspaceBootstrap(t, url, dataDir, true)
 	if _, err := os.Stat(filepath.Join(dataDir, "workspaces")); !os.IsNotExist(err) {
 		t.Fatalf("setup created Workspace runtime state: %v", err)
 	}
 	if _, err := registerWorkspaceWithOwner(t.Context(), url, token, dataDir); err == nil {
 		t.Fatal("state directory was accepted as a Workspace")
 	}
-	assertNoWorkspaceBootstrap(t, url, true)
+	assertNoWorkspaceBootstrap(t, url, dataDir, true)
 	stop()
 	url, _ = startWorkspaceSupervisor(t, args, "QCode Runtime Ready: ")
-	assertNoWorkspaceBootstrap(t, url, true)
+	assertNoWorkspaceBootstrap(t, url, dataDir, true)
 }
 
 // TestAddConnectionKeepsDefaultCredentialOwnership pins the credential
@@ -179,7 +186,7 @@ func TestAddConnectionKeepsDefaultCredentialOwnership(t *testing.T) {
 		"--port", "0", "--no-open",
 	}
 	url, stop := startWorkspaceSupervisor(t, args, "QCode Setup Ready: ")
-	token := fetchSupervisorToken(t, url)
+	token := fetchSupervisorToken(t, dataDir)
 	apply := func(idempotencyKey, model, baseURL string) {
 		request, err := http.NewRequest(http.MethodPost, url+"api/v1/setup/apply",
 			strings.NewReader(`{"model":"`+model+`","api_key":"sk-`+idempotencyKey+`",`+
@@ -257,6 +264,21 @@ func TestAddConnectionKeepsDefaultCredentialOwnership(t *testing.T) {
 	}
 	if first.Credential.Kind != "keyring" || second.Credential.Kind != "keyring" {
 		t.Fatalf("credential kinds = %+v / %+v", first.Credential, second.Credential)
+	}
+	// A key-less probe reopens the connection's credential control with no
+	// selected reference; an un-activated staged key would be reaped here.
+	_, recovered, err := credential.OpenControl(
+		t.Context(), dataDir, webSupervisorScope, second.Provider,
+		credential.Reference{}, credential.Reference{},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recovered != *second.Credential {
+		t.Fatalf("recovered credential = %+v, want activated %+v", recovered, *second.Credential)
+	}
+	if _, err := keyring.New().Lookup(t.Context(), second.Credential.Name); err != nil {
+		t.Fatalf("added connection key was removed: %v", err)
 	}
 	stop()
 }

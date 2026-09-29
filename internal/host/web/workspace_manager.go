@@ -125,33 +125,23 @@ func (m *workspaceRuntimeManager) configureWithoutRuntime(
 	if err != nil {
 		return err
 	}
-	prepared, err := prepareWebCredentials(
-		ctx, loaded, selection, secret, nil, credential.Reference{},
-	)
+	rotation, err := openCredentialRotation(ctx, loaded, selection, "", secret, nil)
 	if err != nil {
 		return err
 	}
 	selectionPersisted := false
 	defer func() {
-		if resultErr == nil {
-			return
-		}
-		if selectionPersisted {
+		if resultErr != nil && selectionPersisted {
 			if previous.Active() != nil {
 				resultErr = errors.Join(resultErr, saveWebSetupSelection(m.dataDir, "", previous))
 			} else if err := os.Remove(setupSelectionPath(m.dataDir, "")); !errors.Is(err, os.ErrNotExist) {
 				resultErr = errors.Join(resultErr, err)
 			}
 		}
-		resultErr = errors.Join(resultErr, prepared.rollbackCredential())
+		rotation.settle(&resultErr, m.stderr)
 	}()
-	reference = prepared.credentialReference
-	if prepared.credentialActivate != nil {
-		value := reference
-		if active := selection.Active(); active != nil {
-			active.Credential = &value
-		}
-	}
+	reference = rotation.Reference()
+	rotation.bindTo(selection, "")
 	if persist {
 		if err := saveWebSetupSelection(m.dataDir, "", selection); err != nil {
 			return err
@@ -161,14 +151,11 @@ func (m *workspaceRuntimeManager) configureWithoutRuntime(
 	if err := m.Persist(); err != nil {
 		return err
 	}
-	if err := prepared.activateCredential(); err != nil {
+	if err := rotation.Activate(); err != nil {
 		return err
 	}
 	m.SetRoute(selection, reference)
 	m.server.ActivateSupervisor()
-	if err := prepared.commitCredential(); err != nil {
-		_, _ = fmt.Fprintf(m.stderr, "qcode: finalize credential rotation: %v\n", err)
-	}
 	return nil
 }
 
@@ -383,9 +370,7 @@ func (m *workspaceRuntimeManager) replaceSelection(
 	reference credential.Reference,
 	secret string,
 ) (protocol.ModelCatalog, error) {
-	return m.replaceSelectionStaged(
-		ctx, selection, reference, secret, nil, credential.Reference{}, "",
-	)
+	return m.replaceSelectionStaged(ctx, selection, reference, secret, nil, "")
 }
 
 // stagedCredentialTargetsDefault reports whether a staged credential belongs
@@ -411,29 +396,27 @@ func stagedCredentialTargetsDefault(
 func runtimeCredentialStaging(
 	selection webSetupSelection,
 	stagedOwner string,
-	control *credential.Control,
-	reference credential.Reference,
-) (*credential.Control, credential.Reference) {
-	if control != nil && !stagedCredentialTargetsDefault(selection, stagedOwner) {
-		return nil, credential.Reference{}
+	staged *credentialRotation,
+) *credentialRotation {
+	if staged != nil && !stagedCredentialTargetsDefault(selection, stagedOwner) {
+		return nil
 	}
-	return control, reference
+	return staged
 }
 
-// replaceSelectionStaged 支持传入已暂存的凭证（connection/add 在目标连接
-// 命名空间预暂存后经此复用）。stagedConnectionID 标记预暂存凭证归属的
-// 连接：空表示默认连接（Reconfigure 语义）；connection/add 传入目标连
-// 接——暂存引用只写回所属连接，不得覆盖默认连接的凭证。
+// replaceSelectionStaged 支持传入已暂存的凭证轮换（connection/add 在目标
+// 连接命名空间预暂存后经此复用）。stagedConnectionID 标记预暂存凭证归属
+// 的连接：空表示默认连接（Reconfigure 语义）；connection/add 传入目标连
+// 接——暂存引用只写回所属连接，不得覆盖默认连接的凭证。预暂存轮换在
+// 选择落盘时与运行时轮换一起 Activate；Commit 与失败 Rollback 仍归调用方。
 func (m *workspaceRuntimeManager) replaceSelectionStaged(
 	ctx context.Context,
 	selection webSetupSelection,
 	reference credential.Reference,
 	secret string,
-	prestagedControl *credential.Control,
-	prestagedReference credential.Reference,
+	prestaged *credentialRotation,
 	stagedConnectionID string,
 ) (protocol.ModelCatalog, error) {
-
 	m.mu.Lock()
 	switch {
 	case m.closing:
@@ -488,6 +471,9 @@ func (m *workspaceRuntimeManager) replaceSelectionStaged(
 		return protocol.ModelCatalog{}, err
 	}
 	if len(active) == 0 {
+		if err := prestaged.Activate(); err != nil {
+			return protocol.ModelCatalog{}, err
+		}
 		err := m.configureWithoutRuntime(ctx, selection, reference, secret, true)
 		return protocol.ModelCatalog{}, err
 	}
@@ -497,14 +483,13 @@ func (m *workspaceRuntimeManager) replaceSelectionStaged(
 	}
 	sort.Strings(ids)
 	prepared := make(map[string]*preparedWebRuntime, len(active))
-	stagedControl := prestagedControl
-	stagedReference := prestagedReference
+	staged := prestaged
 	stagedOwner := stagedConnectionID
 	closePrepared := func() error {
 		var closeErr error
 		for _, runtime := range prepared {
 			runtime.close()
-			closeErr = errors.Join(closeErr, runtime.rollbackCredential())
+			closeErr = errors.Join(closeErr, runtime.credentials.Rollback())
 		}
 		return closeErr
 	}
@@ -521,9 +506,6 @@ func (m *workspaceRuntimeManager) replaceSelectionStaged(
 		if index == 0 {
 			runtimeSecret = secret
 		}
-		runtimeStagedControl, runtimeStagedReference := runtimeCredentialStaging(
-			selection, stagedOwner, stagedControl, stagedReference,
-		)
 		replacement, prepareErr := prepareWebRuntime(
 			ctx,
 			options,
@@ -535,22 +517,20 @@ func (m *workspaceRuntimeManager) replaceSelectionStaged(
 			repositories,
 			stderr,
 			runtimeSecret,
-			runtimeStagedControl,
-			runtimeStagedReference,
+			runtimeCredentialStaging(selection, stagedOwner, staged),
 		)
 		if prepareErr != nil {
 			return protocol.ModelCatalog{}, errors.Join(prepareErr, closePrepared())
 		}
 		prepared[id] = replacement
-		if replacement.credentialActivate != nil {
+		if replacement.credentials.Pending() {
 			// 本次暂存发生在默认连接命名空间（Reconfigure 语义）。
-			stagedControl = replacement.credentialControl
-			stagedReference = replacement.credentialReference
+			staged = replacement.credentials
 			stagedOwner = ""
 		}
 	}
-	if stagedControl != nil {
-		value := stagedReference
+	if staged != nil {
+		value := staged.Reference()
 		if stagedCredentialTargetsDefault(selection, stagedOwner) {
 			if active := selection.Active(); active != nil {
 				active.Credential = &value
@@ -571,8 +551,12 @@ func (m *workspaceRuntimeManager) replaceSelectionStaged(
 	if err := saveWebSetupSelection(m.dataDir, "", selection); err != nil {
 		return protocol.ModelCatalog{}, errors.Join(err, closePrepared())
 	}
+	if err := prestaged.Activate(); err != nil {
+		rollbackErr := saveWebSetupSelection(m.dataDir, "", previousSelection)
+		return protocol.ModelCatalog{}, errors.Join(err, rollbackErr, closePrepared())
+	}
 	for _, runtime := range prepared {
-		if err := runtime.activateCredential(); err != nil {
+		if err := runtime.credentials.Activate(); err != nil {
 			rollbackErr := errors.Join(
 				saveWebSetupSelection(m.dataDir, "", previousSelection),
 			)
@@ -603,13 +587,7 @@ func (m *workspaceRuntimeManager) replaceSelectionStaged(
 	m.active = prepared
 	m.mu.Unlock()
 	for _, runtime := range prepared {
-		if commitErr := runtime.commitCredential(); commitErr != nil {
-			_, _ = fmt.Fprintf(
-				stderr,
-				"qcode: finalize credential rotation: %v\n",
-				commitErr,
-			)
-		}
+		runtime.credentials.commitOrReport(stderr)
 	}
 	for _, runtime := range active {
 		runtime.close()
@@ -792,8 +770,7 @@ func (m *workspaceRuntimeManager) Add(
 		if loadErr == nil {
 			prepared, loadErr = prepareWebRuntime(
 				ctx, options, loaded, selection, root, identity,
-				store, repositories, stderr, "",
-				nil, credential.Reference{},
+				store, repositories, stderr, "", nil,
 			)
 		}
 
@@ -1145,27 +1122,19 @@ func (m *workspaceRuntimeManager) AddConnection(
 	if err != nil {
 		return webhost.ConnectionListResult{}, err
 	}
-	prepared, err := prepareWebCredentialsFor(
-		ctx, loaded, next, request.APIKey, connection.ID, nil, credential.Reference{},
+	rotation, err := openCredentialRotation(
+		ctx, loaded, next, connection.ID, request.APIKey, nil,
 	)
 	if err != nil {
 		return webhost.ConnectionListResult{}, err
 	}
-	defer func() { _ = prepared.rollbackCredential() }()
-	if prepared.credentialActivate != nil {
-		value := prepared.credentialReference
-		if entry := next.Connection(connection.ID); entry != nil {
-			entry.Credential = &value
-		}
-	}
-	if _, err := m.replaceSelectionStaged(
-		ctx, next, m.currentReference(), "",
-		prepared.credentialControl, prepared.credentialReference, connection.ID,
-	); err != nil {
+	rotation.bindTo(next, connection.ID)
+	_, err = m.replaceSelectionStaged(
+		ctx, next, m.currentReference(), "", rotation, connection.ID,
+	)
+	rotation.settle(&err, m.stderr)
+	if err != nil {
 		return webhost.ConnectionListResult{}, err
-	}
-	if err := prepared.commitCredential(); err != nil {
-		_, _ = fmt.Fprintf(m.stderr, "qcode: finalize connection credential: %v\n", err)
 	}
 	return m.ConnectionList(), nil
 }

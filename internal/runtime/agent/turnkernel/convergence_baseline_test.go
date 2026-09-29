@@ -309,7 +309,7 @@ func TestFaultDispositionOwnershipBaseline(t *testing.T) {
 		root,
 		"internal/runtime/app/operation_failure.go",
 	)
-	if !functionCalls(findFunction(operationFile, "reject"), "ProblemOf") {
+	if !functionCalls(findFunction(operationFile, "operationRejection"), "ProblemOf") {
 		t.Fatal("Runtime operation boundary bypasses Fault classification")
 	}
 	stateFile := parseProductionFile(

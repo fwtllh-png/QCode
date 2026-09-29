@@ -11,30 +11,30 @@ import (
 )
 
 func (r *SessionService) SessionLifecycleAvailable() bool {
-	return r != nil && r.sessionLifecycle != nil
+	return r != nil && r.runtime.sessionLifecycle != nil
 }
 
 func (r *SessionService) ListSessions(
 	ctx context.Context,
 	query protocol.SessionListQuery,
 ) (protocol.SessionList, error) {
-	if r.sessionLifecycle == nil {
+	if r.runtime.sessionLifecycle == nil {
 		return protocol.SessionList{}, runtimeProblem(protocol.CodeUnavailable, "session lifecycle is unavailable", nil)
 	}
 	if err := query.Validate(); err != nil {
 		return protocol.SessionList{},
 			runtimeProblem(protocol.CodeInvalidArgument, err.Error(), err)
 	}
-	if r.workspaceRoot != "" {
+	if r.runtime.workspaceRoot != "" {
 		if query.WorkspaceRoot != "" &&
-			!sameWorkspaceRoot(r.workspaceRoot, query.WorkspaceRoot) {
+			!sameWorkspaceRoot(r.runtime.workspaceRoot, query.WorkspaceRoot) {
 			return protocol.SessionList{}, runtimeProblem(
 				protocol.CodeConflict,
 				"session query workspace does not match the Runtime binding",
 				nil,
 			)
 		}
-		query.WorkspaceRoot = r.workspaceRoot
+		query.WorkspaceRoot = r.runtime.workspaceRoot
 	}
 	limit := query.Limit
 	if limit <= 0 {
@@ -49,7 +49,7 @@ func (r *SessionService) ListSessions(
 		storeQuery.Status = ""
 		storeQuery.Limit = 1000
 	}
-	page, err := r.sessionLifecycle.ListLifecycle(ctx, storeQuery)
+	page, err := r.runtime.sessionLifecycle.ListLifecycle(ctx, storeQuery)
 	if err != nil {
 		return protocol.SessionList{}, err
 	}
@@ -58,7 +58,7 @@ func (r *SessionService) ListSessions(
 		searchStoreQuery := query
 		searchStoreQuery.Status = ""
 		searchStoreQuery.Limit = 1000
-		searchPage, err = r.sessionLifecycle.ListLifecycle(ctx, searchStoreQuery)
+		searchPage, err = r.runtime.sessionLifecycle.ListLifecycle(ctx, searchStoreQuery)
 		if err != nil {
 			return protocol.SessionList{}, err
 		}
@@ -137,7 +137,7 @@ func (r *SessionService) searchSessionEvents(
 	query string,
 ) ([]protocol.SessionSearchMatch, error) {
 	matches := make(map[string]protocol.SessionSearchMatch, len(sessions))
-	if reader, ok := r.events.(history.SearchReader); ok {
+	if reader, ok := r.runtime.events.(history.SearchReader); ok {
 		indexed, err := reader.SearchSessionEvents(ctx, byThread, query)
 		if err != nil {
 			return nil, err
@@ -146,7 +146,7 @@ func (r *SessionService) searchSessionEvents(
 			matches[match.SessionID] = match
 		}
 	} else {
-		events, err := r.events.Replay(ctx, 0)
+		events, err := r.runtime.events.Replay(ctx, 0)
 		var gap *CursorGapError
 		if errors.As(err, &gap) {
 			return nil, nil
@@ -192,15 +192,15 @@ func (r *SessionService) SessionStatus(
 	ctx context.Context,
 	sessionID string,
 ) (protocol.SessionSummary, error) {
-	if r.sessionLifecycle == nil {
+	if r.runtime.sessionLifecycle == nil {
 		return protocol.SessionSummary{}, runtimeProblem(protocol.CodeUnavailable, "session lifecycle is unavailable", nil)
 	}
-	summary, err := r.sessionLifecycle.GetLifecycle(ctx, sessionID)
+	summary, err := r.runtime.sessionLifecycle.GetLifecycle(ctx, sessionID)
 	if err != nil {
 		return protocol.SessionSummary{}, err
 	}
-	if r.workspaceRoot != "" &&
-		!sameWorkspaceRoot(r.workspaceRoot, summary.WorkspaceRoot) {
+	if r.runtime.workspaceRoot != "" &&
+		!sameWorkspaceRoot(r.runtime.workspaceRoot, summary.WorkspaceRoot) {
 		return protocol.SessionSummary{}, runtimeProblem(
 			protocol.CodeConflict,
 			"session does not belong to this Runtime workspace",
@@ -231,26 +231,13 @@ func (r *SessionService) projectSessionLiveActivity(
 	}
 	active := false
 	for threadID := range threads {
-		if _, ok := r.active.LookupThread(threadID); ok {
+		if _, ok := r.runtime.active.LookupThread(threadID); ok {
 			active = true
 			break
 		}
 	}
-	pendingOperation := r.OperationService.hasPendingSession(summary.SessionID)
-	r.EventService.mu.Lock()
-	pendingApprovals := 0
-	for _, approval := range r.approvals {
-		if _, ok := threads[approval.ThreadID]; ok {
-			pendingApprovals++
-		}
-	}
-	pendingInputs := 0
-	for _, input := range r.inputs {
-		if _, ok := threads[input.ThreadID]; ok {
-			pendingInputs++
-		}
-	}
-	r.EventService.mu.Unlock()
+	pendingOperation := r.runtime.OperationService.hasPendingSession(summary.SessionID)
+	pendingApprovals, pendingInputs := r.runtime.EventService.pendingCounts(threadIDs)
 	summary.PendingApprovals = pendingApprovals
 	summary.PendingInputs = pendingInputs
 	switch {

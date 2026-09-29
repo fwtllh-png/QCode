@@ -28,16 +28,16 @@ func (r *Runtime) WithdrawTurn(ctx context.Context, request protocol.TurnWithdra
 	if !ok || !stored {
 		return runtimeProblem(protocol.CodeUnavailable, "Turn withdrawal is unavailable", nil)
 	}
-	r.SessionService.mutationMu.Lock()
+	unlockMutations := r.SessionService.lockMutations()
 	current, err := r.SessionStatus(ctx, request.SessionID)
 	if err != nil {
-		r.SessionService.mutationMu.Unlock()
+		unlockMutations()
 		return err
 	}
 	thread := current.ThreadID
 	threadIDs, err := r.sessionLifecycle.ThreadIDs(ctx, request.SessionID)
 	if err != nil {
-		r.SessionService.mutationMu.Unlock()
+		unlockMutations()
 		return err
 	}
 	owned := make(map[protocol.ThreadID]bool, len(threadIDs))
@@ -47,44 +47,15 @@ func (r *Runtime) WithdrawTurn(ctx context.Context, request protocol.TurnWithdra
 	active, running := r.active.LookupThread(thread)
 	if current.Archived || current.LatestTurnID != request.TurnID ||
 		(running && active.TurnID != request.TurnID) {
-		r.SessionService.mutationMu.Unlock()
+		unlockMutations()
 		return runtimeProblem(protocol.CodeConflict, "Only the latest Turn in the active Session Thread can be withdrawn", nil)
 	}
-	s := r.OperationService
-	s.mu.Lock()
-	if !s.accepting || s.workspaceOperation || len(s.withdrawing) != 0 {
-		s.mu.Unlock()
-		r.SessionService.mutationMu.Unlock()
-		return retryableProblem(protocol.CodeConflict, "Runtime is busy")
+	endWithdrawal, err := r.OperationService.beginWithdrawal(thread, request.TurnID, owned)
+	unlockMutations()
+	if err != nil {
+		return err
 	}
-	// An already accepted newer start cannot be overtaken by withdrawal.
-	for _, pending := range s.accepted {
-		operation, decodeErr := decodePendingOperation(pending)
-		if decodeErr != nil {
-			s.mu.Unlock()
-			r.SessionService.mutationMu.Unlock()
-			return decodeErr
-		}
-		owner, turn, _ := protocol.OperationReferences(operation)
-		if !owned[owner] || owner == thread &&
-			(turn != request.TurnID || operation.Kind != protocol.OperationStartTurn) {
-			s.mu.Unlock()
-			r.SessionService.mutationMu.Unlock()
-			return retryableProblem(protocol.CodeConflict, "Finish pending operations before withdrawing")
-		}
-	}
-	s.withdrawing[thread] = true
-	s.changed = make(chan struct{})
-	r.workers.Add(1)
-	s.mu.Unlock()
-	r.SessionService.mutationMu.Unlock()
-	defer func() {
-		s.mu.Lock()
-		delete(s.withdrawing, thread)
-		s.changed = nil
-		s.mu.Unlock()
-		r.workers.Done()
-	}()
+	defer endWithdrawal()
 	if _, found, err := store.TurnBaseline(ctx, thread, request.TurnID); err != nil || !found {
 		if err != nil {
 			return err
@@ -110,19 +81,10 @@ func (r *Runtime) WithdrawTurn(ctx context.Context, request protocol.TurnWithdra
 		}
 	}
 	for {
-		s.mu.Lock()
-		changed := s.changed
-		pending := false
-		for _, value := range s.accepted {
-			operation, decodeErr := decodePendingOperation(value)
-			if decodeErr != nil {
-				s.mu.Unlock()
-				return decodeErr
-			}
-			owner, _, _ := protocol.OperationReferences(operation)
-			pending = pending || owned[owner]
+		pending, changed, err := r.OperationService.pendingForThreads(owned)
+		if err != nil {
+			return err
 		}
-		s.mu.Unlock()
 		if !pending {
 			break
 		}

@@ -292,7 +292,14 @@ func (p *TerminalPublisher) Publish(ctx context.Context, committed CommittedTerm
 	}
 	return nil
 }
-func (p *TerminalPublisher) Recover(ctx context.Context) error {
+
+// Recover projects every pending terminal outbox after a restart. A Turn whose
+// projection fails is handed to deferred and the remaining Turns continue, so
+// one bad outbox cannot block startup; only an unreadable outbox aborts.
+func (p *TerminalPublisher) Recover(
+	ctx context.Context,
+	deferred func(threadID protocol.ThreadID, turnID protocol.TurnID, err error),
+) error {
 	store, ok := p.runtime.TerminalStore().(turnkernel.TerminalProjectionRecoveryStore)
 	if !ok {
 		if p.runtime.DurableTerminal() {
@@ -309,13 +316,28 @@ func (p *TerminalPublisher) Recover(ctx context.Context) error {
 	for _, projection := range projections {
 		for _, entry := range projection.Entries {
 			if err := p.publishEntry(ctx, projection.Envelope.TurnID, entry); err != nil {
-				return fmt.Errorf(
+				deferred(entry.ThreadID, protocol.TurnID(projection.Envelope.TurnID), fmt.Errorf(
 					"project terminal outbox %s/%s: %w",
 					projection.Envelope.TurnID,
 					entry.ID,
 					err,
-				)
+				))
+				break
 			}
+		}
+	}
+	return nil
+}
+
+// PublishPending projects whatever remains in one Turn's terminal outbox.
+func (p *TerminalPublisher) PublishPending(ctx context.Context, turnID protocol.TurnID) error {
+	entries, err := p.runtime.TerminalStore().PendingOutbox(ctx, string(turnID))
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if err := p.publishEntry(ctx, string(turnID), entry); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -347,6 +369,13 @@ func TerminalOutboxEventID(turnID protocol.TurnID, entryID string) protocol.Even
 
 func CommentaryEventID(messageID string) protocol.EventID {
 	sum := sha256.Sum256([]byte("commentary\x00" + messageID))
+	return protocol.EventID(fmt.Sprintf("evt_%x", sum[:16]))
+}
+
+// SettlementEventID names an event that settles an accepted operation, so a
+// retried settlement re-projects the appended event instead of duplicating it.
+func SettlementEventID(operationID protocol.OperationID, slot string) protocol.EventID {
+	sum := sha256.Sum256([]byte("operation-settlement\x00" + string(operationID) + "\x00" + slot))
 	return protocol.EventID(fmt.Sprintf("evt_%x", sum[:16]))
 }
 

@@ -47,7 +47,6 @@ import {
   useMemo,
   useRef,
   useState,
-  useSyncExternalStore,
   type ReactNode
 } from "react";
 import {ExecutionStages} from "./ExecutionStages";
@@ -56,6 +55,7 @@ import {Collapse} from "./primitives/Collapse";
 import {IconButton} from "./primitives/IconButton";
 import {Skeleton} from "./primitives/Skeleton";
 import {useMediaQuery} from "./primitives/useMediaQuery";
+import {useLiveNode, useRuntimeEvents, useWorkbenchSnapshot} from "./useRuntimeView";
 import {useModalFocus} from "./primitives/useModalFocus";
 import {TurnWithdrawalAction} from "./TurnWithdrawalAction";
 import {Presence} from "./primitives/Presence";
@@ -225,11 +225,7 @@ function writePreference(key: string, value: string): void {
 }
 
 export function App({client}: Props) {
-  const snapshot = useSyncExternalStore(
-    client.subscribe,
-    client.getSnapshot,
-    client.getSnapshot
-  );
+  const snapshot = useWorkbenchSnapshot(client);
   const query = snapshot.sessionSearchQuery;
   const [sessionSearchOpen, setSessionSearchOpen] = useState(false);
   const [collapsedWorkspaceIDs, setCollapsedWorkspaceIDs] =
@@ -1404,6 +1400,15 @@ export function App({client}: Props) {
   if (snapshot.phase === "booting") {
     return <BootState title="Starting QCode" detail={snapshot.workspaceRoot} />;
   }
+  if (snapshot.phase === "unauthenticated") {
+    return (
+      <BootState
+        title="Session expired"
+        detail="This page has no valid QCode session. Run qcode again (or reopen the QCode app) to open a fresh link."
+        failed
+      />
+    );
+  }
   if (snapshot.phase === "failed") {
     return (
       <BootState
@@ -1839,18 +1844,20 @@ export function App({client}: Props) {
         >
           {activeView === "trajectory" && selected ? (
             <Suspense fallback={<Skeleton label="Loading trajectory" />}>
-              <Trajectory
-                events={snapshot.events}
-                trace={snapshot.trace}
-                tracePhase={snapshot.tracePhase}
-                traceProblem={snapshot.traceProblem}
-                hasEarlier={snapshot.historyMoreBefore}
-                inspectCallID={inspectCallID}
-                onInspectConsumed={() => setInspectCallID("")}
-                onLoadEarlier={() => client.loadEarlierHistory()}
-                onRetryTrace={() => client.refreshTrace()}
-                onOpenChat={openChatFromTrajectory}
-              />
+              <RuntimeEvents client={client}>{(events) => (
+                <Trajectory
+                  events={events}
+                  trace={snapshot.trace}
+                  tracePhase={snapshot.tracePhase}
+                  traceProblem={snapshot.traceProblem}
+                  hasEarlier={snapshot.historyMoreBefore}
+                  inspectCallID={inspectCallID}
+                  onInspectConsumed={() => setInspectCallID("")}
+                  onLoadEarlier={() => client.loadEarlierHistory()}
+                  onRetryTrace={() => client.refreshTrace()}
+                  onOpenChat={openChatFromTrajectory}
+                />
+              )}</RuntimeEvents>
             </Suspense>
           ) : <div
             className="transcript"
@@ -2439,13 +2446,15 @@ export function App({client}: Props) {
       <Presence open={Boolean(inspectPanelCallID)} kind="drawer">
         {inspectPanelCallID && (
           <Suspense fallback={null}>
-            <InspectPanel
-              events={snapshot.events}
-              trace={snapshot.trace}
-              callID={inspectPanelCallID}
-              onClose={() => setInspectPanelCallID("")}
-              onOpenChat={openChatFromTrajectory}
-            />
+            <RuntimeEvents client={client}>{(events) => (
+              <InspectPanel
+                events={events}
+                trace={snapshot.trace}
+                callID={inspectPanelCallID}
+                onClose={() => setInspectPanelCallID("")}
+                onOpenChat={openChatFromTrajectory}
+              />
+            )}</RuntimeEvents>
           </Suspense>
         )}
       </Presence>
@@ -3012,7 +3021,7 @@ function TranscriptEntry({
 }
 
 const TranscriptItem = memo(function TranscriptItem({
-  entry,
+  entry: projected,
   client,
   onError,
   onInspect,
@@ -3034,6 +3043,7 @@ const TranscriptItem = memo(function TranscriptItem({
   chrome?: MessageChrome;
   feedback?: MessageFeedbackRating;
 }) {
+  const entry = useLiveNode(client, projected);
   const [open, setOpen] = useState(false);
   const [recoveryPending, setRecoveryPending] = useState("");
   const onFeedback = useCallback(
@@ -4051,6 +4061,13 @@ function ResizeHandle({
 
 function clamp(value: number, minimum: number, maximum: number): number {
   return Math.min(maximum, Math.max(minimum, value));
+}
+
+function RuntimeEvents({client, children}: {
+  client: RuntimeClient;
+  children: (events: readonly RuntimeEvent[]) => React.ReactNode;
+}) {
+  return children(useRuntimeEvents(client));
 }
 
 function BootState({title, detail, failed}: {title: string; detail?: string; failed?: boolean}) {

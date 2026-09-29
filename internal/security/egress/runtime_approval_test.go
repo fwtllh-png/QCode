@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/fwtllh-png/QCode/internal/security/egress"
 )
@@ -171,6 +172,75 @@ func TestProcessSessionApprovesConnectBeforeDial(t *testing.T) {
 		"test",
 	); err == nil {
 		t.Fatal("runtime grant leaked onto the workspace gate")
+	}
+}
+
+func TestBoundRuntimeApproverEndsWithItsCall(t *testing.T) {
+	gate := &egress.Gate{
+		Enforce: true,
+		LookupIP: func(context.Context, string) ([]net.IP, error) {
+			return []net.IP{net.ParseIP("203.0.113.10")}, nil
+		},
+	}
+	waiting := make(chan struct{})
+	var asked atomic.Int32
+	release := gate.BindRuntimeApprover(func(ctx context.Context, _ egress.Target) error {
+		asked.Add(1)
+		close(waiting)
+		<-ctx.Done()
+		return ctx.Err()
+	})
+	inFlight := egress.Target{
+		Host: "late.example", Protocol: "https", Port: 443,
+		Methods: []string{http.MethodConnect},
+	}
+	result := make(chan error, 1)
+	go func() {
+		_, err := gate.AuthorizeBeforeConnect(context.Background(), inFlight, "test")
+		result <- err
+	}()
+	<-waiting
+	release()
+	select {
+	case err := <-result:
+		if err == nil {
+			t.Fatal("an approval wait that outlived its call was granted")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("releasing the call did not cancel the in-flight approval wait")
+	}
+
+	after := egress.Target{
+		Host: "background.example", Protocol: "https", Port: 443,
+		Methods: []string{http.MethodConnect},
+	}
+	if _, err := gate.AuthorizeBeforeConnect(context.Background(), after, "test"); err == nil {
+		t.Fatal("a target discovered after the call ended was granted")
+	}
+	if asked.Load() != 1 {
+		t.Fatalf("asked = %d, want only the in-call request", asked.Load())
+	}
+}
+
+func TestOverlappingRuntimeApproverReleaseKeepsTheNewerCall(t *testing.T) {
+	gate := &egress.Gate{
+		Enforce: true,
+		LookupIP: func(context.Context, string) ([]net.IP, error) {
+			return []net.IP{net.ParseIP("203.0.113.10")}, nil
+		},
+	}
+	first := gate.BindRuntimeApprover(func(context.Context, egress.Target) error {
+		return errors.New("stale approver answered")
+	})
+	second := gate.BindRuntimeApprover(func(context.Context, egress.Target) error { return nil })
+	defer second()
+	first()
+	target := egress.Target{
+		Host: "current.example", Protocol: "https", Port: 443,
+		Methods: []string{http.MethodConnect},
+	}
+	if _, err := gate.AuthorizeBeforeConnect(t.Context(), target, "test"); err != nil {
+		t.Fatalf("newer call lost its approver: %v", err)
 	}
 }
 

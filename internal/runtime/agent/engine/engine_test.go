@@ -2661,7 +2661,7 @@ func TestTerminalSeparatesPrimaryAndContextFinalizationFailure(t *testing.T) {
 	handler.addSecondary("terminal_context", secondary)
 	resultErr := errors.Join(primary, secondary)
 	result := Result{}
-	handler.finish(t.Context(), &result, &resultErr)
+	handler.finishTerminal(t.Context(), &result, &resultErr)
 
 	if terminal.ErrorCode != protocol.CodeConflict ||
 		terminal.Error != "primary verification conflict" {

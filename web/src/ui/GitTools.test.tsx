@@ -10,7 +10,7 @@ const overview: GitOverview = {
   repository: true, branch: "main", branches: ["main", "feature"], remotes: ["origin"],
   files: [
     {path: "main.go", index: "M", worktree: "M", staged: {added: 2, removed: 1}, unstaged: {added: 3, removed: 0}},
-    {path: "notes.txt", index: "?", worktree: "?", untracked: true}
+    {path: "notes.txt", index: "?", worktree: "?", untracked: true, unstaged: {added: 4, removed: 0}}
   ]
 };
 
@@ -46,16 +46,43 @@ it("shows only Git facts and separates staged and unstaged file previews", async
   const {client, props} = setup();
   render(<GitTools {...props} />);
   await screen.findByRole("button", {name: /Changes/});
-  expect(gitTotals(overview.files)).toEqual({added: 5, removed: 1});
+  expect(gitTotals(overview.files)).toEqual({added: 9, removed: 1});
+  expect(screen.getByLabelText("9 additions, 1 deletions")).toBeTruthy();
+  expect(screen.queryByText(/excluded from/)).toBeNull();
   expect(screen.queryByText("Progress")).toBeNull();
   expect(screen.queryByText("Agents")).toBeNull();
   fireEvent.click(screen.getByRole("button", {name: /Changes/}));
+  expect(screen.getByLabelText("7 additions, 0 deletions")).toBeTruthy();
+  const newFile = screen.getByRole("button", {name: /notes.txt/});
+  expect(within(newFile).getByText("New")).toBeTruthy();
+  expect(within(newFile).getByLabelText("4 additions, 0 deletions")).toBeTruthy();
+  fireEvent.click(newFile);
+  await waitFor(() => expect(client.gitPatch).toHaveBeenCalledWith("workspace-a", "notes.txt", false, expect.any(AbortSignal)));
   fireEvent.click(screen.getByRole("button", {name: /main.go/}));
   await waitFor(() => expect(client.gitPatch).toHaveBeenCalledWith("workspace-a", "main.go", false, expect.any(AbortSignal)));
   fireEvent.change(screen.getByRole("combobox", {name: "Git change scope"}), {target: {value: "staged"}});
   expect(screen.queryByRole("button", {name: /notes.txt/})).toBeNull();
   fireEvent.click(screen.getByRole("button", {name: /main.go/}));
   await waitFor(() => expect(client.gitPatch).toHaveBeenLastCalledWith("workspace-a", "main.go", true, expect.any(AbortSignal)));
+});
+
+it("distinguishes new binary files and unavailable counts from empty text files", async () => {
+  const {client, props} = setup();
+  client.gitOverview.mockResolvedValue({...overview, files: [
+    ...overview.files,
+    {path: "image.png", index: "?", worktree: "?", untracked: true, unstaged: {added: 0, removed: 0, binary: true}},
+    {path: "empty.txt", index: "?", worktree: "?", untracked: true, unstaged: {added: 0, removed: 0}},
+    {path: "large.txt", index: "?", worktree: "?", untracked: true}
+  ]});
+  render(<GitTools {...props} />);
+  fireEvent.click(await screen.findByRole("button", {name: /Changes/}));
+  expect(screen.getByText("New files with unavailable line counts: 1 (excluded from totals).")).toBeTruthy();
+  expect(screen.getByLabelText("7 additions, 0 deletions (partial)")).toBeTruthy();
+  expect(within(screen.getByRole("button", {name: /image.png/})).getByText("Binary")).toBeTruthy();
+  expect(within(screen.getByRole("button", {name: /empty.txt/})).getByLabelText("0 additions, 0 deletions")).toBeTruthy();
+  const unavailable = within(screen.getByRole("button", {name: /large.txt/}));
+  expect(unavailable.getByText("Lines unavailable")).toBeTruthy();
+  expect(unavailable.queryByText("+0")).toBeNull();
 });
 
 it("commits only staged paths by default and shows the actual revision", async () => {

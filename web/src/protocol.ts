@@ -26,7 +26,9 @@ export interface WorkspaceIdentity {
 export interface Bootstrap {
   protocol_version: number;
   server_build: string;
-  token: string;
+  // authenticated 表示本请求携带了有效的会话 cookie；为 false 时服务端
+  // 只返回协议版本与就绪状态，不含任何工作区信息。
+  authenticated: boolean;
   ready: boolean;
   draining: boolean;
   workspace_root?: string;

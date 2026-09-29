@@ -12,7 +12,6 @@ import (
 
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
 	"github.com/fwtllh-png/QCode/internal/config"
-	workbudget "github.com/fwtllh-png/QCode/internal/orchestration/budget"
 	"github.com/fwtllh-png/QCode/internal/orchestration/subagent"
 	"github.com/fwtllh-png/QCode/internal/persist/state"
 	agentengine "github.com/fwtllh-png/QCode/internal/runtime/agent/engine"
@@ -30,20 +29,6 @@ func (authorityTestTool) Execute(context.Context, json.RawMessage) (tool.Result,
 	return tool.Result{Content: "ok"}, nil
 }
 
-type recoveredChildRuntimeHost struct{}
-
-func (recoveredChildRuntimeHost) StartTurn(
-	context.Context, string, string,
-) (string, error) {
-	return "turn-recovered", nil
-}
-
-func (recoveredChildRuntimeHost) CancelTurn(
-	context.Context, string, string,
-) error {
-	return nil
-}
-
 // subagentFixture is absolute because the session workspace is a temp directory
 // and a relative fixture path is resolved against it.
 func subagentFixture(t *testing.T, name string) string {
@@ -55,119 +40,6 @@ func subagentFixture(t *testing.T, name string) string {
 		t.Fatal(err)
 	}
 	return path
-}
-
-func TestChildTurnIntentUsesEffectiveWorkspaceAuthority(t *testing.T) {
-	testCases := []struct {
-		role     subagent.Role
-		readOnly bool
-		want     protocol.TurnIntent
-	}{
-		{subagent.RoleImplementer, false, protocol.TurnIntentWorkspaceChange},
-		{subagent.RoleGeneral, false, protocol.TurnIntentWorkspaceChange},
-		{subagent.RoleImplementer, true, protocol.TurnIntentAnswer},
-		{subagent.RoleExplore, true, protocol.TurnIntentAnswer},
-		{subagent.RolePlan, true, protocol.TurnIntentPlan},
-	}
-	for _, testCase := range testCases {
-		if got := childTurnIntent(testCase.role, testCase.readOnly); got != testCase.want {
-			t.Fatalf(
-				"childTurnIntent(%q, %v) = %q, want %q",
-				testCase.role,
-				testCase.readOnly,
-				got,
-				testCase.want,
-			)
-		}
-	}
-}
-
-func TestBindRestoresActiveChildObservation(t *testing.T) {
-	control, err := subagent.OpenControl(subagent.Options{
-		Root: t.TempDir(), Gate: recoveryToolGate{},
-		Runtime: recoveredChildRuntimeHost{}, Workspace: t.TempDir(), SessionID: "session-recovered",
-	}, subagent.DelegationExplicit)
-	if err != nil {
-		t.Fatal(err)
-	}
-	child, err := control.SpawnSystem(
-		"recover child", "", subagent.RoleExplore, "inspect", "report",
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := control.Takeover(
-		t.Context(), child.ID, "resume after restart",
-	); err != nil {
-		t.Fatal(err)
-	}
-	if err := control.AwaitApproval(child.ID, "approval-stable"); err != nil {
-		t.Fatal(err)
-	}
-	current, _ := control.Agent(child.ID)
-	child = &current
-
-	threads := app.NewThreadManager(nil)
-	threads.SetChildFactory(func(app.ChildSpec) (*app.EngineAdapter, error) {
-		return nil, errors.New("recovery test must not instantiate an engine")
-	})
-	runtime := app.NewRuntime(app.Options{Engine: threads})
-	children := newChildRuntime(config.Subagent{
-		Workspace: config.SubagentWorkspaceReadOnly,
-		WallTime:  time.Minute,
-	}, t.TempDir(), nil, nil)
-	t.Cleanup(func() {
-		children.close()
-		_ = runtime.Close(context.Background())
-	})
-	if err := children.bind(runtime, threads, control); err != nil {
-		t.Fatal(err)
-	}
-	threadID := protocol.ThreadID(child.ThreadID)
-	children.mu.Lock()
-	recovered := children.turns[threadID]
-	observerBound := children.removeObserver != nil
-	children.mu.Unlock()
-	if recovered == nil || recovered.turnID != protocol.TurnID(child.TurnID) ||
-		!observerBound {
-		t.Fatalf(
-			"recovered turn = %+v, observer_bound=%v, child=%+v",
-			recovered, observerBound, child,
-		)
-	}
-
-	children.observe(protocol.Event{
-		ThreadID: threadID, TurnID: protocol.TurnID(child.TurnID),
-		Data: &protocol.ApprovalResolvedData{
-			RequestID: "approval-stable", Decision: protocol.ApprovalApprove,
-		},
-	})
-	resumed, _ := control.Agent(child.ID)
-	if resumed.Status != subagent.StatusRunning {
-		t.Fatalf("resumed child status = %q, want running", resumed.Status)
-	}
-	children.observe(protocol.Event{
-		ThreadID: threadID, TurnID: protocol.TurnID(child.TurnID),
-		Data: &protocol.TurnCompletedData{Text: "recovered completion"},
-	})
-	select {
-	case <-recovered.terminalSignal:
-	case <-time.After(time.Second):
-		t.Fatal("recovered child settlement did not finish")
-	}
-	result, ok := control.Result(child.ID)
-	if !ok || result.Status != subagent.StatusCompleted ||
-		result.Summary != "recovered completion" {
-		t.Fatalf("recovered result = %+v, ok=%v", result, ok)
-	}
-}
-
-type recoveryToolGate struct{}
-
-func (recoveryToolGate) Execute(
-	context.Context, string, string, json.RawMessage,
-) (tool.Result, error) {
-	return tool.Result{Content: "ok"}, nil
 }
 
 func TestChildAuthorityIsParentAndRoleIntersection(t *testing.T) {
@@ -670,15 +542,13 @@ func TestChildFollowUpReservesOnlyRemainingAgentBudget(t *testing.T) {
 	}
 	waitForAgentStatus(t, manager, child.ID, subagent.StatusCompleted)
 
-	scope := "workspace:" + session.children.root +
-		"/session:" + child.SessionID + "/agents/agent:" + child.ID
-	snapshot, err := session.children.budget.Snapshot(scope)
-	if err != nil {
-		t.Fatal(err)
+	settled, ok := manager.Agent(child.ID)
+	if !ok || settled.SpentTokens != 34 || settled.ReservedTokens != 0 {
+		t.Fatalf("follow-up Agent budget = %+v", settled)
 	}
-	if snapshot.Spent.Tokens != 34 ||
-		snapshot.Reserved != (workbudget.Usage{}) {
-		t.Fatalf("follow-up Agent budget = %+v", snapshot)
+	if ledger := manager.SessionBudget(child.SessionID); ledger.SpentTokens != 34 ||
+		ledger.ReservedTokens != 0 || ledger.ReservedSlots != 0 {
+		t.Fatalf("follow-up tree budget = %+v", ledger)
 	}
 }
 
@@ -1035,7 +905,7 @@ func TestChildAgentWithWritingStanceIsRejectedAtTakeover(t *testing.T) {
 	}
 	snapshot, _ := manager.Agent(child.ID)
 	snapshot.Stance = subagent.StanceWrite
-	if _, err := session.children.specFor(snapshot); err == nil {
+	if _, err := session.children.Spec(snapshot); err == nil {
 		t.Fatal("a writing child agent must not run against the parent workspace")
 	} else if !protocol.IsCode(err, protocol.CodeUnavailable) {
 		t.Fatalf("specFor error = %v (want unavailable)", err)
@@ -1104,10 +974,8 @@ func TestReleaseCompletesFromRunningChildTerminalEvent(t *testing.T) {
 	if _, ok := session.threads.ChildSpecFor(threadID); !ok {
 		t.Fatal("child spec was not registered")
 	}
-	session.children.mu.Lock()
-	running := session.children.turns[threadID]
-	session.children.mu.Unlock()
-	if running == nil {
+	running, tracked := session.children.Tracked(threadID)
+	if !tracked {
 		t.Fatal("running child turn was not tracked")
 	}
 	events, err := session.Runtime.Events(
@@ -1117,7 +985,7 @@ func TestReleaseCompletesFromRunningChildTerminalEvent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	session.children.release(child.ID)
+	session.children.Release(child.ID)
 	deadline := time.After(5 * time.Second)
 	for {
 		select {
@@ -1127,7 +995,7 @@ func TestReleaseCompletesFromRunningChildTerminalEvent(t *testing.T) {
 				continue
 			}
 			select {
-			case <-running.terminalSignal:
+			case <-running.Terminal:
 			case <-time.After(time.Second):
 				t.Fatal("canceled child settlement did not finish")
 			}
@@ -1143,34 +1011,22 @@ func TestReleaseCompletesFromRunningChildTerminalEvent(t *testing.T) {
 
 func TestChildAgentSpendIsChargedToTheSharedLedger(t *testing.T) {
 	session := openChildSession(t, "subagent", nil)
-	ledger := session.children.governor
 	result := runChild(t, session, subagent.RoleExplore)
 	if result.Status != subagent.StatusCompleted {
 		t.Fatalf("result = %+v", result)
-	}
-	// The fixture reports 11 input and 6 output tokens. The ledger must carry
-	// exactly that: a placeholder charge at spawn time would show up here as an
-	// extra token, and no charge at all would leave the budget unenforceable.
-	spent := ledger.Snapshot()
-	if spent.SpentTokens != 17 {
-		t.Fatalf("shared ledger tokens = %d, want 17", spent.SpentTokens)
-	}
-	// The turn's lease is held for the child's whole lifetime and must be back.
-	if spent.InFlight != 0 {
-		t.Fatalf("in-flight leases after settle = %d", spent.InFlight)
 	}
 	agent, ok := session.subagents.Agent(result.AgentID)
 	if !ok {
 		t.Fatal("settled Agent is unavailable")
 	}
-	scope := "workspace:" + session.children.root +
-		"/session:" + agent.SessionID + "/agents"
-	work, err := session.children.budget.Snapshot(scope)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if work.Spent.Tokens != 17 || work.Reserved != (workbudget.Usage{}) {
-		t.Fatalf("hierarchical Agent budget = %+v", work)
+	// The fixture reports 11 input and 6 output tokens. The ledger must carry
+	// exactly that: a placeholder charge at spawn time would show up here as an
+	// extra token, and no charge at all would leave the budget unenforceable.
+	// The turn's slot and reservation are held until settlement and must be back.
+	ledger := session.subagents.SessionBudget(agent.SessionID)
+	if ledger.SpentTokens != 17 || ledger.ReservedTokens != 0 ||
+		ledger.ReservedMicros != 0 || ledger.ReservedSlots != 0 {
+		t.Fatalf("tree ledger after settle = %+v", ledger)
 	}
 }
 
@@ -1178,7 +1034,6 @@ func TestChildAgentTurnHoldsItsConcurrencySlotWhileRunning(t *testing.T) {
 	// The slow fixture keeps the child mid-turn long enough to observe the slot.
 	session := openChildSession(t, "subagent-slow", nil)
 	manager := session.subagents
-	ledger := session.children.governor
 	child, err := manager.Spawn("", subagent.RoleExplore, "count the packages")
 	if err != nil {
 		t.Fatalf("Spawn: %v", err)
@@ -1188,8 +1043,8 @@ func TestChildAgentTurnHoldsItsConcurrencySlotWhileRunning(t *testing.T) {
 	); err != nil {
 		t.Fatalf("Takeover: %v", err)
 	}
-	if spent := ledger.Snapshot(); spent.InFlight != 1 {
-		t.Fatalf("in-flight leases during a running child turn = %d, want 1", spent.InFlight)
+	if slots := manager.SessionBudget(child.SessionID).ReservedSlots; slots != 1 {
+		t.Fatalf("slots during a running child turn = %d, want 1", slots)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
@@ -1198,29 +1053,77 @@ func TestChildAgentTurnHoldsItsConcurrencySlotWhileRunning(t *testing.T) {
 	} else if waited.TimedOut {
 		t.Fatal("child agent never reached a terminal status")
 	}
-	if spent := ledger.Snapshot(); spent.InFlight != 0 {
-		t.Fatalf("in-flight leases after settle = %d", spent.InFlight)
+	if slots := manager.SessionBudget(child.SessionID).ReservedSlots; slots != 0 {
+		t.Fatalf("slots after settle = %d", slots)
 	}
 }
 
-func TestChildAgentRefusedWhenSharedBudgetIsSpent(t *testing.T) {
+func TestChildConcurrencyIsScopedToItsSessionTree(t *testing.T) {
+	session := openChildSession(t, "subagent-slow", func(overrides *config.Overrides) {
+		parallel := 1
+		overrides.SubagentMaxParallel = &parallel
+	})
+	manager := session.subagents
+	running, err := manager.Spawn("", subagent.RoleExplore, "count the packages")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.Takeover(t.Context(), running.ID, "count the packages"); err != nil {
+		t.Fatal(err)
+	}
+	other, err := manager.SpawnIntent(subagent.DelegationIntent{
+		SessionID: "session-other", TaskName: "other_tree",
+		Role: subagent.RoleExplore, Objective: "count the packages",
+		ExpectedOutput: "count", Trigger: subagent.TriggerUser,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.Takeover(t.Context(), other.ID, "count the packages"); err != nil {
+		t.Fatalf("another Session's running child consumed this tree's concurrency: %v", err)
+	}
+	sibling, err := manager.Spawn("", subagent.RoleExplore, "count the packages")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = manager.Takeover(t.Context(), sibling.ID, "count the packages")
+	var problem *protocol.Problem
+	if !errors.As(err, &problem) ||
+		problem.Code != protocol.CodeResourceExhausted || !problem.Retryable ||
+		problem.Details == nil ||
+		problem.Details.Reason != subagent.ReasonConcurrencyExhausted {
+		t.Fatalf("same-tree concurrency refusal = %v", err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
+	defer cancel()
+	if _, err := manager.Wait(ctx, []string{running.ID, other.ID}, 15*time.Second); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestChildAgentRefusedWhenTheTreeBudgetIsCommitted(t *testing.T) {
 	budget := uint64(5000)
-	session := openChildSession(t, "subagent", func(overrides *config.Overrides) {
+	session := openChildSession(t, "subagent-slow", func(overrides *config.Overrides) {
 		overrides.SubagentMaxTokens = &budget
 	})
-	// Stand in for children that already ran: the pot is what admission reads.
-	if err := session.children.governor.Record(budget, 0); err != nil {
-		t.Fatalf("Record: %v", err)
-	}
 	manager := session.subagents
-	child, err := manager.Spawn("", subagent.RoleExplore, "count the packages")
+	whole, err := manager.SpawnIntent(subagent.DelegationIntent{
+		TaskName: "whole_tree", Role: subagent.RoleExplore,
+		Objective: "count the packages", ExpectedOutput: "count",
+		Trigger: subagent.TriggerUser,
+		Budget:  subagent.AgentBudget{MaxTokens: budget},
+	})
 	if err != nil {
-		t.Fatalf("Spawn: %v", err)
+		t.Fatal(err)
 	}
-	_, err = manager.Takeover(context.Background(), child.ID, "count the packages")
-	if err == nil {
-		t.Fatal("a child turn must not start once the shared budget is spent")
+	waiting, err := manager.Spawn("", subagent.RoleExplore, "count the packages")
+	if err != nil {
+		t.Fatal(err)
 	}
+	if _, err := manager.Takeover(t.Context(), whole.ID, "count the packages"); err != nil {
+		t.Fatal(err)
+	}
+	_, err = manager.Takeover(t.Context(), waiting.ID, "count the packages")
 	if !protocol.IsCode(err, protocol.CodeResourceExhausted) {
 		t.Fatalf("Takeover error = %v (want resource_exhausted)", err)
 	}
@@ -1230,12 +1133,20 @@ func TestChildAgentRefusedWhenSharedBudgetIsSpent(t *testing.T) {
 		problem.Fault == nil ||
 		problem.Fault.Disposition != protocol.FaultResumeTurn ||
 		problem.Details == nil ||
-		problem.Details.Reason !=
-			protocol.ProblemReasonTokenBudgetExhausted {
+		problem.Details.Reason != protocol.ProblemReasonTokenBudgetExhausted ||
+		problem.Details.ResourceID != "agent_tree:"+waiting.SessionID {
 		t.Fatalf("child budget error = %+v", problem)
 	}
-	// Refused before submission means no turn was consumed and no lease leaked.
-	if spent := session.children.governor.Snapshot(); spent.InFlight != 0 {
-		t.Fatalf("in-flight leases after refusal = %d", spent.InFlight)
+	// Refused before submission means no turn was consumed and no slot leaked.
+	if slots := manager.SessionBudget(waiting.SessionID).ReservedSlots; slots != 1 {
+		t.Fatalf("slots after refusal = %d, want only the running child", slots)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
+	defer cancel()
+	if _, err := manager.Wait(ctx, []string{whole.ID}, 15*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.Takeover(t.Context(), waiting.ID, "count the packages"); err != nil {
+		t.Fatalf("a settled reservation was not returned to the tree: %v", err)
 	}
 }

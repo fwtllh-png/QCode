@@ -170,7 +170,7 @@ func (c *chatWorkspaces) Discard(
 		return errors.New("Chat session thread identity mismatch")
 	}
 	c.threads.Release(threadID)
-	c.tools.release(value.worktree.Path)
+	c.tools.Release(value.worktree.Path)
 	return c.trees.Discard(value.worktree)
 }
 

@@ -92,8 +92,8 @@ func (e *Engine) runToolsWithCache(
 	)
 	defer stream.Close()
 
-	e.setActiveCancel(cancel)
-	defer e.clearActiveCancel()
+	e.setToolCancel(cancel)
+	defer e.clearToolCancel()
 	defer cancel(nil)
 
 	sched := scope.state.scheduler

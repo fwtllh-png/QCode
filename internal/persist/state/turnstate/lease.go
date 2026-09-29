@@ -82,7 +82,8 @@ func (s *Store) ClaimActiveTurns(
 }
 
 // QuarantineActiveTurn releases an unrestorable active Turn so recovery can
-// continue. The thread is then free to accept a new Turn.
+// continue. The thread is then free to accept a new Turn. It is idempotent: a
+// Turn that is no longer active only loses any leftover coordinator lease.
 func (s *Store) QuarantineActiveTurn(
 	ctx context.Context,
 	turnID string,
@@ -92,7 +93,7 @@ func (s *Store) QuarantineActiveTurn(
 	}
 	now := formatLeaseTime(s.now())
 	return s.database.Transaction(ctx, func(tx *sql.Tx) error {
-		result, err := tx.ExecContext(
+		_, err := tx.ExecContext(
 			ctx,
 			`UPDATE turns
 			 SET status = 'failed', updated_at = ?, completed_at = ?
@@ -103,13 +104,6 @@ func (s *Store) QuarantineActiveTurn(
 		)
 		if err != nil {
 			return err
-		}
-		affected, err := result.RowsAffected()
-		if err != nil {
-			return err
-		}
-		if affected != 1 {
-			return fmt.Errorf("active turn %q was not quarantined", turnID)
 		}
 		_, err = tx.ExecContext(
 			ctx,

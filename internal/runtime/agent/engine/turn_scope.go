@@ -64,12 +64,19 @@ type scopeState struct {
 	toolSurfaceItemBytes int
 	mailbox              *turnkernel.Mailbox[PendingInput]
 	requests             *turnkernel.RequestLedger
-	cancel               context.CancelCauseFunc
-	cancelReason         string
-	delta                *SessionDelta
-	context              agentcontext.Authority
-	contextUsage         provider.Usage
-	contextCost          float64
+	// sampleCancel interrupts the open provider transport; steering and
+	// mailbox input use it to redirect the next sample. toolCancel aborts
+	// the running tool batch and is fired only by Cancel.
+	sampleCancel context.CancelCauseFunc
+	toolCancel   context.CancelCauseFunc
+	// steeringClosed is set once the turn starts terminalizing; later
+	// steers are rejected instead of being accepted and dropped.
+	steeringClosed bool
+	cancelReason   string
+	delta          *SessionDelta
+	context        agentcontext.Authority
+	contextUsage   provider.Usage
+	contextCost    float64
 }
 
 type ScopeSnapshot struct {
@@ -155,7 +162,9 @@ func (e *Engine) finishScope(scope *Scope) {
 			held = append(held, item)
 		}
 	}
-	scope.state.cancel = nil
+	scope.state.sampleCancel = nil
+	scope.state.toolCancel = nil
+	scope.state.steeringClosed = true
 	scope.mu.Unlock()
 	e.scopeMu.Lock()
 	if e.activeScope == scope {
@@ -267,13 +276,21 @@ func (s *Scope) Cancel(reason string) error {
 	kernelErr := kernel.RequestCancel(reason)
 	s.mu.Lock()
 	s.state.cancelReason = reason
-	cancel := s.state.cancel
+	sampleCancel, toolCancel := s.state.sampleCancel, s.state.toolCancel
 	s.mu.Unlock()
-	if cancel != nil {
-		cancel(errors.New(reason))
+	cause := errors.New(reason)
+	if sampleCancel != nil {
+		sampleCancel(cause)
+	}
+	if toolCancel != nil {
+		toolCancel(cause)
 	}
 	return kernelErr
 }
+
+// Steer queues a prompt for the next sample of the running turn. It only
+// interrupts an open provider transport; a running tool batch finishes and
+// the steer is read once its results are recorded.
 func (s *Scope) Steer(prompt string) error {
 	if prompt == "" {
 		return errors.New("steering prompt is required")
@@ -282,10 +299,14 @@ func (s *Scope) Steer(prompt string) error {
 		return errors.New("no active turn to steer")
 	}
 	s.mu.Lock()
+	if s.state.steeringClosed {
+		s.mu.Unlock()
+		return errors.New("turn is finishing and no longer accepts steering")
+	}
 	err := s.state.mailbox.Offer(
 		PendingInput{Source: PendingSteer, Prompt: prompt},
 	)
-	cancel := s.state.cancel
+	cancel := s.state.sampleCancel
 	s.mu.Unlock()
 	if err != nil {
 		return err
@@ -294,6 +315,20 @@ func (s *Scope) Steer(prompt string) error {
 		cancel(errors.New("turn steered"))
 	}
 	return nil
+}
+
+// closeSteering stops accepting turn input before a terminal step. With
+// yieldToPending it leaves steering open and reports true when input is
+// already queued, so a completing turn samples again instead of finishing
+// without it.
+func (s *Scope) closeSteering(yieldToPending bool) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if yieldToPending && s.state.mailbox.Len() != 0 {
+		return true
+	}
+	s.state.steeringClosed = true
+	return false
 }
 
 func (s *Scope) ResolveApproval(

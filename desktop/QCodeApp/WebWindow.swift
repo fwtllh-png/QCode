@@ -9,7 +9,8 @@ final class WebWindow: NSWindow {
     private var titleObservation: NSKeyValueObservation?
     private let themeUnderlay = ThemeUnderlay()
 
-    init(baseURL: URL) {
+    /// baseURL 决定同源放行范围；pageURL 是首次加载的地址（通常带一次性启动码）。
+    init(baseURL: URL, pageURL: URL) {
         let frame = NSRect(x: 0, y: 0, width: 1440, height: 900)
         let style: NSWindow.StyleMask = [.titled, .closable, .miniaturizable, .resizable]
         self.webView = WKWebView(frame: frame)
@@ -47,11 +48,11 @@ final class WebWindow: NSWindow {
         }
 
         center()
-        webView.load(URLRequest(url: baseURL))
+        webView.load(URLRequest(url: pageURL))
     }
 
-    func reload(baseURL: URL) {
-        webView.load(URLRequest(url: baseURL))
+    func reload(pageURL: URL) {
+        webView.load(URLRequest(url: pageURL))
     }
 
     private static func badgeCount(fromTitle title: String) -> String? {

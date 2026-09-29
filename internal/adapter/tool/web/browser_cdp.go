@@ -17,12 +17,19 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
+
+	"github.com/fwtllh-png/QCode/internal/security/egress"
 )
 
+// chromeBrowser owns one headless Chrome whose every request crosses a
+// Runtime-owned loopback proxy. The proxy gate admits public destinations
+// and only the host-network targets that approved web_run calls granted.
 type chromeBrowser struct {
 	binary string
 
 	mu         sync.Mutex
+	gate       *egress.Gate
+	proxy      *egress.ManagedNetworkProxy
 	command    *exec.Cmd
 	profile    string
 	connection *websocket.Conn
@@ -40,7 +47,36 @@ type cdpMessage struct {
 }
 
 func newChromeBrowser(binary string) BrowserRuntime {
-	return &chromeBrowser{binary: binary}
+	return &chromeBrowser{binary: binary, gate: newBrowserGate()}
+}
+
+func newBrowserGate() *egress.Gate {
+	return &egress.Gate{Enforce: true, AllowPublic: true}
+}
+
+// chromeArguments pins Chrome to the proxy: loopback is not implicitly
+// bypassed, local name resolution fails so nothing can connect around the
+// proxy, and WebRTC may not send non-proxied UDP.
+func chromeArguments(profile, proxyURL string) []string {
+	return []string{
+		"--headless=new",
+		"--disable-background-networking",
+		"--disable-component-update",
+		"--disable-default-apps",
+		"--disable-extensions",
+		"--disable-sync",
+		"--metrics-recording-only",
+		"--no-default-browser-check",
+		"--no-first-run",
+		"--proxy-server=" + proxyURL,
+		"--proxy-bypass-list=<-loopback>",
+		"--host-resolver-rules=MAP * ~NOTFOUND , EXCLUDE 127.0.0.1",
+		"--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
+		"--webrtc-ip-handling-policy=disable_non_proxied_udp",
+		"--remote-debugging-port=0",
+		"--user-data-dir=" + profile,
+		"about:blank",
+	}
 }
 
 func findChromeBinary() string {
@@ -79,30 +115,23 @@ func (b *chromeBrowser) ensureStarted(ctx context.Context) error {
 	if b.connection != nil {
 		return nil
 	}
+	proxy, err := egress.StartManagedNetworkProxy(b.gate)
+	if err != nil {
+		return fmt.Errorf("start browser egress proxy: %w", err)
+	}
+	b.proxy = proxy
 	profile, err := os.MkdirTemp("", "qcode-browser-")
 	if err != nil {
+		_ = b.closeLocked()
 		return err
 	}
-	command := exec.Command(b.binary,
-		"--headless=new",
-		"--disable-background-networking",
-		"--disable-component-update",
-		"--disable-default-apps",
-		"--disable-extensions",
-		"--disable-sync",
-		"--metrics-recording-only",
-		"--no-default-browser-check",
-		"--no-first-run",
-		"--remote-debugging-port=0",
-		"--user-data-dir="+profile,
-		"about:blank",
-	)
+	b.profile = profile
+	command := exec.Command(b.binary, chromeArguments(profile, proxy.URL())...)
 	if err := command.Start(); err != nil {
-		_ = os.RemoveAll(profile)
+		_ = b.closeLocked()
 		return err
 	}
 	b.command = command
-	b.profile = profile
 
 	portFile := filepath.Join(profile, "DevToolsActivePort")
 	var port int
@@ -217,6 +246,7 @@ func (b *chromeBrowser) evaluate(ctx context.Context, expression string) (json.R
 func (b *chromeBrowser) Navigate(ctx context.Context, rawURL string) (string, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	b.adoptCallGrants(ctx)
 	parsed, err := url.Parse(rawURL)
 	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") ||
 		parsed.User != nil || parsed.Host == "" {
@@ -249,6 +279,7 @@ func (b *chromeBrowser) Navigate(ctx context.Context, rawURL string) (string, er
 func (b *chromeBrowser) Snapshot(ctx context.Context) (string, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	b.adoptCallGrants(ctx)
 	if err := b.ensureStarted(ctx); err != nil {
 		return "", err
 	}
@@ -270,6 +301,7 @@ func (b *chromeBrowser) snapshotLocked(ctx context.Context) (string, error) {
 func (b *chromeBrowser) Click(ctx context.Context, selector string) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	b.adoptCallGrants(ctx)
 	if err := b.ensureStarted(ctx); err != nil {
 		return err
 	}
@@ -293,6 +325,7 @@ func (b *chromeBrowser) Click(ctx context.Context, selector string) error {
 func (b *chromeBrowser) Fill(ctx context.Context, selector, input string) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	b.adoptCallGrants(ctx)
 	if err := b.ensureStarted(ctx); err != nil {
 		return err
 	}
@@ -324,6 +357,17 @@ func (b *chromeBrowser) Close() error {
 	return b.closeLocked()
 }
 
+// adoptCallGrants keeps the targets Guard approved for this web_run call for
+// the rest of the browser session: pages keep loading from an approved
+// intranet or localhost origin after the call returns.
+func (b *chromeBrowser) adoptCallGrants(ctx context.Context) {
+	if b.gate == nil {
+		b.gate = newBrowserGate()
+	}
+	b.gate.AdoptScope(ctx)
+}
+
+// closeLocked ends the browser session, including every adopted grant.
 func (b *chromeBrowser) closeLocked() error {
 	var result error
 	if b.connection != nil {
@@ -337,11 +381,18 @@ func (b *chromeBrowser) closeLocked() error {
 		_ = b.command.Wait()
 		b.command = nil
 	}
+	if b.proxy != nil {
+		if err := b.proxy.Close(context.Background()); err != nil && result == nil {
+			result = err
+		}
+		b.proxy = nil
+	}
 	if b.profile != "" {
 		if err := os.RemoveAll(b.profile); err != nil && result == nil {
 			result = err
 		}
 		b.profile = ""
 	}
+	b.gate = newBrowserGate()
 	return result
 }

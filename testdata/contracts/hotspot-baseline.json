@@ -38,7 +38,7 @@
         "terminal": [
           "turnEmitter",
           "newTurnEmitter",
-          "finish"
+          "finishTerminal"
         ],
         "cancel": [
           "Cancel",

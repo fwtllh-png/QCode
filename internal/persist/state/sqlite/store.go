@@ -102,11 +102,15 @@ type Options struct {
 
 // Store is a concurrency-safe handle to the QCode state database.
 type Store struct {
-	path      string
-	db        *sql.DB
-	closeOnce sync.Once
-	closeErr  error
+	path        string
+	db          *sql.DB
+	busyTimeout time.Duration
+	closeOnce   sync.Once
+	closeErr    error
 }
+
+// BusyTimeout reports the lock wait applied to every connection.
+func (s *Store) BusyTimeout() time.Duration { return s.busyTimeout }
 
 // Open opens path, creates the current schema when needed, and verifies database
 // integrity. A newer schema is rejected before any write is attempted.
@@ -148,7 +152,7 @@ func Open(ctx context.Context, path string, options ...Options) (*Store, error) 
 	db.SetMaxOpenConns(1)
 	db.SetMaxIdleConns(1)
 
-	store := &Store{path: absolute, db: db}
+	store := &Store{path: absolute, db: db, busyTimeout: opts.BusyTimeout}
 	ok := false
 	defer func() {
 		if !ok {

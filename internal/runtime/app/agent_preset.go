@@ -18,17 +18,17 @@ func (s *AgentPresetService) List(
 			err,
 		)
 	}
-	if s.agentPresets == nil {
+	if s.runtime.agentPresets == nil {
 		return protocol.AgentPresetList{}, runtimeProblem(
 			protocol.CodeUnavailable,
 			"agent preset storage is unavailable",
 			nil,
 		)
 	}
-	if _, err := s.SessionStatus(ctx, request.SessionID); err != nil {
+	if _, err := s.runtime.SessionStatus(ctx, request.SessionID); err != nil {
 		return protocol.AgentPresetList{}, err
 	}
-	return s.agentPresets.List(ctx)
+	return s.runtime.agentPresets.List(ctx)
 }
 
 func (s *AgentPresetService) Save(
@@ -42,14 +42,14 @@ func (s *AgentPresetService) Save(
 			err,
 		)
 	}
-	if s.agentPresets == nil {
+	if s.runtime.agentPresets == nil {
 		return protocol.AgentPresetMutationResult{}, runtimeProblem(
 			protocol.CodeUnavailable,
 			"agent preset storage is unavailable",
 			nil,
 		)
 	}
-	if _, err := s.SessionStatus(ctx, request.SessionID); err != nil {
+	if _, err := s.runtime.SessionStatus(ctx, request.SessionID); err != nil {
 		return protocol.AgentPresetMutationResult{}, err
 	}
 	if err := s.validateProfile(
@@ -59,7 +59,7 @@ func (s *AgentPresetService) Save(
 	); err != nil {
 		return protocol.AgentPresetMutationResult{}, err
 	}
-	result, err := s.agentPresets.Save(ctx, protocol.AgentPreset{
+	result, err := s.runtime.agentPresets.Save(ctx, protocol.AgentPreset{
 		ID: request.ID, Name: request.Name, Description: request.Description,
 		Scope: protocol.AgentPresetScopeWorkspace, Profile: request.Profile,
 	}, request.ExpectedRevision)
@@ -80,17 +80,17 @@ func (s *AgentPresetService) Delete(
 			err,
 		)
 	}
-	if s.agentPresets == nil {
+	if s.runtime.agentPresets == nil {
 		return protocol.AgentPresetMutationResult{}, runtimeProblem(
 			protocol.CodeUnavailable,
 			"agent preset storage is unavailable",
 			nil,
 		)
 	}
-	if _, err := s.SessionStatus(ctx, request.SessionID); err != nil {
+	if _, err := s.runtime.SessionStatus(ctx, request.SessionID); err != nil {
 		return protocol.AgentPresetMutationResult{}, err
 	}
-	result, err := s.agentPresets.Delete(
+	result, err := s.runtime.agentPresets.Delete(
 		ctx,
 		request.ID,
 		request.ExpectedRevision,
@@ -112,14 +112,14 @@ func (s *AgentPresetService) Apply(
 			err,
 		)
 	}
-	if s.agentPresets == nil {
+	if s.runtime.agentPresets == nil {
 		return protocol.AgentPresetApplyResult{}, runtimeProblem(
 			protocol.CodeUnavailable,
 			"agent preset storage is unavailable",
 			nil,
 		)
 	}
-	summary, err := s.SessionStatus(ctx, request.SessionID)
+	summary, err := s.runtime.SessionStatus(ctx, request.SessionID)
 	if err != nil {
 		return protocol.AgentPresetApplyResult{}, err
 	}
@@ -130,11 +130,11 @@ func (s *AgentPresetService) Apply(
 			nil,
 		)
 	}
-	preset, err := s.agentPresets.Get(ctx, request.PresetID)
+	preset, err := s.runtime.agentPresets.Get(ctx, request.PresetID)
 	if err != nil {
 		return protocol.AgentPresetApplyResult{}, presetStoreProblem(err)
 	}
-	current, err := s.SessionProfile(ctx, request.SessionID)
+	current, err := s.runtime.SessionProfile(ctx, request.SessionID)
 	if err != nil {
 		return protocol.AgentPresetApplyResult{}, err
 	}
@@ -147,7 +147,7 @@ func (s *AgentPresetService) Apply(
 	patch := preset.Profile.Patch(current.Profile)
 	update := protocol.SessionProfileUpdateResult{Profile: current.Profile}
 	if !emptySessionProfilePatch(patch) {
-		update, err = s.UpdateSessionProfile(
+		update, err = s.runtime.UpdateSessionProfile(
 			ctx,
 			request.SessionID,
 			request.ThreadID,
@@ -158,7 +158,7 @@ func (s *AgentPresetService) Apply(
 			return protocol.AgentPresetApplyResult{}, err
 		}
 	}
-	capabilities, err := s.capabilitiesForProfile(update.Profile)
+	capabilities, err := s.runtime.capabilitiesForProfile(update.Profile)
 	if err != nil {
 		return protocol.AgentPresetApplyResult{}, err
 	}
@@ -182,7 +182,7 @@ func (s *AgentPresetService) validateProfile(
 	if err := preset.Validate(); err != nil {
 		return runtimeProblem(protocol.CodeInvalidArgument, err.Error(), err)
 	}
-	current, err := s.SessionProfile(ctx, sessionID)
+	current, err := s.runtime.SessionProfile(ctx, sessionID)
 	if err != nil {
 		return err
 	}
@@ -200,11 +200,11 @@ func (s *AgentPresetService) validateProfile(
 	if err != nil {
 		return runtimeProblem(protocol.CodeInvalidArgument, err.Error(), err)
 	}
-	if _, err := s.capabilitiesForProfile(candidate.Profile); err != nil {
+	if _, err := s.runtime.capabilitiesForProfile(candidate.Profile); err != nil {
 		return err
 	}
-	if s.toolCatalog != nil {
-		catalog, err := s.SessionToolCatalog(ctx, sessionID)
+	if s.runtime.toolCatalog != nil {
+		catalog, err := s.runtime.SessionToolCatalog(ctx, sessionID)
 		if err != nil {
 			return err
 		}

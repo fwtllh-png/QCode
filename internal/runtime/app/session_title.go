@@ -23,7 +23,7 @@ func (r *SessionService) prepareSessionTitle(
 	ctx context.Context, summary protocol.SessionSummary,
 	operation protocol.Operation, start *protocol.StartTurnPayload,
 ) {
-	store, ok := r.sessionLifecycle.(sessionTitleStore)
+	store, ok := r.runtime.sessionLifecycle.(sessionTitleStore)
 	if !ok || start.ThreadID != summary.ThreadID ||
 		!needsSessionTitle(summary.TitleSource) ||
 		summary.ParentThreadID != "" {
@@ -36,44 +36,45 @@ func (r *SessionService) prepareSessionTitle(
 	if strings.TrimSpace(prompt) == "" {
 		return
 	}
-	generator, ok := r.engine.(sessionTitleEngine)
+	generator, ok := r.runtime.engine.(sessionTitleEngine)
 	if !ok {
 		return
 	}
-	// Admission and shutdown share this lock, so Close cannot miss a worker.
-	r.OperationService.mu.Lock()
-	if !r.OperationService.accepting {
-		r.OperationService.mu.Unlock()
-		return
-	}
+	r.titleMu.Lock()
 	if r.titleJobs == nil {
 		r.titleJobs = make(map[string]sessionTitleJob)
 	}
 	previous := r.titleJobs[summary.SessionID]
 	if previous.running || previous.turnID == start.TurnID {
-		r.OperationService.mu.Unlock()
+		r.titleMu.Unlock()
 		return
 	}
 	r.titleJobs[summary.SessionID] = sessionTitleJob{turnID: start.TurnID, running: true}
-	r.titleWorkers.Add(1)
-	r.OperationService.mu.Unlock()
+	r.titleMu.Unlock()
+	finish := func() {
+		r.titleMu.Lock()
+		r.titleJobs[summary.SessionID] = sessionTitleJob{turnID: start.TurnID}
+		r.titleMu.Unlock()
+	}
+	if !r.runtime.OperationService.trackWhileAccepting(&r.titleWorkers) {
+		r.titleMu.Lock()
+		r.titleJobs[summary.SessionID] = previous
+		r.titleMu.Unlock()
+		return
+	}
 	go func() {
 		defer r.titleWorkers.Done()
-		defer func() {
-			r.OperationService.mu.Lock()
-			r.titleJobs[summary.SessionID] = sessionTitleJob{turnID: start.TurnID}
-			r.OperationService.mu.Unlock()
-		}()
-		current, err := r.sessionLifecycle.GetLifecycle(r.ctx, summary.SessionID)
+		defer finish()
+		current, err := r.runtime.sessionLifecycle.GetLifecycle(r.runtime.ctx, summary.SessionID)
 		if err != nil || current.Archived || current.ThreadID != summary.ThreadID ||
 			!needsSessionTitle(current.TitleSource) ||
 			current.TitleRevision != summary.TitleRevision {
 			return
 		}
 		identity := fmt.Sprintf("%s:%d:%s", current.SessionID, current.TitleRevision, start.TurnID)
-		result, err := generator.GenerateSessionTitle(r.ctx, current.ThreadID, identity, prompt)
+		result, err := generator.GenerateSessionTitle(r.runtime.ctx, current.ThreadID, identity, prompt)
 		if result.Usage.Total() != 0 {
-			_ = r.publish(operation.ID, start.ThreadID, start.TurnID, start.ItemID, &protocol.UsageData{
+			_ = r.runtime.publish(operation.ID, start.ThreadID, start.TurnID, start.ItemID, &protocol.UsageData{
 				Sample:   contextCompactionSample("session-title:"+identity, 1),
 				Provider: result.Provider, Model: result.Model, ModelMetadata: result.ModelMetadata,
 				InputTokens: result.Usage.InputTokens, OutputTokens: result.Usage.OutputTokens,
@@ -84,7 +85,7 @@ func (r *SessionService) prepareSessionTitle(
 		if err != nil {
 			return
 		}
-		summary, changed, err := store.UpdateGeneratedTitle(r.ctx,
+		summary, changed, err := store.UpdateGeneratedTitle(r.runtime.ctx,
 			current.SessionID, current.ThreadID, current.TitleRevision,
 			protocol.SessionTitleAuto, result.Title)
 		if err == nil && changed {
@@ -94,7 +95,7 @@ func (r *SessionService) prepareSessionTitle(
 }
 
 type sessionTitleJob struct {
-	turnID protocol.TurnID
+	turnID  protocol.TurnID
 	running bool
 }
 
@@ -104,7 +105,7 @@ func needsSessionTitle(source protocol.SessionTitleSource) bool {
 
 func (r *SessionService) publishSessionTitle(operation protocol.Operation, summary protocol.SessionSummary) {
 	threadID, turnID, itemID := protocol.OperationReferences(operation)
-	_ = r.publish(operation.ID, threadID, turnID, itemID, &protocol.SessionTitleUpdatedData{
+	_ = r.runtime.publish(operation.ID, threadID, turnID, itemID, &protocol.SessionTitleUpdatedData{
 		SessionID: summary.SessionID, Title: summary.Title,
 		TitleSource: summary.TitleSource, TitleRevision: summary.TitleRevision,
 	})

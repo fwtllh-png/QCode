@@ -64,7 +64,7 @@ func (b runtimeCoreBuilder) BuildChild(spec app.ChildSpec) (*app.EngineAdapter, 
 	}
 	adapter, err := b.build(options, source)
 	if err != nil && openedToolset != "" {
-		b.childTools.release(openedToolset)
+		b.childTools.Release(openedToolset)
 	}
 	return adapter, err
 }

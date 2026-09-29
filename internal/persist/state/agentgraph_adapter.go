@@ -177,11 +177,6 @@ func NewAgentGraph(
 				agentID, previewDigest,
 			)
 		},
-		Budget: func(targetSessionID string) (subagent.BudgetLedger, error) {
-			return store.LoadAgentBudgetSession(
-				context.Background(), workspaceRoot, targetSessionID,
-			)
-		},
 		ReconcileGraph: func() error {
 			sessions, err := store.ListAgentSessions(
 				context.Background(), workspaceRoot,

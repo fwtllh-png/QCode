@@ -5,8 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"slices"
 	"sync"
+	"time"
 
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
 	"github.com/fwtllh-png/QCode/internal/observability/telemetry"
@@ -158,6 +158,10 @@ type Options struct {
 	TerminalStore       turnkernel.TerminalEnvelopeStore
 	ContextRebaseStore  ContextRebaseStore
 	GitControl          *GitControl
+	// SettlementRetry paces background retries of operation settlements and
+	// committed terminal projections that failed to persist. Zero retries
+	// them only before the next dispatched operation.
+	SettlementRetry time.Duration
 }
 
 type Snapshot struct {
@@ -178,6 +182,12 @@ type acceptedOperation struct {
 	operation      protocol.Operation
 	idempotencyKey string
 	canonical      []byte
+	// interruptedBeforeStart marks a recovered StartTurn whose engine never
+	// recorded a domain fact; it is settled instead of re-run.
+	interruptedBeforeStart bool
+	// settleOnRecovery rejects a recovered operation with this problem instead
+	// of dispatching it.
+	settleOnRecovery error
 }
 
 type Runtime struct {
@@ -263,20 +273,8 @@ func (r *Runtime) EnsurePlanExecutionReady(
 			nil,
 		)
 	}
-	r.EventService.mu.Lock()
-	terminal := r.terminals[planTurnID]
-	pendingApprovals, pendingInputs := 0, 0
-	for _, approval := range r.approvals {
-		if slices.Contains(threadIDs, approval.ThreadID) {
-			pendingApprovals++
-		}
-	}
-	for _, input := range r.inputs {
-		if slices.Contains(threadIDs, input.ThreadID) {
-			pendingInputs++
-		}
-	}
-	r.EventService.mu.Unlock()
+	terminal, _ := r.EventService.terminalKind(planTurnID)
+	pendingApprovals, pendingInputs := r.EventService.pendingCounts(threadIDs)
 	summary.PendingApprovals = pendingApprovals
 	summary.PendingInputs = pendingInputs
 	switch {
@@ -336,14 +334,12 @@ func (r *Runtime) ReplayEvents(
 }
 
 func (r *Runtime) Snapshot(context.Context) Snapshot {
-	r.EventService.mu.Lock()
 	events := r.hub.Snapshot()
 	snapshot := Snapshot{
 		LastSequence: events.LastSequence,
 		Subscribers:  events.Subscribers, Metrics: r.metrics.Snapshot(),
-		PendingApprovals: len(r.approvals), PendingInputs: len(r.inputs),
 	}
-	r.EventService.mu.Unlock()
+	snapshot.PendingApprovals, snapshot.PendingInputs = r.EventService.pendingTotals()
 	r.lifecycleMu.Lock()
 	snapshot.Closed = r.closed
 	r.lifecycleMu.Unlock()
@@ -372,24 +368,7 @@ func (r *Runtime) FormatTurnDiff(threadID protocol.ThreadID) string {
 
 // RecoveryState returns a copy of the state needed by a replacement Runtime.
 func (r *Runtime) RecoveryState(context.Context) RecoveryState {
-	r.EventService.mu.Lock()
-	result := RecoveryState{
-		LastSequence:       r.hub.Snapshot().LastSequence,
-		Terminals:          make(map[protocol.TurnID]protocol.EventKind, len(r.terminals)),
-		PendingApprovals:   make(map[string]PendingApproval, len(r.approvals)),
-		PendingInputs:      make(map[string]PendingInput, len(r.inputs)),
-		PendingQueuedTurns: r.TurnQueueService.snapshotMapLocked(),
-	}
-	for turnID, kind := range r.terminals {
-		result.Terminals[turnID] = kind
-	}
-	for requestID, approval := range r.approvals {
-		result.PendingApprovals[requestID] = approval
-	}
-	for requestID, input := range r.inputs {
-		result.PendingInputs[requestID] = input
-	}
-	r.EventService.mu.Unlock()
+	result := r.EventService.recoveryState()
 	result.PendingOperations = r.OperationService.pendingSnapshot()
 	return result
 }
@@ -401,14 +380,7 @@ func (r *Runtime) Close(ctx context.Context) error {
 		r.startErr = errors.New("runtime closed before start")
 		go r.loop()
 	})
-	r.OperationService.mu.Lock()
-	if r.OperationService.accepting {
-		r.OperationService.accepting = false
-		close(r.operations)
-	} else if startedForClose {
-		close(r.operations)
-	}
-	r.OperationService.mu.Unlock()
+	r.OperationService.shutdown(startedForClose)
 	select {
 	case <-r.done:
 		return nil
@@ -419,17 +391,16 @@ func (r *Runtime) Close(ctx context.Context) error {
 }
 
 func (r *Runtime) loop() {
-	for accepted := range r.operations {
-		r.dispatch(accepted)
-		r.OperationService.mu.Lock()
-		r.OperationService.processed++
-		r.metrics.OperationProcessed()
-		r.OperationService.mu.Unlock()
-	}
+	r.OperationService.serve(
+		r.dispatch,
+		r.retrySettlements,
+		r.hasPendingSettlements,
+		r.opts.SettlementRetry,
+	)
 	r.cancel()
 	r.cancelActive()
-	r.workers.Wait()
-	r.titleWorkers.Wait()
+	r.TurnService.waitWorkers()
+	r.SessionService.waitTitleWorkers()
 	_ = errors.Join(closeEngine(r.engine), r.hub.Close(context.Background()))
 	_ = r.content.Close(context.Background())
 	r.lifecycleMu.Lock()
@@ -441,6 +412,18 @@ func (r *Runtime) loop() {
 func (r *Runtime) dispatch(accepted acceptedOperation) {
 	dispatcher := operationDispatcher{runtime: r}
 	r.OperationService.Apply(accepted.operation, dispatcher.Dispatch(accepted))
+}
+
+// retrySettlements projects deferred terminals before retrying parked
+// operation settlements, preserving the order in which they were decided.
+func (r *Runtime) retrySettlements() {
+	r.TurnService.retryDeferredTerminalProjections()
+	r.OperationService.retryUnsettled()
+}
+
+func (r *Runtime) hasPendingSettlements() bool {
+	return r.TurnService.hasDeferredTerminalProjections() ||
+		r.OperationService.hasUnsettled()
 }
 
 func (r *Runtime) turnPhase(threadID protocol.ThreadID, _ protocol.TurnID) TurnPhase {
@@ -485,5 +468,6 @@ func withDefaults(options Options) Options {
 	if options.SubscriberBuffer <= 0 {
 		options.SubscriberBuffer = 64
 	}
+	options.SettlementRetry = max(options.SettlementRetry, 0)
 	return options
 }

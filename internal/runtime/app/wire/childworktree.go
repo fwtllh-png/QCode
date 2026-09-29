@@ -603,7 +603,7 @@ func (c *childToolsets) openJournal(
 }
 
 // release drops the toolset for a root once its child is closed.
-func (c *childToolsets) release(root string) {
+func (c *childToolsets) Release(root string) {
 	c.mu.Lock()
 	toolset := c.built[root]
 	delete(c.built, root)

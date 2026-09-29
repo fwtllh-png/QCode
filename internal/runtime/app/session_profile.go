@@ -15,14 +15,14 @@ func (r *SessionService) SessionToolCatalog(
 	ctx context.Context,
 	sessionID string,
 ) (protocol.SessionToolCatalog, error) {
-	if r.toolCatalog == nil {
+	if r.runtime.toolCatalog == nil {
 		return protocol.SessionToolCatalog{}, runtimeProblem(protocol.CodeUnavailable, "session tool catalog is unavailable", nil)
 	}
 	profile, err := r.SessionProfile(ctx, sessionID)
 	if err != nil {
 		return protocol.SessionToolCatalog{}, err
 	}
-	snapshot, err := r.toolCatalog.Snapshot()
+	snapshot, err := r.runtime.toolCatalog.Snapshot()
 	if err != nil {
 		return protocol.SessionToolCatalog{}, fmt.Errorf("snapshot tool catalog: %w", err)
 	}
@@ -157,25 +157,25 @@ func (r *SessionService) SessionProfile(
 	ctx context.Context,
 	sessionID string,
 ) (protocol.SessionProfileSnapshot, error) {
-	if r.profiles == nil {
+	if r.runtime.profiles == nil {
 		return protocol.SessionProfileSnapshot{}, runtimeProblem(protocol.CodeUnavailable, "session profiles are unavailable", nil)
 	}
-	if r.workspaceRoot != "" {
+	if r.runtime.workspaceRoot != "" {
 		if _, err := r.SessionStatus(ctx, sessionID); err != nil {
 			return protocol.SessionProfileSnapshot{}, err
 		}
 	}
-	profile, err := r.profiles.EnsureProfile(ctx, sessionID, r.defaultProfile)
+	profile, err := r.runtime.profiles.EnsureProfile(ctx, sessionID, r.runtime.defaultProfile)
 	if err != nil {
 		return protocol.SessionProfileSnapshot{}, err
 	}
 	if !profileFieldMutable(
-		r.profileCapabilities.MutableFields,
+		r.runtime.profileCapabilities.MutableFields,
 		"reasoning_effort",
 	) {
-		profile.ReasoningEffort = r.defaultProfile.ReasoningEffort
+		profile.ReasoningEffort = r.runtime.defaultProfile.ReasoningEffort
 	}
-	capabilities, err := r.capabilitiesForProfile(profile)
+	capabilities, err := r.runtime.capabilitiesForProfile(profile)
 	if err != nil {
 		return protocol.SessionProfileSnapshot{}, err
 	}
@@ -220,7 +220,7 @@ func profileFieldMutable(fields []string, target string) bool {
 }
 
 func (r *SessionService) SessionProfilesAvailable() bool {
-	return r != nil && r.profiles != nil
+	return r != nil && r.runtime.profiles != nil
 }
 
 func (r *SessionService) RestoreSessionProfile(
@@ -232,19 +232,19 @@ func (r *SessionService) RestoreSessionProfile(
 	if err != nil {
 		return protocol.SessionProfileSnapshot{}, err
 	}
-	controller, ok := r.engine.(SessionProfileEngine)
+	controller, ok := r.runtime.engine.(SessionProfileEngine)
 	if !ok {
 		return protocol.SessionProfileSnapshot{}, runtimeProblem(protocol.CodeUnavailable, "session profile updates are unsupported by this engine", nil)
 	}
-	r.active.mu.Lock()
-	defer r.active.mu.Unlock()
-	if r.active.workspaceExclusive {
+	r.runtime.active.mu.Lock()
+	defer r.runtime.active.mu.Unlock()
+	if r.runtime.active.workspaceExclusive {
 		return protocol.SessionProfileSnapshot{}, retryableProblem(
 			protocol.CodeConflict, "session profile cannot change during a Workspace Git operation",
 		)
 	}
-	if _, active := r.active.byThread[threadID]; active {
-		if r.active.profiles[threadID] == snapshot.Profile.Revision {
+	if _, active := r.runtime.active.byThread[threadID]; active {
+		if r.runtime.active.profiles[threadID] == snapshot.Profile.Revision {
 			return snapshot, nil
 		}
 		return protocol.SessionProfileSnapshot{}, retryableProblem(
@@ -258,7 +258,7 @@ func (r *SessionService) RestoreSessionProfile(
 	if err := controller.ApplySessionProfile(threadID, snapshot.Profile); err != nil {
 		return protocol.SessionProfileSnapshot{}, err
 	}
-	r.active.profiles[threadID] = snapshot.Profile.Revision
+	r.runtime.active.profiles[threadID] = snapshot.Profile.Revision
 	return snapshot, nil
 }
 
@@ -269,14 +269,14 @@ func (r *SessionService) UpdateSessionProfile(
 	expectedRevision uint64,
 	patch protocol.SessionProfilePatch,
 ) (protocol.SessionProfileUpdateResult, error) {
-	if r.profiles == nil {
+	if r.runtime.profiles == nil {
 		return protocol.SessionProfileUpdateResult{}, runtimeProblem(protocol.CodeUnavailable, "session profiles are unavailable", nil)
 	}
-	if r.workspaceRoot != "" {
+	if r.runtime.workspaceRoot != "" {
 		if _, err := r.SessionStatus(ctx, sessionID); err != nil {
 			return protocol.SessionProfileUpdateResult{}, err
 		}
-		owner, err := r.sessionLifecycle.SessionForThread(ctx, threadID)
+		owner, err := r.runtime.sessionLifecycle.SessionForThread(ctx, threadID)
 		if err != nil {
 			return protocol.SessionProfileUpdateResult{}, err
 		}
@@ -288,24 +288,24 @@ func (r *SessionService) UpdateSessionProfile(
 			)
 		}
 	}
-	controller, ok := r.engine.(SessionProfileEngine)
+	controller, ok := r.runtime.engine.(SessionProfileEngine)
 	if !ok {
 		return protocol.SessionProfileUpdateResult{}, runtimeProblem(protocol.CodeUnavailable, "session profile updates are unsupported by this engine", nil)
 	}
-	r.active.mu.Lock()
-	defer r.active.mu.Unlock()
-	if r.active.workspaceExclusive {
+	r.runtime.active.mu.Lock()
+	defer r.runtime.active.mu.Unlock()
+	if r.runtime.active.workspaceExclusive {
 		return protocol.SessionProfileUpdateResult{}, retryableProblem(
 			protocol.CodeConflict, "session profile cannot change during a Workspace Git operation",
 		)
 	}
-	if _, active := r.active.byThread[threadID]; active {
+	if _, active := r.runtime.active.byThread[threadID]; active {
 		return protocol.SessionProfileUpdateResult{}, retryableProblem(
 			protocol.CodeConflict,
 			"session profile cannot change while its thread has an active turn",
 		)
 	}
-	current, err := r.profiles.Profile(ctx, sessionID, r.defaultProfile)
+	current, err := r.runtime.profiles.Profile(ctx, sessionID, r.runtime.defaultProfile)
 	if err != nil {
 		return protocol.SessionProfileUpdateResult{}, err
 	}
@@ -316,7 +316,7 @@ func (r *SessionService) UpdateSessionProfile(
 	}
 	if err := validateMutableProfilePatch(
 		patch,
-		r.profileCapabilities.MutableFields,
+		r.runtime.profileCapabilities.MutableFields,
 	); err != nil {
 		return protocol.SessionProfileUpdateResult{}, err
 	}
@@ -324,11 +324,11 @@ func (r *SessionService) UpdateSessionProfile(
 		return protocol.SessionProfileUpdateResult{},
 			runtimeProblem(protocol.CodeInvalidArgument, err.Error(), err)
 	}
-	updated, err := r.profiles.UpdateProfile(
+	updated, err := r.runtime.profiles.UpdateProfile(
 		ctx,
 		sessionID,
 		expectedRevision,
-		r.defaultProfile,
+		r.runtime.defaultProfile,
 		patch,
 	)
 	if err != nil {
@@ -340,7 +340,7 @@ func (r *SessionService) UpdateSessionProfile(
 			err,
 		)
 	}
-	r.active.profiles[threadID] = updated.Profile.Revision
+	r.runtime.active.profiles[threadID] = updated.Profile.Revision
 	return updated, nil
 }
 

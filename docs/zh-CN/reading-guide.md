@@ -229,7 +229,9 @@ Runtime.SubmitWithKey
    - `Runtime.loop`。
 2. `internal/runtime/app/operation_queue.go`
    - `OperationService.SubmitWithKey`；
-   - `OperationService.accept` / `commit`。
+   - `OperationService.accept` / `commitLocal`。
+   `operation_settlement.go`：`settle` / `advance` 把每个已接受 Operation 推进到
+   commit 或 reject，失败步骤进入待结算表并在分发循环上重试。
 3. `internal/runtime/app/turn_service.go`
    - `TurnService.Start` / `run` / `Cancel`。
 4. `internal/runtime/app/operation_dispatch.go`
@@ -284,7 +286,9 @@ Commit？
 3. `SnapshotTurnSpec` 冻结 Route、Profile、Policy、Tool Catalog、Skill、MCP、
    Budget、World 和 Window；
 4. `scopeFactory.Open` 为 Turn 创建隔离 Scope；
-5. `Scope.Run` 获取 Workspace Gate、恢复 Journal Draft、打开 Runtime Kernel。
+5. `Scope.Run` 获取 Workspace Gate、恢复 Journal Draft、打开 Runtime Kernel；
+6. `turn_run.go` 的 `turnRun.execute` 推进各阶段（恢复终态、打开会话、接续挂起
+   工具、逐 Sample 的 `sampleStep`），`turnRun.settle` 是唯一收尾步骤。
 
 `Engine.Execute` 是唯一生产入口。`legacy_entrypoints_test.go` 中出现的 `Run*` 方法是
 负向架构测试，不是可调用兼容层。
@@ -610,16 +614,20 @@ Terminal Envelope
 阅读：
 
 1. `runtime_start.go`：Prepared Runtime 与 `Runtime.Start`；
-2. `eventhub.TerminalPublisher.Recover`：Terminal Outbox；
+2. `eventhub.TerminalPublisher.Recover`：Terminal Outbox；单个 Turn 投影失败交给
+   `terminal_projection.go` 的延迟表，不阻断启动；
 3. `turn_recovery.go`：Recovery Source 校验；Turn 级事件经
-   `event_index_turn_sequence` 回放，不扫描整段 Event Log；
-
+   `event_index_turn_sequence` 回放，不扫描整段 Event Log；`recoverPendingTurns`
+   恢复 Approval/Input，并让每个 accepted Operation 进入分发队列结算：Fact 链可还原的
+   StartTurn 接续执行，不可还原的经 `quarantineTurn` 隔离，其余类型以可重试拒绝结算；
 4. `startup_terminal.go`：启动期失败的终态收敛；
 5. `wire/turn_coordinator.go`：Durable Coordinator、Turn Lease 和 Fact Restore；
-6. `turnkernel.RestoreTurnCoordinator`：校验 Sequence/Digest、Requeue Running Effect；
-7. `runtime.go` 的 `recoverPendingTurns`：恢复 Approval/Input 和未终态 Turn。
+6. `turnkernel.RestoreTurnCoordinator` / `ValidateDomainFacts`：校验 Sequence/Digest、
+   Requeue Running Effect；
+7. `operation_settlement.go`：待结算表与分发循环上的后台重试。
 
-自动恢复要求 Accepted Start Operation、非终态 Domain Facts 和有效 Lease/Identity。
+自动恢复要求 Accepted Start Operation、可还原的非终态 Domain Facts 和有效
+Lease/Identity。
 Checkpoint Restore 是 Context 恢复；Pending Turn Recovery 是执行生命周期恢复，两者
 不是同一操作。
 
@@ -627,6 +635,8 @@ Checkpoint Restore 是 Context 恢复；Pending Turn Recovery 是执行生命周
 
 ```bash
 go test -run 'TestC5Runtime|TestPersistentRuntime' ./internal/runtime/app ./internal/runtime/app/wire
+go test -run 'TestCommitReceiptIOError|TestRejectionProjectionFailure|TestStartupDefers|TestRestartSettles|TestRestartQuarantines|TestAcceptedOperationsSettle' ./internal/runtime/app
+go test -run 'TestPersistentStartupQuarantines' ./internal/runtime/app/wire
 go test -run 'TestPhase4R2TerminalEnvelope' ./internal/runtime/agent/turnkernel
 go test ./internal/persist/...
 ```
@@ -641,13 +651,17 @@ go test ./internal/persist/...
 ### 11.1 Subagent
 
 - `subagent/control_plane.go`：Delegation Intent、Role、Spawn Contract；
-- `subagent/subagent.go`：Manager、Tool Execution、Mailbox；
+- `subagent/subagent.go`：Manager、Spawn（锁内准入、锁外创建 Worktree、再回锁提交）、
+  Tool Execution、Mailbox；
+- `subagent/budget.go`：子 Agent 唯一的预算权威。Session Agent Tree 的账本由 Agent
+  状态折叠而成，Depth、`max_total`、`max_parallel`、Tree 与 Agent 的 Token/Cost
+  准入和预留都在这里；
 - `subagent/context_fork.go`：Task Capsule 与 Context Mode；
 - `subagent/graph.go`：Agent 生命周期与结果事实；
 - `subagent/worktree.go`：隔离工作区；
-- `runtime/app/wire/childruntime.go`：真实 Child Engine；
-- `orchestration/admission/governor.go`：并发与 Token/Cost Admission；
-- `orchestration/budget/ledger.go`：整棵 Agent Tree 的 Reservation 与结算。
+- `orchestration/childrun/runner.go`：真实 Child Turn 的提交、驻留、租约与终态结算，
+  只经 `Host`/`Threads`/`ToolPlanes` 窄接口连接 Session Runtime；它不做预算记账，
+  终态回执交给 Manager 结算。
 
 Child Authority 是父级 Authority 与 Role Policy 的交集。默认 Token Budget 按父级剩余
 容量和并发槽位派生；嵌套 Child 只能继续收窄。写入型并发 Child 使用 Worktree，合并由
@@ -663,9 +677,8 @@ Child Authority 是父级 Authority 与 Role Policy 的交集。默认 Token Bud
 关键测试：
 
 ```bash
-go test ./internal/orchestration/subagent ./internal/orchestration/admission
-go test ./internal/orchestration/budget ./internal/orchestration/chatmerge
-go test ./internal/orchestration/execsettle
+go test ./internal/orchestration/subagent ./internal/orchestration/chatmerge
+go test ./internal/orchestration/execsettle ./internal/orchestration/childrun
 go test -run 'TestChildAgent' ./internal/runtime/app/wire
 ```
 
@@ -679,12 +692,14 @@ go test -run 'TestChildAgent' ./internal/runtime/app/wire
 
 `internal/host/runtimeapi/web/server.go` 是本机 HTTP/WebSocket Host：
 
-- `New` 构造 Boot Surface 和随机 Capability Token；
+- `New` 构造 Boot Surface、随机 Capability Token 和独立的浏览器会话密钥；
 - `Activate` 注入已恢复的 Runtime；
-- `/healthz` 和 `/api/v1/bootstrap` 在 Runtime 失败时仍可访问；
-- `/api/v1/*` 是类型化同源 RPC；
+- `/healthz` 和 `/api/v1/bootstrap` 在 Runtime 失败时仍可访问；无会话的 bootstrap
+  只返回协议版本和就绪状态，不下发凭证；
+- `launch.go` 签发一次性启动码，把 `/?launch=<码>` 兑换为 HttpOnly 会话 Cookie；
+- `/api/v1/*` 是类型化同源 RPC，接受会话 Cookie 或 Bearer Capability Token；
 - `/api/v1/events` 是认证后的下行 WebSocket；
-- `browserFence` 校验 Loopback、Host、Origin 和 Token；
+- `browserFence` 校验 Loopback、Host 和 Origin；
 - `validateWebEditorContext` 重新验证浏览器提交的文件、图片、符号、诊断和 Tool Result
   引用。
 
@@ -829,8 +844,8 @@ Runtime.Start
 
 ### 14.5 跟踪 Child Agent
 
-从 `agent` Tool 进入 `AgentControl.SpawnIntent`，再跟到 Budget Reservation、
-Agent Graph、`childRuntime.StartTurn`、Child Engine、Terminal Settlement 和
+从 `agent` Tool 进入 `AgentControl.SpawnIntent`，再跟到 Manager 的 Budget Reservation、
+Agent Graph、`childrun.Runner.StartTurn`、Child Engine、Terminal Settlement 和
 Chat Merge。检查 Agent Path、Trace、Usage 和 Permission Digest 是否保持父子归属。
 
 ## 十五、按变更类型定位代码
@@ -839,14 +854,14 @@ Chat Merge。检查 Agent Path、Trace、Usage 和 Permission Digest 是否保�
 | --- | --- | --- |
 | 新 Operation/Event | `runtime/protocol` | Schema、Traits、Host Contract、Web Types |
 | 改 Turn 状态 | `turnkernel/state.go`、`reducer_*.go` | Coordinator/Property/Recovery Test |
-| 改 Agent 循环 | `engine/turn_handler.go` | Kernel Command，不新增状态写入点 |
+| 改 Agent 循环 | `engine/turn_run.go` | Kernel Command，不新增状态写入点；终态副作用只在其所有者步骤 |
 | 改 Context | `agent/context` | Prompt Projection、Manifest、Restore |
 | 改 Provider | `adapter/provider` | Assembly、Usage、Retry、Capability |
 | 新 Tool | `adapter/tool` | Catalog、Guard、Receipt、Sandbox |
 | 改权限 | `security`、`tool/guard` | Allow/Deny/Approval/Cleanup/Race |
 | 改终态 | `app/eventhub/terminal.go` | Turnstate Transaction、Outbox Recovery |
 | 改 Session | `runtime/app/service_facade.go` | Lifecycle Store、Web Query |
-| 改 Subagent | `orchestration/subagent` | Child Runtime、Budget、Worktree、Merge |
+| 改 Subagent | `orchestration/subagent`、`orchestration/childrun` | Child Runner、Budget、Worktree、Merge |
 | 改 Web API | `host/runtimeapi/web` | Contract JSON、Generated TS、Client |
 | 改 Web 展示 | `web/src/runtime/client.ts`、`ui/App.tsx` | Hydration、Cursor、Projection Test |
 | 改 Trace/Usage | `observability/trace`、`observability/usage` | Measurement、Query、Receipt |

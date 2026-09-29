@@ -22,7 +22,8 @@ func newResponsesSocketStream(
 	idleTimeout time.Duration,
 ) *responsesSocketStream {
 	return &responsesSocketStream{
-		ctx: ctx, session: session, input: input, property: property,
+		ctx: ctx, session: session, conn: session.conn,
+		input: input, property: property,
 		routeDigest: projection.RouteDigest,
 		windowID:    requestProjection.WindowID,
 		recoveryID:  requestProjection.RecoveryID,
@@ -50,8 +51,16 @@ func sessionMetadata(
 	return metadata
 }
 
+// read is called with s.mu held and releases it only while blocked on the
+// socket. A Close during that window hands the session to the next request,
+// so the late result must not touch session state.
 func (s *responsesSocketStream) read() error {
-	data, err := s.session.conn.Read(s.ctx)
+	s.mu.Unlock()
+	data, err := s.conn.Read(s.ctx)
+	s.mu.Lock()
+	if s.closed {
+		return io.EOF
+	}
 	if err != nil {
 		s.session.forceHTTP = true
 		s.session.invalidate()
@@ -76,6 +85,8 @@ func (s *responsesSocketStream) read() error {
 }
 
 func (s *responsesSocketStream) Close() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.closed {
 		return nil
 	}
@@ -84,7 +95,18 @@ func (s *responsesSocketStream) Close() error {
 	if s.session.idle != nil {
 		s.session.idle.Stop()
 	}
-	if s.idleTimeout > 0 {
+	if !s.stopped {
+		// The response may still be streaming on this socket; reusing it would
+		// hand its remaining frames to the next request. The close handshake
+		// can wait on a stalled peer, so it runs detached; completing it also
+		// unblocks any abandoned Read.
+		conn := s.session.conn
+		s.session.conn = nil
+		s.session.invalidate()
+		if conn != nil {
+			go func() { _ = conn.Close() }()
+		}
+	} else if s.idleTimeout > 0 {
 		session := s.session
 		session.idle = time.AfterFunc(s.idleTimeout, func() {
 			session.mu.Lock()

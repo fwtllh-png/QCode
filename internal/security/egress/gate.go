@@ -76,11 +76,20 @@ type Gate struct {
 	// UseCallScope binds Web tool traffic to Guard's dynamic call grants.
 	// Provider and process gates retain their independently configured grants.
 	UseCallScope bool
-	LookupIP     func(context.Context, string) ([]net.IP, error)
-	allowed      map[string]targetGrant
-	receipts     []Receipt
-	approver     RuntimeApprover
-	asks         askState
+	// AllowPublic admits, without a grant, any target whose every resolved
+	// address is public. Non-public destinations still need a grant with
+	// private access, and a hostname never reaches host-local addresses
+	// unless it names them. The browser session uses it: page subresources,
+	// redirects, and scripts reach the public web while the host network
+	// stays behind approval.
+	AllowPublic bool
+	LookupIP    func(context.Context, string) ([]net.IP, error)
+	allowed     map[string]targetGrant
+	receipts    []Receipt
+	approver    RuntimeApprover
+	// approverGeneration identifies the latest BindRuntimeApprover call.
+	approverGeneration uint64
+	asks               askState
 }
 
 // Private access is attached to each method, never shared across methods.
@@ -273,6 +282,20 @@ func (g *Gate) authorize(
 		g.mu.RUnlock()
 	}
 	var resolved []net.IP
+	if !allowed && g.AllowPublic {
+		ips, resolveErr := g.resolve(ctx, request.Host)
+		if resolveErr != nil {
+			denied := deniedTarget(request, reasonDNSFailed)
+			g.recordDenied(source, request, denied)
+			return nil, denied
+		}
+		if len(ips) == 0 || slices.ContainsFunc(ips, nonPublicIP) {
+			denied := deniedTarget(request, reasonPrivateNotGranted)
+			g.recordDenied(source, request, denied)
+			return nil, denied
+		}
+		resolved, allowed = ips, true
+	}
 	if !allowed && discover {
 		if err := g.discover(ctx, request); err == nil {
 			// The approval covers the target as it resolves right here, and
@@ -327,7 +350,12 @@ func (g *Gate) authorize(
 		}
 	}
 	for _, ip := range ips {
-		if nonPublicIP(ip) && !allowPrivate {
+		// Model-driven Web traffic reaches host-local addresses only through a
+		// host that names them; a hostname granted for an intranet address
+		// must not rebind onto loopback services or cloud metadata.
+		modelDriven := scoped || g.AllowPublic
+		hostLocalByName := modelDriven && hostLocalIP(ip) && !policy.NamesHostLocal(request.Host)
+		if (nonPublicIP(ip) && !allowPrivate) || hostLocalByName {
 			denied := deniedTarget(request, reasonPrivateNotGranted)
 			g.recordDenied(source, request, denied)
 			return nil, denied

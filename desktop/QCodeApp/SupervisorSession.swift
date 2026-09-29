@@ -17,12 +17,21 @@ import Foundation
 final class SupervisorSession {
     struct Endpoints {
         var baseURL: URL
-        var capabilityToken: String?
+        /// 带一次性启动码（?launch=）的地址：页面加载时服务端兑换成
+        /// HttpOnly 会话 cookie。拿不到启动码时为 nil，页面会提示重新打开。
+        var launchURL: URL?
 
-        init(baseURL: URL, capabilityToken: String? = nil) {
+        init(baseURL: URL, launchURL: URL? = nil) {
             self.baseURL = baseURL
-            self.capabilityToken = capabilityToken
+            self.launchURL = launchURL
         }
+    }
+
+    private struct LaunchCodeEnvelope: Decodable {
+        struct Result: Decodable {
+            let code: String
+        }
+        let result: Result?
     }
 
     private struct LeaseMetadata: Decodable {
@@ -49,6 +58,7 @@ final class SupervisorSession {
     private var terminating = false
     private var probeGeneration = 0
     private var sawReadyLine = false
+    private var readyLaunchURL: URL?
 
     /// Supervisor 就绪（ready 或 setup_required 都会打开页面）。
     var onReady: ((Endpoints) -> Void)?
@@ -99,9 +109,15 @@ final class SupervisorSession {
         // 逐个探测 lease 指向的 Supervisor；收集结果后回到主线程裁决。
         var pending = candidates.count
         var winner: Endpoints?
+        var winnerToken: String?
         func settle() {
             if let winner {
-                finishReady(winner, spawnOwned: false)
+                requestLaunchURL(base: winner.baseURL, token: winnerToken) { launchURL in
+                    self.finishReady(
+                        Endpoints(baseURL: winner.baseURL, launchURL: launchURL),
+                        spawnOwned: false
+                    )
+                }
             } else {
                 spawnOwnedProcess()
             }
@@ -123,7 +139,8 @@ final class SupervisorSession {
             probeHealthz(url) { status in
                 DispatchQueue.main.async {
                     if let status, status != "draining", winner == nil {
-                        winner = Endpoints(baseURL: url, capabilityToken: metadata.capabilityToken)
+                        winner = Endpoints(baseURL: url)
+                        winnerToken = metadata.capabilityToken
                     }
                     pending -= 1
                     if pending == 0 { settle() }
@@ -137,6 +154,36 @@ final class SupervisorSession {
         guard let data = try? Data(contentsOf: url), data.count > 1 else { return nil }
         // lease 文件第 1 个字节是保留字节，其后为单行 JSON。
         return try? JSONDecoder().decode(LeaseMetadata.self, from: data.dropFirst())
+    }
+
+    /// 用 lease 里的 capability token 向已运行的 Supervisor 申请一次性启动码。
+    /// token 只在本进程内使用，不写日志、不进 URL；完成回调在主线程。
+    private func requestLaunchURL(base: URL, token: String?, completion: @escaping (URL?) -> Void) {
+        guard let token, !token.isEmpty else {
+            completion(nil)
+            return
+        }
+        var request = URLRequest(url: base.appendingPathComponent("api/v1/auth/launch-code"))
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = Data("{}".utf8)
+        urlSession.dataTask(with: request) { data, response, _ in
+            var launchURL: URL?
+            if let http = response as? HTTPURLResponse, http.statusCode == 200,
+               let data,
+               let code = try? JSONDecoder().decode(LaunchCodeEnvelope.self, from: data).result?.code,
+               var components = URLComponents(url: base, resolvingAgainstBaseURL: false) {
+                components.queryItems = [URLQueryItem(name: "launch", value: code)]
+                launchURL = components.url
+            }
+            DispatchQueue.main.async {
+                if launchURL == nil {
+                    Self.log("launch code request failed for \(base)")
+                }
+                completion(launchURL)
+            }
+        }.resume()
     }
 
     private func probeHealthz(_ base: URL, completion: @escaping (String?) -> Void) {
@@ -241,8 +288,9 @@ final class SupervisorSession {
             if line.hasPrefix("QCode Runtime Ready: ") ||
                 line.hasPrefix("QCode Setup Ready: ") {
                 // Runtime Ready 在全部已注册 Workspace 激活完成之后打印，
-                // 是比 healthz ready 更强的就绪信号。
+                // 是比 healthz ready 更强的就绪信号；该行的 URL 带一次性启动码。
                 sawReadyLine = true
+                readyLaunchURL = Self.printedURL(fromLine: line)
             }
             if let url = Self.listenURL(fromLine: line) {
                 Self.log("supervisor listening at \(url)")
@@ -251,13 +299,24 @@ final class SupervisorSession {
         }
     }
 
-    private static func listenURL(fromLine line: String) -> URL? {
+    /// 就绪行打印的完整地址（可能带 ?launch= 启动码）。
+    private static func printedURL(fromLine line: String) -> URL? {
         for prefix in ["QCode Web Listening: ", "QCode Runtime Ready: ", "QCode Setup Ready: "] {
             if let range = line.range(of: prefix) {
                 return URL(string: String(line[range.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines))
             }
         }
         return nil
+    }
+
+    /// 去掉查询串的根地址，用于 healthz 探活与同源判定。
+    private static func listenURL(fromLine line: String) -> URL? {
+        guard let printed = printedURL(fromLine: line),
+              var components = URLComponents(url: printed, resolvingAgainstBaseURL: false)
+        else { return nil }
+        components.query = nil
+        components.path = "/"
+        return components.url
     }
 
     private func fallbackAdoptDefaultPort() {
@@ -288,7 +347,7 @@ final class SupervisorSession {
                     // 与前端 awaitWorkspaceReady 双保险。
                     if self.spawnOwned && !self.sawReadyLine {
                         if attempt >= 240 {
-                            self.finishReady(Endpoints(baseURL: base), spawnOwned: self.spawnOwned)
+                            self.finishReady(Endpoints(baseURL: base, launchURL: self.readyLaunchURL), spawnOwned: self.spawnOwned)
                             return
                         }
                         DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
@@ -296,7 +355,7 @@ final class SupervisorSession {
                         }
                         return
                     }
-                    self.finishReady(Endpoints(baseURL: base), spawnOwned: self.spawnOwned)
+                    self.finishReady(Endpoints(baseURL: base, launchURL: self.readyLaunchURL), spawnOwned: self.spawnOwned)
                 case "initializing", nil:
                     // 启动中或暂时不可达：每 250ms 重试，60s 超时。
                     if attempt >= 240 {
@@ -319,7 +378,8 @@ final class SupervisorSession {
         guard self.endpoints == nil else { return }
         self.endpoints = endpoints
         self.spawnOwned = spawnOwned
-        Self.log("ready spawnOwned=\(spawnOwned) url=\(endpoints.baseURL)")
+        readyLaunchURL = nil
+        Self.log("ready spawnOwned=\(spawnOwned) url=\(endpoints.baseURL) launch=\(endpoints.launchURL != nil)")
         onReady?(endpoints)
     }
 

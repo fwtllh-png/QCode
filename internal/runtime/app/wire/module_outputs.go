@@ -11,8 +11,7 @@ import (
 	webtool "github.com/fwtllh-png/QCode/internal/adapter/tool/web"
 	"github.com/fwtllh-png/QCode/internal/observability/diagnostics"
 	"github.com/fwtllh-png/QCode/internal/observability/verify"
-	"github.com/fwtllh-png/QCode/internal/orchestration/admission"
-	workbudget "github.com/fwtllh-png/QCode/internal/orchestration/budget"
+	"github.com/fwtllh-png/QCode/internal/orchestration/childrun"
 	"github.com/fwtllh-png/QCode/internal/orchestration/subagent"
 	"github.com/fwtllh-png/QCode/internal/persist/contentstore"
 	"github.com/fwtllh-png/QCode/internal/persist/joblog"
@@ -82,9 +81,7 @@ type securityBuildState struct {
 }
 
 type orchestrationBuildState struct {
-	workBudget    *workbudget.Ledger
-	childGovernor *admission.Governor
-	children      *childRuntime
+	children      *childrun.Runner
 	childToolsets *childToolsets
 	chatTrees     *childWorktrees
 	parentFiles   *filetool.Tools

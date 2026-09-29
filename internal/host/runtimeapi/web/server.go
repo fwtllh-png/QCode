@@ -106,11 +106,16 @@ type Server struct {
 	expectedHost  string
 	origin        string
 	token         string
+	session       string
 	build         string
 	index         []byte
 	capacity      Capacity
 	pickDirectory directoryPicker
 	handler       http.Handler
+	now           func() time.Time
+
+	launchMu    sync.Mutex
+	launchCodes map[string]time.Time
 
 	mu                sync.RWMutex
 	directoryPickerMu sync.Mutex
@@ -138,7 +143,7 @@ type responseEnvelope struct {
 type bootstrapResponse struct {
 	ProtocolVersion  int                         `json:"protocol_version"`
 	ServerBuild      string                      `json:"server_build"`
-	Token            string                      `json:"token"`
+	Authenticated    bool                        `json:"authenticated"`
 	Ready            bool                        `json:"ready"`
 	Draining         bool                        `json:"draining"`
 	WorkspaceRoot    string                      `json:"workspace_root,omitempty"`
@@ -182,9 +187,15 @@ func New(options Options) (*Server, error) {
 			return nil, err
 		}
 	}
+	session, err := newToken()
+	if err != nil {
+		return nil, err
+	}
 	server := &Server{
 		assets: options.Assets, expectedHost: options.ExpectedHost,
-		origin: options.Origin, token: token, build: options.Build, index: index,
+		origin: options.Origin, token: token, session: session,
+		build: options.Build, index: index, now: time.Now,
+		launchCodes:   make(map[string]time.Time),
 		capacity:      options.Capacity.normalized(),
 		pickDirectory: options.PickDirectory,
 		setup:         options.Setup, workspaceControl: options.Workspaces,
@@ -343,16 +354,20 @@ func (s *Server) bootstrap(w http.ResponseWriter, r *http.Request) {
 		methodNotAllowed(w, http.MethodGet)
 		return
 	}
-	dependencies, problem := s.snapshot()
 	result := bootstrapResponse{
 		ProtocolVersion: webProtocol,
 		ServerBuild:     s.build,
-		Token:           s.token,
+		Authenticated:   s.authorized(r),
 		Ready:           s.ready.Load(),
 		Draining:        s.draining.Load(),
-		WorkspaceRoot:   dependencies.WorkspaceRoot,
-		Problem:         problem,
 	}
+	if !result.Authenticated {
+		writeJSON(w, http.StatusOK, result)
+		return
+	}
+	dependencies, problem := s.snapshot()
+	result.WorkspaceRoot = dependencies.WorkspaceRoot
+	result.Problem = problem
 	if s.workspaceControl != nil {
 		if catalog, err := s.workspaceControl.List(r.Context()); err == nil {
 			result.WorkspaceCatalog = catalog
@@ -1714,48 +1729,30 @@ func collectWorkspaceDiagnostics(
 	limit int,
 ) ([]workspaceDiagnosticContext, error) {
 	values := make([]workspaceDiagnosticContext, 0)
-	cursor := protocol.Cursor(0)
-	for {
-		events, more, err := dependencies.Runtime.ReplayEvents(ctx, cursor, 1000)
-		if err != nil {
-			return nil, err
+	err := dependencies.Runtime.EachThreadDiagnostic(ctx, threadID, func(diagnostic app.ThreadDiagnostic) error {
+		contextReference, ok, err := workspaceDiagnosticReference(
+			ctx,
+			dependencies.Workspace,
+			dependencies.WorkspaceIdentity,
+			diagnostic.Receipt,
+		)
+		if err != nil || !ok {
+			return err
 		}
-		for _, event := range events {
-			cursor = event.Sequence
-			if event.ThreadID != threadID {
-				continue
-			}
-			diagnostics, ok := event.Data.(*protocol.DiagnosticsData)
-			if !ok {
-				continue
-			}
-			for _, receipt := range diagnostics.Receipts {
-				contextReference, ok, err := workspaceDiagnosticReference(
-					ctx,
-					dependencies.Workspace,
-					dependencies.WorkspaceIdentity,
-					receipt,
-				)
-				if err != nil {
-					return nil, err
-				}
-				if !ok {
-					continue
-				}
-				values = append(values, workspaceDiagnosticContext{
-					CallID: diagnostics.CallID, Tool: diagnostics.Tool,
-					Status: receipt.Status, Message: receipt.Message,
-					Context: contextReference,
-				})
-				if len(values) > limit {
-					values = values[len(values)-limit:]
-				}
-			}
+		values = append(values, workspaceDiagnosticContext{
+			CallID: diagnostic.CallID, Tool: diagnostic.Tool,
+			Status: diagnostic.Receipt.Status, Message: diagnostic.Receipt.Message,
+			Context: contextReference,
+		})
+		if len(values) > limit {
+			values = values[len(values)-limit:]
 		}
-		if !more || len(events) == 0 {
-			return values, nil
-		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
+	return values, nil
 }
 
 func workspaceDiagnosticReference(
@@ -2066,42 +2063,22 @@ func validateWebTerminalContexts(
 	if runtime == nil {
 		return unavailable("runtime is unavailable")
 	}
-	pending := make(map[string]protocol.EditorContextReference, len(references))
+	claims := make([]app.ToolOutputClaim, 0, len(references))
 	for _, reference := range references {
-		pending[reference.Label+"\x00"+reference.Digest] = reference
+		claims = append(claims, app.ToolOutputClaim{
+			CallID: reference.Label, Digest: reference.Digest, Output: reference.Content,
+		})
 	}
-	cursor := protocol.Cursor(0)
-	for len(pending) > 0 {
-		events, more, err := runtime.ReplayEvents(ctx, cursor, 1000)
-		if err != nil {
-			return protocol.NewProblem(
-				protocol.CodeConflict,
-				"terminal context source is no longer available",
-				true,
-				err,
-			)
-		}
-		for _, event := range events {
-			cursor = event.Sequence
-			if event.ThreadID != threadID {
-				continue
-			}
-			result, ok := event.Data.(*protocol.ToolResultData)
-			if !ok {
-				continue
-			}
-			digest := sha256.Sum256([]byte(result.Output))
-			key := result.CallID + "\x00" + hex.EncodeToString(digest[:])
-			reference, wanted := pending[key]
-			if wanted && reference.Content == result.Output {
-				delete(pending, key)
-			}
-		}
-		if !more || len(events) == 0 {
-			break
-		}
+	issued, err := runtime.ToolOutputsIssued(ctx, threadID, claims)
+	if err != nil {
+		return protocol.NewProblem(
+			protocol.CodeConflict,
+			"terminal context source is no longer available",
+			true,
+			err,
+		)
 	}
-	if len(pending) != 0 {
+	if !issued {
 		return protocol.NewProblem(
 			protocol.CodeConflict,
 			"terminal context is stale or was not issued for this thread",
@@ -2314,7 +2291,7 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 	var auth authFrame
 	if decodeStrict(data, &auth) != nil ||
 		auth.Type != "authenticate" ||
-		!tokenEqual(auth.Token, s.token) {
+		!(s.authorized(r) || tokenEqual(auth.Token, s.token)) {
 		_ = connection.Close(websocket.StatusPolicyViolation, "authentication failed")
 		return
 	}
@@ -2433,6 +2410,10 @@ func (s *Server) static(w http.ResponseWriter, r *http.Request) {
 	}
 	if strings.HasPrefix(r.URL.Path, "/api/") {
 		http.NotFound(w, r)
+		return
+	}
+	if r.URL.Query().Has(launchQueryParameter) {
+		s.launch(w, r)
 		return
 	}
 	if hasTraversalSegment(r.URL.EscapedPath()) {
@@ -2599,13 +2580,6 @@ func (s *Server) securityHeaders(next http.Handler) http.Handler {
 		w.Header().Set("Cross-Origin-Opener-Policy", "same-origin")
 		next.ServeHTTP(w, r)
 	})
-}
-
-func (s *Server) authorized(r *http.Request) bool {
-	const prefix = "Bearer "
-	value := r.Header.Get("Authorization")
-	return strings.HasPrefix(value, prefix) &&
-		tokenEqual(strings.TrimPrefix(value, prefix), s.token)
 }
 
 func (s *Server) snapshot() (Dependencies, *protocol.Problem) {

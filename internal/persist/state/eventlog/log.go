@@ -133,8 +133,11 @@ type Log struct {
 	byThread  map[protocol.ThreadID][]int
 	last      protocol.Cursor
 	end       int64
-	closed    bool
-	closeErr  error
+	// tailUnknown records a failed rollback: bytes past end may exist, so no
+	// append may write until the tail is truncated back to end.
+	tailUnknown bool
+	closed      bool
+	closeErr    error
 }
 
 // Store is an integration-friendly alias for Log.
@@ -257,6 +260,9 @@ func (l *Log) AppendWithEvidence(ctx context.Context, event protocol.Event) (Evi
 	if event.Sequence < expected {
 		return Evidence{}, &SequenceError{Expected: expected, Actual: event.Sequence, Offset: l.end}
 	}
+	if err := l.repairUnknownTailLocked(event.Sequence); err != nil {
+		return Evidence{}, err
+	}
 
 	offset := l.end
 	if _, err := l.file.Seek(offset, io.SeekStart); err != nil {
@@ -310,6 +316,9 @@ func (l *Log) AppendBatchWithEvidence(
 		return nil, ErrClosed
 	}
 	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err := l.repairUnknownTailLocked(events[0].Sequence); err != nil {
 		return nil, err
 	}
 	start := l.end
@@ -373,22 +382,45 @@ func writeFull(writer io.Writer, data []byte) error {
 }
 
 func (l *Log) rollbackFailedAppend(sequence protocol.Cursor, offset int64, appendErr error) error {
-	var rollbackErr error
-	if err := l.file.Truncate(offset); err != nil {
-		rollbackErr = errors.Join(rollbackErr, fmt.Errorf("truncate: %w", err))
-	}
-	if _, err := l.file.Seek(offset, io.SeekStart); err != nil {
-		rollbackErr = errors.Join(rollbackErr, fmt.Errorf("seek: %w", err))
-	}
-	if err := l.file.Sync(); err != nil {
-		rollbackErr = errors.Join(rollbackErr, fmt.Errorf("fsync: %w", err))
-	}
-	if rollbackErr != nil {
+	if rollbackErr := l.truncateTo(offset); rollbackErr != nil {
+		l.tailUnknown = true
 		return &IndeterminateAppendError{
 			Sequence: sequence, Offset: offset, AppendErr: appendErr, RollbackErr: rollbackErr,
 		}
 	}
 	return appendErr
+}
+
+// repairUnknownTailLocked retries the rollback a failed append left behind.
+// Until it succeeds every append stays indeterminate instead of writing at
+// an offset that may sit in front of torn or uncommitted bytes.
+func (l *Log) repairUnknownTailLocked(sequence protocol.Cursor) error {
+	if !l.tailUnknown {
+		return nil
+	}
+	if err := l.truncateTo(l.end); err != nil {
+		return &IndeterminateAppendError{
+			Sequence: sequence, Offset: l.end,
+			AppendErr:   errors.New("previous append left an unrepaired tail"),
+			RollbackErr: err,
+		}
+	}
+	l.tailUnknown = false
+	return nil
+}
+
+func (l *Log) truncateTo(offset int64) error {
+	var err error
+	if truncateErr := l.file.Truncate(offset); truncateErr != nil {
+		err = errors.Join(err, fmt.Errorf("truncate: %w", truncateErr))
+	}
+	if _, seekErr := l.file.Seek(offset, io.SeekStart); seekErr != nil {
+		err = errors.Join(err, fmt.Errorf("seek: %w", seekErr))
+	}
+	if syncErr := l.file.Sync(); syncErr != nil {
+		err = errors.Join(err, fmt.Errorf("fsync: %w", syncErr))
+	}
+	return err
 }
 
 // Replay returns committed events whose sequence is greater than cursor.

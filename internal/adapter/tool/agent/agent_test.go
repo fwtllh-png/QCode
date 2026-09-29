@@ -997,7 +997,6 @@ func TestSpawnPostStartFailureReleasesChildRuntime(t *testing.T) {
 		) (subagent.IntegrationCandidate, bool, error) {
 			return subagent.IntegrationCandidate{}, false, nil
 		},
-		Budget:         func(string) (subagent.BudgetLedger, error) { return subagent.BudgetLedger{}, nil },
 		ReconcileGraph: func() error { return nil },
 	}
 	if err := control.AttachGraph(graph); err != nil {

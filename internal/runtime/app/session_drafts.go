@@ -15,7 +15,7 @@ func (r *SessionService) reclaimSessionWorkspaceDrafts(
 	ctx context.Context,
 	threadIDs []protocol.ThreadID,
 ) error {
-	reclaimer, ok := r.engine.(workspaceDraftReclaimer)
+	reclaimer, ok := r.runtime.engine.(workspaceDraftReclaimer)
 	if !ok || reclaimer == nil {
 		return nil
 	}
@@ -47,14 +47,14 @@ func (r *SessionService) turnIDsOwnedByThreads(
 	threadIDs []protocol.ThreadID,
 ) (map[string]struct{}, error) {
 	owned := make(map[string]struct{})
-	if r.events == nil || len(threadIDs) == 0 {
+	if r.runtime.events == nil || len(threadIDs) == 0 {
 		return owned, nil
 	}
 	threads := make(map[protocol.ThreadID]struct{}, len(threadIDs))
 	for _, threadID := range threadIDs {
 		threads[threadID] = struct{}{}
 	}
-	events, err := r.events.Replay(ctx, 0)
+	events, err := r.runtime.events.Replay(ctx, 0)
 	if err != nil {
 		return nil, err
 	}

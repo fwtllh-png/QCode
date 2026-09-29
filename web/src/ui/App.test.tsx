@@ -9,10 +9,21 @@ import {
 } from "@testing-library/react";
 import {afterEach, describe, expect, it, vi} from "vitest";
 import type {RuntimeEvent, SessionSummary} from "../protocol";
-import {projectConversation} from "../projection/conversation";
+import {ConversationProjection, projectConversation} from "../projection/conversation";
 import type {RuntimeClient, RuntimeSnapshot} from "../runtime/client";
 import {App, projectTranscript, selectionRange} from "./App";
 import {notificationPreferenceKey} from "./browserNotifications";
+
+const workbenchRenders = vi.hoisted(() => ({count: 0}));
+vi.mock("./usePresentationEvents", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./usePresentationEvents")>();
+  return {
+    usePresentationEvents: (events: readonly RuntimeEvent[]) => {
+      workbenchRenders.count += 1;
+      return actual.usePresentationEvents(events);
+    }
+  };
+});
 
 const clipboardWrite = vi.fn(async () => {});
 
@@ -1696,6 +1707,47 @@ describe("projectTranscript", () => {
     expect(client.addImageContext).toHaveBeenCalledWith(image);
   });
 
+  it("keeps the latest workspace preview when an earlier read resolves late", async () => {
+    const client = mockClient(snapshot());
+    const resource = (path: string) => ({
+      path,
+      uri: `file:///workspace/${path}`,
+      document_version: 1,
+      content: `content of ${path}`,
+      digest: "0".repeat(64),
+      bytes: 10,
+      content_handle: path
+    });
+    vi.mocked(client.browseWorkspace).mockResolvedValue({
+      path: ".",
+      entries: [
+        {path: "slow.go", kind: "file", size: 10},
+        {path: "fast.go", kind: "file", size: 10}
+      ],
+      more: false
+    });
+    let releaseSlow = (): void => {};
+    vi.mocked(client.readWorkspaceResource).mockImplementation(async (path: string) => {
+      if (path === "slow.go") {
+        await new Promise<void>((resolve) => { releaseSlow = resolve; });
+      }
+      return resource(path);
+    });
+    render(<App client={client} />);
+    await openContextDetails();
+
+    fireEvent.click(await screen.findByRole("button", {name: /slow.go/}));
+    fireEvent.click(screen.getByRole("button", {name: /fast.go/}));
+    await waitFor(() => expect(
+      (screen.getByLabelText("Workspace resource content") as HTMLTextAreaElement).value
+    ).toBe("content of fast.go"));
+    await act(async () => { releaseSlow(); });
+
+    expect(
+      (screen.getByLabelText("Workspace resource content") as HTMLTextAreaElement).value
+    ).toBe("content of fast.go");
+  });
+
   it("adds only a completed tool result to prompt context", async () => {
     const value = snapshot();
     value.events = [
@@ -2243,6 +2295,14 @@ describe("projectTranscript", () => {
     expect(screen.queryByRole("button", {name: "Stop turn"})).toBeNull();
   });
 
+  it("asks for a fresh launch link when the browser has no session", () => {
+    render(<App client={mockClient({...snapshot([]), phase: "unauthenticated" as const})} />);
+
+    expect(screen.getByRole("heading", {name: "Session expired"})).toBeTruthy();
+    expect(screen.getByText(/Run qcode again/)).toBeTruthy();
+    expect(screen.queryByPlaceholderText("Ask QCode")).toBeNull();
+  });
+
   it("stops active progress when the Runtime connection is interrupted", async () => {
     const value = {
       ...snapshot([event(1, "turn.started", {display_prompt: "Inspect"})]),
@@ -2263,6 +2323,63 @@ describe("projectTranscript", () => {
     expect(screen.queryByText("Working")).toBeNull();
     expect(screen.queryByRole("button", {name: "Stop turn"})).toBeNull();
     expect(screen.queryByPlaceholderText("Ask QCode")).toBeNull();
+  });
+
+  it("streams answer text without re-rendering the workbench", async () => {
+    const projection = new ConversationProjection();
+    const initial = [
+      event(1, "turn.started", {display_prompt: "Explain"}),
+      event(2, "output.delta", {text: "Streaming "})
+    ];
+    projection.applyAll(initial);
+    let value: RuntimeSnapshot = {...snapshot(initial), conversation: projection.snapshot()};
+    const listeners = new Set<() => void>();
+    const client = mockClient(value);
+    Object.assign(client, {
+      subscribe: (listener: () => void) => {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      },
+      getSnapshot: () => value
+    });
+    const publish = (next: RuntimeEvent) => act(() => {
+      projection.apply(next);
+      value = {...value, events: [...value.events, next], conversation: projection.snapshot()};
+      listeners.forEach((listener) => listener());
+    });
+    render(<App client={client} />);
+    await screen.findByText(/Streaming/);
+    const before = workbenchRenders.count;
+
+    publish(event(3, "output.delta", {text: "answer"}));
+    publish(event(4, "output.delta", {text: " text"}));
+
+    expect(await screen.findByText(/Streaming answer text/)).toBeTruthy();
+    expect(workbenchRenders.count).toBe(before);
+    publish(event(5, "turn.completed", {}));
+    expect(workbenchRenders.count).toBeGreaterThan(before);
+  });
+
+  it("keeps the workbench mounted while the event stream reconnects", () => {
+    const value = {
+      ...snapshot([event(1, "turn.started", {display_prompt: "Inspect"})]),
+      phase: "reconnecting" as const,
+      socketConnected: false,
+      problem: {
+        version: 1,
+        code: "internal",
+        message: "Connection interrupted.",
+        retryable: true
+      }
+    };
+    const client = mockClient(value);
+    render(<App client={client} />);
+
+    expect(screen.queryByRole("heading", {name: "Runtime unavailable"})).toBeNull();
+    expect(screen.getByPlaceholderText("Ask QCode")).toBeTruthy();
+    expect(screen.getByText("Connection interrupted.")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", {name: "Reconnect"}));
+    expect(client.start).toHaveBeenCalled();
   });
 
   it("keeps normal tool continuation in the status bar, not a chat card", () => {

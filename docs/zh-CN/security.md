@@ -81,7 +81,10 @@ Web Markdown 不执行原始 HTML 或危险 URL。同源图片可以直接显示
   `approve_network_target`；代理 403 使用同一结构化回执，不把
   Forbidden 说成上游响应。连接前审批走现有 Approval；探测
   `Authorize` 不能补授权。同一执行内同一 origin 只问一次，超时或拒绝后
-  `retry_original=false`，进程命令不整段重放。绑定 GOPROXY 认证服务后，上游 401/403 写成
+  `retry_original=false`，进程命令不整段重放。连接前审批只在发起它的工具调用
+  存续期间有效：`exec_command` 返回后，仍在后台运行的进程再发现新目标会直接拒绝，
+  尚未答复的审批也随调用结束而取消，不会挂到已结束的调用或后续 Turn 上。属主
+  Thread 用 `write_stdin` 轮询该 Session 时，在这次调用期间可以重新发起审批。绑定 GOPROXY 认证服务后，上游 401/403 写成
   `credential_rejected` / `bind_credential`，前缀外模块写成
   `trust_validation_failed`；这两类不与未批准 CONNECT 混淆。
   对已绑定上游主机的 CONNECT 或绝对形式请求同样写成
@@ -123,6 +126,10 @@ Web Markdown 不执行原始 HTML 或危险 URL。同源图片可以直接显示
   一次；随后按行内空白与易混标点（智能引号、连字符、NBSP 等一对一折叠）在
   折叠视图中定位，并把命中投影回原始字节区间后只替换该区间——折叠文本本身
   永不写回，span 与 `old` 差距失衡或回投影校验失败时按原失配错误 Fail Closed。
+  恢复路径写入的替换文本会对齐文件原貌：`new` 各行的缩进按 `old` 与文件命中行
+  的缩进对应关系映射到文件实际缩进，span 起点之前的同行文本保留；换行符沿用命中
+  位置的行尾（命中处为 CRLF 行时 `new` 中的 LF 转为 CRLF）；精确匹配的 `old` 不含
+  `\r` 而命中处为 CRLF 行时同样按 CRLF 写入，不会产生混合行尾。
   出现次数语义在恢复路径下不变，工具结果以 `normalized_match` /
   `line_prefixes_stripped` 元数据如实标注恢复来源。
 - `file_read` 的文本窗口按行流式读取：单行超过公开的按 rune 上限时在返回内容中
@@ -197,7 +204,10 @@ Web Markdown 不执行原始 HTML 或危险 URL。同源图片可以直接显示
   Port、Protocol、传输 Method 和私网权限。HTTPS 目标必须使用 `CONNECT`，HTTP
   目标使用普通 HTTP Method。已声明的 Process Network Resource 会先于 Process
   Effect 被归类：`suggest` 必须经过人工 Network Approval，`auto` 才可以自动
-  Review 精确的只读目标。Sandbox 只能连接代理端口，直连和未声明目标均 Fail
+  Review 精确的只读目标。只读目标仅指限定为 `GET`、`HEAD`、`OPTIONS` 的明文
+  HTTP 目标；HTTPS 的 CONNECT 隧道无法约束方法、可以上传任意数据，未限定方法或
+  含其他方法的目标同理，都归类为 Network Mutating（高风险），`auto` 下也必须人工
+  审批。运行时发现的 CONNECT 使用同一分类。Sandbox 只能连接代理端口，直连和未声明目标均 Fail
   Closed。该 Loopback Proxy 返回 CONNECT 403 表示目标未声明或未授权，并不表示
   远端服务不可达。
   macOS 的代理能力通过启动时的精确端口允许/拒绝探测单独确认，不从默认禁网状态
@@ -236,6 +246,18 @@ Web Markdown 不执行原始 HTML 或危险 URL。同源图片可以直接显示
   通用 `http_request` 都按不可逆 External Mutation 要求单次审批；Loopback 导航必须
   显式声明。`http_request` 拒绝 Authorization、Cookie 和 API Key Header，并从返回
   Metadata 中删除 Set-Cookie 与认证挑战 Header。
+- `web_run` 的 Chromium 所有流量都经过 Runtime 自有的 loopback 代理和浏览器专用
+  Egress Gate，页面子资源、重定向、脚本 `fetch` 和 WebSocket 都不能绕开：
+  - 启动参数指定 `--proxy-server`，并用 `--proxy-bypass-list=<-loopback>` 取消
+    Chromium 对 localhost 的默认直连；`--host-resolver-rules` 让浏览器自身的域名
+    解析一律失败，WebRTC 禁止非代理 UDP。域名由代理解析，并按解析结果钉住连接地址。
+  - 解析结果全部是公网地址的目标直接放行，页面能正常加载 CDN、字体和第三方资源。
+  - 内网、回环、链路本地（含云元数据地址）等非公网目标，只有已批准的 `web_run`
+    调用授权过的目标才放行，私网权限沿用 Web URL 授权的“授权时解析”规则。授权在
+    浏览器会话内有效，浏览器关闭后全部作废。未直接写明回环或链路本地地址的域名，
+    即使获授权也不能解析进这类地址。
+  - 已知限制：通过代理的 `ws://` 以 CONNECT 发起，本地开发服务的 WebSocket（如 HMR）
+    不匹配 `http://` 授权，会被拒绝；页面本身仍可加载。
 - 权限规则保留原始 Resource。文件资源使用 Guard 解析出的规范化路径匹配，主机、
   URL 等 ID 资源使用原值匹配；通配工具或同时涉及文件和网络的工具也遵循该区分。
   相对文件规则继续拒绝 `..` 逃逸并解析符号链接，不根据名称是否含点猜测资源类型。
@@ -256,6 +278,21 @@ Web Markdown 不执行原始 HTML 或危险 URL。同源图片可以直接显示
 - Command Policy 使用 Bash AST 与 Static argv Segment。Managed Authority 定义
   Ceiling，Repository 只能收紧，User Approval 不能覆盖高权 Deny/Ask。Policy Reload
   原子发布新 Revision，并绑定到 Profile Provenance。
+- `command_prefix` 规则按动作区分匹配方式：
+  - `allow` 只匹配单段、静态、非解释器负载的命令，argv 逐词字面比较，不展开路径或
+    包装命令，因此 `/tmp/x/git status` 不会命中 `git status` 的放行规则。
+  - `deny`、`hold`、`ask` 回答“这条命令是否可能执行该前缀”，并对无法证明的情况
+    Fail Closed：
+    - 命令无法解析时视为命中。
+    - 动态词（命令替换、变量展开）可匹配任意前缀词。
+    - 可执行文件按去掉反斜杠后的文件名比较，`/usr/bin/git`、`\git` 都等同 `git`。
+    - 前缀词之间允许插入选项及其参数，如 `git -C dir push`。
+    - 穿透 `command`、`exec`、`env`、`nice`、`timeout`、`sudo`、`nohup`、
+      `xargs`、`find -exec` 等包装命令；`xargs` 和 `find` 从输入补全 argv，前缀
+      被截断也算命中。
+    - `eval` 与 `sh -c` 的文本递归解析，解析失败视为命中。
+    - `python -c` 等解释器程序文本包含全部前缀词时视为命中。
+  - `env -S` 等无法静态确定 argv 的写法标记为动态，放行规则不会命中。
 - 每次实际执行的 Tool Attempt 都记录准确的 Effective Permission Profile
   Revision/Digest、Enforcement Backend、Filesystem Root、Network Mode、Grant
   Provenance，以及 Typed Denial 或 One-shot Amendment。Amendment Receipt 将 Base
@@ -300,6 +337,22 @@ Web 写入凭证时会创建 Workspace/Provider 隔离的新 Keyring Entry，并
 切换后当前 Runtime 继续使用 Turn 已冻结的旧 Route，页面显示需要重启；下次启动会清理
 未提交的新 Orphan，并只在扫描 data-dir 内全部托管 Reference 后删除无引用的旧托管
 Entry。用户自定义 Keyring Name 无法完成全局引用证明，因此不会被自动删除。
+`connection/add` 与 `setup/apply` 使用同一套暂存—激活流程：Setup Record 保存成功后、
+Runtime 切换前先把暂存 Intent 推进到已提交，激活失败时恢复原 Setup Record 并清理
+暂存。未激活的暂存 Entry 会被后续不带 Key 的 Probe 或重启视为 Orphan 删除，因此新增
+连接必须完成激活才算成功。
+
+Web Host 的暂存 → 激活 → 提交只由一个事务类型 `credentialRotation`
+（`internal/host/web/credential_rotation.go`）驱动。Launcher、无 Workspace 配置、
+Runtime 重建和 `connection/add` 四处都复用它：
+
+- 阶段只前进，未激活不得提交；
+- 暂存或已激活时回滚会恢复旧 Reference，提交后回滚为空操作；
+- 暂存 Reference 只写回所属连接，`connection/add` 为非默认连接暂存的 Key 不会成为
+  默认连接的凭证，也不会进入默认 Runtime。
+
+`TestCredentialProtocolLivesInRotation` 禁止在该类型之外直接调用 Credential Control
+的协议方法。
 
 运行：
 
@@ -311,6 +364,22 @@ make secret-leak-test
 
 - 服务默认监听 `127.0.0.1`。
 - 非 Loopback 部署必须使用经过 Review 的认证网关。
+- Web Host 的浏览器认证使用一次性启动码换取会话 Cookie：
+  - 启动器打开或打印的地址带 `?launch=<启动码>`。启动码只能兑换一次，未兑换的
+    启动码在 `capacity_defaults.launch_code_ttl_seconds`（默认 300 秒，见
+    `docs/protocol/web-host.contract.json`）后失效。
+  - 服务端把启动码兑换为 `HttpOnly`、`SameSite=Strict` 的会话 Cookie，Cookie 名带
+    端口后缀；随后 303 跳转到去掉启动码的地址。未知或过期的启动码不设置 Cookie。
+  - 会话 Cookie 与 Owner Lease 中的 Capability Token 是两个独立的随机值，Token
+    不能当作 Cookie 使用。Host 重启后旧 Cookie 失效，需重新运行 `qcode` 或重开
+    桌面 App 获取新链接。
+  - `/api/v1/bootstrap` 不再下发任何凭证。无有效会话时只返回协议版本、构建和就绪
+    状态，不包含 Workspace 路径或目录列表。
+  - Bearer Capability Token 只供进程外属主使用（重复运行的 `qcode`、桌面壳），
+    从仅当前用户可读的 Owner Lease 读取。只有持有该 Token 的调用方才能通过
+    `auth/launch-code` 申请新的启动码，浏览器会话不能申请。
+  - 浏览器共享 `127.0.0.1` 所有端口的 Cookie。本机其他端口上的服务若被浏览器
+    访问，可能收到该 Cookie；这是本机信任边界内的已知限制。
 - Provider Base URL 与 Redirect 属于安全敏感配置。
 - Provider、Web 工具和进程代理分别使用独立 Egress Gate。固定 Provider Endpoint
   与 Web Search Backend 的授权不会授予进程代理；Guard 按可信 Tool Capability
@@ -320,6 +389,17 @@ make secret-leak-test
   `allow_private` 只作用于同次获批的 Method；例如公网 GET 与私网 POST 合并后，
   私网 GET 仍拒绝。空 Method 授权表示所有方法，后续精确方法授权不能将其收窄；
   请求省略 Method 时则必须具有所有方法的授权。
+- Web 工具的 URL 授权按授权时的解析结果决定私网权限，不再一律授予：
+  - URL 直接写回环、链路本地（含云元数据地址 `169.254.169.254`）、未指定地址或
+    `localhost` 名称时，`auto` 也不会自动放行，必须人工审批。审批通过后允许访问
+    该字面地址。
+  - 域名在授权时解析：解析结果含回环或链路本地地址时不授予私网权限；否则只要含
+    内网地址（`10/8`、`172.16/12`、`192.168/16`、ULA 等）就授予私网权限，内网域名
+    照常可用。解析失败时不授予私网权限。
+  - Web Gate 在每次请求时重新解析。未直接写明回环或链路本地地址的主机，即使
+    解析到这类地址也会被拒绝，因此 DNS 重绑定不能进入本机服务。
+  - 已知残余风险：在 `auto` 下，解析到内网地址的外部域名仍会获得内网访问权限。
+    需要隔离内网时应使用 `suggest` Posture。
   Darwin 上每个 Process Session 绑定独立 loopback 端口和 Session Gate；兄弟命令、
   子 Agent 和 Workspace 共享端口不能消费该 Session 的目标。
   取消或关闭 Session 会停止 listen 并回收已 hijack 的 CONNECT。

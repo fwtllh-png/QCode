@@ -26,6 +26,7 @@ type HostContract struct {
 }
 
 var unaryRouteContracts = []RouteContract{
+	setupRPC("auth/launch-code", "empty", "launch_code", false, false),
 	setupRPC("setup/probe", "setup_probe_request", "setup_probe_result", false, false),
 	setupRPC("setup/apply", "setup_request", "setup_result", true, true),
 	setupRPC("workspace/list", "empty", "workspace_catalog", false, false),

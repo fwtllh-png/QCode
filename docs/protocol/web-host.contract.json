@@ -11,7 +11,8 @@
     "max_connections": 16,
     "max_active_sessions": 32,
     "max_identity_bytes": 256,
-    "max_trace_turns": 128
+    "max_trace_turns": 128,
+    "launch_code_ttl_seconds": 300
   },
   "routes": [
     {
@@ -62,6 +63,16 @@
       "mutation": false,
       "idempotency_key": false,
       "requires_runtime": true,
+      "requires_capability": true
+    },
+    {
+      "path": "/api/v1/auth/launch-code",
+      "method": "POST",
+      "request": "empty",
+      "response": "launch_code",
+      "mutation": false,
+      "idempotency_key": false,
+      "requires_runtime": false,
       "requires_capability": true
     },
     {

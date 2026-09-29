@@ -13,21 +13,42 @@ func (r *Runtime) rejectResumableOperation(
 		return false
 	}
 	release()
-	if rejectErr := r.reject(operation, err); rejectErr == nil {
-		r.commit(operation.ID)
-	}
+	r.rejectAndCommit(operation, err)
 	return true
 }
 
-func (r *OperationService) reject(
-	operation protocol.Operation,
-	err error,
-) error {
+// operationRejection classifies a rejection cause into its durable event.
+func operationRejection(err error) *protocol.OperationRejectedData {
 	problem := protocol.ProblemOf(err)
-	return (&runtimeSink{runtime: r.Runtime, operation: operation}).Emit(
-		&protocol.OperationRejectedData{
-			Code: problem.Code, Message: problem.Message,
-			Fault: problem.Fault,
+	return &protocol.OperationRejectedData{
+		Code: problem.Code, Message: problem.Message,
+		Fault: problem.Fault,
+	}
+}
+
+// restartInterruptedProblem rejects an operation that was accepted but not
+// committed when the previous Runtime stopped. Only a StartTurn with durable
+// domain facts can be resumed deterministically; anything else is settled so
+// the client can decide whether to submit it again. Thread-wide engine
+// mutations may have partially applied before the stop.
+func restartInterruptedProblem(kind protocol.OperationKind) error {
+	sideEffects := protocol.SideEffectNone
+	switch kind {
+	case protocol.OperationCompactThread,
+		protocol.OperationForkThread,
+		protocol.OperationRevertTurn:
+		sideEffects = protocol.SideEffectUnknown
+	}
+	return protocol.NewFault(
+		protocol.CodeUnavailable,
+		"operation was interrupted by a Runtime restart before it committed; submit it again",
+		true,
+		protocol.FaultMetadata{
+			Origin:      protocol.FaultOriginRuntime,
+			Disposition: protocol.FaultReject,
+			SideEffects: sideEffects,
+			RetryOwner:  protocol.FaultRetryOwnerHost,
 		},
+		nil,
 	)
 }

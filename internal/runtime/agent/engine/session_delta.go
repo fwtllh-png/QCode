@@ -22,6 +22,16 @@ func (e *Engine) stageSessionDelta(delta SessionDelta) {
 	scope.mu.Unlock()
 }
 
+func (e *Engine) discardSessionDelta() {
+	scope := e.runningScope()
+	if scope == nil {
+		return
+	}
+	scope.mu.Lock()
+	scope.state.delta = nil
+	scope.mu.Unlock()
+}
+
 func (e *Engine) applySessionDelta() error {
 	scope := e.runningScope()
 	if scope == nil {

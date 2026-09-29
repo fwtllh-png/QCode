@@ -28,8 +28,12 @@ func (e *Engine) EnqueueMailbox(prompt string, triggerTurn bool) error {
 		return e.holdMailbox(item)
 	}
 	scope.mu.Lock()
+	if scope.state.steeringClosed {
+		scope.mu.Unlock()
+		return e.holdMailbox(item)
+	}
 	err := scope.state.mailbox.Offer(item)
-	cancel := scope.state.cancel
+	cancel := scope.state.sampleCancel
 	scope.mu.Unlock()
 	if err != nil {
 		return err
@@ -84,23 +88,29 @@ func (e *Engine) appendPendingInputs(history *[]provider.Message, pending []Pend
 	}
 }
 
-func (e *Engine) setActiveCancel(cancel context.CancelCauseFunc) {
-	scope := e.runningScope()
-	if scope == nil {
-		return
-	}
-	scope.mu.Lock()
-	scope.state.cancel = cancel
-	scope.mu.Unlock()
+func (e *Engine) setSampleCancel(cancel context.CancelCauseFunc) {
+	e.setCancelSlot(func(state *scopeState) { state.sampleCancel = cancel })
 }
 
-func (e *Engine) clearActiveCancel() {
+func (e *Engine) clearSampleCancel() {
+	e.setCancelSlot(func(state *scopeState) { state.sampleCancel = nil })
+}
+
+func (e *Engine) setToolCancel(cancel context.CancelCauseFunc) {
+	e.setCancelSlot(func(state *scopeState) { state.toolCancel = cancel })
+}
+
+func (e *Engine) clearToolCancel() {
+	e.setCancelSlot(func(state *scopeState) { state.toolCancel = nil })
+}
+
+func (e *Engine) setCancelSlot(update func(*scopeState)) {
 	scope := e.runningScope()
 	if scope == nil {
 		return
 	}
 	scope.mu.Lock()
-	scope.state.cancel = nil
+	update(&scope.state)
 	scope.mu.Unlock()
 }
 

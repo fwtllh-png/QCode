@@ -64,24 +64,6 @@ type RecoveryState struct {
 	ToolItems map[EventItemOwner]protocol.ItemID
 }
 
-// PendingApproval returns the authoritative identity for one unresolved
-// approval. Hosts use it to route a decision to a child thread without
-// weakening Session ownership checks.
-func (r *Runtime) PendingApproval(requestID string) (PendingApproval, bool) {
-	r.EventService.mu.Lock()
-	defer r.EventService.mu.Unlock()
-	pending, ok := r.approvals[requestID]
-	return pending, ok
-}
-
-// PendingInput returns the authoritative identity for one unresolved input.
-func (r *Runtime) PendingInput(requestID string) (PendingInput, bool) {
-	r.EventService.mu.Lock()
-	defer r.EventService.mu.Unlock()
-	pending, ok := r.inputs[requestID]
-	return pending, ok
-}
-
 type CommitReceipt struct {
 	OperationID  protocol.OperationID `json:"operation_id"`
 	Status       string               `json:"status"`

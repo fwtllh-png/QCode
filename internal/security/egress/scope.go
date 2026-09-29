@@ -41,6 +41,44 @@ func AllowInScope(ctx context.Context, target Target) {
 	}
 }
 
+// AdoptScope copies the grants Guard approved for the current call onto g so
+// they outlive the call. It serves long-lived clients such as the browser
+// session, whose page traffic continues after the approving call returns.
+// Without a live scope it adds nothing.
+func (g *Gate) AdoptScope(ctx context.Context) {
+	if g == nil || ctx == nil || ctx.Err() != nil {
+		return
+	}
+	scope, _ := ctx.Value(scopeKey{}).(*callScope)
+	if scope == nil {
+		return
+	}
+	scope.mu.Lock()
+	defer scope.mu.Unlock()
+	if scope.grants == nil {
+		return
+	}
+	scope.grants.mu.RLock()
+	defer scope.grants.mu.RUnlock()
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.allowed == nil {
+		g.allowed = make(map[string]targetGrant, len(scope.grants.allowed))
+	}
+	for origin, adopted := range scope.grants.allowed {
+		grant := g.allowed[origin]
+		grant.allMethods = grant.allMethods || adopted.allMethods
+		grant.allPrivate = grant.allPrivate || adopted.allPrivate
+		for method, private := range adopted.methods {
+			if grant.methods == nil {
+				grant.methods = make(map[string]bool, len(adopted.methods))
+			}
+			grant.methods[method] = grant.methods[method] || private
+		}
+		g.allowed[origin] = grant
+	}
+}
+
 func scopedPermissions(ctx context.Context, target Target) (scoped, allowed, private bool) {
 	scope, _ := ctx.Value(scopeKey{}).(*callScope)
 	if scope == nil {

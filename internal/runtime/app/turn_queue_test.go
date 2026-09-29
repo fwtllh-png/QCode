@@ -4,10 +4,12 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/fwtllh-png/QCode/internal/runtime/agent/turnkernel"
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
 )
 
@@ -386,6 +388,163 @@ func TestRecoveredPendingQueueStartsWhenRuntimeBecomesReady(t *testing.T) {
 	data := started.Data.(*protocol.TurnStartedData)
 	if data.QueueID != "queue-recovered" {
 		t.Fatalf("queue_id = %q, want queue-recovered", data.QueueID)
+	}
+}
+
+type failingQueuedTurnEngine struct {
+	*queuedTurnEngine
+}
+
+func (e failingQueuedTurnEngine) StartTurn(
+	ctx context.Context,
+	payload *protocol.StartTurnPayload,
+	sink EngineSink,
+) error {
+	switch payload.Prompt {
+	case "fail-terminal":
+		return sink.Emit(&protocol.TurnFailedData{
+			Code: protocol.CodeInternal, Message: "preparation failed",
+		})
+	case "fail-reject":
+		return errors.New("preparation failed")
+	default:
+		return e.queuedTurnEngine.StartTurn(ctx, payload, sink)
+	}
+}
+
+// A queued Turn can fail before turn.started either with a terminal event or
+// with an operation rejection. Neither may strand its claim or queue item, or
+// every later queue edit reports "already starting" and the queue stops.
+func TestTurnQueueAdvancesPastQueuedTurnsThatFailBeforeStarting(t *testing.T) {
+	engine := failingQueuedTurnEngine{&queuedTurnEngine{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}}
+	runtime := NewRuntime(Options{
+		Engine: engine, EventHistory: 64, SubscriberBuffer: 64,
+	})
+	t.Cleanup(func() { closeRuntime(t, runtime) })
+	events, err := runtime.Events(t.Context(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := startOperation(t, 1)
+	if err := runtime.Submit(t.Context(), start); err != nil {
+		t.Fatal(err)
+	}
+	receiveEvent(t, events)
+	<-engine.started
+	threadID, turnID, _ := protocol.OperationReferences(start)
+	for _, prompt := range []string{"fail-terminal", "fail-reject", "ok"} {
+		operation, err := protocol.NewOperation(&protocol.EnqueueTurnPayload{
+			ThreadID: threadID, TurnID: turnID,
+			ItemID:  protocol.ItemID("queue-operation-" + prompt),
+			QueueID: "queue-" + prompt, Prompt: prompt,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := runtime.Submit(t.Context(), operation); err != nil {
+			t.Fatal(err)
+		}
+		if queued := receiveEvent(t, events); queued.Kind != protocol.EventTurnQueued {
+			t.Fatalf("queue event = %s", queued.Kind)
+		}
+	}
+	close(engine.release)
+	deadline := time.After(3 * time.Second)
+	for started := false; !started; {
+		select {
+		case event := <-events:
+			if data, ok := event.Data.(*protocol.TurnStartedData); ok {
+				started = data.QueueID == "queue-ok"
+			}
+		case <-deadline:
+			t.Fatalf(
+				"queue stalled: items=%v",
+				runtime.TurnQueueService.snapshotMap(),
+			)
+		}
+	}
+	waitForCondition(t, func() bool {
+		runtime.TurnQueueService.mu.Lock()
+		defer runtime.TurnQueueService.mu.Unlock()
+		return len(runtime.TurnQueueService.items) == 0 &&
+			len(runtime.TurnQueueService.claims) == 0
+	})
+}
+
+func TestTurnQueueProjectionConsumesItemWhoseStartFailedBeforeStarting(t *testing.T) {
+	items := map[string]protocol.QueuedTurn{}
+	queued, err := protocol.NewEvent(protocol.EventMeta{
+		Sequence: 1, OperationID: "enqueue", ThreadID: "thread",
+		TurnID: "source", ItemID: "item",
+	}, &protocol.TurnQueuedData{QueueID: "queue", Prompt: "later"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ApplyTurnQueueEvent(items, queued); err != nil {
+		t.Fatal(err)
+	}
+	_, operationID := queuedTurnStart("queue", "thread")
+	failed, err := protocol.NewEvent(protocol.EventMeta{
+		Sequence: 2, OperationID: operationID, ThreadID: "thread",
+		TurnID: "queued-turn", ItemID: "queued-item",
+	}, &protocol.TurnFailedData{
+		Code: protocol.CodeInternal, Message: "preparation failed",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ApplyTurnQueueEvent(items, failed); err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 0 {
+		t.Fatalf("pending queue after failed start = %v", items)
+	}
+}
+
+// Durable Runtimes publish terminals through the terminal outbox rather than
+// the live publish path; that path must settle the queue the same way.
+func TestTerminalOutboxProjectionReleasesQueuedStartThatNeverStarted(t *testing.T) {
+	runtime := NewRuntime(Options{
+		Engine: &testEngine{}, EventStore: NewMemoryEventStore(16),
+		SubscriberBuffer: 8,
+	})
+	t.Cleanup(func() { closeRuntime(t, runtime) })
+	if err := runtime.EventService.publish(
+		"enqueue", "thread-outbox", "source-turn", "queue-item",
+		&protocol.TurnQueuedData{QueueID: "queue-outbox", Prompt: "later"},
+	); err != nil {
+		t.Fatal(err)
+	}
+	_, operationID := queuedTurnStart("queue-outbox", "thread-outbox")
+	if _, claimed := runtime.TurnQueueService.claimNext("thread-outbox"); !claimed {
+		t.Fatal("queued turn was not claimable")
+	}
+	if err := runtime.PublishTerminalProjection(
+		context.Background(),
+		turnkernel.ProjectionOutboxEntry{
+			ID: "terminal-outbox", EventID: "event-terminal-outbox",
+			OperationID: operationID, ThreadID: "thread-outbox",
+			TurnID: "queued-turn", ItemID: "queued-item",
+			Kind: string(protocol.EventTurnFailed),
+		},
+		&protocol.TurnFailedData{
+			Code: protocol.CodeInternal, Message: "preparation failed",
+		},
+	); err != nil {
+		t.Fatal(err)
+	}
+	runtime.TurnQueueService.mu.Lock()
+	defer runtime.TurnQueueService.mu.Unlock()
+	if len(runtime.TurnQueueService.items) != 0 ||
+		len(runtime.TurnQueueService.claims) != 0 {
+		t.Fatalf(
+			"queue after outbox terminal: items=%v claims=%v",
+			runtime.TurnQueueService.items,
+			runtime.TurnQueueService.claims,
+		)
 	}
 }
 

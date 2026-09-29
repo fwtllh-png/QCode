@@ -1,6 +1,7 @@
 package workspacequery
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -51,7 +52,7 @@ type GitPatch struct {
 	Diff   string `json:"diff"`
 }
 
-// GitOverview reads metadata on demand; it does not walk or read file contents.
+// GitOverview reads Git metadata and bounded untracked content on demand.
 func (s *Service) GitOverview(ctx context.Context) (GitOverview, error) {
 	state, err := s.GitState(ctx)
 	result := GitOverview{GitState: state, Files: []GitChange{}, Remotes: []string{}}
@@ -93,6 +94,9 @@ func (s *Service) GitOverview(ctx context.Context) (GitOverview, error) {
 		return GitOverview{}, err
 	}
 	for _, file := range files {
+		if err := ctx.Err(); err != nil {
+			return GitOverview{}, err
+		}
 		if excluded[file.Path] || repowalk.Skippable(file.Path) {
 			continue
 		}
@@ -101,6 +105,9 @@ func (s *Service) GitOverview(ctx context.Context) (GitOverview, error) {
 		}
 		if stat, ok := unstaged[file.Path]; ok {
 			file.Unstaged = &stat
+		}
+		if file.Untracked {
+			file.Unstaged = s.gitUntrackedStat(file.Path)
 		}
 		result.Files = append(result.Files, file)
 	}
@@ -113,6 +120,29 @@ func (s *Service) GitOverview(ctx context.Context) (GitOverview, error) {
 		result.Remotes = []string{}
 	}
 	return result, nil
+}
+
+func (s *Service) gitUntrackedStat(name string) *GitChangeStat {
+	// Git status already enumerated nonignored literal paths. Read them through
+	// the resource boundary without enumerating the whole repository per file.
+	content, skipped, err := s.walker.Read(repowalk.Entry{Path: name}, GitInspectMaxBytes)
+	if err != nil {
+		return nil
+	}
+	switch skipped {
+	case repowalk.SkipNone:
+		added := bytes.Count(content.Data, []byte{'\n'})
+		if len(content.Data) > 0 && content.Data[len(content.Data)-1] != '\n' {
+			added++
+		}
+		return &GitChangeStat{Added: added}
+	case repowalk.SkipBinary:
+		return &GitChangeStat{Binary: true}
+	default:
+		// Keep the file visible, with absent stats meaning unavailable rather
+		// than zero. The UI reports these exclusions from the line totals.
+		return nil
+	}
 }
 
 // GitRevision binds explicit actions to HEAD, the entire index and local Git

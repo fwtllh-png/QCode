@@ -596,9 +596,7 @@ func (p *commandProtocol) execCommand(
 	var sessionPort uint16
 	if network != nil {
 		sessionPort = network.Port()
-		if approver := egress.RuntimeApproverFrom(ctx); approver != nil {
-			network.Gate().SetRuntimeApprover(approver)
-		}
+		defer network.Gate().BindRuntimeApprover(egress.RuntimeApproverFrom(ctx))()
 	}
 	if authService != nil {
 		// Point GOPROXY at the stable workspace channel: the managed port is
@@ -972,6 +970,12 @@ func (p *commandProtocol) writeStdin(
 	}
 	if (input.Rows == 0) != (input.Cols == 0) {
 		return tool.Result{}, errors.New("rows and cols must be supplied together")
+	}
+	// A poll by the owning thread is a live call again: runtime-discovered
+	// targets may ask under it until it returns.
+	if network := p.sessionNetwork(input.SessionID); network != nil &&
+		threadID != "" && p.manager.OwnerThread(input.SessionID) == threadID {
+		defer network.Gate().BindRuntimeApprover(egress.RuntimeApproverFrom(ctx))()
 	}
 	var priorAuth []environment.Fact
 	if service := goproxy.ServiceFrom(ctx); service != nil {

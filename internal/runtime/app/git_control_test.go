@@ -245,19 +245,17 @@ func TestDirectGitHonorsPolicyAndWorkspaceAdmission(t *testing.T) {
 		t.Fatalf("direct Git admitted during a Turn: %v", err)
 	}
 	_ = r.active.Release(lease)
-	r.EventService.mu.Lock()
+	r.TurnQueueService.mu.Lock()
 	r.TurnQueueService.items["queued"] = protocol.QueuedTurn{
 		QueueID: "queued", ThreadID: "waiting", Prompt: "next task",
 	}
-	r.EventService.mu.Unlock()
+	r.TurnQueueService.mu.Unlock()
 	if _, err := r.ExecuteGit(t.Context(), request); !protocol.IsCode(err, protocol.CodeConflict) {
 		t.Fatalf("direct Git admitted ahead of queued work: %v", err)
 	}
-	r.EventService.mu.Lock()
-	if len(r.TurnQueueService.items) != 1 {
+	if len(r.TurnQueueService.snapshotMap()) != 1 {
 		t.Error("direct Git consumed queued work")
 	}
-	r.EventService.mu.Unlock()
 }
 
 func TestDirectGitShutdownCancelsWithoutStartingAnEffect(t *testing.T) {

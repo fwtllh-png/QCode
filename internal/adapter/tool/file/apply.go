@@ -626,7 +626,9 @@ func replaceExact(
 	content := string(data)
 	count := strings.Count(content, old)
 	if count == occurrences {
-		return []byte(strings.Replace(content, old, new, occurrences)), editRecovery{}, nil
+		return []byte(strings.Replace(
+			content, old, exactReplacementText(content, old, new), occurrences,
+		)), editRecovery{}, nil
 	}
 
 	type candidate struct {
@@ -642,8 +644,10 @@ func replaceExact(
 			// The stripped text can match byte-for-byte; try exact first so a
 			// plain paste artifact never depends on folding.
 			if strings.Count(content, current.old) == occurrences {
-				return []byte(strings.Replace(content, current.old, new, occurrences)),
-					editRecovery{prefixStripped: true}, nil
+				return []byte(strings.Replace(
+					content, current.old,
+					exactReplacementText(content, current.old, new), occurrences,
+				)), editRecovery{prefixStripped: true}, nil
 			}
 		}
 		if next, ok := replaceNormalized(content, current.old, new, occurrences); ok {
@@ -660,6 +664,15 @@ func replaceExact(
 		startLine: startLine, endLine: endLine,
 		excerpt: excerpt, matchLines: matchLines,
 	}
+}
+
+// exactReplacementText adopts the file's CRLF endings only when old carried no
+// '\r' of its own, i.e. it was written from the '\r'-free file_read view.
+func exactReplacementText(content, old, replacement string) string {
+	if strings.Contains(old, "\r") {
+		return replacement
+	}
+	return adoptLineEnding(content, strings.Index(content, old), replacement)
 }
 
 // closestEditExcerpt locates the failing edit for the recovery hint: a

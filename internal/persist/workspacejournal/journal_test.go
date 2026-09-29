@@ -5,6 +5,8 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/fwtllh-png/QCode/internal/persist/contentstore"
@@ -175,6 +177,76 @@ func TestJournalDraftResumeCommitsOriginalBaseline(t *testing.T) {
 	if data, _ := os.ReadFile(path); string(data) != "before\n" {
 		t.Fatalf("reverted recovery = %q, want original baseline", data)
 	}
+}
+
+func TestJournalDraftStaysOwnedByAnInFlightRevert(t *testing.T) {
+	root := t.TempDir()
+	first := filepath.Join(root, "a.txt")
+	second := filepath.Join(root, "b.txt")
+	for _, path := range []string{first, second} {
+		if err := os.WriteFile(path, []byte("before\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	store := &blockingGetStore{
+		Store:   contentstore.NewMemory(contentstore.Options{}),
+		entered: make(chan struct{}, 2),
+		release: make(chan struct{}),
+	}
+	manager, err := New(root, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Begin("source"); err != nil {
+		t.Fatal(err)
+	}
+	write(t, manager, first, "draft\n")
+	write(t, manager, second, "draft\n")
+	if err := manager.Suspend("source"); err != nil {
+		t.Fatal(err)
+	}
+	store.block.Store(true)
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := manager.Revert(context.Background(), "source")
+		done <- err
+	}()
+	<-store.entered
+	var readers sync.WaitGroup
+	readers.Add(1)
+	go func() {
+		defer readers.Done()
+		for range 100 {
+			_ = manager.DraftChanges("source")
+		}
+	}()
+	if err := manager.ResumeDraft("source", "recovery"); err == nil {
+		t.Fatal("draft resumed while its revert was still restoring files")
+	}
+	close(store.release)
+	readers.Wait()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if manager.HasDraft("source") {
+		t.Fatal("reverted draft is still retained")
+	}
+}
+
+type blockingGetStore struct {
+	contentstore.Store
+	block   atomic.Bool
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (s *blockingGetStore) Get(ctx context.Context, handle string) ([]byte, error) {
+	if s.block.Load() {
+		s.entered <- struct{}{}
+		<-s.release
+	}
+	return s.Store.Get(ctx, handle)
 }
 
 func TestJournalDoesNotRetainEmptyDraft(t *testing.T) {

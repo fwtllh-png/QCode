@@ -172,48 +172,6 @@ func loadAgentResultRow(
 	return result, true, nil
 }
 
-func (s *Store) LoadAgentBudget(
-	ctx context.Context, workspaceRoot string,
-) (subagent.BudgetLedger, error) {
-	return s.loadAgentBudget(ctx, workspaceRoot, "")
-}
-
-func (s *Store) LoadAgentBudgetSession(
-	ctx context.Context, workspaceRoot, sessionID string,
-) (subagent.BudgetLedger, error) {
-	return s.loadAgentBudget(ctx, workspaceRoot, sessionID)
-}
-
-func (s *Store) loadAgentBudget(
-	ctx context.Context, workspaceRoot, sessionID string,
-) (subagent.BudgetLedger, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.closed {
-		return subagent.BudgetLedger{}, ErrClosed
-	}
-	var ledger subagent.BudgetLedger
-	query := `
-		SELECT COALESCE(SUM(reserved_tokens), 0),
-		       COALESCE(SUM(spent_tokens), 0),
-		       COALESCE(SUM(reserved_microunits), 0),
-		       COALESCE(SUM(spent_microunits), 0),
-		       COALESCE(SUM(reserved_slots), 0),
-		       COUNT(*)
-		FROM agent_budget_ledger WHERE workspace_root = ?`
-	args := []any{workspaceRoot}
-	if sessionID != "" {
-		query += ` AND session_id = ?`
-		args = append(args, sessionID)
-	}
-	err := s.sqlite.DB().QueryRowContext(ctx, query, args...).Scan(
-		&ledger.ReservedTokens, &ledger.SpentTokens,
-		&ledger.ReservedMicros, &ledger.SpentMicros, &ledger.ReservedSlots,
-		&ledger.TotalSpawned,
-	)
-	return ledger, err
-}
-
 func (s *Store) PlanAgentReconciliation(
 	ctx context.Context, workspaceRoot, sessionID string,
 ) ([]subagent.GraphTransition, error) {

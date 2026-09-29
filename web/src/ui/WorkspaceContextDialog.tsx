@@ -20,6 +20,7 @@ import {
   type ReactNode
 } from "react";
 import {useModalFocus} from "./primitives/useModalFocus";
+import {ScopeSlot} from "../runtime/requestScope";
 import type {
   EditorRange,
   WorkspaceDiagnosticContext,
@@ -65,6 +66,8 @@ export function WorkspaceContextDialog({
   const [error, setError] = useState("");
   const closeRef = useRef<HTMLButtonElement>(null);
   const dialogRef = useRef<HTMLElement>(null);
+  const browsing = useRef(new ScopeSlot());
+  const preview = useRef(new ScopeSlot());
   useModalFocus(dialogRef, true, onClose);
   const reportError = useCallback((value: unknown) => {
     setError(value instanceof Error ? value.message : String(value));
@@ -75,27 +78,39 @@ export function WorkspaceContextDialog({
   );
 
   useEffect(() => {
+    const scope = browsing.current.renew();
     void client.browseWorkspace(".").then((result) => {
+      if (!scope.live) return;
       setPath(result.path);
       setEntries(result.entries);
     }, reportError);
   }, [client, reportError]);
 
   useEffect(() => () => {
+    browsing.current.renew();
+    preview.current.renew();
+  }, []);
+
+  useEffect(() => () => {
     if (imageURL) URL.revokeObjectURL(imageURL);
   }, [imageURL]);
 
   const browse = (nextPath: string) => {
+    const scope = browsing.current.renew();
     void client.browseWorkspace(nextPath).then((result) => {
+      if (!scope.live) return;
       setPath(result.path);
       setEntries(result.entries);
     }, reportError);
   };
   const openPath = async (target: string) => {
+    const scope = preview.current.renew();
     try {
       if (isWorkspaceImagePath(target)) {
         const next = await client.readWorkspaceImage(target);
+        if (!scope.live) return;
         const blob = await client.downloadWorkspaceContent(next.content_handle);
+        if (!scope.live) return;
         if (imageURL) URL.revokeObjectURL(imageURL);
         setResource(undefined);
         setSelection(undefined);
@@ -104,13 +119,14 @@ export function WorkspaceContextDialog({
         return;
       }
       const next = await client.readWorkspaceResource(target);
+      if (!scope.live) return;
       if (imageURL) URL.revokeObjectURL(imageURL);
       setImage(undefined);
       setImageURL("");
       setSelection(undefined);
       setResource(next);
     } catch (error) {
-      reportError(error);
+      if (scope.live) reportError(error);
     }
   };
   const download = async (

@@ -75,11 +75,14 @@ func (p *MCPPrewarm) SetRegistry(registry *tool.Registry) {
 	}
 }
 
+// Start runs the worker and breaker-retry timers until Stop. parent only
+// supplies values: construction may run under a request context that ends
+// long before the Session that owns this prewarm.
 func (p *MCPPrewarm) Start(parent context.Context) {
 	if p == nil || p.pool == nil {
 		return
 	}
-	ctx, cancel := context.WithCancel(parent)
+	ctx, cancel := context.WithCancel(context.WithoutCancel(parent))
 	p.cancel = cancel
 	p.unsubscribe = p.pool.SubscribeHealth(func(change mcpruntime.HealthChange) {
 		if change.Current.State != mcpruntime.HealthOpen || change.Current.RetryAt.IsZero() {

@@ -3,10 +3,13 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
 	"sort"
 	"time"
+
+	"github.com/fwtllh-png/QCode/internal/runtime/agent/turnkernel"
+	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
 )
 
 func (r StartTurnHandler) validateStart(payload *protocol.StartTurnPayload) error {
@@ -87,26 +90,11 @@ func (r StartTurnHandler) validateStart(payload *protocol.StartTurnPayload) erro
 }
 
 func (r *RecoveryService) recoverPendingTurns(ctx context.Context) error {
-	if restorer, ok := r.engine.(interface {
+	if restorer, ok := r.runtime.engine.(interface {
 		RestorePendingApproval(PendingApproval) error
 		RestorePendingInput(PendingInput) error
 	}); ok {
-		r.EventService.mu.Lock()
-		approvals := make([]PendingApproval, 0, len(r.approvals))
-		for _, approval := range r.approvals {
-			approvals = append(approvals, approval)
-		}
-		inputs := make([]PendingInput, 0, len(r.inputs))
-		for _, input := range r.inputs {
-			inputs = append(inputs, input)
-		}
-		r.EventService.mu.Unlock()
-		sort.Slice(approvals, func(i, j int) bool {
-			return approvals[i].RequestID < approvals[j].RequestID
-		})
-		sort.Slice(inputs, func(i, j int) bool {
-			return inputs[i].RequestID < inputs[j].RequestID
-		})
+		approvals, inputs := r.runtime.EventService.pendingInteractions()
 		for _, approval := range approvals {
 			if err := restorer.RestorePendingApproval(approval); err != nil {
 				return err
@@ -118,60 +106,113 @@ func (r *RecoveryService) recoverPendingTurns(ctx context.Context) error {
 			}
 		}
 	}
-	pending := r.OperationService.pendingOperations()
+	pending := r.runtime.OperationService.pendingOperations()
 	sort.Slice(pending, func(i, j int) bool {
 		return pending[i].ID < pending[j].ID
 	})
+	// Every recovered operation is enqueued so the dispatch loop settles it:
+	// a StartTurn with a restorable fact chain resumes, everything else is
+	// committed or rejected rather than left accepted without an owner.
 	for _, pendingOperation := range pending {
 		operation, err := decodePendingOperation(pendingOperation)
 		if err != nil {
 			return err
 		}
-		if operation.Kind != protocol.OperationStartTurn {
-			continue
-		}
-		if operation.Kind == protocol.OperationStartTurn {
-			threadID, turnID, _ := protocol.OperationReferences(operation)
-			if pendingOperation.SessionID != "" && r.profiles != nil {
-				if _, err := r.RestoreSessionProfile(
-					ctx,
-					pendingOperation.SessionID,
-					threadID,
-				); err != nil {
-					return fmt.Errorf(
-						"restore profile before interrupted turn %s: %w",
-						turnID,
-						err,
-					)
-				}
-			}
-			facts, err := r.terminalStore.LoadDomainFacts(
-				ctx,
-				string(turnID),
-			)
-			if err != nil {
-				// A single unrestorable Turn must not block Runtime boot.
-				continue
-			}
-			start, _ := operation.Payload.(*protocol.StartTurnPayload)
-			if len(facts) == 0 && (start == nil || start.QueueID == "") {
-				continue
-			}
-		}
-		select {
-		case r.operations <- acceptedOperation{
+		accepted := acceptedOperation{
 			operation:      operation,
 			idempotencyKey: pendingOperation.IdempotencyKey,
 			canonical: append(
 				[]byte(nil),
 				pendingOperation.Canonical...,
 			),
-		}:
-		case <-ctx.Done():
-			return ctx.Err()
+		}
+		if operation.Kind != protocol.OperationStartTurn {
+			accepted.settleOnRecovery = restartInterruptedProblem(operation.Kind)
+		} else if err := r.classifyRecoveredStart(
+			ctx,
+			pendingOperation,
+			&accepted,
+		); err != nil {
+			return err
+		}
+		if err := r.runtime.OperationService.enqueueRecovered(ctx, accepted); err != nil {
+			return err
 		}
 	}
 	return nil
+}
+
+// TurnQuarantineStore retires a durable active Turn that recovery cannot
+// restore, releasing its Thread and coordinator lease.
+type TurnQuarantineStore interface {
+	QuarantineActiveTurn(context.Context, string) error
+}
+
+func (r *RecoveryService) classifyRecoveredStart(
+	ctx context.Context,
+	pending PendingOperation,
+	accepted *acceptedOperation,
+) error {
+	threadID, turnID, _ := protocol.OperationReferences(accepted.operation)
+	if pending.SessionID != "" && r.runtime.profiles != nil {
+		if _, err := r.runtime.RestoreSessionProfile(
+			ctx,
+			pending.SessionID,
+			threadID,
+		); err != nil {
+			return fmt.Errorf(
+				"restore profile before interrupted turn %s: %w",
+				turnID,
+				err,
+			)
+		}
+	}
+	facts, err := r.runtime.terminalStore.LoadDomainFacts(ctx, string(turnID))
+	if err == nil && len(facts) != 0 {
+		err = turnkernel.ValidateDomainFacts(string(turnID), facts)
+	}
+	if err != nil {
+		accepted.settleOnRecovery = r.quarantineTurn(ctx, turnID, err)
+		return nil
+	}
+	start, _ := accepted.operation.Payload.(*protocol.StartTurnPayload)
+	accepted.interruptedBeforeStart = len(facts) == 0 &&
+		(start == nil || start.QueueID == "")
+	return nil
+}
+
+// quarantineTurn retires a Turn whose durable facts cannot be restored. One
+// such Turn must not block boot, hold its Thread, or be retried on every
+// restart, so it is failed durably and its operation is rejected.
+func (r *RecoveryService) quarantineTurn(
+	ctx context.Context,
+	turnID protocol.TurnID,
+	cause error,
+) error {
+	r.runtime.metrics.Error()
+	if store, ok := r.runtime.terminalStore.(TurnQuarantineStore); ok {
+		if err := store.QuarantineActiveTurn(ctx, string(turnID)); err != nil {
+			// The rejection projection still fails the Turn row.
+			cause = errors.Join(cause, fmt.Errorf("quarantine turn: %w", err))
+		}
+	}
+	if r.runtime.logger != nil {
+		r.runtime.logger.Error(
+			"unrestorable turn quarantined during recovery",
+			"turn_id", turnID, "error", cause,
+		)
+	}
+	return protocol.NewFault(
+		protocol.CodeInternal,
+		"turn state could not be restored after a Runtime restart; the turn was quarantined",
+		false,
+		protocol.FaultMetadata{
+			Origin:      protocol.FaultOriginKernel,
+			Disposition: protocol.FaultRetryTurn,
+			SideEffects: protocol.SideEffectUnknown,
+		},
+		cause,
+	)
 }
 
 func decodePendingOperation(
@@ -206,34 +247,9 @@ func decodePendingOperation(
 }
 
 func (r *RecoveryService) restore(recovery RecoveryState) {
-	r.hub.Restore(recovery.LastSequence)
-	for turnID, kind := range recovery.Terminals {
-		r.terminals[turnID] = kind
-	}
-	for requestID, approval := range recovery.PendingApprovals {
-		r.approvals[requestID] = approval
-		if approval.ItemID != "" {
-			r.approvalItems[eventItemOwner(approval.TurnID, requestID)] = approval.ItemID
-		}
-	}
-	for requestID, input := range recovery.PendingInputs {
-		r.inputs[requestID] = input
-		if input.ItemID != "" {
-			r.inputItems[eventItemOwner(input.TurnID, requestID)] = input.ItemID
-		}
-	}
-	for owner, itemID := range recovery.ToolItems {
-		if owner.TurnID != "" && owner.LocalID != "" && itemID != "" {
-			r.toolItems[owner] = itemID
-		}
-	}
-	for operationID, pending := range recovery.PendingOperations {
-		r.OperationService.accepted[operationID] = pending
-		if pending.IdempotencyKey != "" {
-			r.OperationService.acceptedKeys[pending.IdempotencyKey] = operationID
-		}
-	}
-	r.TurnQueueService.Restore(
+	r.runtime.EventService.restore(recovery)
+	r.runtime.OperationService.restore(recovery.PendingOperations)
+	r.runtime.TurnQueueService.Restore(
 		recovery.PendingQueuedTurns,
 		recovery.PendingOperations,
 	)

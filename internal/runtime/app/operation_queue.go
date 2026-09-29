@@ -14,18 +14,18 @@ func (s *OperationService) SubmitWithKey(
 	idempotencyKey string,
 ) error {
 	if err := operation.Validate(); err != nil {
-		s.metrics.Error()
+		s.runtime.metrics.Error()
 		return protocol.NewProblem(protocol.CodeInvalidArgument, err.Error(), false, err)
 	}
 	canonical, err := CanonicalOperationPayload(operation)
 	if err != nil {
-		s.metrics.Error()
+		s.runtime.metrics.Error()
 		return protocol.NewProblem(protocol.CodeInvalidArgument, err.Error(), false, err)
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if !s.accepting {
-		s.metrics.Error()
+		s.runtime.metrics.Error()
 		return ErrClosed
 	}
 	if s.workspaceOperation {
@@ -35,12 +35,12 @@ func (s *OperationService) SubmitWithKey(
 		return retryableProblem(protocol.CodeConflict, "Turn withdrawal is in progress")
 	}
 	if len(s.operations) == cap(s.operations) {
-		s.metrics.Error()
+		s.runtime.metrics.Error()
 		return ErrQueueFull
 	}
 	acceptance, err := s.accept(ctx, operation, idempotencyKey, canonical)
 	if err != nil {
-		s.metrics.Error()
+		s.runtime.metrics.Error()
 		return err
 	}
 	if acceptance.Duplicate {
@@ -50,9 +50,9 @@ func (s *OperationService) SubmitWithKey(
 	case s.operations <- acceptedOperation{
 		operation: operation, idempotencyKey: idempotencyKey, canonical: canonical,
 	}:
-		s.metrics.OperationSubmitted()
-		if s.logger != nil {
-			s.logger.Info("runtime operation submitted", "operation_id", operation.ID, "kind", operation.Kind)
+		s.runtime.metrics.OperationSubmitted()
+		if s.runtime.logger != nil {
+			s.runtime.logger.Info("runtime operation submitted", "operation_id", operation.ID, "kind", operation.Kind)
 		}
 		return nil
 	default:
@@ -66,7 +66,7 @@ func (r *OperationService) operationCommitReceipt(
 	return CommitReceipt{
 		OperationID:  operationID,
 		Status:       "committed",
-		LastSequence: r.hub.Snapshot().LastSequence,
+		LastSequence: r.runtime.hub.Snapshot().LastSequence,
 		CompletedAt:  time.Now().UTC(),
 	}
 }
@@ -77,8 +77,8 @@ func (s *OperationService) accept(
 	idempotencyKey string,
 	canonical []byte,
 ) (Acceptance, error) {
-	if s.lifecycle != nil {
-		acceptance, err := s.lifecycle.Accept(
+	if s.runtime.lifecycle != nil {
+		acceptance, err := s.runtime.lifecycle.Accept(
 			ctx, operation, idempotencyKey, canonical,
 		)
 		if err != nil {
@@ -136,29 +136,6 @@ func (s *OperationService) accept(
 		s.acceptedKeys[idempotencyKey] = operation.ID
 	}
 	return Acceptance{OperationID: operation.ID}, nil
-}
-
-func (s *OperationService) commit(operationID protocol.OperationID) {
-	receipt := CommitReceipt{
-		OperationID:  operationID,
-		Status:       "committed",
-		LastSequence: s.hub.Snapshot().LastSequence,
-		CompletedAt:  time.Now().UTC(),
-	}
-	if s.lifecycle != nil {
-		if err := s.lifecycle.Commit(context.Background(), receipt); err != nil {
-			s.metrics.Error()
-			if s.logger != nil {
-				s.logger.Error(
-					"runtime operation commit failed",
-					"operation_id", operationID,
-					"error", err,
-				)
-			}
-			return
-		}
-	}
-	s.commitLocal(operationID)
 }
 
 func (s *OperationService) commitLocal(operationID protocol.OperationID) {

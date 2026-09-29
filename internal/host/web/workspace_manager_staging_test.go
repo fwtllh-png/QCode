@@ -14,8 +14,11 @@ func TestRuntimeCredentialStagingStaysInTheDefaultNamespace(t *testing.T) {
 		},
 		DefaultConnection: "openai",
 	}
-	staged := credential.Reference{Kind: "keyring", Name: "staged-key"}
-	control := &credential.Control{}
+	staged := &credentialRotation{
+		control:   &credential.Control{},
+		reference: credential.Reference{Kind: "keyring", Name: "staged-key"},
+		phase:     credentialRotationStaged,
+	}
 	tests := []struct {
 		name        string
 		stagedOwner string
@@ -40,32 +43,21 @@ func TestRuntimeCredentialStagingStaysInTheDefaultNamespace(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			gotControl, gotReference := runtimeCredentialStaging(
-				selection, test.stagedOwner, control, staged,
-			)
+			got := runtimeCredentialStaging(selection, test.stagedOwner, staged)
 			if test.passes {
-				if gotControl != control || gotReference != staged {
-					t.Fatalf(
-						"default staging was filtered: control=%v reference=%+v",
-						gotControl != nil, gotReference,
-					)
+				if got != staged {
+					t.Fatalf("default staging was filtered: %+v", got)
 				}
 				return
 			}
-			if gotControl != nil || gotReference != (credential.Reference{}) {
-				t.Fatalf(
-					"foreign staging reached the default runtime: control=%v reference=%+v",
-					gotControl != nil, gotReference,
-				)
+			if got != nil {
+				t.Fatalf("foreign staging reached the default runtime: %+v", got)
 			}
 		})
 	}
 
-	// A nil control stays nil for every owner; nothing is invented.
-	gotControl, gotReference := runtimeCredentialStaging(
-		selection, "openai-compatible:2222", nil, credential.Reference{},
-	)
-	if gotControl != nil || gotReference != (credential.Reference{}) {
-		t.Fatalf("nil staging changed: control=%v reference=%+v", gotControl, gotReference)
+	// A nil rotation stays nil for every owner; nothing is invented.
+	if got := runtimeCredentialStaging(selection, "openai-compatible:2222", nil); got != nil {
+		t.Fatalf("nil staging changed: %+v", got)
 	}
 }

@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	threadstate "github.com/fwtllh-png/QCode/internal/host/runtimeapi/thread"
+	threadstate "github.com/fwtllh-png/QCode/internal/persist/thread"
 	sessionstate "github.com/fwtllh-png/QCode/internal/persist/session"
 	"github.com/fwtllh-png/QCode/internal/persist/state"
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"

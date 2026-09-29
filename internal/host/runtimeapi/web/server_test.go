@@ -23,7 +23,7 @@ import (
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
 	gittool "github.com/fwtllh-png/QCode/internal/adapter/tool/git"
 	"github.com/fwtllh-png/QCode/internal/adapter/tool/guard"
-	threadstate "github.com/fwtllh-png/QCode/internal/host/runtimeapi/thread"
+	threadstate "github.com/fwtllh-png/QCode/internal/persist/thread"
 	webhost "github.com/fwtllh-png/QCode/internal/host/runtimeapi/web"
 	"github.com/fwtllh-png/QCode/internal/persist/state"
 	"github.com/fwtllh-png/QCode/internal/platform/workspacequery"
@@ -38,7 +38,7 @@ import (
 	"github.com/fwtllh-png/QCode/internal/security/workspacebroker"
 )
 
-func TestBootstrapIsLoopbackFencedAndDoesNotCacheToken(t *testing.T) {
+func TestBootstrapIsLoopbackFencedAndDoesNotCache(t *testing.T) {
 	server := newTestServer(t, "127.0.0.1:43210")
 	request := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:43210/api/v1/bootstrap", nil)
 	request.Host = "127.0.0.1:43210"
@@ -48,14 +48,15 @@ func TestBootstrapIsLoopbackFencedAndDoesNotCacheToken(t *testing.T) {
 		t.Fatalf("status = %d body=%s", response.Code, response.Body.String())
 	}
 	var value struct {
-		Token string `json:"token"`
-		Ready bool   `json:"ready"`
+		Authenticated bool `json:"authenticated"`
+		Ready         bool `json:"ready"`
 	}
 	if err := json.Unmarshal(response.Body.Bytes(), &value); err != nil {
 		t.Fatal(err)
 	}
-	if len(value.Token) < 40 || value.Ready {
-		t.Fatalf("bootstrap = %+v", value)
+	if value.Authenticated || value.Ready ||
+		strings.Contains(response.Body.String(), server.CapabilityToken()) {
+		t.Fatalf("bootstrap = %s", response.Body.String())
 	}
 	if response.Header().Get("Cache-Control") != "no-store" {
 		t.Fatalf("cache control = %q", response.Header().Get("Cache-Control"))
@@ -667,7 +668,7 @@ func TestRoutesSessionsAndEventsByWorkspace(t *testing.T) {
 	httpServer := &http.Server{Handler: server.Handler()}
 	go func() { _ = httpServer.Serve(listener) }()
 	t.Cleanup(func() { _ = httpServer.Shutdown(context.Background()) })
-	token := fetchBootstrapToken(t, "http://"+host)
+	token := server.CapabilityToken()
 
 	assertWorkspaceSessions := func(
 		workspaceID string,
@@ -867,7 +868,7 @@ func TestWebSocketDownlinkConcurrencyAndShutdown(t *testing.T) {
 	go func() { _ = httpServer.Serve(listener) }()
 	t.Cleanup(func() { _ = httpServer.Shutdown(context.Background()) })
 
-	token := fetchBootstrapToken(t, "http://"+host)
+	token := server.CapabilityToken()
 	connection, _, err := websocket.Dial(
 		t.Context(),
 		"ws://"+host+"/api/v1/events",
@@ -1294,19 +1295,9 @@ func newTestServerWithOptions(
 	return server
 }
 
-func bootstrapToken(t *testing.T, server *webhost.Server, host string) string {
+func bootstrapToken(t *testing.T, server *webhost.Server, _ string) string {
 	t.Helper()
-	request := httptest.NewRequest(http.MethodGet, "http://"+host+"/api/v1/bootstrap", nil)
-	request.Host = host
-	response := httptest.NewRecorder()
-	server.Handler().ServeHTTP(response, request)
-	var value struct {
-		Token string `json:"token"`
-	}
-	if err := json.Unmarshal(response.Body.Bytes(), &value); err != nil {
-		t.Fatal(err)
-	}
-	return value.Token
+	return server.CapabilityToken()
 }
 
 func runWorkspaceGit(t *testing.T, root string, arguments ...string) {
@@ -1321,22 +1312,6 @@ func runWorkspaceGit(t *testing.T, root string, arguments ...string) {
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("git %v: %v: %s", arguments, err, output)
 	}
-}
-
-func fetchBootstrapToken(t *testing.T, origin string) string {
-	t.Helper()
-	response, err := http.Get(origin + "/api/v1/bootstrap")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer response.Body.Close()
-	var value struct {
-		Token string `json:"token"`
-	}
-	if err := json.NewDecoder(response.Body).Decode(&value); err != nil {
-		t.Fatal(err)
-	}
-	return value.Token
 }
 
 func postWeb(
@@ -1363,6 +1338,7 @@ func bootstrapWorkspaceID(
 	t.Helper()
 	request := httptest.NewRequest(http.MethodGet, "http://"+host+"/api/v1/bootstrap", nil)
 	request.Host = host
+	request.Header.Set("Authorization", "Bearer "+server.CapabilityToken())
 	response := httptest.NewRecorder()
 	server.Handler().ServeHTTP(response, request)
 	var value struct {

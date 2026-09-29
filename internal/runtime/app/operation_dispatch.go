@@ -47,6 +47,9 @@ func (d operationDispatcher) Dispatch(accepted acceptedOperation) OperationOutco
 		}
 	}
 	operation := accepted.operation
+	if accepted.settleOnRecovery != nil {
+		return finishOutcome(accepted.settleOnRecovery)
+	}
 	if d.runtime.engine == nil {
 		return OperationOutcome{
 			Kind:       OutcomeRejected,
@@ -56,6 +59,9 @@ func (d operationDispatcher) Dispatch(accepted acceptedOperation) OperationOutco
 	}
 	switch payload := operation.Payload.(type) {
 	case *protocol.StartTurnPayload:
+		if accepted.interruptedBeforeStart {
+			return d.runtime.TurnService.SettleInterruptedStart(operation, payload)
+		}
 		return StartTurnHandler{d.runtime}.Handle(operation, payload)
 	case *protocol.CancelTurnPayload:
 		return CancelTurnHandler{d.runtime}.Handle(operation, payload)
@@ -123,32 +129,21 @@ func finishOutcome(err error) OperationOutcome {
 }
 func (s *OperationService) Apply(operation protocol.Operation, outcome OperationOutcome) {
 	if err := validateOperationOutcome(outcome); err != nil {
-		if s.reject(operation, err) == nil {
-			s.commit(operation.ID)
-		}
+		s.rejectAndCommit(operation, err)
 		return
 	}
 	if outcome.Kind == OutcomeRejected {
-		if s.reject(operation, outcome.Problem) == nil {
-			s.commit(operation.ID)
-		}
+		s.rejectAndCommit(operation, outcome.Problem)
 		return
 	}
 	if outcome.Kind == OutcomeCommitted {
-		sink := &runtimeSink{runtime: s.Runtime, operation: operation}
-		drainThread := protocol.ThreadID("")
+		settlement := unsettledOperation{operation: operation, events: outcome.Events}
 		for _, event := range outcome.Events {
-			if err := sink.Emit(event); err != nil {
-				return
-			}
 			if _, queued := event.(*protocol.TurnQueuedData); queued {
-				drainThread, _, _ = protocol.OperationReferences(operation)
+				settlement.drain, _, _ = protocol.OperationReferences(operation)
 			}
 		}
-		s.commit(operation.ID)
-		if drainThread != "" {
-			s.Runtime.TurnQueueService.Drain(drainThread)
-		}
+		s.settle(settlement)
 	}
 }
 func validateOperationOutcome(outcome OperationOutcome) error {
@@ -200,9 +195,7 @@ func (r SteerTurnHandler) run(operation protocol.Operation, payload *protocol.St
 }
 
 func (r ApprovalHandler) Handle(operation protocol.Operation, payload *protocol.ApprovalDecisionPayload) OperationOutcome {
-	r.EventService.mu.Lock()
-	pending, known := r.approvals[payload.RequestID]
-	r.EventService.mu.Unlock()
+	pending, known := r.PendingApproval(payload.RequestID)
 	if known {
 		proxied := *payload
 		proxied.ThreadID = pending.ThreadID
@@ -228,9 +221,7 @@ func (r ApprovalHandler) Handle(operation protocol.Operation, payload *protocol.
 
 func (r InputHandler) Handle(operation protocol.Operation, payload *protocol.InputReplyPayload) OperationOutcome {
 	phase := r.turnPhase(payload.ThreadID, payload.TurnID)
-	r.EventService.mu.Lock()
-	_, known := r.inputs[payload.RequestID]
-	r.EventService.mu.Unlock()
+	_, known := r.PendingInput(payload.RequestID)
 	if known {
 		phase = PhaseAwaitingInput
 	}

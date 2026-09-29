@@ -8,6 +8,7 @@ export const webRPCRoutes = [
   "agent-preset/list",
   "agent-preset/save",
   "agent/list",
+  "auth/launch-code",
   "checkpoint/fork",
   "checkpoint/get",
   "checkpoint/list",

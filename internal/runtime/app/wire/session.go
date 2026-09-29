@@ -265,7 +265,7 @@ func (s *Session) registerResourceClosers() error {
 		}},
 		{name: "child-runtime", close: func(context.Context) error {
 			if s.children != nil {
-				s.children.close()
+				s.children.Close()
 			}
 			return nil
 		}},

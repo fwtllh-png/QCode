@@ -18,6 +18,7 @@ import (
 	"time"
 
 	webhost "github.com/fwtllh-png/QCode/internal/host/runtimeapi/web"
+	"github.com/fwtllh-png/QCode/internal/platform/ownerlease"
 )
 
 func TestMain(m *testing.M) {
@@ -167,7 +168,7 @@ func TestRunContextStartsAndStopsWebHost(t *testing.T) {
 	) {
 		t.Fatalf("second Workspace output = %q", secondOutput.String())
 	}
-	token := fetchSupervisorToken(t, url)
+	token := fetchSupervisorToken(t, dataDir)
 	catalog := fetchWorkspaceCatalog(t, url, token)
 	if len(catalog.Workspaces) != 2 {
 		t.Fatalf("Workspace catalog = %+v", catalog)
@@ -255,7 +256,7 @@ func TestRunContextStartsAndStopsWebHost(t *testing.T) {
 	restartCatalog := fetchWorkspaceCatalog(
 		t,
 		restartURL,
-		fetchSupervisorToken(t, restartURL),
+		fetchSupervisorToken(t, dataDir),
 	)
 	if len(restartCatalog.Workspaces) != 2 {
 		t.Fatalf("restored Workspace catalog = %+v", restartCatalog)
@@ -268,13 +269,13 @@ func TestRunContextStartsAndStopsWebHost(t *testing.T) {
 	removeWorkspace(
 		t,
 		restartURL,
-		fetchSupervisorToken(t, restartURL),
+		fetchSupervisorToken(t, dataDir),
 		secondIdentity.RootID,
 	)
 	removedCatalog := fetchWorkspaceCatalog(
 		t,
 		restartURL,
-		fetchSupervisorToken(t, restartURL),
+		fetchSupervisorToken(t, dataDir),
 	)
 	if len(removedCatalog.Workspaces) != 1 {
 		t.Fatalf("Workspace catalog after removal = %+v", removedCatalog)
@@ -319,20 +320,28 @@ func TestRunContextStartsWithoutAConfigFile(t *testing.T) {
 	}()
 
 	setupURL := waitForOutputURL(t, outputLines, "QCode Setup Ready: ")
-	bootstrapResponse, err := http.Get(strings.TrimSuffix(setupURL, "/") + "/api/v1/bootstrap")
+	token := fetchSupervisorToken(t, dataDir)
+	bootstrapRequest, err := http.NewRequest(
+		http.MethodGet, strings.TrimSuffix(setupURL, "/")+"/api/v1/bootstrap", nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bootstrapRequest.Header.Set("Authorization", "Bearer "+token)
+	bootstrapResponse, err := http.DefaultClient.Do(bootstrapRequest)
 	if err != nil {
 		t.Fatal(err)
 	}
 	var bootstrap struct {
-		Token         string `json:"token"`
-		SetupRequired bool   `json:"setup_required"`
+		Authenticated bool `json:"authenticated"`
+		SetupRequired bool `json:"setup_required"`
 	}
 	if err := json.NewDecoder(bootstrapResponse.Body).Decode(&bootstrap); err != nil {
 		_ = bootstrapResponse.Body.Close()
 		t.Fatal(err)
 	}
 	_ = bootstrapResponse.Body.Close()
-	if !bootstrap.SetupRequired || bootstrap.Token == "" {
+	if !bootstrap.SetupRequired || !bootstrap.Authenticated {
 		t.Fatalf("bootstrap = %+v", bootstrap)
 	}
 	setupBody := strings.NewReader(
@@ -352,7 +361,7 @@ func TestRunContextStartsWithoutAConfigFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	setupRequest.Header.Set("Authorization", "Bearer "+bootstrap.Token)
+	setupRequest.Header.Set("Authorization", "Bearer "+token)
 	setupRequest.Header.Set("Content-Type", "application/json")
 	setupRequest.Header.Set("X-QCode-Request-ID", "setup-request")
 	setupRequest.Header.Set("Idempotency-Key", "setup-idempotency")
@@ -384,7 +393,7 @@ func TestRunContextStartsWithoutAConfigFile(t *testing.T) {
 	if !strings.Contains(
 		repeatedOutput.String(),
 		"QCode Runtime Ready: "+readyURL,
-	) {
+	) || !strings.Contains(repeatedOutput.String(), "&launch=") {
 		t.Fatalf("repeated start output = %q", repeatedOutput.String())
 	}
 
@@ -410,7 +419,7 @@ func waitForOutputURL(t *testing.T, lines <-chan string, prefix string) string {
 				t.Fatal("Web host exited before " + prefix)
 			}
 			if value, found := strings.CutPrefix(line, prefix); found {
-				return value
+				return launchOrigin(t, value)
 			}
 		case <-timer.C:
 			t.Fatal("timed out waiting for " + prefix)
@@ -418,22 +427,36 @@ func waitForOutputURL(t *testing.T, lines <-chan string, prefix string) string {
 	}
 }
 
-func fetchSupervisorToken(t *testing.T, rawURL string) string {
+// launchOrigin strips the one-time launch code (and Workspace selection)
+// from a printed ready URL, leaving the base the API calls build on.
+func launchOrigin(t *testing.T, printed string) string {
 	t.Helper()
-	response, err := http.Get(
-		strings.TrimSuffix(rawURL, "/") + "/api/v1/bootstrap",
-	)
+	base, query, _ := strings.Cut(printed, "?")
+	if !strings.Contains(query, "launch=") {
+		t.Fatalf("ready URL carries no launch code: %q", printed)
+	}
+	return base
+}
+
+// fetchSupervisorToken reads the capability token the way out-of-process
+// owners do: from the owner lease, never from the Web host.
+func fetchSupervisorToken(t *testing.T, dataDir string) string {
+	t.Helper()
+	data, err := os.ReadFile(ownerlease.Path(dataDir, webSupervisorScope))
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer response.Body.Close()
-	var bootstrap struct {
-		Token string `json:"token"`
+	if len(data) < 2 {
+		t.Fatal("owner lease has no metadata")
 	}
-	if err := json.NewDecoder(response.Body).Decode(&bootstrap); err != nil {
+	var metadata ownerlease.Metadata
+	if err := json.Unmarshal(data[1:], &metadata); err != nil {
 		t.Fatal(err)
 	}
-	return bootstrap.Token
+	if metadata.CapabilityToken == "" {
+		t.Fatal("owner lease has no capability token")
+	}
+	return metadata.CapabilityToken
 }
 
 func fetchWorkspaceCatalog(
@@ -535,7 +558,7 @@ func waitForReadyURL(t *testing.T, reader io.Reader) string {
 		if ready.url == "" {
 			t.Fatal("Web host exited before readiness")
 		}
-		return ready.url
+		return launchOrigin(t, ready.url)
 	case <-time.After(30 * time.Second):
 		t.Fatal("timed out waiting for Web readiness")
 		return ""

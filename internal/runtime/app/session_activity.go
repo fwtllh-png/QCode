@@ -48,7 +48,7 @@ func (r *SessionService) projectSessionActivities(
 		if summary.LatestTurnWithdrawn {
 			summary.Status = protocol.SessionStatusIdle
 		}
-		if r.sessionArtifacts != nil {
+		if r.runtime.sessionArtifacts != nil {
 			checkpoint := checkpoints[summary.SessionID]
 			summary.CheckpointCount = checkpoint.Count
 			summary.ChangedFiles = checkpoint.ChangedFiles
@@ -59,12 +59,12 @@ func (r *SessionService) projectSessionActivities(
 }
 
 func (r *SessionService) sessionThreads(ctx context.Context, ids []string) (map[string][]protocol.ThreadID, error) {
-	if reader, ok := r.sessionLifecycle.(sessionThreadBatchReader); ok {
+	if reader, ok := r.runtime.sessionLifecycle.(sessionThreadBatchReader); ok {
 		return reader.ThreadIDsForSessions(ctx, ids)
 	}
 	result := make(map[string][]protocol.ThreadID, len(ids))
 	for _, id := range ids {
-		threads, err := r.sessionLifecycle.ThreadIDs(ctx, id)
+		threads, err := r.runtime.sessionLifecycle.ThreadIDs(ctx, id)
 		if err != nil {
 			return nil, err
 		}
@@ -74,21 +74,21 @@ func (r *SessionService) sessionThreads(ctx context.Context, ids []string) (map[
 }
 
 func (r *SessionService) sessionCheckpointSummaries(ctx context.Context, ids []string) (map[string]artifact.SessionCheckpointSummary, error) {
-	if reader, ok := r.sessionArtifacts.(artifact.SessionCheckpointSummaryStore); ok {
+	if reader, ok := r.runtime.sessionArtifacts.(artifact.SessionCheckpointSummaryStore); ok {
 		return reader.CheckpointSummaries(ctx, ids)
 	}
 	result := make(map[string]artifact.SessionCheckpointSummary, len(ids))
-	if r.sessionArtifacts == nil {
+	if r.runtime.sessionArtifacts == nil {
 		return result, nil
 	}
 	for _, id := range ids {
-		count, err := r.sessionArtifacts.CountCheckpoints(ctx, id)
+		count, err := r.runtime.sessionArtifacts.CountCheckpoints(ctx, id)
 		if err != nil {
 			return nil, err
 		}
 		summary := artifact.SessionCheckpointSummary{Count: count}
 		if count > 0 {
-			checkpoints, err := r.sessionArtifacts.ListCheckpoints(ctx, id, 1)
+			checkpoints, err := r.runtime.sessionArtifacts.ListCheckpoints(ctx, id, 1)
 			if err != nil {
 				return nil, err
 			}
@@ -102,12 +102,12 @@ func (r *SessionService) sessionCheckpointSummaries(ctx context.Context, ids []s
 }
 
 func (r *SessionService) sessionTurnWithdrawals(ctx context.Context, turns map[protocol.ThreadID]protocol.TurnID) (map[protocol.ThreadID]bool, error) {
-	if reader, ok := r.contextRebaseStore.(turnWithdrawalBatchReader); ok {
+	if reader, ok := r.runtime.contextRebaseStore.(turnWithdrawalBatchReader); ok {
 		return reader.TurnsWithdrawn(ctx, turns)
 	}
 	result := make(map[protocol.ThreadID]bool, len(turns))
 	for thread, turn := range turns {
-		withdrawn, err := r.TurnWithdrawn(ctx, thread, turn)
+		withdrawn, err := r.runtime.TurnWithdrawn(ctx, thread, turn)
 		if err != nil {
 			return nil, err
 		}

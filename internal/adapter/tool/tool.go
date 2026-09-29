@@ -1784,54 +1784,18 @@ func (t *resultRetrieval) Execute(_ context.Context, raw json.RawMessage) (Resul
 
 	var excerpt string
 	var more bool
-	switch input.Mode {
-	case "metadata":
-	case "summary":
-		excerpt, more = summarizeResult(value.Content, limit)
-	case "head":
-		excerpt, more = boundedSlice(value.Content, 0, limit)
-		if more {
-			metadata["next_offset"] = len(excerpt)
+	if input.Mode != "metadata" {
+		page, err := ProjectPage(value.Content, PageRequest{
+			Mode: input.Mode, StartLine: input.StartLine, MaxLines: input.MaxLines,
+			Query: input.Query, Offset: input.Offset, Limit: limit,
+		})
+		if err != nil {
+			return Result{}, err
 		}
-	case "tail":
-		start := max(0, len(value.Content)-limit)
-		excerpt = validSuffix(value.Content, start)
-		more = start > 0
-		if more {
-			metadata["previous_offset"] = start
+		excerpt, more = page.Excerpt, page.More
+		for key, value := range page.Cursor {
+			metadata[key] = value
 		}
-	case "bytes":
-		excerpt, more = boundedSlice(value.Content, input.Offset, limit)
-		metadata["offset"] = min(input.Offset, len(value.Content))
-		if more {
-			metadata["next_offset"] = min(len(value.Content), input.Offset+len(excerpt))
-		}
-	case "lines":
-		startLine := input.StartLine
-		if startLine == 0 {
-			startLine = 1
-		}
-		var nextLine, nextOffset int
-		excerpt, more, nextLine, nextOffset = selectLines(value.Content, startLine, input.MaxLines, limit)
-		metadata["start_line"] = startLine
-		if more {
-			if nextLine > 0 {
-				metadata["next_start_line"] = nextLine
-			}
-			if nextOffset > 0 {
-				metadata["next_offset"] = nextOffset
-			}
-		}
-	case "query":
-		var nextOffset int
-		excerpt, more, nextOffset = queryLines(value.Content, input.Query, input.Offset, input.MaxLines, limit)
-		metadata["query"] = input.Query
-		metadata["offset"] = input.Offset
-		if more {
-			metadata["next_offset"] = nextOffset
-		}
-	default:
-		return Result{}, fmt.Errorf("unsupported result retrieval mode %q", input.Mode)
 	}
 	metadata["excerpt_bytes"] = len(excerpt)
 	return Result{
@@ -1873,100 +1837,6 @@ func validUTF8Start(value string, offset int) int {
 
 func validSuffix(value string, offset int) string {
 	return value[validUTF8Start(value, offset):]
-}
-
-func summarizeResult(value string, limit int) (string, bool) {
-	if len(value) <= limit {
-		return value, false
-	}
-	if limit < 5 {
-		excerpt, _ := boundedSlice(value, 0, limit)
-		return excerpt, true
-	}
-	const separator = "\n...\n"
-	if limit <= len(separator) {
-		excerpt, _ := boundedSlice(value, 0, limit)
-		return excerpt, true
-	}
-	headBytes := (limit - len(separator)) / 2
-	tailBytes := limit - len(separator) - headBytes
-	head, _ := boundedSlice(value, 0, headBytes)
-	tail := validSuffix(value, len(value)-tailBytes)
-	for len(head)+len(separator)+len(tail) > limit {
-		tail = validSuffix(tail, 1)
-	}
-	return head + separator + tail, true
-}
-
-func countLines(value string) int {
-	if value == "" {
-		return 0
-	}
-	count := strings.Count(value, "\n")
-	if !strings.HasSuffix(value, "\n") {
-		count++
-	}
-	return count
-}
-
-func selectLines(value string, startLine, maxLines, limit int) (excerpt string, more bool, nextLine, nextOffset int) {
-	lines := strings.SplitAfter(value, "\n")
-	if len(lines) > 0 && lines[len(lines)-1] == "" {
-		lines = lines[:len(lines)-1]
-	}
-	if startLine > len(lines) {
-		return "", false, 0, 0
-	}
-	startOffset := 0
-	for _, line := range lines[:startLine-1] {
-		startOffset += len(line)
-	}
-	lines = lines[startLine-1:]
-	selectedLines := len(lines)
-	if maxLines > 0 && len(lines) > maxLines {
-		lines = lines[:maxLines]
-		selectedLines = maxLines
-	}
-	selected := strings.Join(lines, "")
-	excerpt, byteMore := boundedSlice(selected, 0, limit)
-	if byteMore {
-		return excerpt, true, 0, startOffset + len(excerpt)
-	}
-	nextLine = startLine + selectedLines
-	if nextLine > countLines(value) {
-		nextLine = 0
-	}
-	return excerpt, nextLine > 0, nextLine, 0
-}
-
-func queryLines(value, query string, offset, maxLines, limit int) (excerpt string, more bool, nextOffset int) {
-	if offset >= len(value) {
-		return "", false, 0
-	}
-	offset = validUTF8Start(value, offset)
-	var builder strings.Builder
-	cursor := offset
-	matches := 0
-	for _, line := range strings.SplitAfter(value[offset:], "\n") {
-		lineStart := cursor
-		cursor += len(line)
-		if strings.Contains(line, query) {
-			remaining := limit - builder.Len()
-			part, lineMore := boundedSlice(line, 0, remaining)
-			builder.WriteString(part)
-			matches++
-			if lineMore {
-				return builder.String(), true, lineStart + len(part)
-			}
-			if maxLines > 0 && matches >= maxLines {
-				return builder.String(), cursor < len(value), cursor
-			}
-			if builder.Len() >= limit {
-				return builder.String(), cursor < len(value), cursor
-			}
-		}
-	}
-	return builder.String(), false, 0
 }
 
 type Claims struct {

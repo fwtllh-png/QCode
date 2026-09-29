@@ -6,6 +6,32 @@ import {
 } from "./conversation";
 
 describe("ConversationProjection", () => {
+  it("advances the structure revision only when the transcript shape changes", () => {
+    const projection = new ConversationProjection();
+    const step = (value: RuntimeEvent) => {
+      projection.apply(value);
+      return projection.snapshot();
+    };
+    step(event(1, "turn.started", {prompt: "Explain"}));
+    const answering = step(event(2, "output.delta", {text: "Hel"}));
+    const streamed = step(event(3, "output.delta", {text: "lo"}));
+    expect(streamed.revision).toBeGreaterThan(answering.revision);
+    expect(streamed.structureRevision).toBe(answering.structureRevision);
+    expect(streamed.nodes.get("output-turn")).toMatchObject({text: "Hello"});
+
+    const reasoning = step(event(4, "reasoning.delta", {text: "a"}));
+    expect(reasoning.structureRevision).toBeGreaterThan(streamed.structureRevision);
+    expect(step(event(5, "reasoning.delta", {text: "b"})).structureRevision)
+      .toBe(reasoning.structureRevision);
+
+    const tool = step(event(6, "tool.start", {call_id: "call", tool: "exec_command"}));
+    expect(tool.structureRevision).toBeGreaterThan(reasoning.structureRevision);
+    const toolOutput = step(event(7, "tool.output", {call_id: "call", chunk: "ok"}));
+    expect(toolOutput.structureRevision).toBe(tool.structureRevision);
+    expect(step(event(8, "tool.result", {call_id: "call", output: "ok"})).structureRevision)
+      .toBeGreaterThan(toolOutput.structureRevision);
+  });
+
   it.each(["completed", "failed", "canceled", "timed_out"])(
     "replays a yielded command through its original call to %s",
     (status) => {

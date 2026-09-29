@@ -91,7 +91,7 @@ func (s *runtimeSink) commitOperation() {
 		s.runtime.commitLocal(s.operation.ID)
 		return
 	}
-	s.runtime.commit(s.operation.ID)
+	s.runtime.commit(s.operation)
 }
 
 func (s *runtimeSink) publishTerminalAs(

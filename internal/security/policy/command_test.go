@@ -61,6 +61,98 @@ func TestCommandRuleCannotCrossSegmentsOrInterpreterPayload(t *testing.T) {
 	}
 }
 
+func TestRestrictiveCommandRulesFailClosedOnEvasion(t *testing.T) {
+	for _, command := range []string{
+		`/usr/bin/git push`,
+		`\git push`,
+		`g\it push`,
+		`"git" push`,
+		`command git push`,
+		`exec git push`,
+		`env -i git push`,
+		`env -u HOME git push`,
+		`nice -n 5 git push`,
+		`timeout 10 git push`,
+		`sudo -u root git push`,
+		`nohup git push origin main`,
+		`$(echo git) push`,
+		`git $(echo push)`,
+		`$GIT push`,
+		`git -C ./repo push`,
+		`git -c core.sshCommand=ssh push --force`,
+		`echo push | xargs git`,
+		`eval git push`,
+		`eval "git push"`,
+		`bash -c 'git push'`,
+		`bash -c 'git push; if'`,
+		`python3 -c "import subprocess; subprocess.run(['git', 'push'])"`,
+		`git push "unterminated`,
+	} {
+		for _, action := range []Action{ActionDeny, ActionHold, ActionAsk} {
+			if !commandRuleMatches(command, `git push`, action) {
+				t.Errorf("%s rule `git push` missed %q", action, command)
+			}
+		}
+	}
+	for _, command := range []string{
+		`find . -name '*.tmp' -exec rm -f {} +`,
+		`find . -execdir /bin/rm {} ;`,
+		`xargs -0 rm`,
+	} {
+		if !commandRuleMatches(command, `rm`, ActionDeny) {
+			t.Errorf("deny rule `rm` missed %q", command)
+		}
+	}
+	for _, command := range []string{
+		`git status`,
+		`git log --oneline`,
+		`echo git push`,
+		`printf '%s\n' "git push"`,
+		`gitk push`,
+		`go test ./...`,
+	} {
+		if commandRuleMatches(command, `git push`, ActionDeny) {
+			t.Errorf("deny rule `git push` matched unrelated %q", command)
+		}
+	}
+}
+
+func TestAllowCommandRulesStayLiteral(t *testing.T) {
+	for _, command := range []string{
+		`/tmp/evil/git status`,
+		`command git status`,
+		`$(echo git) status`,
+		`git status "unterminated`,
+	} {
+		if commandRuleMatches(command, `git status`, ActionAllow) {
+			t.Errorf("allow rule `git status` widened to %q", command)
+		}
+	}
+}
+
+func TestEnvOptionsUnwrapToTheCommand(t *testing.T) {
+	for command, want := range map[string][]string{
+		`env -i PATH=/bin git status`:           {"git", "status"},
+		`env -u HOME -- git status`:             {"git", "status"},
+		`env --unset=HOME --chdir=/ git status`: {"git", "status"},
+	} {
+		analysis, err := AnalyzeCommand(command)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := analysis.Segments[0].Argv; !reflect.DeepEqual(got, want) {
+			t.Fatalf("%q argv = %#v, want %#v", command, got, want)
+		}
+	}
+	analysis, err := AnalyzeCommand(`env -S 'git push' status`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !analysis.Segments[0].Dynamic {
+		t.Fatal("env -S split string must be treated as dynamic")
+	}
+}
+
 func TestUnsafePersistentPrefixRejectsBroadExecutables(t *testing.T) {
 	for _, prefix := range []string{
 		"sh", "bash -lc 'echo ok'", "python3 script.py", "node app.js", "git", "rm",

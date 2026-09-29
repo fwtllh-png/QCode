@@ -3,6 +3,7 @@ package ratelimit
 import (
 	"context"
 	"errors"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -283,14 +284,24 @@ func numericResetDelay(
 	now time.Time,
 	epochAllowed bool,
 ) (time.Duration, bool) {
-	seconds, err := strconv.ParseFloat(value, 64)
-	if err != nil || seconds < 0 {
+	number, err := strconv.ParseFloat(value, 64)
+	if err != nil || number < 0 {
 		return 0, false
 	}
-	if epochAllowed && seconds > float64(now.Unix()) {
-		return time.UnixMilli(int64(seconds * 1000)).Sub(now), true
+	if !epochAllowed {
+		return time.Duration(number * float64(time.Second)), true
 	}
-	return time.Duration(seconds * float64(time.Second)), true
+	// X-RateLimit-Reset is sent as delta seconds, epoch seconds, or epoch
+	// milliseconds depending on the provider. The unit is the reading that
+	// lands nearest to now; a reset already passed means no wait.
+	nowSeconds := float64(now.UnixNano()) / float64(time.Second)
+	delay := number
+	for _, candidate := range []float64{number - nowSeconds, number/1000 - nowSeconds} {
+		if math.Abs(candidate) < math.Abs(delay) {
+			delay = candidate
+		}
+	}
+	return time.Duration(max(delay, 0) * float64(time.Second)), true
 }
 
 func retryAfter(value string, now time.Time) (time.Duration, bool) {

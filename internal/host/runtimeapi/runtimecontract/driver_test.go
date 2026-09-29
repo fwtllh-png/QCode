@@ -8,7 +8,7 @@ import (
 
 	"github.com/fwtllh-png/QCode/internal/config"
 	contract "github.com/fwtllh-png/QCode/internal/host/runtimeapi/runtimecontract"
-	threadstate "github.com/fwtllh-png/QCode/internal/host/runtimeapi/thread"
+	threadstate "github.com/fwtllh-png/QCode/internal/persist/thread"
 	runtimeview "github.com/fwtllh-png/QCode/internal/host/runtimeapi/view"
 	usagestate "github.com/fwtllh-png/QCode/internal/observability/usage"
 	"github.com/fwtllh-png/QCode/internal/orchestration/subagent"

@@ -207,7 +207,7 @@ func terminalJournalOutcome(
 		state.Verification.Action != VerificationActionReverted:
 		return EffectCommitJournal, JournalCommitted
 	case decision.Kind == TerminalCanceled &&
-		decision.Message == protocol.CancelReasonUserInterrupted:
+		CancelSuspendsDraft(decision.Message):
 		return EffectSuspendJournal, JournalSuspended
 	case decision.Kind == TerminalFailed &&
 		(state.Verification.Action == VerificationActionBlocked ||
@@ -219,6 +219,14 @@ func terminalJournalOutcome(
 	default:
 		return EffectRollbackJournal, JournalRolledBack
 	}
+}
+
+// CancelSuspendsDraft reports whether a cancel with this reason keeps the
+// turn's workspace changes as a resumable draft. Every other cancel rolls the
+// journal back, so the conversation retained for the turn must follow the
+// same rule or history would describe edits the workspace no longer has.
+func CancelSuspendsDraft(reason string) bool {
+	return reason == protocol.CancelReasonUserInterrupted
 }
 
 func recoverableTerminalFault(fault *protocol.FaultMetadata) bool {

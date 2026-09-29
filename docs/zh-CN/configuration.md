@@ -351,10 +351,14 @@ Agent Tree、Mailbox、Result 和 Budget Ledger 持久化在 Workspace State Sto
 每个 Agent 具有 Canonical Path 和 CAS Revision；终态 Result 与 Completion Outbox
 原子提交。Completion 自动通知 Parent，`wait_agent` 只是对同一事实的主动同步方式。
 Mailbox 使用稳定 Message ID 和 `Receive/Ack`，未确认消息在重启后重投。
-`max_parallel` 限制活跃 Child 数，`max_resident` 还计入仍保留 Result 或 Worktree 的
-已完成 Child，`max_total` 则限制整棵 Durable Tree 的累计 Spawn 数，包括已关闭
-Agent。Depth、Token 和 Cost Admission 同样作用于 Nested Agent；Child 只能收窄，
-不能扩大 Parent Budget。
+以下上限都按 Session 的 Agent Tree 计算，同一 Workspace Runtime 中的其他 Session
+互不占用。`max_parallel` 限制活跃 Child 数，`max_resident` 还计入仍保留 Result 或
+Worktree 的已完成 Child，`max_total` 则限制整棵 Durable Tree 的累计 Spawn 数，包括
+已关闭 Agent；在第一个 Turn 获准之前就被关闭的委派（例如因预算投影被拒）不计入。
+正在创建 Worktree 的 Spawn 已计入 `max_total`，但创建 Worktree 期间不持有 Manager
+锁，不会阻塞其他 Child 的 Wait、Settle 或工具调用。Depth、Token 和 Cost Admission
+同样作用于 Nested Agent；Child 只能收窄，不能扩大 Parent Budget。这些准入、预留和
+结算只由 `subagent.Manager` 执行，账本在重启后由持久化的 Agent 状态重建。
 
 Child Authority 只能收紧当前 Session Profile。有效 Posture 遵循
 `never < suggest < auto < bypass`；写工具权限是 Parent Tool Catalog 与 Child Role
@@ -391,7 +395,9 @@ Resume、连接或 Response State 存在任何不确定性时，都发送完整�
 Provider 继续使用原有 HTTP Transport。
 
 Incremental Transport 固定使用 `store=false`。Response State 只保留在活动连接
-内存中，并在失败或 Idle Timeout 后删除。Usage Event 仅持久化 Request Bytes
+内存中，并在失败或 Idle Timeout 后删除。采样流在 Idle Timeout 后被关闭时，其所在
+连接随之退役：读取不再占用会话，下一次 Sample 在新连接上发送完整请求，旧连接迟到
+的帧不会串入新响应。Usage Event 仅持久化 Request Bytes
 以及 Logical/Transport 的 SHA-256 Digest，不保存 Prompt 内容。Request Byte
 下降只属于传输证据，不会被报告为 Token 降幅。
 
@@ -442,7 +448,9 @@ Progress 与 Convergence 状态都会持久化并在 Runtime 恢复后延续。
 都会按 Provider、Endpoint、Credential 引用和 Model 共享动态限流状态：优先采用
 `Retry-After`，其次采用 `RateLimit-Reset`/`X-RateLimit-Reset`；Provider 未返回时间
 提示时，根据实际请求耗时和连续限流反馈逐步延长冷却。冷却等待可取消且不会占用
-Provider 并发槽。
+Provider 并发槽。不同 Provider 的 `X-RateLimit-Reset` 可能是相对秒数、Unix 秒或
+Unix 毫秒，Runtime 取三种读法中最接近当前时间的一种；已过去的重置时间视为无需等待，
+不会把毫秒时间戳误当成数十年的冷却。
 
 `execution.tokens_per_minute` 是运维侧声明的 Provider Throughput 合同，单位为每分钟
 Token。它与模型 Context Window、`budget_tokens` / `turn_budget_tokens` 经济预算是三个
@@ -530,7 +538,12 @@ Runtime 返回包含 Scope、资源类型和 Used/Limit 的结构化 `resource_e
 `spawn_agent` 中的 `max_tokens` 或 `max_cost_usd` 是 resident Agent 跨初始 Turn 与
 follow-up 的生命周期上限；每次 follow-up 只预留该 Agent 的剩余额度。child 未显式
 填写 Token/Cost 上限时，Runtime 按并发度分配一份 Tree 额度
-（`Tree / max_parallel`），不会再让第一个 child 预留整棵 Tree。
+（`Tree / max_parallel`），不会再让第一个 child 预留整棵 Tree。真实用量只有在
+回执中才出现，因此一个 Turn 的实际消耗可以超过它的预留；这不会把已完成的 Child 改成
+失败，超出部分照常记账，之后的 Turn 或 Spawn 会以 `resource_exhausted` 拒绝
+（Scope 为 `agent:<id>` 或 `agent_tree:<session>`）。并发槽位耗尽返回可重试的
+`resource_exhausted`（reason `concurrency_capacity_exhausted`），`max_total` 耗尽返回
+不可重试的 `resource_exhausted`（reason `spawn_capacity_exhausted`）。
 
 未知 TOML 字段会被拒绝。这是有意设计：拼错的安全或预算字段不能“看起来已配置但
 实际没有生效”。
@@ -653,6 +666,12 @@ Fail Closed。
 
 当前状态 schema 为 5，CAS 内容及引用归属保存在 SQLite；旧版本数据库直接拒绝，
 不自动迁移或删除。切换前应停止 Runtime，再自行移走旧数据或选择新的空数据目录。
+
+`state.busy_timeout`（环境变量 `QCODE_STATE_BUSY_TIMEOUT`）是 SQLite 等待锁的上限，
+默认 `"5s"`，接受 1ns 到 5m 的 Go duration。持久化 Runtime 同时用它作为结算重试
+间隔：Operation 的拒绝事件、Outcome 事件或 Commit Receipt 写入失败，以及已提交
+终态的 Outbox 投影失败后，Runtime 每隔该时长在后台重试，直到写入成功；这一窗口内
+写入持续失败才会进入重试，因此不另设独立阈值。
 
 `state.deleted_event_retention` 控制已删除会话的审计日志保留时长，默认 `"0s"`，
 接受非负 Go duration（如 `"24h"`）。到期日志在启动、删除会话后的维护或显式

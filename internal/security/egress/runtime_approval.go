@@ -34,8 +34,47 @@ func (g *Gate) SetRuntimeApprover(approver RuntimeApprover) {
 		return
 	}
 	g.mu.Lock()
+	g.approverGeneration++
 	g.approver = approver
 	g.mu.Unlock()
+}
+
+// BindRuntimeApprover installs approver for the lifetime of one tool call.
+// The returned release revokes it and cancels approval waits still in
+// flight, so a background process that outlives its call cannot raise
+// approvals against a finished call or whichever turn runs next; targets it
+// discovers afterwards fail closed. A release after a newer bind leaves the
+// newer approver in place.
+func (g *Gate) BindRuntimeApprover(approver RuntimeApprover) (release func()) {
+	if g == nil || approver == nil {
+		return func() {}
+	}
+	call, cancel := context.WithCancel(context.Background())
+	bound := func(ctx context.Context, target Target) error {
+		if call.Err() != nil {
+			return deniedTarget(target, reasonTargetNotGranted)
+		}
+		wait, stop := context.WithCancel(ctx)
+		defer stop()
+		defer context.AfterFunc(call, stop)()
+		return approver(wait, target)
+	}
+	g.mu.Lock()
+	g.approverGeneration++
+	generation := g.approverGeneration
+	g.approver = bound
+	g.mu.Unlock()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			cancel()
+			g.mu.Lock()
+			if g.approverGeneration == generation {
+				g.approver = nil
+			}
+			g.mu.Unlock()
+		})
+	}
 }
 
 func (g *Gate) runtimeApprover(ctx context.Context) RuntimeApprover {

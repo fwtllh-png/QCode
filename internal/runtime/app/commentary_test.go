@@ -64,7 +64,13 @@ func TestCommentaryTerminalOutboxRecoversAndDeduplicatesLiveMessage(t *testing.T
 			if err := runtime.terminal.Publish(t.Context(), committed); err != nil {
 				t.Fatal(err)
 			}
-			if err := runtime.terminal.Recover(t.Context()); err != nil {
+			if err := runtime.terminal.Recover(t.Context(), func(
+				_ protocol.ThreadID,
+				turnID protocol.TurnID,
+				err error,
+			) {
+				t.Fatalf("recover terminal %s: %v", turnID, err)
+			}); err != nil {
 				t.Fatal(err)
 			}
 			projected, err := events.Replay(t.Context(), 0)

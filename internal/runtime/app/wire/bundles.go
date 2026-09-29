@@ -10,6 +10,7 @@ import (
 	"github.com/fwtllh-png/QCode/internal/adapter/provider/fixture"
 	interacttool "github.com/fwtllh-png/QCode/internal/adapter/tool/interact"
 	"github.com/fwtllh-png/QCode/internal/observability/telemetry"
+	"github.com/fwtllh-png/QCode/internal/orchestration/childrun"
 	"github.com/fwtllh-png/QCode/internal/orchestration/subagent"
 	"github.com/fwtllh-png/QCode/internal/persist/contentstore"
 	"github.com/fwtllh-png/QCode/internal/persist/joblog"
@@ -50,7 +51,7 @@ type capabilityBundle struct {
 type orchestrationBundle struct {
 	inputHost        *interacttool.Host
 	applyPlan        func(interacttool.Plan) error
-	children         *childRuntime
+	children         *childrun.Runner
 	childTools       *childToolsets
 	chatWorkspaces   *chatWorkspaces
 	subagents        *subagent.AgentControl

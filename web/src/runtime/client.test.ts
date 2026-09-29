@@ -1,6 +1,7 @@
 import {afterEach, beforeEach, describe, expect, it, vi} from "vitest";
 import type {AgentPreset} from "../protocol";
 import {RuntimeClient} from "./client";
+import {reconnectDelay, reconnectMaxDelayMs} from "./reconnect";
 import type {
   BrowserProjectionState,
   BrowserStorage
@@ -109,7 +110,7 @@ describe("RuntimeClient", () => {
     body: Record<string, unknown>;
     headers: Headers;
   }> = [];
-  let bootstrapToken = "token";
+  let bootstrapAuthenticated = true;
   let snapshotSequence = 0;
   let snapshotGate: Promise<void> | undefined;
   let profileGate: Promise<void> | undefined;
@@ -132,11 +133,14 @@ describe("RuntimeClient", () => {
   let multipleWorkspaces = false;
   let emptyPrimaryWorkspace = false;
   let activePlan = false;
+  let failBootstrapAttempts = 0;
+  let failSnapshotSessions = new Set<string>();
+  let holdNextProfile: Promise<void> | undefined;
 
   beforeEach(() => {
     requests.length = 0;
     FakeWebSocket.instances.length = 0;
-    bootstrapToken = "token";
+    bootstrapAuthenticated = true;
     snapshotSequence = 0;
     snapshotGate = undefined;
     profileGate = undefined;
@@ -159,6 +163,9 @@ describe("RuntimeClient", () => {
     multipleWorkspaces = false;
     emptyPrimaryWorkspace = false;
     activePlan = false;
+    failBootstrapAttempts = 0;
+    failSnapshotSessions = new Set<string>();
+    holdNextProfile = undefined;
     window.history.replaceState(null, "", "/?workspace=workspace-id");
     vi.stubGlobal("WebSocket", FakeWebSocket);
     vi.stubGlobal("crypto", {
@@ -188,11 +195,15 @@ describe("RuntimeClient", () => {
         });
       }
       if (route.endsWith("/bootstrap")) {
+        if (failBootstrapAttempts > 0) {
+          failBootstrapAttempts -= 1;
+          throw new TypeError("connection refused");
+        }
         if (setupRequired) {
           return response({
             protocol_version: 1,
             server_build: "build",
-            token: bootstrapToken,
+            authenticated: bootstrapAuthenticated,
             ready: false,
             draining: false,
             setup_required: true,
@@ -202,7 +213,7 @@ describe("RuntimeClient", () => {
         return response({
           protocol_version: 1,
           server_build: "build",
-          token: bootstrapToken,
+          authenticated: bootstrapAuthenticated,
           ready: true,
           draining: false,
           workspace_root: "/workspace",
@@ -400,6 +411,9 @@ describe("RuntimeClient", () => {
       }
       if (route.endsWith("/session/snapshot")) {
         await snapshotGate;
+        if (failSnapshotSessions.has(String(body.session_id))) {
+          return envelopeProblem("unavailable", "snapshot unavailable", true);
+        }
         return envelope({
           version: 1,
           session_id: body.session_id,
@@ -422,7 +436,13 @@ describe("RuntimeClient", () => {
         await historyGate;
         return envelope(page);
       }
+      if (route.endsWith("/model/remove")) {
+        return envelope({version: 1, models: []});
+      }
       if (route.endsWith("/profile/get")) {
+        const hold = holdNextProfile;
+        holdNextProfile = undefined;
+        await hold;
         await profileGate;
         return envelope({
           profile: {
@@ -1262,7 +1282,7 @@ describe("RuntimeClient", () => {
     client.stop();
   });
 
-  it("restores scoped cursor, selection, and drafts without persisting tokens", async () => {
+  it("restores scoped cursor, selection, and drafts over a cookie-authenticated socket", async () => {
     const storage = new MemoryBrowserStorage();
     storage.values.set("v1:build:workspace-id", {
       cursor: 41,
@@ -1277,7 +1297,6 @@ describe("RuntimeClient", () => {
     socket?.emit("open");
     expect(JSON.parse(socket?.sent[0] ?? "{}")).toEqual({
       type: "authenticate",
-      token: "token",
       workspace_id: "workspace-id",
       cursor: 41
     });
@@ -2024,7 +2043,7 @@ describe("RuntimeClient", () => {
     client.stop();
   });
 
-  it("downloads a signed content handle with the in-memory capability token", async () => {
+  it("downloads a signed content handle relying on the session cookie", async () => {
     const client = new RuntimeClient();
     await startClient(client);
 
@@ -2034,7 +2053,8 @@ describe("RuntimeClient", () => {
     expect(content.type).toBe("text/plain;charset=utf-8");
     const request = requests.find((item) => item.route.includes("/api/v1/content/"));
     expect(request?.route).toContain("signed.handle");
-    expect(request?.headers.get("Authorization")).toBe("Bearer token");
+    expect(request?.headers.get("Authorization")).toBeNull();
+    expect(requests.every((item) => !item.headers.has("Authorization"))).toBe(true);
     client.stop();
   });
 
@@ -2555,26 +2575,141 @@ describe("RuntimeClient", () => {
     client.stop();
   });
 
-  it("bootstraps a fresh token before reconnecting the socket", async () => {
+  it("shows the session-expired state instead of reconnecting without a session", async () => {
     vi.useFakeTimers();
     const client = new RuntimeClient();
     await startClient(client);
     const first = FakeWebSocket.instances.at(-1);
     if (!first) throw new Error("missing first WebSocket");
-    bootstrapToken = "rotated-token";
+    bootstrapAuthenticated = false;
 
     first.emit("close");
     await vi.advanceTimersByTimeAsync(700);
     await vi.waitFor(() => {
-      expect(FakeWebSocket.instances).toHaveLength(2);
+      expect(client.getSnapshot().phase).toBe("unauthenticated");
     });
-    const second = FakeWebSocket.instances[1];
-    second?.emit("open");
+    expect(FakeWebSocket.instances).toHaveLength(1);
+    client.stop();
+  });
 
-    expect(JSON.parse(second?.sent[0] ?? "{}")).toMatchObject({
-      type: "authenticate",
-      token: "rotated-token"
+  it("keeps reconnecting with backoff when a restart attempt fails", async () => {
+    vi.useFakeTimers();
+    const client = new RuntimeClient();
+    const first = await startClient(client);
+    failBootstrapAttempts = 1;
+
+    first.emit("close");
+    expect(client.getSnapshot()).toMatchObject({
+      phase: "reconnecting",
+      socketConnected: false
     });
+    await vi.advanceTimersByTimeAsync(reconnectDelay(0));
+    expect(failBootstrapAttempts).toBe(0);
+    expect(FakeWebSocket.instances).toHaveLength(1);
+    expect(client.getSnapshot().phase).toBe("reconnecting");
+
+    await vi.advanceTimersByTimeAsync(reconnectDelay(1));
+    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(2));
+    const second = FakeWebSocket.instances[1]!;
+    second.emit("open");
+    second.emit("message", {type: "hello", protocol_version: 1, sequence: 0});
+    await vi.waitFor(() => expect(client.getSnapshot()).toMatchObject({
+      phase: "ready",
+      socketConnected: true
+    }));
+    client.stop();
+  });
+
+  it("does not treat its own close of an expired session's stream as a disconnect", async () => {
+    vi.useFakeTimers();
+    const client = new RuntimeClient();
+    const first = await startClient(client);
+    first.close = () => first.emit("close");
+    bootstrapAuthenticated = false;
+
+    const bootstraps = () => vi.mocked(fetch).mock.calls
+      .filter(([input]) => String(input).endsWith("/bootstrap")).length;
+
+    first.emit("close");
+    await vi.advanceTimersByTimeAsync(reconnectDelay(0));
+    await vi.waitFor(() => expect(client.getSnapshot().phase).toBe("unauthenticated"));
+    const settled = bootstraps();
+    await vi.advanceTimersByTimeAsync(reconnectMaxDelayMs);
+
+    expect(bootstraps()).toBe(settled);
+    expect(client.getSnapshot().phase).toBe("unauthenticated");
+    expect(FakeWebSocket.instances).toHaveLength(1);
+    client.stop();
+  });
+
+  it("restores the previous Session when switching to another fails", async () => {
+    snapshotEvents = [runtimeEvent(1, "turn.started"), runtimeEvent(2, "turn.completed")];
+    snapshotSequence = 2;
+    const client = new RuntimeClient();
+    await startClient(client);
+    await vi.waitFor(() => expect(client.getSnapshot().hydratingSessionID).toBe(""));
+    const before = client.getSnapshot();
+    expect(before.selectedSessionID).toBe("session");
+    expect(before.conversation.order.length).toBeGreaterThan(0);
+    failSnapshotSessions.add("session-b");
+
+    await expect(client.selectSession("session-b")).rejects.toThrow("snapshot unavailable");
+
+    const after = client.getSnapshot();
+    expect(after.selectedSessionID).toBe("session");
+    expect(after.hydratingSessionID).toBe("");
+    expect(after.events).toEqual(before.events);
+    expect(after.conversation).toBe(before.conversation);
+    expect(after.profile).toEqual(before.profile);
+    client.stop();
+  });
+
+  it("does not apply a model-catalog profile read to a newer Session selection", async () => {
+    const client = new RuntimeClient();
+    await startClient(client);
+    await vi.waitFor(() => expect(client.getSnapshot().hydratingSessionID).toBe(""));
+    let release = (): void => {};
+    holdNextProfile = new Promise<void>((resolve) => { release = resolve; });
+    const removal = client.removeModel("reasoner");
+    await vi.waitFor(() => expect(holdNextProfile).toBeUndefined());
+
+    await client.selectSession("session-b");
+    expect(client.getSnapshot().profile?.profile.model).toBe("fixture");
+    currentModel = "reasoner";
+    release();
+    await removal;
+
+    expect(client.getSnapshot().selectedSessionID).toBe("session-b");
+    expect(client.getSnapshot().profile?.profile.model).toBe("fixture");
+    client.stop();
+  });
+
+  it("keeps the abort signal on the network retry of an idempotent request", async () => {
+    const client = new RuntimeClient();
+    await startClient(client);
+    const signals: Array<AbortSignal | null | undefined> = [];
+    const originalFetch = globalThis.fetch;
+    let failed = false;
+    vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).endsWith("/agent-preset/save")) {
+        signals.push(init?.signal);
+        if (!failed) {
+          failed = true;
+          return Promise.reject(new TypeError("connection reset"));
+        }
+      }
+      return originalFetch(input, init);
+    }));
+    const controller = new AbortController();
+    const call = (client as unknown as {
+      call: (route: string, body: unknown, options: unknown) => Promise<unknown>;
+    }).call.bind(client);
+    await call("agent-preset/save", {}, {
+      retryNetwork: true, idempotencyKey: "key", signal: controller.signal
+    }).catch(() => undefined);
+    expect(signals).toHaveLength(2);
+    expect(signals[1]).toBe(controller.signal);
+    vi.stubGlobal("fetch", originalFetch);
     client.stop();
   });
 
@@ -2589,7 +2724,7 @@ describe("RuntimeClient", () => {
     socket.emit("close");
 
     expect(client.getSnapshot()).toMatchObject({
-      phase: "failed",
+      phase: "reconnecting",
       socketConnected: false,
       problem: {message: "Connection interrupted.", retryable: true}
     });

@@ -111,3 +111,25 @@ func TestControllerIncreasesHeaderlessCooldownAfterRepeatedLimits(t *testing.T) 
 		t.Fatalf("adaptive penalties = %s, %s", first, second)
 	}
 }
+
+func TestXRateLimitResetAcceptsSecondAndMillisecondEpochs(t *testing.T) {
+	now := time.Unix(1_790_000_000, 0)
+	for _, test := range []struct {
+		value string
+		want  time.Duration
+	}{
+		{value: "30", want: 30 * time.Second},
+		{value: "1790000060", want: time.Minute},
+		{value: "1790000060000", want: time.Minute},
+		{value: "1790000000500", want: 500 * time.Millisecond},
+		{value: "1789999990000", want: 0},
+		{value: "1789999990", want: 0},
+	} {
+		header := http.Header{}
+		header.Set("X-RateLimit-Reset", test.value)
+		got, ok := resetDelay(header, now)
+		if !ok || got != test.want {
+			t.Fatalf("X-RateLimit-Reset %s = %v, %t; want %v", test.value, got, ok, test.want)
+		}
+	}
+}

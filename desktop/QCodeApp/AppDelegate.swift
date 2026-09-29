@@ -70,11 +70,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.session = session
         session.onReady = { [weak self] endpoints in
             guard let self, !self.terminating else { return }
+            let pageURL = endpoints.launchURL ?? endpoints.baseURL
             if let window = self.window {
-                window.reload(baseURL: endpoints.baseURL)
+                window.reload(pageURL: pageURL)
                 window.makeKeyAndOrderFront(nil)
             } else {
-                self.showWindow(baseURL: endpoints.baseURL)
+                self.showWindow(baseURL: endpoints.baseURL, pageURL: pageURL)
             }
         }
         session.onFailure = { [weak self] message in
@@ -90,8 +91,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         session.start()
     }
 
-    private func showWindow(baseURL: URL) {
-        let window = WebWindow(baseURL: baseURL)
+    private func showWindow(baseURL: URL, pageURL: URL) {
+        let window = WebWindow(baseURL: baseURL, pageURL: pageURL)
         self.window = window
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)

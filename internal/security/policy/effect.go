@@ -1,6 +1,10 @@
 package policy
 
-import "github.com/fwtllh-png/QCode/internal/adapter/tool"
+import (
+	"strings"
+
+	"github.com/fwtllh-png/QCode/internal/adapter/tool"
+)
 
 type EffectKind string
 
@@ -79,7 +83,8 @@ func NormalizeEffect(invocation Invocation) Effect {
 		// can review it without repeatedly asking for human approval.
 		return effect(EffectNetworkRead, RiskMedium, "bounded")
 	case invocation.Capability == tool.CapabilityNetwork || resources&4 != 0:
-		if invocation.Access == tool.AccessRead && resources&1 == 0 {
+		if invocation.Access == tool.AccessRead && resources&1 == 0 &&
+			!processEgressCanWrite(invocation) {
 			return effect(EffectNetworkRead, RiskMedium, "bounded")
 		}
 		return effect(EffectNetworkMutating, RiskHigh, "irreversible")
@@ -118,6 +123,44 @@ func strongProcessUsesOnlyLoopback(invocation Invocation) bool {
 		}
 	}
 	return found
+}
+
+// processEgressCanWrite reports whether a process network grant can carry
+// data outward. The managed proxy sees only the CONNECT endpoint of an HTTPS
+// tunnel and enforces methods only for plaintext HTTP, so a process target is
+// a read only when it is plaintext HTTP restricted to safe methods.
+func processEgressCanWrite(invocation Invocation) bool {
+	if invocation.Capability != tool.CapabilityProcess {
+		return false
+	}
+	for _, resource := range invocation.Resources {
+		protocol := resource.Protocol
+		switch resource.Kind {
+		case "host":
+			if protocol == "loopback" {
+				continue
+			}
+		case "url":
+			target, ok := ParseNetworkTarget(resource.ID)
+			if !ok {
+				return true
+			}
+			protocol = target.Protocol
+		default:
+			continue
+		}
+		if protocol != "http" || len(resource.Methods) == 0 {
+			return true
+		}
+		for _, method := range resource.Methods {
+			switch strings.ToUpper(method) {
+			case "GET", "HEAD", "OPTIONS":
+			default:
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func effect(kind EffectKind, risk RiskLevel, reversibility string) Effect {

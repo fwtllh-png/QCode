@@ -11,7 +11,7 @@ import (
 	filetool "github.com/fwtllh-png/QCode/internal/adapter/tool/file"
 	interacttool "github.com/fwtllh-png/QCode/internal/adapter/tool/interact"
 	"github.com/fwtllh-png/QCode/internal/config"
-	workbudget "github.com/fwtllh-png/QCode/internal/orchestration/budget"
+	"github.com/fwtllh-png/QCode/internal/orchestration/childrun"
 	"github.com/fwtllh-png/QCode/internal/orchestration/subagent"
 	sessionstate "github.com/fwtllh-png/QCode/internal/persist/session"
 	persiststate "github.com/fwtllh-png/QCode/internal/persist/state"
@@ -25,7 +25,6 @@ func buildChildOrchestration(
 ) error {
 	session, execution := state.session, state.config.execution
 	limits := effectiveSubagentLimits(execution.Subagent, execution.TurnBudgetTokens)
-	output.childGovernor = newChildGovernor(limits)
 	childRoot := childStateRoot(state)
 	agentRoot := filepath.Join(childRoot, "agents")
 	if err := os.MkdirAll(agentRoot, 0o700); err != nil {
@@ -64,11 +63,10 @@ func buildChildOrchestration(
 	if err != nil {
 		return fmt.Errorf("Chat worktrees: %w", err)
 	}
-	output.children = newChildRuntime(
-		limits, execution.Workspace, output.childGovernor, output.childToolsets,
-	)
-	output.workBudget = workbudget.NewLedger()
-	output.children.useBudget(output.workBudget)
+	output.children = childrun.New(childrun.Options{
+		Limits: limits, Workspace: execution.Workspace,
+		Tools: output.childToolsets,
+	})
 	workspaceIdentity, err := sessionstate.NormalizeWorkspaceRoot(execution.Workspace)
 	if err != nil {
 		return fmt.Errorf("normalize agent workspace: %w", err)
@@ -83,7 +81,7 @@ func buildChildOrchestration(
 	if err != nil {
 		return fmt.Errorf("agent control: %w", err)
 	}
-	output.childToolsets.bindAgents(output.subagents, state.config.runtimeSessionID, output.children.release)
+	output.childToolsets.bindAgents(output.subagents, state.config.runtimeSessionID, output.children.Release)
 	output.parentFiles, err = filetool.NewWithBackend(
 		execution.Workspace,
 		state.platform.backend,
@@ -99,11 +97,21 @@ func buildChildOrchestration(
 			state.options.PersistentStore, execution.Workspace, state.config.runtimeSessionID,
 		),
 		Files:   output.parentFiles,
-		Sandbox: state.platform.backend, OnRelease: output.children.release, Verify: state.security.verify, Workspace: execution.Workspace, SessionID: state.config.runtimeSessionID,
+		Sandbox: state.platform.backend, OnRelease: output.children.Release, Verify: state.security.verify, Workspace: execution.Workspace, SessionID: state.config.runtimeSessionID,
 	}); err != nil {
 		return fmt.Errorf("agent tool: %w", err)
 	}
 	return nil
+}
+
+func childStateRoot(state *buildState) string {
+	// Worktrees must remain inside the guarded workspace so their paths can be
+	// represented by the resource resolver and enforced by the OS sandbox.
+	root := filepath.Clean(state.config.execution.Workspace)
+	if resolved, err := filepath.EvalSymlinks(root); err == nil {
+		root = resolved
+	}
+	return filepath.Join(root, ".qcode")
 }
 
 func buildInteractionOrchestration(

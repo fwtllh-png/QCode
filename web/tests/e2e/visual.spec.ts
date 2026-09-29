@@ -10,7 +10,6 @@ import {tmpdir} from "node:os";
 import path from "node:path";
 import type {Readable} from "node:stream";
 import {fileURLToPath} from "node:url";
-import type {WorkspaceCatalog} from "../../src/protocol";
 
 const repositoryRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -1580,16 +1579,13 @@ function runtimeURL(
   });
 }
 
-async function workspaceURL(origin: string): Promise<string> {
-  const bootstrap = await fetch(new URL("/api/v1/bootstrap", origin));
-  const value = await bootstrap.json() as {
-    workspace_catalog: WorkspaceCatalog;
-  };
-  const workspaces = value.workspace_catalog.workspaces.filter((workspace) => workspace.ready);
-  if (workspaces.length !== 1) {
-    throw new Error("Expected one ready workspace in the isolated visual fixture");
+// The printed ready URL carries the one-time launch code and, because the
+// fixture passes --workspace, the Workspace selection. The anonymous
+// bootstrap no longer exposes the catalog, so the URL is used as printed.
+async function workspaceURL(printed: string): Promise<string> {
+  const target = new URL(printed);
+  if (!target.searchParams.get("launch") || !target.searchParams.get("workspace")) {
+    throw new Error(`Expected a launch URL for the isolated visual fixture: ${printed}`);
   }
-  const target = new URL(origin);
-  target.searchParams.set("workspace", workspaces[0].id);
   return target.toString();
 }

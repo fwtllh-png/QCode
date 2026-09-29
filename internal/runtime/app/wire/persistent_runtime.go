@@ -15,6 +15,9 @@ import (
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
 )
 
+// Startup recovery quarantines unrestorable Turns through the terminal store.
+var _ app.TurnQuarantineStore = (*state.WorkspaceTerminalStore)(nil)
+
 type PersistentRuntimeOptions struct {
 	Store               *state.Store
 	WorkspaceRoot       string
@@ -67,6 +70,9 @@ func PreparePersistentRuntime(
 		AgentPresets:       presets,
 		Observability:      options.Observability,
 		GitControl:         options.GitControl,
+		// A failed durable write already waited out the store's lock budget,
+		// so settlement retries are paced by that same budget.
+		SettlementRetry: options.Store.SQLite().BusyTimeout(),
 	}
 	if options.DefaultProfile.Version != 0 {
 		runtimeOptions.SessionProfiles = repositories.Sessions

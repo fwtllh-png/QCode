@@ -25,9 +25,10 @@ func (e *Engine) WorkspaceExcerpt(relPath string, maxBytes int) (string, bool) {
 	if e == nil || maxBytes <= 0 {
 		return "", false
 	}
-	e.mu.Lock()
+	// Workspace is fixed at construction. Taking e.mu here would deadlock:
+	// Execute holds it for the whole turn, including the spawn_agent tool call
+	// that forks parent context through this method.
 	root := e.options.Workspace
-	e.mu.Unlock()
 	if root == "" || relPath == "" {
 		return "", false
 	}

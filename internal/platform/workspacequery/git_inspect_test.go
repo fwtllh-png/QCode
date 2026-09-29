@@ -20,7 +20,7 @@ func TestGitInspectSeparatesIndexWorktreeAndUntracked(t *testing.T) {
 	write("a.txt", "initial\n")
 	write("remove.txt", "remove\n")
 	write("image.bin", "\x00initial")
-	write(".gitignore", ".secret\n")
+	write(".gitignore", ".secret\nignored.txt\n")
 	runGit(t, root, "add", ".")
 	runGit(t, root, "commit", "-m", "initial")
 	write("a.txt", "initial\nstaged\n")
@@ -29,6 +29,7 @@ func TestGitInspectSeparatesIndexWorktreeAndUntracked(t *testing.T) {
 	write("new\tfile.txt", "hello\n")
 	write("image.bin", "\x00modified")
 	write(".secret", "do not expose\n")
+	write("ignored.txt", "do not count\n")
 	runGit(t, root, "add", "-f", ".secret")
 	if err := os.Remove(filepath.Join(root, "remove.txt")); err != nil {
 		t.Fatal(err)
@@ -46,6 +47,7 @@ func TestGitInspectSeparatesIndexWorktreeAndUntracked(t *testing.T) {
 		files[file.Path] = file
 	}
 	if len(files) != 4 || !files["new\tfile.txt"].Untracked ||
+		files["new\tfile.txt"].Unstaged == nil || files["new\tfile.txt"].Unstaged.Added != 1 ||
 		files["a.txt"].Staged == nil || files["a.txt"].Staged.Added != 1 ||
 		files["a.txt"].Unstaged == nil || files["a.txt"].Unstaged.Added != 1 ||
 		files["image.bin"].Unstaged == nil || !files["image.bin"].Unstaged.Binary ||
@@ -69,9 +71,74 @@ func TestGitInspectSeparatesIndexWorktreeAndUntracked(t *testing.T) {
 	if err != nil || !strings.Contains(patch.Diff, "+hello") {
 		t.Fatalf("untracked patch=%+v err=%v", patch, err)
 	}
-	for _, name := range []string{".secret", "../outside", ":(glob)*", "not-present.txt"} {
+	for _, name := range []string{".secret", "ignored.txt", "../outside", ":(glob)*", "not-present.txt"} {
 		if _, err := service.GitPatch(t.Context(), name, false); !errors.Is(err, os.ErrNotExist) {
 			t.Fatalf("expected inaccessible path %q, got %v", name, err)
+		}
+	}
+}
+
+func TestGitInspectCountsNewFilesBeforeAndAfterStaging(t *testing.T) {
+	root := t.TempDir()
+	initRepository(t, root)
+	cases := []struct {
+		name    string
+		content string
+		stat    GitChangeStat
+	}{
+		{"empty.txt", "", GitChangeStat{}},
+		{"lines.txt", "first\n\nlast\n", GitChangeStat{Added: 3}},
+		{"no-eol.txt", "first\nlast", GitChangeStat{Added: 2}},
+		{"crlf.txt", "first\r\nlast\r\n", GitChangeStat{Added: 2}},
+		{"blank.txt", "\n", GitChangeStat{Added: 1}},
+		{"你好\tfile\nname.txt", "你好\n世界", GitChangeStat{Added: 2}},
+		{" literal\\name.txt ", "literal\n", GitChangeStat{Added: 1}},
+		{"binary.dat", "\x00one\ntwo\n", GitChangeStat{Binary: true}},
+		{"limit.txt", strings.Repeat("x", GitInspectMaxBytes), GitChangeStat{Added: 1}},
+	}
+	for _, tc := range cases {
+		if err := os.WriteFile(filepath.Join(root, tc.name), []byte(tc.content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	service, err := New(root, queryTestBackend{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, staged := range []bool{false, true} {
+		if staged {
+			runGit(t, root, "add", ".")
+		}
+		before, err := service.gitInspect(t.Context(), "status", "--porcelain=v1", "-z")
+		if err != nil {
+			t.Fatal(err)
+		}
+		overview, err := service.GitOverview(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(overview.Files) != len(cases) {
+			t.Fatalf("unexpected files: %+v", overview.Files)
+		}
+		files := make(map[string]GitChange)
+		for _, file := range overview.Files {
+			files[file.Path] = file
+		}
+		for _, tc := range cases {
+			file := files[tc.name]
+			stat := file.Unstaged
+			if staged {
+				stat = file.Staged
+			}
+			if file.Untracked == staged || stat == nil || *stat != tc.stat {
+				t.Errorf("staged=%t path=%q file=%+v stat=%+v want=%+v", staged, tc.name, file, stat, tc.stat)
+			}
+			if staged && file.Unstaged != nil || !staged && file.Staged != nil {
+				t.Errorf("file counted in both scopes: %+v", file)
+			}
+		}
+		if after, err := service.gitInspect(t.Context(), "status", "--porcelain=v1", "-z"); err != nil || after != before {
+			t.Fatalf("GitOverview changed the index or worktree: err=%v", err)
 		}
 	}
 }
@@ -108,13 +175,18 @@ func TestGitInspectUnbornAndNestedWorkspace(t *testing.T) {
 		t.Fatal(err)
 	}
 	runGit(t, root, "add", ".")
+	if err := os.WriteFile(filepath.Join(root, "nested", "untracked.txt"), []byte("one\ntwo"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	service, err := New(filepath.Join(root, "nested"), queryTestBackend{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	result, err := service.GitOverview(t.Context())
-	if err != nil || len(result.Files) != 1 || result.Files[0].Path != "new.txt" ||
-		result.Files[0].Staged == nil || result.Files[0].Staged.Added != 1 {
+	if err != nil || len(result.Files) != 2 || result.Files[0].Path != "new.txt" ||
+		result.Files[0].Staged == nil || result.Files[0].Staged.Added != 1 ||
+		result.Files[1].Path != "untracked.txt" || result.Files[1].Unstaged == nil ||
+		result.Files[1].Unstaged.Added != 2 {
 		t.Fatalf("overview=%+v err=%v", result, err)
 	}
 	patch, err := service.GitPatch(t.Context(), "new.txt", true)
@@ -129,14 +201,33 @@ func TestGitInspectRefusesOversizedAndSymlinkContent(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "large.txt"), []byte(strings.Repeat("x", GitInspectMaxBytes+1)), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(filepath.Join(t.TempDir(), "secret"), filepath.Join(root, "link")); err != nil {
+	outside := filepath.Join(t.TempDir(), "secret")
+	if err := os.WriteFile(outside, []byte("outside content\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(root, "link")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(outside, filepath.Join(root, "hardlink")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "encoding.txt"), []byte{0xff, '\n'}, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	service, err := New(root, queryTestBackend{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"large.txt", "link"} {
+	overview, err := service.GitOverview(t.Context())
+	if err != nil || len(overview.Files) != 4 {
+		t.Fatalf("overview=%+v err=%v", overview, err)
+	}
+	for _, file := range overview.Files {
+		if !file.Untracked || file.Unstaged != nil {
+			t.Fatalf("unreadable file must have unavailable stats: %+v", file)
+		}
+	}
+	for _, name := range []string{"large.txt", "link", "hardlink", "encoding.txt"} {
 		if _, err := service.GitPatch(t.Context(), name, false); err == nil {
 			t.Fatalf("exposed %q", name)
 		}

@@ -467,8 +467,8 @@ func (e *Engine) modelStep(
 				},
 			},
 			providerassembly.TransportLifecycle{
-				Activate: e.setActiveCancel,
-				Clear:    e.clearActiveCancel,
+				Activate: e.setSampleCancel,
+				Clear:    e.clearSampleCancel,
 				Begin: func(callCtx context.Context) (
 					context.Context,
 					func(error),

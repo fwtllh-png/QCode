@@ -391,7 +391,7 @@ func (runtimeModule) Build(
 		}
 	}
 	if state.orchestration.children != nil {
-		if err := state.orchestration.children.bind(
+		if err := state.orchestration.children.Bind(
 			session.Runtime,
 			state.agent.threads,
 			state.orchestration.subagents,

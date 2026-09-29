@@ -314,7 +314,7 @@ func (e *Engine) failedTurnContextMessage(transaction []provider.Message, failur
 	return message
 }
 
-func (h *turnEmitter) finish(ctx context.Context, result *Result, resultErr *error) {
+func (h *turnEmitter) finishTerminal(ctx context.Context, result *Result, resultErr *error) {
 	if h.emitted || h.recoveryPending {
 		return
 	}

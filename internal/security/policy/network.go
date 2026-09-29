@@ -2,6 +2,7 @@ package policy
 
 import (
 	"net"
+	"net/netip"
 	"net/url"
 	"strconv"
 	"strings"
@@ -75,6 +76,41 @@ func ParseNetworkTarget(raw string) (NetworkTarget, bool) {
 
 func normalizeHost(host string) string {
 	return strings.ToLower(strings.TrimSpace(host))
+}
+
+// NamesHostLocal reports whether host itself names this machine or its link:
+// a localhost name, or a loopback, link-local (including cloud metadata), or
+// unspecified IP literal.
+func NamesHostLocal(host string) bool {
+	host = strings.TrimSuffix(normalizeHost(strings.Trim(host, "[]")), ".")
+	if host == "localhost" || strings.HasSuffix(host, ".localhost") {
+		return true
+	}
+	address, err := netip.ParseAddr(host)
+	if err != nil {
+		return false
+	}
+	address = address.Unmap()
+	return address.IsLoopback() || address.IsLinkLocalUnicast() ||
+		address.IsLinkLocalMulticast() || address.IsUnspecified()
+}
+
+func targetsHostLocal(resources []tool.Resource) bool {
+	for _, resource := range resources {
+		switch resource.Kind {
+		case "host":
+			// The loopback protocol is a sandboxed process binding its own
+			// loopback, not a request toward a host-local service.
+			if resource.Protocol != "loopback" && NamesHostLocal(resource.ID) {
+				return true
+			}
+		case "url":
+			if target, ok := ParseNetworkTarget(resource.ID); ok && NamesHostLocal(target.Host) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func HostResource(target NetworkTarget, access tool.AccessMode) tool.Resource {

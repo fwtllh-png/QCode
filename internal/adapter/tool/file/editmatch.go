@@ -187,23 +187,94 @@ func replaceNormalized(content, old, replacement string, occurrences int) ([]byt
 	if len(spans) == 0 {
 		return nil, false
 	}
-	// A span that carries CRLF endings hands its line endings to the
-	// replacement, so the replacement adopts the file's convention instead of
-	// introducing mixed endings.
-	if strings.Contains(content[spans[0].start:spans[0].end], "\r\n") {
-		replacement = strings.ReplaceAll(
-			strings.ReplaceAll(replacement, "\r\n", "\n"), "\n", "\r\n",
-		)
-	}
 	var builder strings.Builder
 	cursor := 0
 	for _, current := range spans {
-		builder.WriteString(content[cursor:current.start])
-		builder.WriteString(replacement)
+		// Matching trimmed the first line's indentation. When only whitespace
+		// precedes the span, the span takes the whole line so the replacement
+		// is re-indented in the file's style rather than stacked on top of it.
+		lineStart := strings.LastIndexByte(content[:current.start], '\n') + 1
+		fromLineStart := strings.TrimLeftFunc(content[lineStart:current.start], unicode.IsSpace) == ""
+		text := reindentReplacement(old, content[lineStart:current.end], replacement, fromLineStart)
+		start := current.start
+		if fromLineStart {
+			start = lineStart
+		}
+		builder.WriteString(content[cursor:start])
+		builder.WriteString(adoptLineEnding(content, current.start, text))
 		cursor = current.end
 	}
 	builder.WriteString(content[cursor:])
 	return []byte(builder.String()), true
+}
+
+// reindentReplacement carries the whitespace difference between old and the
+// matched file lines over to the replacement. Line i of old corresponds to
+// line i of region because folding never adds or removes line breaks. Each
+// replacement line whose indentation extends an old line's indentation gets
+// that prefix swapped for the file line's indentation (longest prefix wins);
+// lines with unrelated indentation are kept verbatim. When the span starts
+// mid-line, the file already supplies what precedes it, so only the leading
+// whitespace old itself carried is dropped from the first replacement line.
+func reindentReplacement(old, region, replacement string, fromLineStart bool) string {
+	oldLines := strings.Split(strings.ReplaceAll(old, "\r\n", "\n"), "\n")
+	regionLines := strings.Split(strings.ReplaceAll(region, "\r\n", "\n"), "\n")
+	type indentPair struct{ from, to string }
+	var pairs []indentPair
+	for index := range min(len(oldLines), len(regionLines)) {
+		if (index == 0 && !fromLineStart) || strings.TrimSpace(oldLines[index]) == "" {
+			continue
+		}
+		pairs = append(pairs, indentPair{
+			from: leadingWhitespace(oldLines[index]),
+			to:   leadingWhitespace(regionLines[index]),
+		})
+	}
+	lines := strings.Split(replacement, "\n")
+	for index, line := range lines {
+		if index == 0 && !fromLineStart {
+			lines[index] = strings.TrimPrefix(line, leadingWhitespace(oldLines[0]))
+			continue
+		}
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		indent := leadingWhitespace(line)
+		best := -1
+		for candidate, pair := range pairs {
+			if strings.HasPrefix(indent, pair.from) &&
+				(best < 0 || len(pair.from) > len(pairs[best].from)) {
+				best = candidate
+			}
+		}
+		if best >= 0 {
+			lines[index] = pairs[best].to + line[len(pairs[best].from):]
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+func leadingWhitespace(line string) string {
+	return line[:len(line)-len(strings.TrimLeftFunc(line, unicode.IsSpace))]
+}
+
+// adoptLineEnding rewrites bare '\n' separators in replacement to CRLF when the
+// file line at offset ends in CRLF. file_read hides '\r', so replacement text
+// written from that view would otherwise introduce mixed line endings.
+func adoptLineEnding(content string, offset int, replacement string) string {
+	if !strings.Contains(replacement, "\n") {
+		return replacement
+	}
+	terminator := strings.IndexByte(content[offset:], '\n')
+	if terminator >= 0 {
+		terminator += offset
+	} else {
+		terminator = strings.LastIndexByte(content[:offset], '\n')
+	}
+	if terminator <= 0 || content[terminator-1] != '\r' {
+		return replacement
+	}
+	return strings.ReplaceAll(strings.ReplaceAll(replacement, "\r\n", "\n"), "\n", "\r\n")
 }
 
 // disproportionateEditSpan rejects a projected span that grew far beyond the

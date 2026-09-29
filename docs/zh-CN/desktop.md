@@ -44,6 +44,13 @@ QCode.app/Contents/MacOS/qcode-runtime  内嵌的 qcode Runtime 二进制
 页面始终从 `http://127.0.0.1:6732` 加载（不使用自定义 URL scheme）：
 前端 WebSocket、服务端 Origin 栅栏与本地存储都要求稳定的本机 origin。
 
+页面地址带一次性启动码（`?launch=`），加载时由服务端兑换为会话 Cookie：
+
+- 壳自己拉起的 Runtime：使用就绪行打印的启动地址。
+- 收养的 Runtime：用 lease 中的 Capability Token 调用 `auth/launch-code` 申请启动码。
+- 兜底收养默认端口时没有 lease，拿不到启动码，页面会提示会话失效。此时请用默认
+  数据目录启动 `qcode`，或直接运行 `qcode` 获取链接。
+
 ## 通知与角标
 
 WKWebView 不支持网页版 Notification API。桌面壳在页面加载前注入一个

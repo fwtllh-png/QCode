@@ -322,11 +322,14 @@ func (r *Runtime) evaluate(invocation Invocation) Decision {
 		decision = Decision{Action: ActionAsk, Code: "approval_required", Reason: "approval is required"}
 		effect := NormalizeEffect(invocation)
 		_, typed := GrantForInvocation(invocation)
+		// Loopback services and cloud metadata are never auto-reviewed: model
+		// input naming them is the classic request-forgery path.
 		if !r.DisableAutoReview && permissionAction == ActionAsk &&
 			!repositoryAsk && grant.Action != ActionAsk && typed &&
 			effect.Risk == RiskMedium &&
 			(effect.Kind == EffectAgentLifecycle ||
-				(effect.Kind == EffectNetworkRead && r.Permission == PermissionAuto)) {
+				(effect.Kind == EffectNetworkRead && r.Permission == PermissionAuto &&
+					!targetsHostLocal(invocation.Resources))) {
 			decision = Decision{
 				Action: ActionAllow, Code: "auto_review_allowed",
 				Reason: "bounded medium-risk effect has an exact typed grant",

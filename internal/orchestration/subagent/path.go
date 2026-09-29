@@ -13,9 +13,11 @@ func (m *Manager) nextPathLocked(parentID, taskName, agentID string) string {
 	}
 	name := pathSegment(taskName)
 	candidate := parent + "/" + name
-	for _, agent := range m.agents {
-		if agent.Path == candidate {
-			return fmt.Sprintf("%s_%s", candidate, strings.TrimPrefix(agentID, "agent-"))
+	for _, agents := range []map[string]*Agent{m.agents, m.provisioning} {
+		for _, agent := range agents {
+			if agent.Path == candidate {
+				return fmt.Sprintf("%s_%s", candidate, strings.TrimPrefix(agentID, "agent-"))
+			}
 		}
 	}
 	return candidate

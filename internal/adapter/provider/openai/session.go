@@ -206,9 +206,14 @@ func websocketEndpoint(endpoint string) (string, error) {
 	return value.String(), nil
 }
 
+// responsesSocketStream owns session.mu from openSession until Close. Its own
+// mu orders Close against a Recv that another goroutine left blocked in Read
+// (the transport idle timeout abandons Recv without waiting for it).
 type responsesSocketStream struct {
+	mu                       sync.Mutex
 	ctx                      context.Context
 	session                  *responsesSession
+	conn                     providerwire.Socket
 	decoder                  ResponsesDecoder
 	queue                    []provider.StreamEvent
 	started, stopped, closed bool
@@ -222,6 +227,8 @@ type responsesSocketStream struct {
 }
 
 func (s *responsesSocketStream) Recv() (provider.StreamEvent, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.stopped || s.closed {
 		return provider.StreamEvent{}, io.EOF
 	}
@@ -230,6 +237,9 @@ func (s *responsesSocketStream) Recv() (provider.StreamEvent, error) {
 		return provider.StreamEvent{Type: provider.EventMessageStart}, nil
 	}
 	for {
+		if s.closed {
+			return provider.StreamEvent{}, io.EOF
+		}
 		if len(s.queue) != 0 {
 			event := s.queue[0]
 			s.queue = s.queue[1:]

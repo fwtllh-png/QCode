@@ -261,6 +261,74 @@ func TestRollbackFailureIsIndeterminate(t *testing.T) {
 	}
 }
 
+func TestAppendAfterIndeterminateRollbackNeverWritesOverUnknownTail(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "events.jsonl")
+	log, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := log.Append(t.Context(), testEvent(1)); err != nil {
+		t.Fatal(err)
+	}
+	faulty := &tornTailFile{durableFile: log.file, truncateFailures: 2}
+	log.file = faulty
+	if err := log.Append(t.Context(), testEvent(2)); !errors.Is(err, ErrIndeterminate) {
+		t.Fatalf("first append error = %v, want indeterminate", err)
+	}
+	// Truncation still fails: the log must refuse rather than write at a
+	// stale offset in front of the torn bytes.
+	if err := log.Append(t.Context(), testEvent(3)); !errors.Is(err, ErrIndeterminate) {
+		t.Fatalf("append over unrepaired tail error = %v, want indeterminate", err)
+	}
+	if faulty.writes != 1 {
+		t.Fatalf("writes = %d, want no write before the tail is repaired", faulty.writes)
+	}
+	if err := log.Append(t.Context(), testEvent(3)); err != nil {
+		t.Fatalf("append after tail repair: %v", err)
+	}
+	if err := log.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := Open(path)
+	if err != nil {
+		t.Fatalf("reopen after repaired indeterminate append: %v", err)
+	}
+	t.Cleanup(func() { _ = reopened.Close(context.Background()) })
+	events, err := reopened.Replay(t.Context(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := eventSequences(events); fmt.Sprint(got) != "[1 3]" {
+		t.Fatalf("sequences = %v, want [1 3]", got)
+	}
+}
+
+type tornTailFile struct {
+	durableFile
+	truncateFailures int
+	writes           int
+}
+
+func (f *tornTailFile) Write(data []byte) (int, error) {
+	f.writes++
+	if f.writes > 1 {
+		return f.durableFile.Write(data)
+	}
+	written, err := f.durableFile.Write(data[:len(data)/2])
+	if err != nil {
+		return written, err
+	}
+	return written, errors.New("injected write failure")
+}
+
+func (f *tornTailFile) Truncate(size int64) error {
+	if f.truncateFailures > 0 {
+		f.truncateFailures--
+		return errors.New("injected truncate failure")
+	}
+	return f.durableFile.Truncate(size)
+}
+
 func TestCloseAndCanceledContext(t *testing.T) {
 	log, err := Open(filepath.Join(t.TempDir(), "events.jsonl"))
 	if err != nil {
