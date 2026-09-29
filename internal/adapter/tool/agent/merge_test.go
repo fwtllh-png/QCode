@@ -20,7 +20,7 @@ import (
 	"github.com/fwtllh-png/QCode/internal/persist/contentstore"
 	"github.com/fwtllh-png/QCode/internal/persist/workspacejournal"
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
-	"github.com/fwtllh-png/QCode/internal/security/controlmatrix"
+	securitymodel "github.com/fwtllh-png/QCode/internal/security/model"
 	"github.com/fwtllh-png/QCode/internal/security/policy"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
 )
@@ -167,17 +167,14 @@ func (mergeTestBackend) Capability() sandbox.Capability {
 	return sandbox.Capability{
 		Platform: "test", Backend: "passthrough",
 		Available: true,
-		Effective: controlmatrix.Matrix{FilesystemRead: controlmatrix.
-			FilesystemReadDeclaredRoots,
+		Effective: securitymodel.Controls{FilesystemRead: securitymodel.FilesystemReadDeclaredRoots,
 
-			FilesystemWrite: controlmatrix.
-				FilesystemWriteExactPaths,
+			FilesystemWrite: securitymodel.FilesystemWriteExactPaths,
 
-			Network: controlmatrix.NetworkDenied, ProcessTree: controlmatrix.ProcessTreeGroupKill, CrossProcess: controlmatrix.CrossProcessUnrestricted,
-			Syscall: controlmatrix.SyscallDenyDangerous, IPC: controlmatrix.
-					IPCUnrestricted, PathIdentity: controlmatrix.PathIdentityDescriptorRelative,
-			ArtifactOrigin:  controlmatrix.ArtifactOriginUnverifiedPath,
-			DurableRecovery: controlmatrix.DurableRecoveryMemoryOnly,
+			Network: securitymodel.NetworkDenied, ProcessTree: securitymodel.ProcessTreeGroupKill, CrossProcess: securitymodel.CrossProcessUnrestricted,
+			Syscall: securitymodel.SyscallDenyDangerous, IPC: securitymodel.IPCUnrestricted, PathIdentity: securitymodel.PathIdentityDescriptorRelative,
+			ArtifactOrigin:  securitymodel.ArtifactOriginUnverifiedPath,
+			DurableRecovery: securitymodel.DurableRecoveryMemoryOnly,
 		},
 	}
 }
@@ -190,9 +187,13 @@ func (b mergeTestBackend) Prepare(
 ) (sandbox.Command, error) {
 	command.PreparedPolicyID = b.policy.ID
 	command.PreparedAuthorityDigest = command.AuthorityDigest
-	command.PreparedControls = sandbox.CommandControls(
+	var err error
+	command.PreparedControls, err = sandbox.CommandControls(
 		b.Capability(), b.policy, command,
 	)
+	if err != nil {
+		return sandbox.Command{}, err
+	}
 	command.PreparedReadOnly = command.WorkspaceReadOnly
 	command.PreparedReadPaths = append(
 		[]string(nil),

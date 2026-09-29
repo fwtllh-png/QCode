@@ -3,7 +3,7 @@ package egress
 import "testing"
 
 func TestReceiptLogIsBounded(t *testing.T) {
-	gate := &Gate{}
+	gate := NewStaticGate()
 	gate.AllowTarget(Target{Host: "example.com", Protocol: "https", Port: 443})
 	authorized := Target{
 		Host: "example.com", Protocol: "https", Port: 443,

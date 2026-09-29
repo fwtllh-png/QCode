@@ -15,7 +15,7 @@ import (
 	"github.com/fwtllh-png/QCode/internal/platform/process"
 	"github.com/fwtllh-png/QCode/internal/security/artifactbroker"
 	"github.com/fwtllh-png/QCode/internal/security/authority"
-	"github.com/fwtllh-png/QCode/internal/security/effect"
+	securitymodel "github.com/fwtllh-png/QCode/internal/security/model"
 	"github.com/fwtllh-png/QCode/internal/security/policy"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
 )
@@ -98,7 +98,7 @@ func TestRunCommandSettlesNonZeroExitAsFailure(t *testing.T) {
 			WorkspaceID: workspaceID, WorkspaceGeneration: 1,
 			Subject: subject, Executable: "/bin/sh",
 			Args: []string{"-c", "exit 7"}, WorkingDirectory: workspace,
-			Effect: authority.ManagedProcessEffect(effect.RiskLow),
+			Effect: authority.ManagedProcessEffect(securitymodel.RiskLow),
 		},
 	)
 	if err != nil {
@@ -201,38 +201,33 @@ func newFixture(t *testing.T) brokerFixture {
 		Disposition: tool.DispositionWaitForTeardown,
 	}
 	invocation.Binding = tool.TrustedBindingFromDescriptor(descriptor)
+	invocation.Assessment = tool.AssessResources(invocation.Binding, securitymodel.Declared{}, invocation.Resources)
+	prepared, err := invocation.SecurityInvocation()
+	if err != nil {
+		t.Fatal(err)
+	}
 	runtimePolicy := policy.DefaultRuntime(
 		policy.ModeAct,
 		policy.PermissionBypass,
 	)
-	profile, err := authority.Compile(authority.CompileInput{
+	compiled, err := authority.Compile(authority.CompileInput{
 		Runtime: runtimePolicy,
 		Invocation: policy.Invocation{
-			CallID: invocation.CallID, Tool: invocation.Tool,
-			Arguments: invocation.Arguments, Resources: invocation.Resources,
-			Capability: descriptor.Capability, Access: descriptor.AccessMode,
-			Sandbox: descriptor.SandboxRequirement, Validated: true,
+			CallID: prepared.CallID, Tool: prepared.Tool, Arguments: prepared.Arguments,
+			Source:     tool.CatalogSourceKind(invocation.Tool, invocation.Ref.Source),
+			Assessment: prepared.Assessment, Validated: true,
 		},
+		Prepared:   prepared,
 		Decision:   policy.Decision{Action: policy.ActionAllow},
-		Authorized: true, Revision: 1, Enforcement: "none",
-		Capability:    sandbox.Capability{Backend: "host", Available: true},
-		SandboxPolicy: sandbox.Policy{WorkspaceRoot: workspace},
+		Authorized: true, Revision: 1, Enforcement: sandbox.EnforcementNone,
+		Capability:          sandbox.Capability{Backend: "host", Available: true},
+		SandboxPolicy:       sandbox.Policy{WorkspaceRoot: workspace},
+		WorkspaceGeneration: 1,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	preliminary, err := authority.BuildExecutionOperation(authority.OperationInput{
-		WorkspaceRoot: workspace, WorkspaceGeneration: 1,
-		Invocation: invocation,
-		Effect: effect.Effect{
-			Kind: effect.ProcessReadOnly, Risk: effect.RiskHigh,
-			Reversibility: effect.Bounded,
-		},
-		HostReadRoots: []string{workspace},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	preliminary := compiled.Operation
 	artifactBroker, err := artifactbroker.New(artifactbroker.Options{
 		WorkspaceRoot: workspace, SandboxHomeRoot: home, StagingRoot: stage,
 		WorkspaceID: preliminary.WorkspaceID, WorkspaceGeneration: 1,
@@ -246,22 +241,16 @@ func newFixture(t *testing.T) brokerFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	operation, err := authority.BuildExecutionOperation(authority.OperationInput{
-		WorkspaceRoot: workspace, WorkspaceID: preliminary.WorkspaceID,
-		WorkspaceGeneration: 1, Invocation: invocation,
-		Effect: effect.Effect{
-			Kind: effect.ProcessReadOnly, Risk: effect.RiskHigh,
-			Reversibility: effect.Bounded,
-		},
+	bound, err := compiled.Bind(authority.Evidence{
 		Artifact: &authority.ArtifactIntent{
 			ManifestDigest: snapshot.Manifest.Digest,
 			Generation:     snapshot.Manifest.Generation,
 		},
-		HostReadRoots: []string{workspace},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
+	operation, profile := bound.Operation, bound.Profile
 	manager := authority.NewLeaseAuthority(authority.LeaseAuthorityOptions{})
 	lease, err := manager.Issue(authority.LeaseIssueRequest{
 		Operation: operation, Profile: profile,

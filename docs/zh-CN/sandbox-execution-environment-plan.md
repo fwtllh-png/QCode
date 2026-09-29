@@ -2,15 +2,21 @@
 
 状态：可实施设计合同。日期：2026-09-21。P6 已把产品默认改为 `v1` + `native`。
 同日修正：声明是通用接入路径；适配器与认证服务按接口/协议添加，不按语言清单添加。
+2026-09-29 修订：默认 Go 发现和宿主 GOPROXY 自动认证已移除，启动指纹不再执行
+工具版本命令。后续方向以[执行环境通用化优化方案](./environment-language-neutral-plan.md)
+为准；本文 EDS/Go 表格仅保留为历史问题背景。对应代码夹具已移除，编译测试使用
+通用资源声明，不代表默认语言发现能力。
 
-本文是实现与验收合同。产品默认现为 `architecture.md` / `security.md` 中的
-`v1` + `native`；`shared_user_temp` 仍默认关。配置层 `auth_services` 默认为空，
-runtime 会绑定宿主已有的 GOPROXY 认证。`contract` 只接受 `v1`，没有回退开关。
-空 `network_targets` 继承用户声明的环境网络资源到 Session Gate；未声明、
-无认证服务、无 `allow_loopback` 才是离线。
+本文记录原实现与验收合同，涉及语言发现与认证服务的旧决策已由通用化方案覆盖。
+产品默认现为 `architecture.md` / `security.md` 中的 `v1` + `native`；
+`shared_user_temp` 仍默认关。内置 GOPROXY 服务与 `auth_services` 配置已经删除，
+旧字段明确报错；Runtime 不探测或绑定宿主认证，不自动改写 GOPROXY。
+`contract` 只接受 `v1`，没有回退开关。空 `network_targets` 继承用户声明的环境网络
+资源到 Session Gate；没有声明目标且未开启 `allow_loopback` 时为离线。
+准备事实独立记录在 `environment_preparation_facts`，不用于归因任意失败命令。
 原 EDS 业务工作区的编译和指定测试不因默认切换而标成完成。
 
-实机证据见[内部依赖诊断](./sandbox-dependency-diagnosis.md)。
+当前实机验收见[执行环境通用化方案](./environment-language-neutral-plan.md#p4-实施记录)。
 证书文件发现已迁入环境准备链：`BuildPolicy` 不再独立发现 CA。
 
 ## 1. 推荐决策
@@ -45,9 +51,9 @@ P0 关闭前不得改写这些决策来“先做一个能跑的版本”。能�
 | D3 | 不新增 Control Matrix 维度。环境资源用新的 Resource Namespace 与 Access 表达；Workspace 写语义仍由现有 `filesystem_write` 描述。 |
 | D4 | P6 后主 Agent 默认 `native`。`shared_user_temp` 必须用户或显式配置打开。子 Agent 仍 `isolated`（D5）。 |
 | D5 | 子 Agent 默认 `isolated`，只继承父授权与子需求的交集；不能因父级原生 Home 或共享临时区而自动同权。 |
-| D6 | 首次登记只询问已绑定环境来源、用户声明的精确资源和已注册适配器的公开接口，禁止扫描整个 Home，禁止按变量名猜测敏感性。 |
+| D6 | 首次登记只询问已绑定环境来源、用户声明的精确资源和平台公开接口与 Git 集成声明，禁止扫描整个 Home，禁止按变量名猜测敏感性。 |
 | D7 | Darwin 单执行网络通道：一个 Workspace 代理进程，每个 Process Session 一个 loopback 端口和一份 Session Gate；Seatbelt 只放行该端口。 |
-| D8 | 第一种需要进程外认证的**协议**闭环必须是已复现的 GOPROXY，而不是通用 HTTP 反代。第二种认证协议在 GOPROXY 闭环之后单独验收。认证服务按协议加，不按语言加。 |
+| D8 | 内置 GOPROXY 认证服务和显式配置已由通用化 P3 删除；不读取宿主认证、不扩展内置语言或认证协议清单。 |
 | D9 | 隔离执行工作区与三方结算是独立阶段（P2b），不阻塞 P2a / P3。 |
 | D10 | 每个 Workspace 只有一套环境权威：准备器。`contract` 只接受 `v1`。 |
 | D11 | Skill、Agent 安装工具和 `sandbox-home` 资产继续以状态域身份存在，不跟随进程 `HOME`。 |
@@ -154,7 +160,7 @@ P2a 起新增并走协议生成命令：
 十维 Control Matrix 保持不变：
 
 - Workspace 写仍是 `filesystem_write`：`denied` / `exact_paths` / `workspace_tree`。
-- 出网仍是 `network`：`denied` / `loopback_exact` / `proxy_targets`。
+- 出网仍是 `network`：`denied` / `loopback_any` / `proxy_targets`。
 - `sandbox_home`、`cache`、`shared_user_temp` 是额外写域，由 Resource 绑定编译进
   OS 策略，不塞进 `workspace_tree`。
 - 凭证不进入进程时，不出现可读的 `credential` 文件 Resource；只出现 `use`。
@@ -277,9 +283,9 @@ GUI 绑定是 Host 操作，不是模型工具。用户确认后，Runtime 可�
    `EnvironmentGrant` 类型。Host 补声明界面尚未交付。
 9. 来源变化、工具升级或凭证轮换只影响下一次准备。活跃执行走显式撤销。
 
-核心不得出现生态名分支。Go / npm / pip / Git 若存在，只存在于
-`internal/adapter/environment`，且都是可选翻译器。
-Git 适配器只发现已存在的用户配置文件（`GIT_CONFIG_GLOBAL`、`~/.gitconfig`、
+核心不得出现生态名分支。环境准备器 `internal/adapter/envprep` 只处理通用声明，
+不维护语言发现器。Git 配置声明由 `internal/adapter/tool/git` 生成，
+只发现已存在的用户配置文件（`GIT_CONFIG_GLOBAL`、`~/.gitconfig`、
 XDG `git/config`），不扫描 Home，不声明凭证文件。isolated 仍跳过 Home 下的
 `host_config`。
 
@@ -290,24 +296,13 @@ XDG `git/config`），不扫描 Home，不声明凭证文件。isolated 仍跳�
 - 需要 shell 初始化时，初始化脚本本身是可执行资源，必须在 Spec 中声明。
 - 受保护控制变量（代理、沙箱、凭证引用、状态域根）不能被模型覆盖。
 
-### 7.4 适配器什么时候才需要写
+### 7.4 与通用化方案的衔接
 
-多数本机编码只需要 `native`、已批准的 `host_config` / `host_toolchain`、
-命令或环境级 `network` 目标。这时没有适配器也应能工作。
-
-只有同时满足下面两条，才值得新增适配器，而不是让用户重复声明：
-
-1. 该工具有稳定、非秘密的公开查询接口（例如 `go env -json`）。
-2. 手工声明这些结果的成本明显高于一次翻译，且翻译结果仍是第 5.2 节的
-   通用 namespace，不引入新的授权对象。
-
-只有同时满足下面两条，才值得新增认证服务（P3 类），而不是再写一个适配器：
-
-1. 长期凭证不能进入不可信进程。
-2. 现有 CONNECT 目标控制无法表达该协议的认证作用域
-   （模块路径前缀、registry 语义、禁止把凭证转到其他 Host）。
-
-不得为“支持 Rust / npm / Python”本身立项适配器或认证服务。
+新增语言工具只使用通用声明和普通受控命令，不为语言安装、缓存或版本选择新增
+默认发现器。Git 是 QCode 已有的版本控制集成，其配置声明由 Git 包负责。
+PATH、macOS SDK 和 TLS 证书属于平台基础，由统一来源驱动；解释器预加载规则
+属于安全防护。内置 GOPROXY 服务已移除，现行边界以
+[执行环境通用化优化方案](./environment-language-neutral-plan.md)的 P3 为准。
 
 ## 8. 开工实例：已复现的 EDS / Go 失败
 
@@ -339,7 +334,9 @@ P0 必须把下表做成可编译夹具。实现对照此表，而不是对照�
 
 ### 8.2 PreparedEnvironment 对这次命令的物化
 
-`contract=v1`、`profile=native`、`shared_user_temp=true`、凭证服务已绑定该源时：
+以下是原 EDS 样本的预期投影，保留用于理解历史设计。当前变量和缓存须由可信资源
+声明提供，内置凭证服务已删除；样本不代表当前 Runtime 会执行 `go env` 或配置认证。
+原条件为 `contract=v1`、`profile=native`、`shared_user_temp=true`、凭证服务已绑定该源：
 
 - `HOME` 保留宿主值；Seatbelt 只放行已批准的 `host_config` / `host_toolchain` 路径。
 - 不把整个 `~`、`~/.netrc`、`~/.ssh` 放进只读根。
@@ -360,7 +357,8 @@ P0 必须把下表做成可编译夹具。实现对照此表，而不是对照�
 | 回退打到 `code.byted.org` | Session Gate | `network_target_unapproved` | 现有网络审批 | 把 Forbidden 当成代理响应 |
 | 无结构化证据的退出 | 进程回执 | `unknown` | 保留输出，不自动授权 | 扫描 `401` / `permission denied` 改判 |
 
-这些类别在后续阶段接到准备器、Session Gate 和认证服务后仍然成立。
+这些类别保留为历史故障分类样本。当前准备事实独立记录，不直接分类任意失败命令；
+QCode 不再提供制品认证服务，也不从工具文本中推断凭证被拒绝。
 
 ## 9. 文件视图、Home、缓存与临时空间
 
@@ -429,40 +427,21 @@ P2b（独立阶段，复用现有 child worktree、File Broker、Journal、snaps
 
 ## 10. 认证与信任
 
-凭证是“调用某项认证能力”的引用。认证服务持有上游长期凭证；
-模型、普通命令和安装脚本默认拿不到它。
+凭证是“调用某项认证能力”的引用。用户显式接入的外部认证服务可持有上游长期凭证；
+QCode 内核不再提供制品源认证服务，也不承诺 `credential/use` 声明已完成凭证交付。
 
 已有 `certificates.go` 的规则保留：公共 CA 按文件或系统信任接口提供；
 客户端证书私钥按凭证处理；不关校验、不用 `-k`、不改宿主全局信任库。
 
-### 10.1 第一种认证协议：GOPROXY 受限服务
+### 10.1 内置 GOPROXY 服务已移除
 
-P3 闭环的是“制品源认证协议”，不是“Go 语言支持”。没有该服务时，Go 仍可走
-声明的 `host_config` / `network`；只是长期凭证不能承诺不进进程。
+原方案在此设计并交付过 GOPROXY 受限服务。通用化 P3 已删除其生产包、配置入口、
+协议分发、宿主凭证消费与进程变量重写，不再计划在内核中增加第二种制品认证协议。
+用户可显式接入受限外部服务，网络目标仍通过现有授权链。
 
-P3 第一个闭环：
-
-1. 绑定确定的 GOPROXY 源、HTTPS、允许的模块路径前缀和凭证引用。
-2. 执行进程只看到该 Session 的本地源端点；服务映射到固定上游。
-3. 服务校验上游 TLS、完成认证、只返回允许的模块元信息和 zip。
-4. 客户端 Host、路径、重定向不能改变凭证作用域。
-5. 服务不执行 `go`、仓库脚本或安装钩子。
-6. `\|direct` 与 `GOPRIVATE` 回退目标单独授权。
-
-不能只反向代理第一个 URL 就宣称兼容其他制品协议。
-第二种认证协议在 GOPROXY 空缓存获取、构建、测试通过后再选，并单独验收。
-选定依据是协议不兼容，不是“还要支持另一种语言”。
-
-Git credential helper 若把长期密码交还 Git，仍是向进程交付凭证，
-必须标成例外，不能计入“进程不可见凭证”。
-
-### 10.2 例外
-
-普通 CONNECT 保持端到端 TLS，只承诺目标级控制。
-本方案不默认部署通用 TLS 中间人。
-
-无法走受限服务时，可以显式批准短期、窄作用域凭证交付。
-这不是默认回退。只有长期凭证且无法限制作用域时，保留为能力缺口。
+`credential/use` 的编译只确定资源身份；当前没有通用绑定器，必需声明产生
+`credential_binder_unavailable` 准备事实，不向进程交付秘密，不隐式放开网络。
+Git credential helper 若把长期密码交还 Git，仍属于向进程交付凭证。
 
 ## 11. 网络
 
@@ -497,11 +476,9 @@ Web Gate 已有 `UseCallScope`。
 
 忽略代理的客户端不具备该出网能力，不能自动切到不受控网络。
 
-P3 已把 GOPROXY 认证接到 **Session loopback**，不写 Workspace 共享 Gate。
-绑定 `[[execution.environment.auth_services]]` 时即使 `network_targets` 为空
-也会开 Session 端口；进程只看到 `GOPROXY=http://127.0.0.1:<session-port>`。
-CONNECT 到真实制品源仍须单独声明，默认拒绝。
-Session 通道不可用时不回退到共享 Gate 或把凭证写入进程环境。
+内置 GOPROXY 服务及其保持联网的分支已在通用化 P3 删除。Session 通道只承担
+普通代理目标授权，不分发 origin-form 模块请求，也不改写 GOPROXY。
+Session 通道不可用时仍失败关闭，不回退到共享 Gate。
 
 ### 11.3 运行中发现新目标
 
@@ -532,7 +509,7 @@ source_unbound
 每条事实必须包含证据来源组件、受限 Resource、环境和授权版本、是否已有副作用。
 未经授权的路径不能完整暴露给无权主体。
 
-事实只来自环境准备器、File Broker、Session Gate、认证服务、OS 后端
+事实只来自环境准备器、File Broker、Session Gate、OS 后端
 或受支持工具的结构化结果。禁止搜索 stderr 自动授权或改判根因。
 macOS 拿不到精确 errno 时保留退出状态和原始输出，标记 `unknown`。
 
@@ -549,13 +526,13 @@ macOS 拿不到精确 errno 时保留退出状态和原始输出，标记 `unkno
 
 | Owner | 职责 |
 | --- | --- |
-| `internal/platform/environment` | `EnvironmentSpec`、`ResourceRequest`、编译到 `authority.Resource`、结构化失败事实，以及来源快照、准备、平台物化、`confstr`；无生态名 |
-| `internal/adapter/environment` | 可选翻译器；公开接口 → `ResourceRequest`。无适配器时准备器仍必须接受声明 |
+| `internal/environment` | `EnvironmentSpec`、`ResourceRequest`、声明校验、结构化失败事实；仅依赖标准库，无宿主探测或实现依赖 |
+| `internal/adapter/envprep` | 来源快照、通用声明编译到 `authority.Resource`、平台物化、`confstr` 与最终 `sandbox.Options` 投影；只接收声明 |
 | `internal/security/authority`、`policy` | namespace、`AccessUse`、Grant、Lease 绑定、修订、撤销 |
 | `internal/security/sandbox` | 已批准资源 → OS 约束；报告真实能力；迁出 toolchains/certificates 的环境权威 |
 | `internal/security/egress` | Session 端口、Session Gate、结构化失败、CONNECT 回收 |
-| `internal/platform/process` | 消费 `PreparedEnvironment`；绑定进程树、PTY、生命周期 |
-| `internal/runtime/app/wire` | 构造；Skill 根仍从状态域解析 |
+| `internal/platform/process` | 消费后端 Policy 中的环境投影并过滤密钥；绑定进程树、PTY、生命周期 |
+| `internal/runtime/app/wire` | 组合可信配置与 Git 集成声明，使用准备结果构造后端；不重复解释资源；Skill 根仍从状态域解析 |
 | `internal/runtime/agent` | 消费缺失能力与 `required_action`；不新增循环 |
 | `internal/host`、Web | 展示 Posture、登记、失败事实；不探测、不认证 |
 | `internal/persist`、`observability` | 复用 Journal、回执、Permission；不建第二套库 |
@@ -563,9 +540,23 @@ macOS 拿不到精确 errno 时保留退出状态和原始输出，标记 `unkno
 `internal/runtime/protocol` 继续不依赖实现包。回执字段放在 protocol，
 由仓库生成命令更新 Schema。
 
-环境契约与准备器同属一个包；Go/Git 适配器通过 `Discoverer` 接入，由 `wire`
-组装。EDS 夹具、基线观察和静态平台能力矩阵仅保留在该包的 `_test.go` 中，
-不进入生产包或作为真实平台能力探测结果。
+环境契约与准备实现分离，配置、安全模块只依赖契约。Git 配置文件发现归入
+`adapter/tool/git`，由 `wire` 组合成声明；准备器不保留 Discoverer 接口。
+Go 发现已删除，语言变量和缓存使用可信资源声明，默认链不扫描项目语言清单。
+准备器只生成一份执行投影：选择后的环境变量、路径与用户网络目标直接进入
+`PreparedEnvironment.Sandbox`。调用方已有的诊断、Git 路径与托管代理配置继续保留；
+声明中的 HTTP 代理变量不替换托管代理，isolated 继续过滤宿主 Home 配置。
+
+`Options.SourceEnv=nil` 在准备入口捕获一次宿主变量；显式空切片不继承宿主变量。
+PATH、SDK、证书和 Git 配置使用同一来源。平台 PATH 仍按公开目录补全；后续策略
+与进程创建不回读宿主环境。子 Agent 继承父策略的环境选择结果与平台资源，对自己的
+私有目录重新绑定声明。完整来源快照不进入 `PreparedEnvironment` 或策略。
+`security/envpolicy` 统一选择和安全规则：来源基线 < 可信声明 < 单次命令声明；
+同层同名异值、重复资源名报错。HOME、临时目录和受管代理由策略决定。
+秘密名与解释器预加载防护保留，进程层的 Go 变量清单与 Python 自动开关已删除。
+内置 GOPROXY 服务和显式绑定入口均已删除，不捕获宿主认证或读取 `.netrc`。
+环境编译使用通用声明测试覆盖网络、变量、凭证和路径绑定。EDS JSON 夹具、静态
+基线观察和测试专用平台能力矩阵已删除；真实能力由后端与 capability 测试验证。
 
 ### 13.1 必须删除的旧路径
 
@@ -573,7 +564,7 @@ macOS 拿不到精确 errno 时保留退出状态和原始输出，标记 `unkno
 
 | 旧路径 | 删除点 |
 | --- | --- |
-| `allowedEnvironment` 中的语言变量与 `SecretEnvironmentName` 子串猜测 | 不再从宿主继承语言变量；模型 extra 仍走白名单，秘密名仍 fail-closed |
+| 默认语言变量继承与分散的变量校验 | 只继承选择后的平台变量；任意普通变量可显式声明并统一校验，秘密名仍 fail-closed |
 | `sandboxEnvironment` 无条件重写 HOME / TMPDIR / GO*CACHE | 已删除。HOME/缓存只由准备器或 isolated `PrivateTemp` 写入 |
 | 隐式 login shell 恢复 PATH | 已删除；进程一律 `sh -c` |
 | Workspace 共享动态进程 Gate | P1b 后不再写入；P5 工具审批与 shell 不再把该 Gate 当累积面 |
@@ -605,10 +596,11 @@ macOS 拿不到精确 errno 时保留退出状态和原始输出，标记 `unkno
 
 ### P1a 结构化缺失回执
 
-状态：已落地（2026-09-21）。后续阶段已把准备器、Gate 和认证服务接到同一套
-`error_category` / `required_action`；无权威事实时仍为 `unknown`。
+状态：已落地（2026-09-21）。通用化 P3 后，当前执行的 Gate / OS 事实决定
+`error_category` / `required_action`；无权威事实时仍为 `unknown`。准备事实独立
+放入 `environment_preparation_facts`，不作为任意失败命令的原因。
 
-工作：准备器、Gate、进程回执发出第 12 节类别；Agent 提示消费 `required_action`。
+工作：准备器、Gate、进程回执发出第 12 节类别，并区分准备快照与当前执行事实。
 后续阶段已把准备器接入，不再依赖旧 HOME 重写。
 
 完成：第 8.3 节四种误诊在集成测试中不再把“沙箱看不见”说成“宿主不存在”，
@@ -635,12 +627,11 @@ Workspace 共享进程 Gate 不再写入。
 `legacy` + `isolated`。
 `contract=v1` 启用准备链并跳过旧 HOME / 缓存重写；`native` 与 `shared_user_temp`
 仍须显式打开。空 `network_targets` 的离线推断已在 P5 改为继承用户声明 Grant。
-Go 适配器是可选翻译器样例，不是
-本阶段的产品范围。Host 上的 `unattached` 补声明界面尚未交付。可信配置
+早期 Go 翻译器样例已在 2026-09-29 的通用化 P1 中删除，测试改用显式声明。Host 上的 `unattached` 补声明界面尚未交付。可信配置
 `[[execution.environment.resources]]` 已进入准备链。`write_paths` 可指向已存在
 工作区子目录并授予树写；工作区根仍拒绝。P2b 已把这些树写接到隔离工作区结算。
 
-工作：`internal/platform/environment` 中的环境契约与准备器；`AccessUse` 与新 namespace 的协议生成；
+工作：`internal/environment` 中的环境契约与 `internal/adapter/envprep` 中的准备器；`AccessUse` 与新 namespace 的协议生成；
 声明接入（无生态名的 `ResourceRequest`）与可选的第一个 Go 翻译器；
 `native` / `shared_user_temp` 显式开关；证书发现迁入准备链；Skill 根回归；
 目录树写授权（不含三方结算）。
@@ -649,7 +640,7 @@ Go 适配器是可选翻译器样例，不是
 核心从未识别过名称的工具只靠声明读写配置/缓存/临时文件；核心无语言名分支；
 旧 HOME 重写在 `v1` 下不执行；去掉 Go 适配器后声明路径仍能准备。
 
-验证：`go test ./internal/platform/environment ./internal/adapter/environment ./internal/security/sandbox`；
+验证：`go test ./internal/environment ./internal/adapter/envprep ./internal/security/sandbox`；
 现有 Skill sandbox 测试；按 Posture 拆分的临时区测试。
 
 ### P2b 隔离工作区结算
@@ -673,43 +664,13 @@ Go 适配器是可选翻译器样例，不是
 验证：`go test ./internal/orchestration/execsettle ./internal/orchestration/chatmerge
 ./internal/adapter/tool/shell ./internal/adapter/tool/guard`。
 
-### P3 GOPROXY 认证协议，再选第二种协议
+### P3 原 GOPROXY 认证协议（已撤销）
 
-状态：第一种认证协议 GOPROXY 已落地（2026-09-21）。第二种协议未选，
-配置层拒绝未知 protocol。产品默认不写 `auth_services`，但会绑定宿主已有的
-GOPROXY 认证。
-
-工作：GOPROXY 受限服务；长期凭证不进不可信进程；空缓存获取。
-这是认证协议闭环，不是“把 Go 做完”。GOPROXY 闭环后再选**协议不兼容**的
-第二种认证服务；不得按语言清单立项。
-
-实现要点：
-
-1. 可信配置 `[[execution.environment.auth_services]]` 覆盖绑定；最多 8 条，
-   当前实现只接受 1 个 `protocol = "goproxy"`。配置为空时，runtime 绑定宿主
-   `go env GOPROXY` 已有的 userinfo 或宿主 `~/.netrc`，前缀为 `*`（宿主代理
-   原本就承接全部模块）。没有宿主凭证则保持未绑定。第二种协议未开放。
-2. `upstream` 必须是 https 源点（loopback 可用 http），禁止 userinfo / query /
-   path；凭证只允许 `env` / `file` / `keyring` / `host` 引用。
-3. 服务挂在现有 Process Session loopback 上，不新增端口，也不写共享 Gate。
-4. Origin-form GET/HEAD 进协议处理；对已绑定上游主机的 CONNECT 与
-   absolute-form 记 `trust_validation_failed` 并拒绝。其他 CONNECT 仍走
-   Session Gate。
-5. 进程环境被改写为 `GOPROXY=http://127.0.0.1:<session-port>`，去掉 `|direct`
-   与上游秘密。`GOPRIVATE` 回退目标单独授权。
-6. 跨主机重定向不转发 Authorization。前缀外模块记
-   `trust_validation_failed`；上游 401/403 记 `credential_rejected`。
-7. 单次上游获取公共上限：拨号 10s、TLS 握手 10s、客户端 30s
-   （`goproxy.DialTimeout` / `TLSHandshakeTimeout` / `ClientTimeout`）。
-
-完成：受控测试源上空缓存 `@v/*.info` 返回真实版本元信息；
-`credential_rejected` 与 `network_target_unapproved` 可区分；
-长期凭证不出现在 argv / 进程环境 / 回执 / 模型上下文。
-第二种协议尚未立项。
-
-验证：`go test ./internal/security/goproxy ./internal/security/egress
-./internal/adapter/tool/shell ./internal/adapter/tool/guard
-./internal/runtime/app/wire ./internal/config`；默认 CI 不使用真实长期凭证。
+2026-09-21 的协议服务交付属于历史记录。2026-09-29 的执行环境通用化 P3 已删除
+`internal/security/goproxy`、`auth_services` 配置、代理 origin-form 服务分发和
+Shell 语言变量重写。当前仅保留通用 CONNECT / HTTP 转发、Gate 授权、通道认证
+和连接撤销。origin-form 在通道认证后返回 400；普通上游 Authorization 不受改写。
+相关验收转为旧配置拒绝、通道凭据隔离、普通代理授权及准备事实独立性。
 
 ### P4 运行中审批与恢复
 
@@ -747,19 +708,19 @@ GOPROXY 认证。
    `exec_command` / Session 通道。
 2. `v1` 空 `network_targets` 只继承用户声明的 `namespace=network` 到 Session
    Gate，不继承适配器发现的 GOPROXY 主机，也不写 Workspace 共享 Gate。
-3. 不再从宿主继承 `GO*` 语言变量；准备器物化值与模型 extra 才进入进程。
+3. 受控进程只使用准备结果与显式命令声明，不回读宿主变量，不枚举语言变量清单。
    `SecretEnvironmentName` 仍拦截 extra。HOME/缓存重写与 login shell 已删除。
 4. 工具审批不再接收进程 Gate。Workspace `processEgress` 只做代理 listen/enforce。
 
 完成：无共享动态进程授权，无隐式环境路径，无双权威。默认切换见 P6。
 
-验证：`go test ./internal/platform/environment ./internal/security/sandbox
+验证：`go test ./internal/environment ./internal/adapter/envprep ./internal/security/sandbox
 ./internal/platform/process ./internal/adapter/tool/shell
 ./internal/runtime/app/wire`；`make docs-check`。
 
 ### P6 默认切换
 
-状态：产品默认已切换（2026-09-21）。`shared_user_temp` 与认证服务仍默认关。
+状态：产品默认已切换（2026-09-21）。`shared_user_temp` 仍默认关，内置认证服务已删除。
 
 工作：选定 Workspace 完整矩阵通过后，才把推荐默认改为 `v1`+`native`。
 `shared_user_temp` 仍默认关，除非该 Workspace 明确需要原生 `mktemp`。
@@ -767,18 +728,20 @@ GOPROXY 认证。
 实现要点：
 
 1. 配置默认值为 `contract=v1`、`profile=native`、`shared_user_temp=false`，
-   `auth_services` 为空。runtime 仍绑定宿主已有的 GOPROXY 认证。`contract`
+   `auth_services` 已删除。runtime 不绑定宿主认证。`contract`
    拒绝其它值。`isolated` 仍是子 Agent 固定姿态，也可由主 Agent 显式选择。
 2. 主 Agent 保留宿主 HOME 变量，但不开放整个 Home，也不打开共享用户临时区。
    子 Agent 仍 `ChildProfile=isolated`。
-3. 仓库内标准库样本模块在默认合同下执行 `go test`，并与宿主同输入对照。
+3. 仓库内标准库样本模块通过显式工具链与缓存资源声明执行 `go test`，
+   并与宿主同输入对照。
    这是验收样本，不是“已支持语言”清单，也不把原 EDS 业务任务标成完成。
 
-完成：默认合同可真实编译并跑指定测试；文档区分已交付默认与原 EDS 业务证据。
+完成：通过通用声明准备的环境可真实编译并跑指定测试；默认合同不再代为发现
+Go 工具链和缓存。文档区分已交付默认与原 EDS 业务证据。
 
 验证：`go test ./internal/config
-./internal/platform/environment ./internal/runtime/app/wire
-./internal/adapter/environment`；`make docs-check`。
+./internal/environment ./internal/runtime/app/wire
+./internal/adapter/envprep`；`make docs-check`。
 
 若 P0 发现平台边界无法满足，修正执行配置或实现后端，不得为通过检查而扩大权限。
 
@@ -791,7 +754,7 @@ GOPROXY 认证。
 | P1a | 配置缺失、认证失败、未批准出网、临时区 EPERM 可区分 |
 | P1b | 命令 A 的目标不能被命令 B、兄弟 Agent、已撤销进程消费 |
 | P2a | 第 8 节准备成功；`mktemp` 按 Posture 成立；未知工具只靠声明接入且无适配器也能准备；Skill 仍在 `sandbox-home` |
-| P3 | 空缓存 GOPROXY 协议获取成功；长期凭证不出现在 argv/环境/日志/模型上下文 |
+| P3（历史） | 内置服务已删除；现行验收见通用化方案 P3 |
 | P2b | 动态目录写可结算；用户并发修改不自动算 Agent 修改 |
 | P6 | 真实构建与指定测试；与宿主同输入对照 |
 

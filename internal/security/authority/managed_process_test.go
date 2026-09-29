@@ -3,7 +3,7 @@ package authority
 import (
 	"testing"
 
-	"github.com/fwtllh-png/QCode/internal/security/effect"
+	securitymodel "github.com/fwtllh-png/QCode/internal/security/model"
 )
 
 func TestManagedProcessProfileDropsProxyForDeniedNetwork(t *testing.T) {
@@ -21,7 +21,7 @@ func TestManagedProcessProfileDropsProxyForDeniedNetwork(t *testing.T) {
 		ID: "fixture", Tool: "fixture",
 		WorkspaceID:         "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 		WorkspaceGeneration: 1, Subject: subject, Executable: "/bin/sh",
-		WorkingDirectory: t.TempDir(), Effect: ManagedProcessEffect(effect.RiskLow),
+		WorkingDirectory: t.TempDir(), Effect: ManagedProcessEffect(securitymodel.RiskLow),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -34,7 +34,7 @@ func TestManagedProcessProfileDropsProxyForDeniedNetwork(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if profile.Network.Mode != "denied" || profile.Network.ProxyPort != 0 {
+	if profile.Controls.Network != securitymodel.NetworkDenied || profile.Network.ProxyPort != 0 {
 		t.Fatalf("network profile = %+v", profile.Network)
 	}
 }

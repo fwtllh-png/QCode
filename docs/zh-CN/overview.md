@@ -95,5 +95,6 @@ QCode 不是：
 ## 当前成熟度
 
 当前仓库是首个完成历史收敛的实现基线。首次公开稳定发布前，优先事项是正确性、
-文档、macOS 验证、可重复发布和持续降低偶然复杂度。后续目标见
-[后续规划](./roadmap.md)。
+文档、macOS 验证、可重复发布和持续降低偶然复杂度。当前实施合同见
+[安全策略模型收敛方案](./security-policy-refactor-plan.md)和
+[执行环境通用化方案](./environment-language-neutral-plan.md)。

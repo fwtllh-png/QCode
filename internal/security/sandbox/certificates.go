@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/fwtllh-png/QCode/internal/security/envpolicy"
 )
 
 // ToolchainProbeTimeout bounds a local, noninteractive toolchain metadata query,
@@ -32,12 +34,6 @@ func (b *toolchainProbeOutput) Write(data []byte) (int, error) {
 		return 0, errors.New("toolchain metadata exceeds output limit")
 	}
 	return b.buffer.Write(data)
-}
-
-// DiscoverCertificateFiles is the environment-preparer entry for public CA
-// files. BuildPolicy does not call it when contract=v1.
-func DiscoverCertificateFiles(exposure *ToolchainExposure, workspace string) {
-	discoverCertificateFiles(exposure, workspace)
 }
 
 // discoverCertificateFiles queries OpenSSL's documented OPENSSLDIR instead of
@@ -92,11 +88,11 @@ func opensslCertificateFile(output string) (string, error) {
 	return filepath.Join(directory, "cert.pem"), nil
 }
 
-func configuredCertificateFiles(exposure *ToolchainExposure, workspace string) error {
+func configuredCertificateFiles(exposure *ToolchainExposure, workspace string, sourceEnv []string) error {
 	for _, name := range []string{
 		"SSL_CERT_FILE", "NODE_EXTRA_CA_CERTS", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE",
 	} {
-		path := os.Getenv(name)
+		path := envpolicy.Value(sourceEnv, name)
 		if path == "" {
 			continue
 		}

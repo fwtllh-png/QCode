@@ -54,7 +54,7 @@ func TestToolchainSearchPathOrdersAndDedupes(t *testing.T) {
 		"PATH",
 		strings.Join([]string{"", host, host, first}, string(os.PathListSeparator)),
 	)
-	ordered := ToolchainSearchPath([]string{second, first})
+	ordered := ToolchainSearchPath([]string{"PATH=" + strings.Join([]string{second, first, "", host, host, first}, string(os.PathListSeparator))})
 	if len(ordered) == 0 || ordered[0] != second {
 		t.Fatalf("toolchain bins must resolve first: %v", ordered)
 	}

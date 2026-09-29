@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -22,10 +24,14 @@ func TestChromeArgumentsRouteEveryRequestThroughTheProxy(t *testing.T) {
 		"--host-resolver-rules=MAP * ~NOTFOUND , EXCLUDE 127.0.0.1",
 		"--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
 		"--user-data-dir=/tmp/profile",
+		"--remote-debugging-pipe",
 	} {
 		if !strings.Contains(arguments, want) {
 			t.Fatalf("chrome arguments missing %q:\n%s", want, arguments)
 		}
+	}
+	if strings.Contains(arguments, "--remote-debugging-port") {
+		t.Fatal("browser debugger is exposed to local clients")
 	}
 }
 
@@ -83,6 +89,26 @@ func TestChromeTrafficCannotReachUngrantedHostServices(t *testing.T) {
 	}
 	if !strings.Contains(snapshot, "approved page") {
 		t.Fatalf("approved loopback page did not load through the proxy:\n%s", snapshot)
+	}
+	if _, err := os.Stat(filepath.Join(browser.profile, "DevToolsActivePort")); !os.IsNotExist(err) {
+		t.Fatal("browser exposed a debugger TCP endpoint")
+	}
+	for _, argument := range browser.command.Args {
+		if strings.Contains(argument, browser.proxy.Credential()) {
+			t.Fatal("proxy credential leaked into Chrome argv")
+		}
+	}
+	proxyURL, _ := url.Parse(fmt.Sprintf("http://127.0.0.1:%d", browser.proxy.Port()))
+	transport := &http.Transport{Proxy: http.ProxyURL(proxyURL)}
+	defer transport.CloseIdleConnections()
+	foreign := &http.Client{Transport: transport, Timeout: 5 * time.Second}
+	response, err := foreign.Get(page.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusProxyAuthRequired {
+		t.Fatalf("foreign browser proxy status = %d", response.StatusCode)
 	}
 	if _, err := browser.Navigate(ctx, page.URL+"/redirect"); err != nil {
 		t.Fatal(err)

@@ -4,7 +4,6 @@ import (
 	"errors"
 	"time"
 
-	language "github.com/fwtllh-png/QCode/internal/adapter/lsp"
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
 	completiontool "github.com/fwtllh-png/QCode/internal/adapter/tool/completion"
 	contenttool "github.com/fwtllh-png/QCode/internal/adapter/tool/content"
@@ -24,7 +23,7 @@ import (
 	"github.com/fwtllh-png/QCode/internal/platform/symbols"
 	"github.com/fwtllh-png/QCode/internal/security/authority"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
-	"github.com/fwtllh-png/QCode/internal/security/workspacebroker"
+	"github.com/fwtllh-png/QCode/internal/orchestration/workspacebroker"
 )
 
 func NewWithDependencies(
@@ -141,7 +140,7 @@ func NewWithIndexAndRuntime(
 	if semanticProvider == nil {
 		// Without a resident pool the session keeps the one-shot checker it
 		// always had: one server per query, no state between them.
-		semanticProvider = language.Checker{Root: root, Sandbox: backend}
+		semanticProvider = lsptool.Checker{Root: root, Sandbox: backend}
 	}
 	if err := searchtool.RegisterWithProviders(
 		registry, root, backend, index, semanticProvider,

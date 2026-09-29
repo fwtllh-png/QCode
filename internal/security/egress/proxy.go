@@ -16,61 +16,27 @@ import (
 )
 
 type ManagedNetworkProxy struct {
-	workspace     *proxyChannel
-	protocol      http.Handler
-	authenticated bool
-	mu            sync.Mutex
-	sessions      map[uint16]*processSession
+	workspace *proxyChannel
+	mu        sync.Mutex
+	sessions  map[uint16]*processSession
+	closed    bool
 }
 
 // StartManagedNetworkProxy starts the proxy for sandboxed processes. The
 // workspace channel and every session channel require their own credential.
 func StartManagedNetworkProxy(gate *Gate) (*ManagedNetworkProxy, error) {
-	return startNetworkProxy(gate, true)
-}
-
-// StartUnauthenticatedNetworkProxy starts a proxy whose channels accept any
-// local client. Only the browser uses it: Chrome's --proxy-server cannot
-// carry a credential, so any process allowed to reach local ports can also
-// use this channel under the browser Gate while the browser runs.
-func StartUnauthenticatedNetworkProxy(gate *Gate) (*ManagedNetworkProxy, error) {
-	return startNetworkProxy(gate, false)
-}
-
-func startNetworkProxy(gate *Gate, authenticated bool) (*ManagedNetworkProxy, error) {
-	channel, err := listenProxyChannel(gate, nil, authenticated)
+	channel, err := listenProxyChannel(gate)
 	if err != nil {
 		return nil, err
 	}
 	return &ManagedNetworkProxy{
-		workspace:     channel,
-		authenticated: authenticated,
-		sessions:      make(map[uint16]*processSession),
+		workspace: channel,
+		sessions:  make(map[uint16]*processSession),
 	}, nil
 }
 
-// BindProtocolHandler binds the protocol service on every channel the proxy
-// will serve: the stable workspace channel and each session channel opened
-// afterwards. The workspace gate stays empty (deny-all) for CONNECT — the
-// service enforces its own scope on origin-form requests, and external
-// CONNECT keeps going through per-command session gates.
-func (p *ManagedNetworkProxy) BindProtocolHandler(handler http.Handler) {
-	if p == nil {
-		return
-	}
-	p.mu.Lock()
-	p.protocol = handler
-	p.mu.Unlock()
-	if p.workspace != nil {
-		p.workspace.setProtocol(handler)
-	}
-}
-
-type managedBackend struct {
-	sandbox.Backend
-	proxy *ManagedNetworkProxy
-}
-
+// NewManagedBackend starts the Workspace proxy, builds the sandbox backend
+// against its port and credential, and composes the two.
 func NewManagedBackend(
 	gate *Gate,
 	options sandbox.Options,
@@ -91,35 +57,18 @@ func NewManagedBackend(
 		_ = proxy.Close(context.Background())
 		return nil, fmt.Errorf("create managed sandbox backend: %w", err)
 	}
-	return &managedBackend{Backend: backend, proxy: proxy}, nil
-}
-
-func (b *managedBackend) OpenProcessSession(targets []Target) (ProcessSession, error) {
-	if b == nil || b.proxy == nil {
-		return nil, ErrProcessSessionUnsupported
+	composed, err := compose(backend, proxy, func() error {
+		return errors.Join(
+			sandbox.CloseBackend(backend),
+			proxy.Close(context.Background()),
+		)
+	})
+	if err != nil {
+		_ = sandbox.CloseBackend(backend)
+		_ = proxy.Close(context.Background())
+		return nil, err
 	}
-	return b.proxy.OpenSession(targets)
-}
-
-func (b *managedBackend) BindProtocolHandler(handler http.Handler) {
-	if b == nil || b.proxy == nil {
-		return
-	}
-	b.proxy.BindProtocolHandler(handler)
-}
-
-func (b *managedBackend) InnerBackend() sandbox.Backend {
-	if b == nil {
-		return nil
-	}
-	return b.Backend
-}
-
-func (b *managedBackend) Close() error {
-	if b == nil {
-		return nil
-	}
-	return errors.Join(sandbox.CloseBackend(b.Backend), b.proxy.Close(context.Background()))
+	return composed, nil
 }
 
 // URL is the workspace channel's proxy URL, with its credential as userinfo.
@@ -153,14 +102,8 @@ func (p *ManagedNetworkProxy) OpenSession(targets []Target) (ProcessSession, err
 	if p == nil {
 		return nil, ErrProcessSessionUnsupported
 	}
-	gate := &Gate{}
-	for _, target := range targets {
-		gate.AllowTarget(target)
-	}
-	p.mu.Lock()
-	handler := p.protocol
-	p.mu.Unlock()
-	channel, err := listenProxyChannel(gate, handler, p.authenticated)
+	gate := NewStaticGate(targets...)
+	channel, err := listenProxyChannel(gate)
 	if err != nil {
 		return nil, err
 	}
@@ -171,6 +114,11 @@ func (p *ManagedNetworkProxy) OpenSession(targets []Target) (ProcessSession, err
 	}
 	session := &processSession{parent: p, channel: channel, port: port}
 	p.mu.Lock()
+	if p.closed {
+		p.mu.Unlock()
+		_ = channel.close()
+		return nil, errors.New("network proxy is closed")
+	}
 	p.sessions[port] = session
 	p.mu.Unlock()
 	return session, nil
@@ -190,6 +138,7 @@ func (p *ManagedNetworkProxy) Close(ctx context.Context) error {
 		return nil
 	}
 	p.mu.Lock()
+	p.closed = true
 	sessions := make([]*processSession, 0, len(p.sessions))
 	for _, session := range p.sessions {
 		sessions = append(sessions, session)

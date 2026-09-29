@@ -5,7 +5,6 @@ import (
 	"strings"
 	"testing"
 
-	adaptercontent "github.com/fwtllh-png/QCode/internal/adapter/content"
 	"github.com/fwtllh-png/QCode/internal/adapter/provider"
 	agentcontext "github.com/fwtllh-png/QCode/internal/runtime/agent/context"
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
@@ -139,7 +138,7 @@ func TestSessionDeltaPreservesToolAdmissionReceipt(t *testing.T) {
 				Type: provider.ContentToolResult,
 				ToolResult: &provider.ToolResult{
 					CallID: "call-large", Content: "bounded",
-					Admission: &adaptercontent.AdmissionReceipt{
+					Admission: &provider.AdmissionReceipt{
 						Kind: "build", Reason: "token_limit",
 						Digest: "sha256:fixture", Handle: "result_fixture",
 						OriginalBytes: 100 << 10, RetainedBytes: 12 << 10,

@@ -3,32 +3,32 @@ package config
 import (
 	"strings"
 
-	platformenv "github.com/fwtllh-png/QCode/internal/platform/environment"
+	"github.com/fwtllh-png/QCode/internal/environment"
 )
 
-func (e ExecutionEnvironment) DeclaredRequests() []platformenv.ResourceRequest {
+func (e ExecutionEnvironment) DeclaredRequests() []environment.ResourceRequest {
 	if len(e.Resources) == 0 {
 		return nil
 	}
-	requests := make([]platformenv.ResourceRequest, 0, len(e.Resources))
+	requests := make([]environment.ResourceRequest, 0, len(e.Resources))
 	for _, resource := range e.Resources {
 		requests = append(requests, resource.Request())
 	}
 	return requests
 }
 
-func (r EnvironmentResource) Request() platformenv.ResourceRequest {
+func (r EnvironmentResource) Request() environment.ResourceRequest {
 	required := true
 	if r.Required != nil {
 		required = *r.Required
 	}
-	access := platformenv.Access(strings.TrimSpace(r.Access))
+	access := environment.Access(strings.TrimSpace(r.Access))
 	if access == "" {
-		access = defaultDeclarationAccess(platformenv.Namespace(r.Namespace))
+		access = defaultDeclarationAccess(environment.Namespace(r.Namespace))
 	}
-	return platformenv.StampDeclaration(platformenv.ResourceRequest{
+	return environment.StampDeclaration(environment.ResourceRequest{
 		Name:      r.Name,
-		Namespace: platformenv.Namespace(r.Namespace),
+		Namespace: environment.Namespace(r.Namespace),
 		Access:    access,
 		Path:      r.Path,
 		Host:      r.Host,
@@ -45,28 +45,16 @@ func (r EnvironmentResource) Request() platformenv.ResourceRequest {
 	})
 }
 
-func defaultDeclarationAccess(namespace platformenv.Namespace) platformenv.Access {
+func defaultDeclarationAccess(namespace environment.Namespace) environment.Access {
 	switch namespace {
-	case platformenv.NamespaceCredential:
-		return platformenv.AccessUse
-	case platformenv.NamespaceCache, platformenv.NamespaceSandboxHome,
-		platformenv.NamespaceSharedUserTemp:
-		return platformenv.AccessWrite
+	case environment.NamespaceCredential:
+		return environment.AccessUse
+	case environment.NamespaceCache, environment.NamespaceSandboxHome,
+		environment.NamespaceSharedUserTemp:
+		return environment.AccessWrite
 	default:
-		return platformenv.AccessRead
+		return environment.AccessRead
 	}
-}
-
-func cloneEnvironmentAuthServices(services []EnvironmentAuthService) []EnvironmentAuthService {
-	if services == nil {
-		return nil
-	}
-	cloned := make([]EnvironmentAuthService, len(services))
-	for index, service := range services {
-		service.Prefixes = append([]string(nil), service.Prefixes...)
-		cloned[index] = service
-	}
-	return cloned
 }
 
 func cloneEnvironmentResources(resources []EnvironmentResource) []EnvironmentResource {

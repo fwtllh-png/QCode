@@ -37,8 +37,8 @@ import (
 	promptcontext "github.com/fwtllh-png/QCode/internal/runtime/agent/prompt"
 	"github.com/fwtllh-png/QCode/internal/runtime/agent/turnkernel"
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
-	"github.com/fwtllh-png/QCode/internal/security/controlmatrix"
 	"github.com/fwtllh-png/QCode/internal/security/egress"
+	securitymodel "github.com/fwtllh-png/QCode/internal/security/model"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
 )
 
@@ -48,21 +48,17 @@ func (b engineSandboxBackend) Capability() sandbox.Capability {
 	return sandbox.Capability{
 		Platform: "fixture", Backend: "fixture",
 		Available: true,
-		Effective: controlmatrix.Matrix{FilesystemRead: controlmatrix.FilesystemReadDeclaredRoots,
+		Effective: securitymodel.Controls{FilesystemRead: securitymodel.FilesystemReadDeclaredRoots,
 
-			FilesystemWrite: controlmatrix.
-				FilesystemWriteExactPaths,
+			FilesystemWrite: securitymodel.FilesystemWriteExactPaths,
 
-			Network: controlmatrix.
-				NetworkDenied,
+			Network: securitymodel.NetworkDenied,
 
-			ProcessTree: controlmatrix.
-				ProcessTreeGroupKill,
+			ProcessTree: securitymodel.ProcessTreeGroupKill,
 
-			CrossProcess: controlmatrix.CrossProcessUnrestricted,
-			Syscall:      controlmatrix.SyscallDenyDangerous, IPC: controlmatrix.
-					IPCUnrestricted, PathIdentity: controlmatrix.PathIdentityDescriptorRelative,
-			ArtifactOrigin: controlmatrix.ArtifactOriginUnverifiedPath, DurableRecovery: controlmatrix.DurableRecoveryMemoryOnly},
+			CrossProcess: securitymodel.CrossProcessUnrestricted,
+			Syscall:      securitymodel.SyscallDenyDangerous, IPC: securitymodel.IPCUnrestricted, PathIdentity: securitymodel.PathIdentityDescriptorRelative,
+			ArtifactOrigin: securitymodel.ArtifactOriginUnverifiedPath, DurableRecovery: securitymodel.DurableRecoveryMemoryOnly},
 	}
 }
 
@@ -3467,7 +3463,7 @@ func testHTTPProvider(
 		t.Fatal(err)
 	}
 	client := httpclient.New()
-	client.Egress = &egress.Gate{}
+	client.Egress = egress.NewStaticGate()
 	client.Egress.SetRuntimeApprover(func(context.Context, egress.Target) error { return nil })
 	runtime, err := providerrouter.New(registry, routes, client)
 	if err != nil {

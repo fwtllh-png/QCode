@@ -8,8 +8,8 @@ import (
 	"testing"
 
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
-	"github.com/fwtllh-png/QCode/internal/security/controlmatrix"
 	"github.com/fwtllh-png/QCode/internal/security/egress"
+	securitymodel "github.com/fwtllh-png/QCode/internal/security/model"
 	"github.com/fwtllh-png/QCode/internal/security/policy"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
 )
@@ -20,15 +20,15 @@ func TestProcessNetworkLeaseAggregatesLoopbackAndProxyTargets(t *testing.T) {
 		hosts    []string
 		loopback bool
 		deny     bool
-		want     controlmatrix.Network
+		want     securitymodel.Network
 	}{
-		{"host before localhost", []string{"api.github.com"}, true, false, controlmatrix.NetworkProxyTargets},
-		{"host after localhost", []string{"registry.npmjs.org"}, true, false, controlmatrix.NetworkProxyTargets},
-		{"targets ascending", []string{"api.github.com", "registry.npmjs.org"}, true, false, controlmatrix.NetworkProxyTargets},
-		{"targets descending", []string{"registry.npmjs.org", "api.github.com"}, true, false, controlmatrix.NetworkProxyTargets},
-		{"loopback only", nil, true, false, controlmatrix.NetworkLoopbackExact},
-		{"proxy only", []string{"api.github.com"}, false, false, controlmatrix.NetworkProxyTargets},
-		{"denied mixed request", []string{"api.github.com"}, true, true, controlmatrix.NetworkProxyTargets},
+		{"host before localhost", []string{"api.github.com"}, true, false, securitymodel.NetworkProxyTargets},
+		{"host after localhost", []string{"registry.npmjs.org"}, true, false, securitymodel.NetworkProxyTargets},
+		{"targets ascending", []string{"api.github.com", "registry.npmjs.org"}, true, false, securitymodel.NetworkProxyTargets},
+		{"targets descending", []string{"registry.npmjs.org", "api.github.com"}, true, false, securitymodel.NetworkProxyTargets},
+		{"loopback only", nil, true, false, securitymodel.NetworkLoopbackAny},
+		{"proxy only", []string{"api.github.com"}, false, false, securitymodel.NetworkProxyTargets},
+		{"denied mixed request", []string{"api.github.com"}, true, true, securitymodel.NetworkProxyTargets},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			workspace := t.TempDir()
@@ -77,7 +77,7 @@ func TestProcessNetworkLeaseAggregatesLoopbackAndProxyTargets(t *testing.T) {
 					if resource.Kind != "host" {
 						continue
 					}
-					if resource.Protocol == "loopback" {
+					if resource.Protocol == securitymodel.LoopbackProtocol {
 						loopback = true
 					} else {
 						hosts = append(hosts, resource.ID)
@@ -142,7 +142,9 @@ func TestProcessNetworkLeaseAggregatesLoopbackAndProxyTargets(t *testing.T) {
 				wantTargets = append(wantTargets, "https://"+host+":443")
 			}
 			if test.loopback {
-				wantTargets = append(wantTargets, "loopback://localhost:0")
+				if !profile.AllowLoopback {
+					t.Fatal("loopback scope is missing")
+				}
 			}
 			slices.Sort(wantTargets)
 			if !slices.Equal(profile.NetworkTargets, wantTargets) {

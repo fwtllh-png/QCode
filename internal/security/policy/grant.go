@@ -5,11 +5,11 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
-	"github.com/fwtllh-png/QCode/internal/adapter/tool"
-	"github.com/fwtllh-png/QCode/internal/security/netpolicy"
+	securitymodel "github.com/fwtllh-png/QCode/internal/security/model"
 )
 
 type Grant struct {
@@ -29,14 +29,22 @@ type Grant struct {
 }
 
 func GrantForInvocation(call Invocation) (Grant, bool) {
-	resources, kinds := normalizedGrantResources(call.Resources, false)
+	assessment := call.Assessment
+	if !assessment.Valid() {
+		return Grant{}, false
+	}
+	resources, agent := grantResources(assessment.Resources())
+	summaries := make([]string, 0, len(resources))
+	for _, item := range resources {
+		summaries = append(summaries, item.String())
+	}
 	kind, summary := "", ""
 	hash := sha256.New()
 	writeFingerprintField(hash, call.Tool)
 	var prefix []string
 	var cwd string
 	switch {
-	case call.Capability == tool.CapabilityProcess:
+	case call.Capability() == securitymodel.CapabilityProcess:
 		var input struct {
 			Command, CWD, Path string
 			Args               []string
@@ -58,108 +66,104 @@ func GrantForInvocation(call Invocation) (Grant, bool) {
 			}
 			input.Command = string(encoded)
 		}
-		if input.Command == "" && kinds&4 == 0 {
+		if input.Command == "" {
 			return Grant{}, false
 		}
-		commandIdentity := input.Command
-		if input.Command != "" {
-			var ok bool
-			commandIdentity, ok = commandGrantIdentity(input.Command)
-			if !ok {
-				return Grant{}, false
-			}
-			prefix = commandGrantPrefix(input.Command)
+		commandIdentity, ok := commandGrantIdentity(input.Command)
+		if !ok {
+			return Grant{}, false
 		}
+		prefix = commandGrantPrefix(input.Command)
 		kind, summary = "shell", "command: "+input.Command
-		if input.Command == "" {
-			kind, summary = "sandbox", "sandbox escalation: "+strings.Join(resources, ", ")
-		}
 		writeFingerprintField(hash, commandIdentity)
 		cwd = cleanGrantPath(input.CWD)
 		writeFingerprintField(hash, cwd)
-	case call.Journaled && len(resources) != 0:
-		kind, summary = "file", "workspace paths: "+strings.Join(resources, ", ")
-	case call.Capability == tool.CapabilityNetwork:
-		resources, _ = normalizedGrantResources(call.Resources, true)
-		if len(resources) == 0 {
+	case call.Journaled() && len(resources) != 0:
+		kind, summary = "file", "workspace paths: "+strings.Join(summaries, ", ")
+	case call.Capability() == securitymodel.CapabilityNetwork:
+		endpoints := networkGrantEndpoints(resources)
+		if len(endpoints) == 0 {
 			return Grant{}, false
 		}
-		kind, summary = "network", "network endpoints: "+strings.Join(resources, ", ")
-	case kinds&2 != 0 && len(resources) != 0:
-		kind, summary = "agent", call.Tool+": "+strings.Join(resources, ", ")
+		kind, summary = "network", "network endpoints: "+strings.Join(endpoints, ", ")
+		for _, endpoint := range endpoints {
+			writeFingerprintField(hash, endpoint)
+		}
+		resources = nil
+	case agent && len(resources) != 0:
+		kind, summary = "agent", call.Tool+": "+strings.Join(summaries, ", ")
 	default:
 		return Grant{}, false
 	}
-	for _, resource := range resources {
-		writeFingerprintField(hash, resource)
+	keys := make([]string, 0, len(resources))
+	for _, item := range resources {
+		keys = append(keys, item.Key())
 	}
+	for _, key := range keys {
+		writeFingerprintField(hash, key)
+	}
+	// Key also matches deny rules, so it must not narrow when facets change;
+	// only the prefix scope binds the assessed effect.
 	return Grant{
 		Kind: kind, Key: hex.EncodeToString(hash.Sum(nil)),
 		Summary: summary, Prefix: prefix,
-		scope: grantScopeFingerprint(cwd, resources),
+		scope: grantScopeFingerprint(cwd, keys, assessment.Digest()),
 	}, true
 }
 
-// grantScopeFingerprint binds a shell grant prefix to its cwd and resource
-// set: an approved prefix may only match later commands in the same scope.
-func grantScopeFingerprint(cwd string, resources []string) string {
+// grantScopeFingerprint binds a shell grant prefix to its cwd, resource set,
+// and assessed effect: an approved prefix may only match later commands in
+// the same scope with the same effect and facets.
+func grantScopeFingerprint(cwd string, resources []string, digest string) string {
 	hash := sha256.New()
 	writeFingerprintField(hash, cwd)
 	for _, resource := range resources {
 		writeFingerprintField(hash, resource)
 	}
+	writeFingerprintField(hash, digest)
 	return hex.EncodeToString(hash.Sum(nil))
 }
 
-func normalizedGrantResources(
-	resources []tool.Resource, network bool,
-) ([]string, uint8) {
-	var values []string
-	var kinds uint8
-	for _, resource := range resources {
-		switch resource.Kind {
-		case "agent":
-			kinds |= 2
-		case "sandbox":
-			kinds |= 4
-		}
-		value := resource.Path
-		if value == "" {
-			value = resource.ID
-		}
-		if value == "" || resource.Kind == "parallel" {
+// grantResources returns the addressable resources a grant binds, with
+// canonical paths, sorted and deduplicated by Key, and whether any is an agent.
+func grantResources(
+	resources []securitymodel.Resource,
+) ([]securitymodel.Resource, bool) {
+	agent := false
+	values := make([]securitymodel.Resource, 0, len(resources))
+	for _, item := range resources {
+		if item.Location() == "" {
 			continue
 		}
-		if network {
-			target, err := netpolicy.ParseTarget(value)
-			if resource.Kind != "host" && resource.Kind != "url" || err != nil {
-				continue
-			}
-			value = target.Scheme + "://" + target.Host
-		} else {
-			canonical := cleanGrantPath(value)
-			value = resource.Kind + ":" + canonical + ":" + string(resource.Access)
-			if resource.Tree || resource.Protocol != "" || resource.Port != 0 ||
-				len(resource.Methods) != 0 || resource.AllowPrivate {
-				identity := resource
-				identity.Path, identity.ID = "", canonical
-				identity.Protocol = strings.ToLower(identity.Protocol)
-				identity.Methods = append([]string(nil), identity.Methods...)
-				sort.Strings(identity.Methods)
-				sum := sha256.Sum256([]byte(identity.Key()))
-				value += ":" + hex.EncodeToString(sum[:])
-			}
+		if item.Class == securitymodel.ClassAgent {
+			agent = true
 		}
-		values = append(values, value)
+		if item.Class == securitymodel.ClassPath {
+			item.Path = cleanGrantPath(item.Path)
+		}
+		values = append(values, item)
 	}
-	sort.Strings(values)
-	result := values[:0]
-	for _, value := range values {
-		if len(result) == 0 || result[len(result)-1] != value {
-			result = append(result, value)
+	sort.Slice(values, func(i, j int) bool { return values[i].Key() < values[j].Key() })
+	return slices.CompactFunc(values, func(a, b securitymodel.Resource) bool {
+		return a.Key() == b.Key()
+	}), agent
+}
+
+// networkGrantEndpoints is the scheme://host set of a network grant; ports,
+// methods, and paths are enforced per request.
+func networkGrantEndpoints(resources []securitymodel.Resource) []string {
+	var endpoints []string
+	for _, item := range resources {
+		switch {
+		case item.Class == securitymodel.ClassLoopback:
+			endpoints = append(endpoints,
+				securitymodel.LoopbackScope)
+		case item.Class == securitymodel.ClassNetwork && item.Network != nil:
+			endpoints = append(endpoints, item.Network.Scheme+"://"+item.Network.Host)
 		}
 	}
-	return result, kinds
+	slices.Sort(endpoints)
+	return slices.Compact(endpoints)
 }
 
 func cleanGrantPath(value string) string {

@@ -5,18 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/coder/websocket"
-	"github.com/coder/websocket/wsjson"
 
 	"github.com/fwtllh-png/QCode/internal/security/egress"
 )
@@ -32,18 +27,8 @@ type chromeBrowser struct {
 	proxy      *egress.ManagedNetworkProxy
 	command    *exec.Cmd
 	profile    string
-	connection *websocket.Conn
-	nextID     int64
-}
-
-type cdpMessage struct {
-	ID     int64           `json:"id,omitempty"`
-	Method string          `json:"method,omitempty"`
-	Result json.RawMessage `json:"result,omitempty"`
-	Error  *struct {
-		Code    int    `json:"code"`
-		Message string `json:"message"`
-	} `json:"error,omitempty"`
+	connection *cdpClient
+	sessionID  string
 }
 
 func newChromeBrowser(binary string) BrowserRuntime {
@@ -51,7 +36,7 @@ func newChromeBrowser(binary string) BrowserRuntime {
 }
 
 func newBrowserGate() *egress.Gate {
-	return &egress.Gate{AllowPublic: true}
+	return egress.NewBrowserGate()
 }
 
 // chromeArguments pins Chrome to the proxy: loopback is not implicitly
@@ -73,7 +58,7 @@ func chromeArguments(profile, proxyURL string) []string {
 		"--host-resolver-rules=MAP * ~NOTFOUND , EXCLUDE 127.0.0.1",
 		"--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
 		"--webrtc-ip-handling-policy=disable_non_proxied_udp",
-		"--remote-debugging-port=0",
+		"--remote-debugging-pipe",
 		"--user-data-dir=" + profile,
 		"about:blank",
 	}
@@ -115,7 +100,7 @@ func (b *chromeBrowser) ensureStarted(ctx context.Context) error {
 	if b.connection != nil {
 		return nil
 	}
-	proxy, err := egress.StartUnauthenticatedNetworkProxy(b.gate)
+	proxy, err := egress.StartManagedNetworkProxy(b.gate)
 	if err != nil {
 		return fmt.Errorf("start browser egress proxy: %w", err)
 	}
@@ -126,63 +111,67 @@ func (b *chromeBrowser) ensureStarted(ctx context.Context) error {
 		return err
 	}
 	b.profile = profile
-	command := exec.Command(b.binary, chromeArguments(profile, proxy.URL())...)
-	if err := command.Start(); err != nil {
+	childRead, parentWrite, err := os.Pipe()
+	if err != nil {
+		_ = b.closeLocked()
+		return err
+	}
+	parentRead, childWrite, err := os.Pipe()
+	if err != nil {
+		_ = childRead.Close()
+		_ = parentWrite.Close()
+		_ = b.closeLocked()
+		return err
+	}
+	command := exec.Command(b.binary, chromeArguments(profile, fmt.Sprintf("http://127.0.0.1:%d", proxy.Port()))...)
+	command.ExtraFiles = []*os.File{childRead, childWrite}
+	err = command.Start()
+	_ = childRead.Close()
+	_ = childWrite.Close()
+	if err != nil {
+		_ = parentRead.Close()
+		_ = parentWrite.Close()
 		_ = b.closeLocked()
 		return err
 	}
 	b.command = command
-
-	portFile := filepath.Join(profile, "DevToolsActivePort")
-	var port int
-	for {
-		data, readErr := os.ReadFile(portFile)
-		if readErr == nil {
-			lines := strings.Split(strings.TrimSpace(string(data)), "\n")
-			if len(lines) > 0 {
-				port, err = strconv.Atoi(strings.TrimSpace(lines[0]))
-				if err == nil && port > 0 {
-					break
-				}
-			}
-		}
-		select {
-		case <-ctx.Done():
-			_ = b.closeLocked()
-			return ctx.Err()
-		case <-time.After(20 * time.Millisecond):
-		}
-	}
-	endpoint := fmt.Sprintf("http://127.0.0.1:%d/json/new?about%%3Ablank", port)
-	request, err := http.NewRequestWithContext(ctx, http.MethodPut, endpoint, nil)
-	if err != nil {
-		_ = b.closeLocked()
-		return err
-	}
-	response, err := http.DefaultClient.Do(request)
-	if err != nil {
-		_ = b.closeLocked()
-		return err
-	}
-	defer response.Body.Close()
+	b.connection = newCDPClient(parentRead, parentWrite, proxy.Port(), proxy.Credential())
+	created, err := b.connection.call(ctx, "", "Target.createTarget", map[string]any{"url": "about:blank"})
 	var target struct {
-		WebSocketDebuggerURL string `json:"webSocketDebuggerUrl"`
+		TargetID string `json:"targetId"`
 	}
-	if err := json.NewDecoder(response.Body).Decode(&target); err != nil {
-		_ = b.closeLocked()
-		return err
+	if err == nil {
+		err = json.Unmarshal(created, &target)
 	}
-	if target.WebSocketDebuggerURL == "" {
-		_ = b.closeLocked()
-		return errors.New("Chrome did not return a page debugger endpoint")
+	if err == nil && target.TargetID == "" {
+		err = errors.New("Chrome returned no page target")
 	}
-	connection, _, err := websocket.Dial(ctx, target.WebSocketDebuggerURL, nil)
 	if err != nil {
 		_ = b.closeLocked()
 		return err
 	}
-	connection.SetReadLimit(32 << 20)
-	b.connection = connection
+	attached, err := b.connection.call(ctx, "", "Target.attachToTarget", map[string]any{"targetId": target.TargetID, "flatten": true})
+	var session struct {
+		SessionID string `json:"sessionId"`
+	}
+	if err == nil {
+		err = json.Unmarshal(attached, &session)
+	}
+	if err == nil && session.SessionID == "" {
+		err = errors.New("Chrome returned no page session")
+	}
+	if err != nil {
+		_ = b.closeLocked()
+		return err
+	}
+	b.sessionID = session.SessionID
+	if _, err := b.call(ctx, "Fetch.enable", map[string]any{
+		"handleAuthRequests": true,
+		"patterns":           []map[string]string{{"urlPattern": "*", "requestStage": "Request"}, {"urlPattern": "*", "requestStage": "Response"}},
+	}); err != nil {
+		_ = b.closeLocked()
+		return err
+	}
 	if _, err := b.call(ctx, "Page.enable", nil); err != nil {
 		_ = b.closeLocked()
 		return err
@@ -199,26 +188,7 @@ func (b *chromeBrowser) call(
 	method string,
 	params any,
 ) (json.RawMessage, error) {
-	b.nextID++
-	id := b.nextID
-	if err := wsjson.Write(ctx, b.connection, map[string]any{
-		"id": id, "method": method, "params": params,
-	}); err != nil {
-		return nil, err
-	}
-	for {
-		var message cdpMessage
-		if err := wsjson.Read(ctx, b.connection, &message); err != nil {
-			return nil, err
-		}
-		if message.ID != id {
-			continue
-		}
-		if message.Error != nil {
-			return nil, fmt.Errorf("CDP %s: %s", method, message.Error.Message)
-		}
-		return message.Result, nil
-	}
+	return b.connection.call(ctx, b.sessionID, method, params)
 }
 
 func (b *chromeBrowser) evaluate(ctx context.Context, expression string) (json.RawMessage, error) {
@@ -371,8 +341,9 @@ func (b *chromeBrowser) adoptCallGrants(ctx context.Context) {
 func (b *chromeBrowser) closeLocked() error {
 	var result error
 	if b.connection != nil {
-		result = b.connection.Close(websocket.StatusNormalClosure, "closing")
+		b.connection.Close()
 		b.connection = nil
+		b.sessionID = ""
 	}
 	if b.command != nil && b.command.Process != nil {
 		if err := b.command.Process.Kill(); err != nil && result == nil {

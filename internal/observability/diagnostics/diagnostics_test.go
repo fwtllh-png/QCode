@@ -7,7 +7,7 @@ import (
 	"runtime"
 	"testing"
 
-	"github.com/fwtllh-png/QCode/internal/security/controlmatrix"
+	securitymodel "github.com/fwtllh-png/QCode/internal/security/model"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
 )
 
@@ -64,21 +64,16 @@ func (passthroughBackend) Capability() sandbox.Capability {
 		Backend:  "test",
 
 		Available: true,
-		Effective: controlmatrix.Matrix{
-			FilesystemRead: controlmatrix.
-				FilesystemReadDeclaredRoots,
+		Effective: securitymodel.Controls{
+			FilesystemRead: securitymodel.FilesystemReadDeclaredRoots,
 
-			FilesystemWrite: controlmatrix.FilesystemWriteExactPaths, Network: controlmatrix.
-						NetworkDenied, ProcessTree:        controlmatrix.ProcessTreeGroupKill, CrossProcess: controlmatrix.
-						CrossProcessUnrestricted, Syscall: controlmatrix.SyscallDenyDangerous,
-			IPC: controlmatrix.IPCUnrestricted,
-			PathIdentity: controlmatrix.
-				PathIdentityDescriptorRelative,
+			FilesystemWrite: securitymodel.FilesystemWriteExactPaths, Network: securitymodel.NetworkDenied, ProcessTree: securitymodel.ProcessTreeGroupKill, CrossProcess: securitymodel.CrossProcessUnrestricted, Syscall: securitymodel.SyscallDenyDangerous,
+			IPC:          securitymodel.IPCUnrestricted,
+			PathIdentity: securitymodel.PathIdentityDescriptorRelative,
 
-			ArtifactOrigin: controlmatrix.ArtifactOriginUnverifiedPath,
+			ArtifactOrigin: securitymodel.ArtifactOriginUnverifiedPath,
 
-			DurableRecovery: controlmatrix.
-				DurableRecoveryMemoryOnly},
+			DurableRecovery: securitymodel.DurableRecoveryMemoryOnly},
 	}
 }
 

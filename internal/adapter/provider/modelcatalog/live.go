@@ -61,7 +61,7 @@ func ProbeCapabilitiesForProtocol(
 	if protocol == model.ProtocolOpenAIResponses {
 		target = base + "/responses"
 	}
-	gate := &egress.Gate{}
+	gate := egress.NewStaticGate()
 	if !gate.AllowURL(target) && !gate.AllowURL(base) {
 		return model.Capabilities{}, fmt.Errorf("model probe endpoint host cannot be granted")
 	}
@@ -249,7 +249,7 @@ func discover(
 	if override := strings.TrimSpace(os.Getenv("QCODE_MODEL_LIST_URL")); override != "" {
 		target = override
 	}
-	gate := &egress.Gate{}
+	gate := egress.NewStaticGate()
 	if !gate.AllowURL(target) && !gate.AllowURL(base) {
 		return nil, fmt.Errorf("live list endpoint host cannot be granted")
 	}

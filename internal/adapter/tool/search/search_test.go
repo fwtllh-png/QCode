@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
-	"github.com/fwtllh-png/QCode/internal/security/controlmatrix"
+	securitymodel "github.com/fwtllh-png/QCode/internal/security/model"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
 	"github.com/fwtllh-png/QCode/testutil/tooltest"
 )
@@ -327,17 +327,14 @@ type searchTestBackend struct{}
 func (searchTestBackend) Capability() sandbox.Capability {
 	return sandbox.Capability{
 		Platform: "test", Backend: "passthrough", Available: true,
-		Effective: controlmatrix.Matrix{FilesystemRead: controlmatrix.FilesystemReadDeclaredRoots,
+		Effective: securitymodel.Controls{FilesystemRead: securitymodel.FilesystemReadDeclaredRoots,
 
-			FilesystemWrite: controlmatrix.
-				FilesystemWriteExactPaths,
+			FilesystemWrite: securitymodel.FilesystemWriteExactPaths,
 
-			Network:     controlmatrix.NetworkDenied,
-			ProcessTree: controlmatrix.ProcessTreeGroupKill, CrossProcess: controlmatrix.
-					CrossProcessUnrestricted, Syscall: controlmatrix.SyscallDenyDangerous,
-			IPC: controlmatrix.
-				IPCUnrestricted, PathIdentity: controlmatrix.PathIdentityDescriptorRelative, ArtifactOrigin: controlmatrix.ArtifactOriginUnverifiedPath,
-			DurableRecovery: controlmatrix.DurableRecoveryMemoryOnly,
+			Network:     securitymodel.NetworkDenied,
+			ProcessTree: securitymodel.ProcessTreeGroupKill, CrossProcess: securitymodel.CrossProcessUnrestricted, Syscall: securitymodel.SyscallDenyDangerous,
+			IPC: securitymodel.IPCUnrestricted, PathIdentity: securitymodel.PathIdentityDescriptorRelative, ArtifactOrigin: securitymodel.ArtifactOriginUnverifiedPath,
+			DurableRecovery: securitymodel.DurableRecoveryMemoryOnly,
 		},
 	}
 }

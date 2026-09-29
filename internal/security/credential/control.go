@@ -13,8 +13,6 @@ import (
 	"sort"
 	"strings"
 	"sync"
-
-	"github.com/fwtllh-png/QCode/internal/security/keyring"
 )
 
 const controlVersion = 1
@@ -238,7 +236,7 @@ func (c *Control) Commit(ctx context.Context, current Reference) error {
 }
 
 func keyringStore() store {
-	return keyring.New()
+	return NewKeyringStore()
 }
 
 func (c *Control) rotate(

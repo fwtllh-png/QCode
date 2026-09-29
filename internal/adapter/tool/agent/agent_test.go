@@ -229,6 +229,40 @@ func TestAgentToolSurfaceIsExplicitAndPolicyVisible(t *testing.T) {
 	}
 }
 
+func TestSpawnDeclaresReadOnlyRoles(t *testing.T) {
+	registry := tool.NewRegistry(nil, nil)
+	if err := agenttool.Register(registry, agenttool.Options{
+		Handles: handle.NewStore(),
+		Root:    t.TempDir(), Gate: &recordingGate{}, SessionID: "session-1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for name, want := range map[string][]string{
+		"spawn_agent":   {"review", "explore", "awaiter"},
+		"followup_task": nil,
+	} {
+		_, _, executor, err := registry.Resolve(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		binding := executor.(tool.TrustedBindingProvider).TrustedBinding()
+		match := binding.Effect.ReadOnlyWhen
+		if want == nil {
+			if match != nil {
+				t.Fatalf("%s declares read-only values %+v", name, match)
+			}
+			continue
+		}
+		if match == nil || match.Field != "role" ||
+			strings.Join(match.Values, ",") != strings.Join(want, ",") {
+			t.Fatalf("%s read-only declaration = %+v", name, match)
+		}
+		if err := binding.Validate(); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 func TestSendMessageQueuesWithoutStartingTurn(t *testing.T) {
 	runtime := &dualRuntime{}
 	registry := tool.NewRegistry(nil, nil)

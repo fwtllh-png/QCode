@@ -786,7 +786,7 @@ func testClient() *adapterClient {
 	}
 	client := httpclient.New()
 	client.Credentials = staticCredentials("")
-	client.Egress = &egress.Gate{}
+	client.Egress = egress.NewStaticGate()
 	client.Egress.SetRuntimeApprover(func(context.Context, egress.Target) error { return nil })
 	return &adapterClient{Client: client, adapter: adapter}
 }

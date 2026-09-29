@@ -8,11 +8,11 @@ import (
 	"time"
 
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
+	"github.com/fwtllh-png/QCode/internal/environment"
 	"github.com/fwtllh-png/QCode/internal/persist/workspacejournal"
 	"github.com/fwtllh-png/QCode/internal/security/authority"
-	"github.com/fwtllh-png/QCode/internal/security/controlmatrix"
 	"github.com/fwtllh-png/QCode/internal/security/egress"
-	"github.com/fwtllh-png/QCode/internal/security/goproxy"
+	securitymodel "github.com/fwtllh-png/QCode/internal/security/model"
 	"github.com/fwtllh-png/QCode/internal/security/policy"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
 )
@@ -89,6 +89,10 @@ func (g *Guard) executePipeline(
 					receipt.Disposition = authorized.invocation.Disposition
 					receipt.VerificationEvidenceAuthorized =
 						authorized.invocation.Binding.ProducesVerificationEvidence
+					switch authorized.decision.Action {
+					case policy.ActionDeny, policy.ActionHold:
+						receipt.PolicyDenial = policyDecisionReceipt(authorized.decision)
+					}
 					setExecutionTerminal(
 						&receipt,
 						terminalStatus(err, result),
@@ -123,6 +127,7 @@ func (g *Guard) executePipeline(
 			retryProfile,
 		)
 		retryProfile = nil
+		attempt.receipt.Policy = policyDecisionReceipt(prepared.decision)
 		receipt.Attempts = append(receipt.Attempts, attempt.receipt)
 		receipt.DispatchWait += attempt.dispatchWait
 		receipt.ClaimWait += attempt.claimWait
@@ -264,14 +269,11 @@ func (g *Guard) runAttempt(
 ) (run attemptRun) {
 	invocation := prepared.invocation
 	started := g.now()
-	var profile authority.EffectivePermissionProfile
-	var err error
-	if profileOverride == nil {
-		profile, err = g.compileAuthority(prepared, mode, uint64(sequence))
-	} else {
-		profile = *profileOverride
-		err = profile.Validate()
+	compiled, err := g.compileAuthority(prepared, mode, uint64(sequence))
+	if err == nil && profileOverride != nil {
+		compiled, err = compiled.WithProfile(*profileOverride)
 	}
+	profile := compiled.Profile
 	if err != nil || profile.Revision != uint64(sequence) {
 		if err == nil {
 			err = errors.New("additional permission profile revision is invalid")
@@ -293,17 +295,8 @@ func (g *Guard) runAttempt(
 	var artifactIntent *authority.ArtifactIntent
 	var fileBinding authority.FileBinding
 	if brokerAware {
-		preliminary, buildErr := g.buildExecutionOperation(prepared, profile, nil, "")
-		if buildErr != nil {
-			run.err = buildErr
-			run.receipt = attemptReceipt(
-				sequence, mode, started, g.now(), tool.OutcomeRejected,
-				"artifact_operation", run.profile,
-			)
-			return run
-		}
 		artifactBinding, err = brokerExecutor.PrepareAuthorizedProcess(
-			ctx, prepared.invocation, preliminary.Digest,
+			ctx, prepared.invocation, compiled.Operation.Digest,
 		)
 		if err != nil {
 			run.err = err
@@ -344,10 +337,12 @@ func (g *Guard) runAttempt(
 	operation, lease, leaseSnapshot, err := g.issueExecutionLease(
 		ctx,
 		prepared,
-		profile,
+		compiled,
 		uint64(sequence),
-		artifactIntent,
-		fileBinding.MutationDigest,
+		authority.Evidence{
+			Artifact:           artifactIntent,
+			FileMutationDigest: fileBinding.MutationDigest,
+		},
 		!brokerManaged,
 	)
 	if err != nil {
@@ -499,8 +494,7 @@ func (g *Guard) runAttempt(
 		return run
 	}
 	runContext = tool.WithIsolator(runContext, g.isolator)
-	runContext = goproxy.WithService(runContext, g.moduleProxy)
-	runContext = goproxy.WithBindReport(runContext, g.authBindReport)
+	runContext = environment.WithPreparationFacts(runContext, g.preparationFacts)
 	// Network tools get the connect-time approver so redirect chains and
 	// runtime-discovered origins ask once mid-fetch instead of failing the
 	// whole request and replaying. Probe-style callers keep the
@@ -804,11 +798,10 @@ func (g *Guard) approveAdditionalPermission(
 	callID string,
 	request authority.AdditionalPermissionRequest,
 ) (time.Duration, ApprovalDecision, error) {
-	escalation := policyInput(callID, invocation)
-	escalation.Resources = append(
-		append([]tool.Resource(nil), invocation.Resources...),
-		authority.PermissionResource(request.Permission),
-	)
+	escalation := g.policyInput(callID, invocation)
+	resolved := invocation.Assessment.Input()
+	resolved.Resources = append(resolved.Resources, authority.PermissionResource(request.Permission))
+	escalation.Assessment = securitymodel.Assess(resolved)
 	now := g.now()
 	started := g.now()
 	approval, err := g.waitForApproval(
@@ -838,38 +831,34 @@ func (g *Guard) reauthorizeAdditionalPermission(
 	permission authority.AdditionalPermission,
 	approval ApprovalDecision,
 ) (preparedExecution, error) {
-	runtime := g.Policy().CloneSampling()
+	runtime, err := g.samplePolicy()
+	if err != nil {
+		return preparedExecution{}, err
+	}
 	baseline := prepared
 	baseline.runtime = runtime
-	baseline.decision = runtime.Evaluate(
-		policyInput(prepared.invocation.CallID, prepared.invocation),
+	baseline.decision = runtime.Decide(
+		g.policyInput(prepared.invocation.CallID, prepared.invocation),
 	)
 	current, err := g.compileAuthority(baseline, mode, base.Revision)
-	if err != nil || current.Digest != base.Digest {
+	if err != nil || current.Profile.Digest != base.Digest {
 		return preparedExecution{}, &policy.DecisionError{
 			Code:   "authorization_changed",
 			Reason: "tool authorization changed before the amended retry",
 		}
 	}
-	resource := authority.PermissionResource(permission)
-	resources := append(
-		append([]tool.Resource(nil), prepared.invocation.Resources...),
-		resource,
-	)
-	if writeErr := g.checkControlPlaneWrites(resources); writeErr != nil {
-		return preparedExecution{}, writeErr
-	}
-	prepared.invocation.Resources = resources
-	invocation := policyInput(
+	resolved := prepared.invocation.Assessment.Input()
+	resolved.Resources = append(resolved.Resources, authority.PermissionResource(permission))
+	prepared.invocation.Assessment = securitymodel.Assess(resolved)
+	prepared.invocation.Resources = approvalResources(resolved.Resources)
+	invocation := g.policyInput(
 		prepared.invocation.CallID,
 		prepared.invocation,
 	)
-	decision := runtime.Evaluate(invocation)
+	decision := runtime.Decide(invocation)
 	switch decision.Action {
 	case policy.ActionDeny, policy.ActionHold:
-		return preparedExecution{}, &policy.DecisionError{
-			Code: decision.Code, Reason: decision.Reason,
-		}
+		return preparedExecution{}, g.decisionError(decision)
 	case policy.ActionAsk:
 		if err := g.cacheApproval(ctx, invocation, approval); err != nil {
 			return preparedExecution{}, err
@@ -939,7 +928,7 @@ func bindAttemptAuthority(
 	receipt.PermissionDigest = profile.Digest
 	receipt.PermissionCapability = profile.Capability
 	receipt.PermissionAccess = profile.Access
-	receipt.Enforcement = profile.Process.Enforcement
+	receipt.Enforcement = string(profile.Process.Enforcement)
 	receipt.Backend = profile.Process.Backend
 	receipt.EffectiveControls = profile.Controls
 	receipt.WorkspaceRoot = profile.Filesystem.WorkspaceRoot
@@ -950,7 +939,7 @@ func bindAttemptAuthority(
 		profile.Filesystem.DeniedWriteRoots...,
 	)
 	receipt.WorkspaceBaseWrite = profile.Filesystem.WorkspaceBaseWrite
-	receipt.NetworkMode = profile.Network.Mode
+	receipt.NetworkMode = string(profile.Controls.Network)
 	receipt.NetworkTargets = append([]string(nil), profile.Network.Targets...)
 	receipt.ManagedProxyPort = profile.Network.ProxyPort
 	receipt.LoopbackAllowed = profile.Network.Loopback
@@ -994,12 +983,12 @@ func bindAttemptLease(
 	receipt.WorkspaceTransaction = string(operation.Effect.WorkspaceTransaction)
 	if operation.Artifact != nil {
 		receipt.EffectiveControls.ArtifactOrigin =
-			controlmatrix.ArtifactOriginBrokerSnapshot
+			securitymodel.ArtifactOriginBrokerSnapshot
 	}
 	if operation.Effect.WorkspaceTransaction ==
 		authority.WorkspaceTransactionBeforeImage {
 		receipt.EffectiveControls.DurableRecovery =
-			controlmatrix.DurableRecoveryExternalJournal
+			securitymodel.DurableRecoveryExternalJournal
 	}
 }
 
@@ -1036,6 +1025,17 @@ func setAmendmentDecision(
 	}
 	amendment.Decision = decision
 	amendment.AmendedPermissionDigest = amendedDigest
+}
+
+func policyDecisionReceipt(decision policy.Decision) *tool.PolicyDecisionReceipt {
+	if decision.Action == "" {
+		return nil
+	}
+	return &tool.PolicyDecisionReceipt{
+		Action: string(decision.Action),
+		Layer:  string(decision.Layer),
+		Code:   decision.Code,
+	}
 }
 
 func setExecutionTerminal(

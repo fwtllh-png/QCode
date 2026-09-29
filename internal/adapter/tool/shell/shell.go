@@ -15,7 +15,7 @@ import (
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
 	"github.com/fwtllh-png/QCode/internal/adapter/tool/typed"
 	"github.com/fwtllh-png/QCode/internal/platform/process"
-	"github.com/fwtllh-png/QCode/internal/security/controlmatrix"
+	securitymodel "github.com/fwtllh-png/QCode/internal/security/model"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
 )
 
@@ -358,7 +358,7 @@ func (e *foregroundExecutor) TrustedBinding() tool.TrustedBinding {
 		WorkspaceTransaction: tool.TransactionNone,
 		Approval:             tool.ApprovalPolicyDefault,
 	}
-	binding.Required.ProcessTree = controlmatrix.ProcessTreeGroupKill
+	binding.Required.ProcessTree = securitymodel.ProcessTreeGroupKill
 	return binding
 }
 

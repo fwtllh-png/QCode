@@ -17,9 +17,9 @@ type ToolchainExposure struct {
 
 func discoverToolchains(
 	workspace string,
-	runtimeRoots, existing []string,
+	runtimeRoots, existing, sourceEnv []string,
 ) ToolchainExposure {
-	searchDirs := executableSearchDirectories()
+	searchDirs := PlatformPATHDirectories(sourceEnv)
 	seen := make(map[string]bool, len(runtimeRoots)+len(existing))
 	for _, root := range append(append([]string(nil), runtimeRoots...), existing...) {
 		seen[root] = true
@@ -34,15 +34,11 @@ func discoverToolchains(
 		)
 		exposePATHExecutables(&exposure, directory, workspace, seen)
 	}
-	discoverPlatformToolchains(&exposure, workspace, seen)
+	discoverPlatformToolchains(&exposure, workspace, seen, sourceEnv)
 	slices.Sort(exposure.ReadRoots)
 	slices.Sort(exposure.ReadFiles)
 	slices.Sort(exposure.Environment)
 	return exposure
-}
-
-func executableSearchDirectories() []string {
-	return PlatformPATHDirectories()
 }
 
 func addToolchainDirectory(
@@ -86,6 +82,11 @@ func addToolchainReadFile(target *[]string, path, workspace string) {
 	lexical, canonical, err := canonicalHostReadFile(path)
 	if err != nil || validateInjectedRoot(filepath.Dir(canonical), workspace) != nil {
 		return
+	}
+	for _, candidate := range []string{lexical, canonical} {
+		if validateSensitivePath(candidate) != nil {
+			return
+		}
 	}
 	for _, candidate := range []string{lexical, canonical} {
 		if !slices.Contains(*target, candidate) {

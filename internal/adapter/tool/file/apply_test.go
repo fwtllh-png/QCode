@@ -690,12 +690,18 @@ func TestFileApplyDryRunIsLowRiskAndDoesNotMutate(t *testing.T) {
 	}
 }
 
+func forcedEditReview(permission policy.Permission) *policy.Runtime {
+	runtime := policy.DefaultRuntime(policy.ModeAct, permission)
+	runtime.SetForceEditPlanApproval(true)
+	return runtime
+}
+
 func TestPlannedWriteAppliesOnlyTheDisplayedContent(t *testing.T) {
 	root, registry := applyTools(t, nil)
 	var guarded *toolguard.Guard
 	guarded, err := toolguard.New(toolguard.Options{
 		Registry: registry,
-		Policy:   policy.DefaultRuntime(policy.ModeAct, policy.PermissionSuggest),
+		Policy:   forcedEditReview(policy.PermissionSuggest),
 		Approvals: func(_ context.Context, request toolguard.ApprovalRequest) error {
 			if request.EditPlan == nil || len(request.EditPlan.Files) != 1 {
 				return errors.New("missing edit plan")
@@ -710,7 +716,7 @@ func TestPlannedWriteAppliesOnlyTheDisplayedContent(t *testing.T) {
 				PlanID: request.EditPlan.ID,
 			})
 		},
-		ForceEditPlanApproval: true, Workspace: root,
+		Workspace: root,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -759,7 +765,7 @@ func TestForcedEditPlanOverridesBroaderWriteGrant(t *testing.T) {
 	var guarded *toolguard.Guard
 	guarded, err := toolguard.New(toolguard.Options{
 		Registry: registry,
-		Policy:   policy.DefaultRuntime(policy.ModeAct, policy.PermissionAuto),
+		Policy:   forcedEditReview(policy.PermissionAuto),
 		Approvals: func(_ context.Context, request toolguard.ApprovalRequest) error {
 			asked = true
 			if request.EditPlan == nil {
@@ -771,7 +777,7 @@ func TestForcedEditPlanOverridesBroaderWriteGrant(t *testing.T) {
 				PlanID: request.EditPlan.ID,
 			})
 		},
-		ForceEditPlanApproval: true, Workspace: root,
+		Workspace: root,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -792,7 +798,7 @@ func TestPlannedWriteRejectsWorkspaceDriftWithZeroWrites(t *testing.T) {
 	var guarded *toolguard.Guard
 	guarded, err := toolguard.New(toolguard.Options{
 		Registry: registry,
-		Policy:   policy.DefaultRuntime(policy.ModeAct, policy.PermissionSuggest),
+		Policy:   forcedEditReview(policy.PermissionSuggest),
 		Approvals: func(_ context.Context, request toolguard.ApprovalRequest) error {
 			if request.EditPlan == nil {
 				return errors.New("missing edit plan")
@@ -808,7 +814,7 @@ func TestPlannedWriteRejectsWorkspaceDriftWithZeroWrites(t *testing.T) {
 				PlanID: request.EditPlan.ID,
 			})
 		},
-		ForceEditPlanApproval: true, Workspace: root,
+		Workspace: root,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -831,7 +837,7 @@ func TestPlannedWriteRejectsWrongPlanIdentity(t *testing.T) {
 	var guarded *toolguard.Guard
 	guarded, err := toolguard.New(toolguard.Options{
 		Registry: registry,
-		Policy:   policy.DefaultRuntime(policy.ModeAct, policy.PermissionSuggest),
+		Policy:   forcedEditReview(policy.PermissionSuggest),
 		Approvals: func(_ context.Context, request toolguard.ApprovalRequest) error {
 			return guarded.Decide(toolguard.ApprovalDecision{
 				RequestID: request.RequestID, Approved: true,
@@ -839,7 +845,7 @@ func TestPlannedWriteRejectsWrongPlanIdentity(t *testing.T) {
 				PlanID: strings.Repeat("0", 64),
 			})
 		},
-		ForceEditPlanApproval: true, Workspace: root,
+		Workspace: root,
 	})
 	if err != nil {
 		t.Fatal(err)

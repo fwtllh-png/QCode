@@ -13,7 +13,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/fwtllh-png/QCode/internal/platform/environment"
+	"github.com/fwtllh-png/QCode/internal/environment"
 	"github.com/fwtllh-png/QCode/internal/security/netpolicy"
 )
 
@@ -69,27 +69,58 @@ func DeniedTarget(err error) (DeniedError, bool) {
 	return *denied, true
 }
 
-// Gate is a session-scoped host allowlist. A zero Gate and a nil *Gate deny
-// every target; there is no pass-through mode.
+// Gate is a host allowlist. A zero Gate is a static gate with no grants; it
+// and a nil *Gate deny every target; there is no pass-through mode. The
+// constructors fix what a gate consults, so no caller combines mode flags.
 type Gate struct {
-	mu sync.RWMutex
-	// UseCallScope binds Web tool traffic to Guard's dynamic call grants.
-	// Provider and process gates retain their independently configured grants.
-	UseCallScope bool
-	// AllowPublic admits, without a grant, any target whose every resolved
-	// address is public. Non-public destinations still need a grant with
-	// private access, and a hostname never reaches host-local addresses
-	// unless it names them. The browser session uses it: page subresources,
-	// redirects, and scripts reach the public web while the host network
-	// stays behind approval.
-	AllowPublic bool
-	LookupIP    func(context.Context, string) ([]net.IP, error)
-	allowed     map[string]targetGrant
-	receipts    []Receipt
-	approver    RuntimeApprover
+	mu   sync.RWMutex
+	mode gateMode
+	// LookupIP replaces the system resolver, for example in tests.
+	LookupIP func(context.Context, string) ([]net.IP, error)
+	allowed  map[string]targetGrant
+	receipts []Receipt
+	approver RuntimeApprover
 	// approverGeneration identifies the latest BindRuntimeApprover call.
 	approverGeneration uint64
 	asks               askState
+}
+
+type gateMode uint8
+
+const (
+	// gateStatic consults only the gate's own grants.
+	gateStatic gateMode = iota
+	// gateCallScoped consults the Guard call scope carried by the request
+	// context, falling back to its own grants outside a call.
+	gateCallScoped
+	// gateBrowser admits, without a grant, any target whose every resolved
+	// address is public. Non-public destinations still need a grant with
+	// private access.
+	gateBrowser
+)
+
+// NewStaticGate returns a gate that allows exactly its grants: provider,
+// process, and Process Session traffic.
+func NewStaticGate(targets ...Target) *Gate {
+	gate := &Gate{}
+	for _, target := range targets {
+		gate.AllowTarget(target)
+	}
+	return gate
+}
+
+// NewCallScopedGate returns the Web tool gate. Inside a Guard call it consults
+// that call's dynamic grants; approvals discovered during the call join the
+// call scope instead of the gate.
+func NewCallScopedGate() *Gate {
+	return &Gate{mode: gateCallScoped}
+}
+
+// NewBrowserGate returns the browser session gate: page subresources,
+// redirects, and scripts reach the public web while the host network stays
+// behind approval.
+func NewBrowserGate() *Gate {
+	return &Gate{mode: gateBrowser}
 }
 
 // Private access is attached to each method, never shared across methods.
@@ -266,7 +297,7 @@ func (g *Gate) authorize(
 		return nil, deniedTarget(request, reasonGateMissing)
 	}
 	scoped, allowed, allowPrivate := false, false, false
-	if g.UseCallScope {
+	if g.mode == gateCallScoped {
 		scoped, allowed, allowPrivate = scopedPermissions(ctx, request)
 	}
 	if !scoped {
@@ -276,7 +307,7 @@ func (g *Gate) authorize(
 		g.mu.RUnlock()
 	}
 	var resolved []net.IP
-	if !allowed && g.AllowPublic {
+	if !allowed && g.mode == gateBrowser {
 		ips, resolveErr := g.resolve(ctx, request.Host)
 		if resolveErr != nil {
 			denied := deniedTarget(request, reasonDNSFailed)
@@ -315,7 +346,7 @@ func (g *Gate) authorize(
 				}
 			}
 			resolved = ips
-			if g.UseCallScope {
+			if g.mode == gateCallScoped {
 				AllowInScope(ctx, granted)
 				scoped, allowed, allowPrivate = scopedPermissions(ctx, request)
 			} else {
@@ -346,10 +377,11 @@ func (g *Gate) authorize(
 		return nil, denied
 	}
 	for _, ip := range ips {
-		// Model-driven Web traffic reaches host-local addresses only through a
-		// host that names them; a hostname granted for an intranet address
-		// must not rebind onto loopback services or cloud metadata.
-		modelDriven := scoped || g.AllowPublic
+		// Model-driven Web traffic (a Guard call scope or the browser)
+		// reaches host-local addresses only through a host that names them;
+		// a hostname granted for an intranet address must not rebind onto
+		// loopback services or cloud metadata.
+		modelDriven := scoped || g.mode == gateBrowser
 		reach := netpolicy.Classify(ip)
 		hostLocalByName := modelDriven && reach == netpolicy.HostLocal &&
 			!netpolicy.NamesHostLocal(request.Host)

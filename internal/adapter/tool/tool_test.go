@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	adaptercontent "github.com/fwtllh-png/QCode/internal/adapter/content"
+	"github.com/fwtllh-png/QCode/internal/adapter/provider"
 )
 
 func executeRegistry(
@@ -208,7 +208,7 @@ func TestResultAdmissionRejectsForgedReceipt(t *testing.T) {
 	payload := strings.Repeat("x", 100<<10)
 	admitted, receipt := store.Admit("exec_command", Result{
 		Content: payload,
-		Admission: &adaptercontent.AdmissionReceipt{
+		Admission: &provider.AdmissionReceipt{
 			Kind: "build", Reason: "inline", Digest: "sha256:forged",
 			OriginalBytes: 1, RetainedBytes: len(payload),
 			OriginalTokens: 1, RetainedTokens: 1, TokenLimit: 10_000,
@@ -314,7 +314,7 @@ func TestModelResultRetainsOnlyModelMetadata(t *testing.T) {
 	}, Outcome: &Outcome{
 		Status: OutcomeSucceeded,
 		Facts:  &OutcomeFacts{ResultHandle: "internal-handle"},
-	}, Execution: &ExecutionReceipt{}, Admission: &adaptercontent.AdmissionReceipt{}}
+	}, Execution: &ExecutionReceipt{}, Admission: &provider.AdmissionReceipt{}}
 	projected := ModelResult("file_write", input)
 	if len(projected.Metadata) != 2 ||
 		projected.Metadata["error_category"] != "retryable" ||

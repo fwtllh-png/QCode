@@ -9,9 +9,6 @@ import (
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
 	"github.com/fwtllh-png/QCode/internal/persist/workspacejournal"
 	"github.com/fwtllh-png/QCode/internal/security/authority"
-	"github.com/fwtllh-png/QCode/internal/security/controlmatrix"
-	"github.com/fwtllh-png/QCode/internal/security/policy"
-	securityresource "github.com/fwtllh-png/QCode/internal/security/resource"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
 )
 
@@ -56,9 +53,9 @@ func (g *Guard) compileAuthority(
 	prepared preparedExecution,
 	mode SandboxMode,
 	revision uint64,
-) (authority.EffectivePermissionProfile, error) {
+) (authority.Authority, error) {
 	if prepared.runtime == nil {
-		return authority.EffectivePermissionProfile{}, errors.New(
+		return authority.Authority{}, errors.New(
 			"authorized policy snapshot is required",
 		)
 	}
@@ -72,30 +69,31 @@ func (g *Guard) compileAuthority(
 	if sandboxPolicy.WorkspaceRoot == "" {
 		sandboxPolicy.WorkspaceRoot = g.workspace
 	}
-	enforcement := string(mode)
-	profile, err := authority.Compile(authority.CompileInput{
-		Runtime:       prepared.runtime,
-		Invocation:    policyInput(prepared.invocation.CallID, prepared.invocation),
-		Decision:      prepared.decision,
-		Authorized:    true,
-		Revision:      revision,
-		Enforcement:   enforcement,
-		Capability:    capability,
-		SandboxPolicy: sandboxPolicy,
-	})
+	securityInput, err := prepared.invocation.SecurityInvocation()
 	if err != nil {
-		return authority.EffectivePermissionProfile{}, err
+		return authority.Authority{}, err
 	}
-	return profile, nil
+	return authority.Compile(authority.CompileInput{
+		Runtime:             prepared.runtime,
+		Invocation:          g.policyInput(prepared.invocation.CallID, prepared.invocation),
+		Prepared:            securityInput,
+		Decision:            prepared.decision,
+		Authorized:          true,
+		Revision:            revision,
+		Enforcement:         sandbox.Enforcement(mode),
+		Capability:          capability,
+		SandboxPolicy:       sandboxPolicy,
+		WorkspaceID:         g.workspaceID,
+		WorkspaceGeneration: g.workspaceGeneration,
+	})
 }
 
 func (g *Guard) issueExecutionLease(
 	ctx context.Context,
 	prepared preparedExecution,
-	profile authority.EffectivePermissionProfile,
+	compiled authority.Authority,
 	attempt uint64,
-	artifact *authority.ArtifactIntent,
-	fileMutationDigest string,
+	evidence authority.Evidence,
 	consume bool,
 ) (
 	authority.ExecutionOperation,
@@ -103,13 +101,12 @@ func (g *Guard) issueExecutionLease(
 	authority.LeaseSnapshot,
 	error,
 ) {
-	operation, err := g.buildExecutionOperation(
-		prepared, profile, artifact, fileMutationDigest,
-	)
+	bound, err := compiled.Bind(evidence)
 	if err != nil {
 		return authority.ExecutionOperation{}, authority.ExecutionLease{},
 			authority.LeaseSnapshot{}, err
 	}
+	operation, profile := bound.Operation, bound.Profile
 	sandboxPolicyID, err := sandboxPolicyBinding(profile, prepared.invocation.Tool)
 	if err != nil {
 		return operation, authority.ExecutionLease{},
@@ -142,39 +139,6 @@ func (g *Guard) issueExecutionLease(
 	return operation, lease, snapshot, err
 }
 
-func (g *Guard) buildExecutionOperation(
-	prepared preparedExecution,
-	profile authority.EffectivePermissionProfile,
-	artifact *authority.ArtifactIntent,
-	fileMutationDigest string,
-) (authority.ExecutionOperation, error) {
-	policyInvocation := policyInput(
-		prepared.invocation.CallID,
-		prepared.invocation,
-	)
-	required := requiredControls(prepared.invocation)
-	if artifact != nil {
-		required.ArtifactOrigin = controlmatrix.ArtifactOriginBrokerSnapshot
-	}
-	operation, err := authority.BuildExecutionOperation(authority.OperationInput{
-		WorkspaceRoot:          g.workspace,
-		WorkspaceID:            g.workspaceID,
-		WorkspaceGeneration:    g.workspaceGeneration,
-		Invocation:             prepared.invocation,
-		Effect:                 policy.NormalizeEffect(policyInvocation),
-		Journaled:              policyInvocation.Journaled,
-		RequireReadBeforeWrite: policyInvocation.Journaled,
-		Required:               required,
-		Artifact:               artifact,
-		FileMutationDigest:     fileMutationDigest,
-		HostReadRoots: append(
-			append([]string(nil), profile.Filesystem.ReadRoots...),
-			profile.Filesystem.WritePaths...,
-		),
-	})
-	return operation, err
-}
-
 func sandboxPolicyBinding(
 	profile authority.EffectivePermissionProfile,
 	toolName string,
@@ -186,7 +150,7 @@ func sandboxPolicyBinding(
 			break
 		}
 	}
-	if sandboxPolicyID == "" && profile.Process.Enforcement == "strong" {
+	if sandboxPolicyID == "" && profile.Process.Enforcement == sandbox.EnforcementStrong {
 		sandboxPolicyID = authority.FallbackSandboxPolicyID(
 			profile.Filesystem.WorkspaceRoot,
 			profile.Process.Backend,
@@ -220,36 +184,6 @@ func leaseValidation(
 		SandboxPolicyID:     sandboxPolicyID, ArtifactDigest: artifactDigest,
 		Attempt: attempt,
 	}
-}
-
-func requiredControls(invocation Invocation) authority.RequiredControls {
-	required := invocation.Binding.Required
-	if invocation.Binding.SandboxRequirement == tool.SandboxStrong {
-		var hasNetworkTargets, allowLoopback bool
-		for _, resource := range invocation.Resources {
-			if resource.Access.Writes() &&
-				securityresource.IsPathKind(resource.Kind) {
-				required.FilesystemWrite = controlmatrix.FilesystemWriteExactPaths
-				required.PathIdentity = controlmatrix.PathIdentityDescriptorRelative
-			}
-			if resource.Kind == "host" || resource.Kind == "url" {
-				if securityresource.IsLoopback(resource.Kind, resource.Protocol) {
-					allowLoopback = true
-				} else {
-					hasNetworkTargets = true
-				}
-			}
-		}
-		switch {
-		case hasNetworkTargets:
-			required.Network = controlmatrix.NetworkProxyTargets
-		case allowLoopback:
-			required.Network = controlmatrix.NetworkLoopbackExact
-		default:
-			required.Network = controlmatrix.NetworkDenied
-		}
-	}
-	return authority.RequiredControls(required)
 }
 
 func settleExecutionLease(

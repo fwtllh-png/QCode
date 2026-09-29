@@ -17,9 +17,8 @@ import (
 
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
 	"github.com/fwtllh-png/QCode/internal/security/authority"
-	"github.com/fwtllh-png/QCode/internal/security/controlmatrix"
-	"github.com/fwtllh-png/QCode/internal/security/effect"
 	"github.com/fwtllh-png/QCode/internal/security/egress"
+	securitymodel "github.com/fwtllh-png/QCode/internal/security/model"
 	"github.com/fwtllh-png/QCode/internal/security/policy"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
 )
@@ -334,8 +333,8 @@ func TestActAutoProcessPausesForApprovalThenResumes(t *testing.T) {
 	if request.Tool != "exec_command" {
 		t.Fatalf("approval tool = %q, want exec_command", request.Tool)
 	}
-	if request.Effect != effect.ProcessMutating ||
-		request.Risk != effect.RiskHigh || request.ReasonCode == "" {
+	if request.Effect != securitymodel.ProcessMutating ||
+		request.Risk != securitymodel.RiskHigh || request.ReasonCode == "" {
 		t.Fatalf("approval presentation facts = %+v", request)
 	}
 	select {
@@ -1042,11 +1041,9 @@ func (e *egressRetryExecutor) Execute(ctx context.Context, _ json.RawMessage) (t
 			},
 		}, nil
 	}
-	gate := &egress.Gate{
-		UseCallScope: true,
-		LookupIP: func(context.Context, string) ([]net.IP, error) {
-			return []net.IP{net.ParseIP("93.184.216.34")}, nil
-		},
+	gate := egress.NewCallScopedGate()
+	gate.LookupIP = func(context.Context, string) ([]net.IP, error) {
+		return []net.IP{net.ParseIP("93.184.216.34")}, nil
 	}
 	if _, err := gate.Authorize(ctx, egress.Target{Host: "cdn.example", Protocol: "https"}, "test"); err != nil {
 		return tool.Result{}, err
@@ -1237,7 +1234,7 @@ func TestProcessLoopbackRequiresApprovalAndBindsAuthority(t *testing.T) {
 	if request.ReasonCode != ApprovalReasonNetworkHost ||
 		request.Network == nil ||
 		request.Network.Host != "localhost" ||
-		request.Network.Protocol != "loopback" ||
+		request.Network.Protocol != securitymodel.LoopbackProtocol ||
 		!request.Network.AllowPrivate ||
 		!reflect.DeepEqual(request.Network.Methods, []string{"BIND", "CONNECT"}) {
 		t.Fatalf("loopback approval = %+v", request)
@@ -1255,7 +1252,7 @@ func TestProcessLoopbackRequiresApprovalAndBindsAuthority(t *testing.T) {
 		len(result.Execution.Attempts) != 1 ||
 		!result.Execution.Attempts[0].LoopbackAllowed ||
 		result.Execution.Attempts[0].EffectiveControls.Network !=
-			controlmatrix.NetworkLoopbackExact {
+			securitymodel.NetworkLoopbackAny {
 		t.Fatalf("loopback execution receipt = %+v", result.Execution)
 	}
 }
@@ -1446,20 +1443,16 @@ type strongBackend struct{}
 func (strongBackend) Capability() sandbox.Capability {
 	return sandbox.Capability{
 		Platform: "test", Backend: "test", Available: true,
-		Effective: controlmatrix.
-			Matrix{FilesystemRead: controlmatrix.
-			FilesystemReadDeclaredRoots,
+		Effective: securitymodel.Controls{FilesystemRead: securitymodel.FilesystemReadDeclaredRoots,
 
-			FilesystemWrite: controlmatrix.
-				FilesystemWriteExactPaths,
+			FilesystemWrite: securitymodel.FilesystemWriteExactPaths,
 
-			Network: controlmatrix.
-				NetworkDenied, ProcessTree: controlmatrix.ProcessTreeGroupKill,
-			CrossProcess: controlmatrix.CrossProcessUnrestricted,
-			Syscall:      controlmatrix.SyscallDenyDangerous, IPC: controlmatrix.IPCUnrestricted,
-			PathIdentity:    controlmatrix.PathIdentityDescriptorRelative,
-			ArtifactOrigin:  controlmatrix.ArtifactOriginUnverifiedPath,
-			DurableRecovery: controlmatrix.DurableRecoveryMemoryOnly,
+			Network: securitymodel.NetworkDenied, ProcessTree: securitymodel.ProcessTreeGroupKill,
+			CrossProcess: securitymodel.CrossProcessUnrestricted,
+			Syscall:      securitymodel.SyscallDenyDangerous, IPC: securitymodel.IPCUnrestricted,
+			PathIdentity:    securitymodel.PathIdentityDescriptorRelative,
+			ArtifactOrigin:  securitymodel.ArtifactOriginUnverifiedPath,
+			DurableRecovery: securitymodel.DurableRecoveryMemoryOnly,
 		},
 	}
 }
@@ -1504,8 +1497,8 @@ func TestAdditionalPermissionRequiresReapproval(t *testing.T) {
 		request.AllowedScopes[0] != policy.ApprovalOnce {
 		t.Fatalf("additional permission scopes = %v", request.AllowedScopes)
 	}
-	if request.Effect != effect.ExternalMutation ||
-		request.Risk != effect.RiskCritical {
+	if request.Effect != securitymodel.ExternalMutation ||
+		request.Risk != securitymodel.RiskCritical {
 		t.Fatalf("additional permission risk = %s/%s", request.Effect, request.Risk)
 	}
 	if err := guard.Decide(ApprovalDecision{RequestID: request.RequestID}); err != nil {

@@ -13,7 +13,7 @@ import (
 
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
 	"github.com/fwtllh-png/QCode/internal/platform/process"
-	"github.com/fwtllh-png/QCode/internal/security/controlmatrix"
+	securitymodel "github.com/fwtllh-png/QCode/internal/security/model"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
 	"github.com/fwtllh-png/QCode/testutil/tooltest"
 )
@@ -584,11 +584,15 @@ func (passthroughBackend) Prepare(
 		command.WorkspaceWritePaths...,
 	)
 	command.PreparedNetworkDenied = command.DenyNetwork
-	command.PreparedControls = sandbox.CommandControls(
+	var err error
+	command.PreparedControls, err = sandbox.CommandControls(
 		passthroughBackend{}.Capability(),
 		sandbox.Policy{},
 		command,
 	)
+	if err != nil {
+		return sandbox.Command{}, err
+	}
 	return command, nil
 }
 
@@ -606,18 +610,18 @@ func (errorBackend) Capability() sandbox.Capability {
 	}
 }
 
-func shellTestControls() controlmatrix.Matrix {
-	return controlmatrix.Matrix{
-		FilesystemRead:  controlmatrix.FilesystemReadDeclaredRoots,
-		FilesystemWrite: controlmatrix.FilesystemWriteExactPaths,
-		Network:         controlmatrix.NetworkDenied,
-		ProcessTree:     controlmatrix.ProcessTreeGroupKill,
-		CrossProcess:    controlmatrix.CrossProcessRestricted,
-		Syscall:         controlmatrix.SyscallDenyDangerous,
-		IPC:             controlmatrix.IPCUnixOnly,
-		PathIdentity:    controlmatrix.PathIdentityDescriptorRelative,
-		ArtifactOrigin:  controlmatrix.ArtifactOriginVerifiedManifest,
-		DurableRecovery: controlmatrix.DurableRecoveryExternalJournal,
+func shellTestControls() securitymodel.Controls {
+	return securitymodel.Controls{
+		FilesystemRead:  securitymodel.FilesystemReadDeclaredRoots,
+		FilesystemWrite: securitymodel.FilesystemWriteExactPaths,
+		Network:         securitymodel.NetworkDenied,
+		ProcessTree:     securitymodel.ProcessTreeGroupKill,
+		CrossProcess:    securitymodel.CrossProcessRestricted,
+		Syscall:         securitymodel.SyscallDenyDangerous,
+		IPC:             securitymodel.IPCUnixOnly,
+		PathIdentity:    securitymodel.PathIdentityDescriptorRelative,
+		ArtifactOrigin:  securitymodel.ArtifactOriginVerifiedManifest,
+		DurableRecovery: securitymodel.DurableRecoveryExternalJournal,
 	}
 }
 

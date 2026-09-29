@@ -184,12 +184,16 @@ func (s *Session) registerResourceClosers() error {
 			return nil
 		}},
 		{name: "sandbox", close: func(context.Context) error {
-			if s.sandbox == nil {
-				return nil
+			var closeErr, cleanupErr error
+			if s.sandbox != nil {
+				closeErr = sandbox.CloseBackend(s.sandbox)
+				s.sandbox = nil
 			}
-			err := sandbox.CloseBackend(s.sandbox)
-			s.sandbox = nil
-			return err
+			if s.environmentStateDir != "" {
+				cleanupErr = os.RemoveAll(s.environmentStateDir)
+				s.environmentStateDir = ""
+			}
+			return errors.Join(closeErr, cleanupErr)
 		}},
 		{name: "ephemeral-state", close: func(context.Context) error {
 			var closeErr error

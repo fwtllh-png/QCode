@@ -12,11 +12,13 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+
+	securitymodel "github.com/fwtllh-png/QCode/internal/security/model"
 )
 
 var (
 	catalogSequence atomic.Uint64
-	legacySequence  atomic.Uint64
+	builtinSequence atomic.Uint64
 )
 
 const (
@@ -247,8 +249,8 @@ func nextCatalogID() string {
 	return fmt.Sprintf("catalog-%d", catalogSequence.Add(1))
 }
 
-func nextLegacySource(name string) string {
-	return fmt.Sprintf("legacy:%s:%d", name, legacySequence.Add(1))
+func nextBuiltinSource(name string) string {
+	return fmt.Sprintf("builtin:%s:%d", name, builtinSequence.Add(1))
 }
 
 // CatalogToolID binds allowlist authority to tool family and source.
@@ -259,16 +261,16 @@ func CatalogToolID(name, source string) string {
 	case "mcp":
 		value = source + "/" + name
 	default:
-		value = kind + ":" + name
+		value = string(kind) + ":" + name
 	}
 	if len(value) <= 256 {
 		return value
 	}
 	sum := sha256.Sum256([]byte(value))
-	return kind + ":" + hex.EncodeToString(sum[:])
+	return string(kind) + ":" + hex.EncodeToString(sum[:])
 }
 
-func CatalogSourceKind(name, source string) string {
+func CatalogSourceKind(name, source string) securitymodel.SourceKind {
 	switch {
 	case strings.HasPrefix(source, "mcp:"):
 		return "mcp"

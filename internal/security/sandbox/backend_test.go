@@ -12,7 +12,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/fwtllh-png/QCode/internal/security/controlmatrix"
+	securitymodel "github.com/fwtllh-png/QCode/internal/security/model"
 	"github.com/fwtllh-png/QCode/internal/security/pathpolicy"
 )
 
@@ -481,7 +481,7 @@ func TestBuildPolicyRecordsV1ContractWithoutIndependentCertDiscovery(t *testing.
 }
 
 func TestDiscoverToolchainsV1SkipsNamedLanguageProbes(t *testing.T) {
-	exposure := discoverToolchains(t.TempDir(), nil, nil)
+	exposure := discoverToolchains(t.TempDir(), nil, nil, os.Environ())
 	for _, entry := range exposure.Environment {
 		name, _, _ := strings.Cut(entry, "=")
 		switch name {
@@ -862,17 +862,17 @@ func TestRequiredControlsUseEffectiveMatrix(t *testing.T) {
 	claimedStrong := &unavailableBackend{capability: Capability{
 		Platform: "fixture", Backend: "claimed-strong",
 		Available: true,
-		Effective: controlmatrix.Matrix{
-			FilesystemRead:  controlmatrix.FilesystemReadUnrestricted,
-			FilesystemWrite: controlmatrix.FilesystemWriteUnrestricted,
-			Network:         controlmatrix.NetworkDirect,
-			ProcessTree:     controlmatrix.ProcessTreeUnmanaged,
-			CrossProcess:    controlmatrix.CrossProcessUnrestricted,
-			Syscall:         controlmatrix.SyscallUnrestricted,
-			IPC:             controlmatrix.IPCUnrestricted,
-			PathIdentity:    controlmatrix.PathIdentityLexical,
-			ArtifactOrigin:  controlmatrix.ArtifactOriginUnverifiedPath,
-			DurableRecovery: controlmatrix.DurableRecoveryMemoryOnly,
+		Effective: securitymodel.Controls{
+			FilesystemRead:  securitymodel.FilesystemReadUnrestricted,
+			FilesystemWrite: securitymodel.FilesystemWriteUnrestricted,
+			Network:         securitymodel.NetworkDirect,
+			ProcessTree:     securitymodel.ProcessTreeUnmanaged,
+			CrossProcess:    securitymodel.CrossProcessUnrestricted,
+			Syscall:         securitymodel.SyscallUnrestricted,
+			IPC:             securitymodel.IPCUnrestricted,
+			PathIdentity:    securitymodel.PathIdentityLexical,
+			ArtifactOrigin:  securitymodel.ArtifactOriginUnverifiedPath,
+			DurableRecovery: securitymodel.DurableRecoveryMemoryOnly,
 		},
 	}}
 	if err := RequireControls(
@@ -882,13 +882,13 @@ func TestRequiredControlsUseEffectiveMatrix(t *testing.T) {
 		t.Fatalf("claimed strong backend error = %v", err)
 	}
 	partial := claimedStrong.capability
-	partial.Effective.FilesystemRead = controlmatrix.FilesystemReadDeclaredRoots
-	partial.Effective.Network = controlmatrix.NetworkDenied
+	partial.Effective.FilesystemRead = securitymodel.FilesystemReadDeclaredRoots
+	partial.Effective.Network = securitymodel.NetworkDenied
 	if err := RequireControls(
 		&unavailableBackend{capability: partial},
-		controlmatrix.Requirements{
-			FilesystemRead: controlmatrix.FilesystemReadDeclaredRoots,
-			Network:        controlmatrix.NetworkDenied,
+		securitymodel.RequiredControls{
+			FilesystemRead: securitymodel.FilesystemReadDeclaredRoots,
+			Network:        securitymodel.NetworkDenied,
 		},
 	); err != nil {
 		t.Fatalf("partial backend with sufficient controls was rejected: %v", err)
@@ -898,30 +898,33 @@ func TestRequiredControlsUseEffectiveMatrix(t *testing.T) {
 func TestPolicyCannotInventUnavailableControls(t *testing.T) {
 	capability := Capability{
 		Platform: "fixture", Backend: "weak", Available: true,
-		Effective: controlmatrix.Matrix{
-			FilesystemRead:  controlmatrix.FilesystemReadUnrestricted,
-			FilesystemWrite: controlmatrix.FilesystemWriteUnrestricted,
-			Network:         controlmatrix.NetworkDirect,
-			ProcessTree:     controlmatrix.ProcessTreeUnmanaged,
-			CrossProcess:    controlmatrix.CrossProcessUnrestricted,
-			Syscall:         controlmatrix.SyscallUnrestricted,
-			IPC:             controlmatrix.IPCUnrestricted,
-			PathIdentity:    controlmatrix.PathIdentityLexical,
-			ArtifactOrigin:  controlmatrix.ArtifactOriginUnverifiedPath,
-			DurableRecovery: controlmatrix.DurableRecoveryMemoryOnly,
+		Effective: securitymodel.Controls{
+			FilesystemRead:  securitymodel.FilesystemReadUnrestricted,
+			FilesystemWrite: securitymodel.FilesystemWriteUnrestricted,
+			Network:         securitymodel.NetworkDirect,
+			ProcessTree:     securitymodel.ProcessTreeUnmanaged,
+			CrossProcess:    securitymodel.CrossProcessUnrestricted,
+			Syscall:         securitymodel.SyscallUnrestricted,
+			IPC:             securitymodel.IPCUnrestricted,
+			PathIdentity:    securitymodel.PathIdentityLexical,
+			ArtifactOrigin:  securitymodel.ArtifactOriginUnverifiedPath,
+			DurableRecovery: securitymodel.DurableRecoveryMemoryOnly,
 		},
 	}
 	policy := Policy{}
 	effective := EffectiveControls(capability, policy)
-	if effective.Network != controlmatrix.NetworkDirect {
+	if effective.Network != securitymodel.NetworkDirect {
 		t.Fatalf("policy invented network isolation: %+v", effective)
 	}
-	prepared := CommandControls(capability, policy, Command{
+	prepared, err := CommandControls(capability, policy, Command{
 		WorkspaceReadOnly: true,
 		DenyNetwork:       true,
 	})
-	if prepared.Network != controlmatrix.NetworkDirect ||
-		prepared.FilesystemWrite != controlmatrix.FilesystemWriteUnrestricted {
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prepared.Network != securitymodel.NetworkDirect ||
+		prepared.FilesystemWrite != securitymodel.FilesystemWriteUnrestricted {
 		t.Fatalf("command invented unavailable controls: %+v", prepared)
 	}
 }

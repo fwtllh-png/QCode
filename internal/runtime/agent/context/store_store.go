@@ -10,7 +10,6 @@ import (
 	"reflect"
 	"sort"
 
-	adaptercontent "github.com/fwtllh-png/QCode/internal/adapter/content"
 	"github.com/fwtllh-png/QCode/internal/adapter/provider"
 )
 
@@ -387,7 +386,7 @@ func CloneBlocks(blocks []provider.ContentBlock) []provider.ContentBlock {
 		}
 		if block.ToolResult != nil {
 			value := *block.ToolResult
-			value.Admission = adaptercontent.CloneAdmissionReceipt(
+			value.Admission = provider.CloneAdmissionReceipt(
 				block.ToolResult.Admission,
 			)
 			result[index].ToolResult = &value

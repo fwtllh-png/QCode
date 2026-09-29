@@ -18,15 +18,13 @@ func TestPublicBrowsingGateAdmitsOnlyPublicDestinations(t *testing.T) {
 		"wiki.corp":        {"10.1.2.3"},
 		"localhost":        {"127.0.0.1"},
 	}
-	gate := &egress.Gate{
-		AllowPublic: true,
-		LookupIP: func(_ context.Context, host string) ([]net.IP, error) {
-			addresses, ok := resolved[host]
-			if !ok {
-				return nil, errors.New("no such host")
-			}
-			return fixedLookup(addresses...)(context.Background(), host)
-		},
+	gate := egress.NewBrowserGate()
+	gate.LookupIP = func(_ context.Context, host string) ([]net.IP, error) {
+		addresses, ok := resolved[host]
+		if !ok {
+			return nil, errors.New("no such host")
+		}
+		return fixedLookup(addresses...)(context.Background(), host)
 	}
 	connect := func(host string, port uint16) egress.Target {
 		return egress.Target{
@@ -77,7 +75,8 @@ func TestPublicBrowsingGateAdmitsOnlyPublicDestinations(t *testing.T) {
 }
 
 func TestAdoptScopeKeepsApprovedTargetsBeyondTheCall(t *testing.T) {
-	browser := &egress.Gate{AllowPublic: true, LookupIP: fixedLookup("10.1.2.3")}
+	browser := egress.NewBrowserGate()
+	browser.LookupIP = fixedLookup("10.1.2.3")
 	target := egress.Target{
 		Host: "wiki.corp", Protocol: "https", Port: 443, Methods: []string{"CONNECT"},
 	}

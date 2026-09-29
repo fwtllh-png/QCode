@@ -21,8 +21,7 @@ import (
 	"github.com/fwtllh-png/QCode/internal/platform/workspacequery"
 	"github.com/fwtllh-png/QCode/internal/runtime/app"
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
-	"github.com/fwtllh-png/QCode/internal/security/constitution"
-	"github.com/fwtllh-png/QCode/internal/security/policy"
+	securitypolicy "github.com/fwtllh-png/QCode/internal/security/policy"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
 )
 
@@ -36,10 +35,11 @@ type providerBundle struct {
 }
 
 type platformBundle struct {
-	processes       *process.SessionManager
-	workspaceQuery  *workspacequery.Service
-	repositoryIndex *repoindex.Index
-	sandbox         sandbox.Backend
+	processes           *process.SessionManager
+	workspaceQuery      *workspacequery.Service
+	repositoryIndex     *repoindex.Index
+	sandbox             sandbox.Backend
+	environmentStateDir string
 }
 
 type capabilityBundle struct {
@@ -68,8 +68,8 @@ type persistenceBundle struct {
 }
 
 type securityBundle struct {
-	security           *policy.Runtime
-	Constitution       constitution.Status
+	security           *securitypolicy.Runtime
+	Constitution       securitypolicy.ConstitutionStatus
 	constitutionPrompt string
 }
 

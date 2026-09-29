@@ -1,9 +1,7 @@
 package policy
 
 import (
-	"strings"
-
-	"github.com/fwtllh-png/QCode/internal/security/effect"
+	securitymodel "github.com/fwtllh-png/QCode/internal/security/model"
 )
 
 type Surface string
@@ -31,14 +29,13 @@ type Granular struct {
 	MCP     SurfacePosture `json:"mcp,omitempty"`
 }
 
-func ClassifySurface(source string, capability Capability) Surface {
-	source = strings.ToLower(strings.TrimSpace(source))
+// ClassifySurface derives the granular surface from the catalog source kind
+// the Registry assigned to the tool binding.
+func ClassifySurface(source securitymodel.SourceKind, capability Capability) Surface {
 	switch {
-	case strings.HasPrefix(source, "mcp:"):
+	case source == securitymodel.SourceMCP:
 		return SurfaceMCP
-	case strings.HasPrefix(source, "skill:") ||
-		strings.HasPrefix(source, "legacy:skills_read:") ||
-		strings.HasPrefix(source, "legacy:skills_list:"):
+	case source == securitymodel.SourceSkill:
 		return SurfaceSkills
 	case capability == CapabilityProcess:
 		return SurfaceSandbox
@@ -55,7 +52,7 @@ func (g Granular) postureFor(surface Surface) SurfacePosture {
 }
 
 func ApplySurfaceTightening(
-	decision Decision, surface Surface, granular Granular, eff effect.Effect,
+	decision Decision, surface Surface, granular Granular, eff securitymodel.Effect,
 ) Decision {
 	posture := granular.postureFor(surface)
 	if posture == SurfaceInherit || posture == SurfaceAllow ||
@@ -67,7 +64,7 @@ func ApplySurfaceTightening(
 		// low-risk probes (echo, ls, env) keep their frictionless allow so
 		// a tightened session does not turn exploration commands into
 		// approval stops. Explicit deny postures are never softened.
-		if eff.Kind == effect.ProcessReadOnly && eff.Risk == effect.RiskLow {
+		if eff.Kind == securitymodel.ProcessReadOnly && eff.Risk == securitymodel.RiskLow {
 			return decision
 		}
 		return Decision{Action: ActionAsk, Code: "granular_ask", Reason: "surface " + string(surface) + " requires approval"}

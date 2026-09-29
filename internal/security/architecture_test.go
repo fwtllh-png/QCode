@@ -22,23 +22,13 @@ var forbiddenLayers = []string{
 	modulePrefix + "internal/host",
 }
 
-// knownLayerViolations registers existing violations by package directory.
-// Entries only ever shrink; an entry that no longer matches an import fails
-// the test so it is removed in the same change that fixes it.
-var knownLayerViolations = map[string][]string{
-	"authority":       {modulePrefix + "internal/adapter/tool"},
-	"plandrift":       {modulePrefix + "internal/runtime/protocol"},
-	"policy":          {modulePrefix + "internal/adapter/tool"},
-	"workspacebroker": {modulePrefix + "internal/persist/workspacejournal"},
-}
-
 // vocabularyPackages define shared security vocabulary and depend on nothing
-// else in the module, so every layer can import them without a cycle.
-var vocabularyPackages = []string{"effect", "netpolicy", "pathpolicy", "resource"}
+// else in the module except each other, so every layer can import them
+// without a cycle.
+var vocabularyPackages = []string{"model", "envpolicy", "netpolicy", "pathpolicy"}
 
 func TestSecurityImportDirection(t *testing.T) {
 	imports := productionImports(t)
-	used := map[string]bool{}
 	var violations []string
 	for pkg, paths := range imports {
 		for path := range paths {
@@ -46,18 +36,7 @@ func TestSecurityImportDirection(t *testing.T) {
 				continue
 			}
 			key := pkg + " -> " + path
-			if contains(knownLayerViolations[pkg], path) {
-				used[key] = true
-				continue
-			}
 			violations = append(violations, key)
-		}
-	}
-	for pkg, paths := range knownLayerViolations {
-		for _, path := range paths {
-			if key := pkg + " -> " + path; !used[key] {
-				violations = append(violations, "stale allowlist entry "+key)
-			}
 		}
 	}
 	sort.Strings(violations)
@@ -74,9 +53,24 @@ func TestSecurityVocabularyPackagesAreLeaves(t *testing.T) {
 			t.Fatalf("vocabulary package %s has no production files", pkg)
 		}
 		for path := range paths {
-			if strings.HasPrefix(path, modulePrefix) {
+			if strings.HasPrefix(path, modulePrefix) &&
+				!contains(vocabularyImports(), path) {
 				t.Fatalf("vocabulary package %s imports %s", pkg, path)
 			}
+		}
+	}
+}
+
+// TestSecurityModelIsPure keeps contracts and classification independent of
+// policy sources, execution, and adapters. Only network normalization is shared.
+func TestSecurityModelIsPure(t *testing.T) {
+	imports, ok := productionImports(t)["model"]
+	if !ok {
+		t.Fatal("security model has no production files")
+	}
+	for path := range imports {
+		if strings.HasPrefix(path, modulePrefix) && path != modulePrefix+"internal/security/netpolicy" {
+			t.Fatalf("model imports %s", path)
 		}
 	}
 }
@@ -124,6 +118,14 @@ func productionImports(t *testing.T) map[string]map[string]bool {
 		t.Fatal("no internal/security packages were scanned")
 	}
 	return out
+}
+
+func vocabularyImports() []string {
+	paths := make([]string, 0, len(vocabularyPackages))
+	for _, pkg := range vocabularyPackages {
+		paths = append(paths, modulePrefix+"internal/security/"+pkg)
+	}
+	return paths
 }
 
 func forbidden(path string) bool {

@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"testing"
 
-	adaptercontent "github.com/fwtllh-png/QCode/internal/adapter/content"
+	"github.com/fwtllh-png/QCode/internal/adapter/provider"
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
 	"github.com/fwtllh-png/QCode/internal/observability/diagnostics"
 	"github.com/fwtllh-png/QCode/internal/observability/verify"
@@ -50,7 +50,7 @@ func TestNoisyFailedCommandsExhaustProgressLease(t *testing.T) {
 
 func TestResultObservationIgnoresPresentationAndAttemptIdentity(t *testing.T) {
 	for _, isError := range []bool{false, true} {
-		first := tool.Result{Admission: &adaptercontent.AdmissionReceipt{Digest: "first-output"}, IsError: isError, Content: "elapsed=1 /tmp/first", Handle: "one", Outcome: &tool.Outcome{Facts: &tool.OutcomeFacts{
+		first := tool.Result{Admission: &provider.AdmissionReceipt{Digest: "first-output"}, IsError: isError, Content: "elapsed=1 /tmp/first", Handle: "one", Outcome: &tool.Outcome{Facts: &tool.OutcomeFacts{
 			ProcessSession: &tool.ProcessSessionFact{SessionID: "one", Cursor: 10, ExitCode: 1},
 			Diagnostics:    []diagnostics.Receipt{{Path: "a.go", Status: "failed", Message: "elapsed=1", Diagnostics: []diagnostics.Diagnostic{{Path: "a.go", Code: "E1", Message: "/tmp/first"}}}},
 			Verification:   &verify.Evidence{Kind: "test", Status: verify.StatusFailed, InputDigest: "input", CallID: "one", CommandDigest: "one", MutationRevision: 1},
@@ -58,7 +58,7 @@ func TestResultObservationIgnoresPresentationAndAttemptIdentity(t *testing.T) {
 		second := first
 		second.Content = "elapsed=2 /tmp/second"
 		second.Handle = "two"
-		second.Admission = &adaptercontent.AdmissionReceipt{Digest: "second-output"}
+		second.Admission = &provider.AdmissionReceipt{Digest: "second-output"}
 		second.Outcome = tool.CloneOutcome(first.Outcome)
 		facts := second.Outcome.Facts
 		facts.ProcessSession.SessionID = "two"

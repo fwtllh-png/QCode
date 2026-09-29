@@ -22,13 +22,13 @@
 4. [Web 使用与工作流](./usage.md)
 5. [桌面应用](./desktop.md)
 6. [安全模型](./security.md)
-7. [排障指南](./troubleshooting.md)
+7. [使用说明](./usage.md)
 
 ### 我要使用 Web 工作区
 
 1. [快速开始](./getting-started.md)
 2. [配置说明](./configuration.md)
-3. [排障指南](./troubleshooting.md)
+3. [使用说明](./usage.md)
 
 ### 我要参与开发
 
@@ -38,7 +38,8 @@
 4. [源码阅读路线指南](./reading-guide.md)
 5. [Agent 指南](./agent-guide.md)
 6. [CONTRIBUTING.md](../../CONTRIBUTING.md)
-7. [后续规划](./roadmap.md)
+7. [安全策略模型收敛方案](./security-policy-refactor-plan.md)
+8. [执行环境通用化优化方案（P1–P4 已实施）](./environment-language-neutral-plan.md)
 
 ## 文档事实来源
 

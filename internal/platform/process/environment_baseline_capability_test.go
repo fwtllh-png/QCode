@@ -4,12 +4,14 @@ package process_test
 
 import (
 	"context"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
-	platformenv "github.com/fwtllh-png/QCode/internal/platform/environment"
+	"github.com/fwtllh-png/QCode/internal/adapter/envprep"
 	"github.com/fwtllh-png/QCode/internal/platform/process"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
 )
@@ -98,20 +100,32 @@ func TestIsolatedSandboxEnvironmentBaseline(t *testing.T) {
 }
 
 func TestV1NativeSharedUserTempAllowsMktemp(t *testing.T) {
-	userTemp, err := platformenv.UserTempDir()
+	userTemp, err := envprep.UserTempDir()
 	if err != nil {
 		t.Fatalf("unavailable: resolve Darwin user temp: %v", err)
 	}
-	root := t.TempDir()
-	backend, err := sandbox.NewPlatformBackend(sandbox.Options{
-		WorkspaceRoot:       root,
-		PrivateTemp:         t.TempDir(),
-		AllowNetwork:        false,
-		EnvironmentContract: "v1",
-		EnvironmentProfile:  "native",
-		SharedUserTemp:      true,
-		HostWriteRoots:      []string{userTemp},
+	// Keep the workspace outside the shared temp root: granting a workspace's
+	// parent as a host write root must remain forbidden.
+	root, err := os.MkdirTemp("/private/tmp", "qcode-shared-temp-workspace-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	private, err := os.MkdirTemp("/private/tmp", "qcode-shared-temp-private-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(private) })
+	prepared, err := envprep.Prepare(t.Context(), envprep.Options{
+		Sandbox: sandbox.Options{
+			WorkspaceRoot: root, PrivateTemp: private,
+			EnvironmentContract: "v1", EnvironmentProfile: "native", SharedUserTemp: true,
+		},
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend, err := sandbox.NewPlatformBackend(prepared.Sandbox)
 	if err != nil {
 		t.Fatalf("unavailable: construct sandbox: %v", err)
 	}
@@ -128,17 +142,25 @@ func TestV1NativeSharedUserTempAllowsMktemp(t *testing.T) {
 		t.Fatalf("unavailable: %v", err)
 	}
 	t.Cleanup(func() { _ = directory.Close() })
+
+	existing, err := os.CreateTemp(userTemp, "qcode-shared-existing-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	existingPath := existing.Name()
+	if _, err := existing.WriteString("unrelated shared content"); err != nil {
+		t.Fatal(err)
+	}
+	if err := existing.Close(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Remove(existingPath) })
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	result, err := process.Run(ctx, process.Options{
 		Dir: workspace.Root(), DirFile: directory,
-		Command: `printf '%s\n' "$TMPDIR"; created=$(mktemp -d) || exit 1; trap 'rmdir "$created"' EXIT; printf '%s\n' "$created"`,
-		Env: []string{
-			"HOME=/host/home",
-			"TMPDIR=" + userTemp,
-			"TMP=" + userTemp,
-			"TEMP=" + userTemp,
-		},
+		Env:     []string{"EXISTING_SHARED_FILE=" + filepath.Clean(existingPath)},
+		Command: `if cat "$EXISTING_SHARED_FILE" >/dev/null 2>&1; then exit 91; fi; printf '%s\n' "$TMPDIR"; created=$(mktemp -d) || exit 1; trap 'rmdir "$created"' EXIT; printf '%s\n' "$created"`,
 		Sandbox: backend, RequireSandbox: true, WorkspaceReadOnly: true,
 	})
 	if err != nil {

@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/fwtllh-png/QCode/internal/security/controlmatrix"
+	securitymodel "github.com/fwtllh-png/QCode/internal/security/model"
 )
 
 func TestTrustedBindingRejectsCrossFieldAuthorityConflicts(t *testing.T) {
@@ -152,9 +152,9 @@ func bindingFixture(
 			Approval: ApprovalPolicyDefault,
 		},
 		Required: RequiredControls{
-			FilesystemRead: controlmatrix.FilesystemReadDeclaredRoots,
-			Network:        controlmatrix.NetworkDenied,
-			PathIdentity:   controlmatrix.PathIdentityDescriptorRelative,
+			FilesystemRead: securitymodel.FilesystemReadDeclaredRoots,
+			Network:        securitymodel.NetworkDenied,
+			PathIdentity:   securitymodel.PathIdentityDescriptorRelative,
 		},
 	}
 }

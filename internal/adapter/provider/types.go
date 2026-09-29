@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"strings"
 
-	adaptercontent "github.com/fwtllh-png/QCode/internal/adapter/content"
 	"github.com/fwtllh-png/QCode/internal/adapter/model"
 )
 
@@ -59,10 +58,10 @@ type ContentBlock struct {
 	Attachment *Attachment   `json:"attachment,omitempty"`
 }
 type ToolResult struct {
-	CallID    string                           `json:"call_id"`
-	Content   string                           `json:"content"`
-	IsError   bool                             `json:"is_error,omitempty"`
-	Admission *adaptercontent.AdmissionReceipt `json:"admission,omitempty"`
+	CallID    string            `json:"call_id"`
+	Content   string            `json:"content"`
+	IsError   bool              `json:"is_error,omitempty"`
+	Admission *AdmissionReceipt `json:"admission,omitempty"`
 }
 type Message struct {
 	Role       Role                 `json:"role"`

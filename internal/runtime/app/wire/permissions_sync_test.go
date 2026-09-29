@@ -10,8 +10,7 @@ import (
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
 	toolguard "github.com/fwtllh-png/QCode/internal/adapter/tool/guard"
 	agentengine "github.com/fwtllh-png/QCode/internal/runtime/agent/engine"
-	"github.com/fwtllh-png/QCode/internal/security/permissions"
-	"github.com/fwtllh-png/QCode/internal/security/policy"
+	securitypolicy "github.com/fwtllh-png/QCode/internal/security/policy"
 )
 
 type permissionsSyncExecutor struct{}
@@ -37,10 +36,10 @@ func (permissionsSyncExecutor) Execute(context.Context, json.RawMessage) (tool.R
 }
 
 func TestAlwaysPermissionSharedAcrossWorkspaceGuards(t *testing.T) {
-	for _, scope := range []policy.ApprovalScope{policy.ApprovalAlways, policy.ApprovalSession, policy.ApprovalOnce} {
+	for _, scope := range []securitypolicy.ApprovalScope{securitypolicy.ApprovalAlways, securitypolicy.ApprovalSession, securitypolicy.ApprovalOnce} {
 		t.Run(string(scope), func(t *testing.T) {
 			root := t.TempDir()
-			store, err := permissions.OpenStore(filepath.Join(t.TempDir(), permissions.FileName))
+			store, err := securitypolicy.OpenPermissionsStore(filepath.Join(t.TempDir(), securitypolicy.PermissionsFileName))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -49,10 +48,10 @@ func TestAlwaysPermissionSharedAcrossWorkspaceGuards(t *testing.T) {
 			if err := registry.Register(permissionsSyncExecutor{}); err != nil {
 				t.Fatal(err)
 			}
-			seed := policy.DefaultRuntime(policy.ModeAct, policy.PermissionSuggest)
+			seed := securitypolicy.DefaultRuntime(securitypolicy.ModeAct, securitypolicy.PermissionSuggest)
 			seed.SetDisableAutoReview(true)
 			base := guardFactory{registry: registry, runtime: seed, permissions: store, workspace: root}
-			build := func(runtime *policy.Runtime, workspace string) *toolguard.Guard {
+			build := func(runtime *securitypolicy.Runtime, workspace string) *toolguard.Guard {
 				options := agentengine.Options{}
 				options.Tools, options.Security, options.Workspace = registry, runtime, workspace
 				bindEngineGuardFactory(&options, base, nil)
@@ -66,26 +65,26 @@ func TestAlwaysPermissionSharedAcrossWorkspaceGuards(t *testing.T) {
 			b := build(cloneThreadSecurity(seed), root)
 			other := build(cloneThreadSecurity(seed), t.TempDir())
 			managed := cloneThreadSecurity(seed)
-			if _, err := managed.AppendManagedRule(policy.Rule{
-				Tool: "web_fetch", Action: policy.ActionDeny, Code: "child_authority_denied",
+			if _, err := managed.AppendManagedRule(securitypolicy.Rule{
+				Tool: "web_fetch", Action: securitypolicy.ActionDeny, Code: "child_authority_denied",
 			}); err != nil {
 				t.Fatal(err)
 			}
 			repository := cloneThreadSecurity(seed)
-			if _, err := repository.ReloadSources(nil, []policy.Rule{{
-				Tool: "web_fetch", Action: policy.ActionDeny,
+			if _, err := repository.ReloadSources(nil, []securitypolicy.Rule{{
+				Tool: "web_fetch", Action: securitypolicy.ActionDeny,
 			}}); err != nil {
 				t.Fatal(err)
 			}
 			readOnly := cloneThreadSecurity(seed)
-			readOnly.SetPermission(policy.PermissionNever)
+			readOnly.SetPermission(securitypolicy.PermissionNever)
 			restricted := map[*toolguard.Guard]string{
 				build(managed, root):    "tool_grant_denied",
 				build(repository, root): "repository_rule_denied",
 				build(readOnly, root):   "permission_denied",
 			}
 			counts := map[*toolguard.Guard]int{}
-			execute := func(g *toolguard.Guard, id string, selected policy.ApprovalScope) {
+			execute := func(g *toolguard.Guard, id string, selected securitypolicy.ApprovalScope) {
 				g.SetApprovalHandler(func(_ context.Context, request toolguard.ApprovalRequest) error {
 					counts[g]++
 					return g.Decide(toolguard.ApprovalDecision{
@@ -100,16 +99,16 @@ func TestAlwaysPermissionSharedAcrossWorkspaceGuards(t *testing.T) {
 			}
 			frozen := b.Policy().CloneSampling()
 			execute(a, "a-initial", scope)
-			execute(b, "b-existing", policy.ApprovalOnce)
+			execute(b, "b-existing", securitypolicy.ApprovalOnce)
 			c := build(cloneThreadSecurity(seed), root)
-			execute(c, "c-new", policy.ApprovalOnce)
-			execute(other, "other-workspace", policy.ApprovalOnce)
-			execute(a, "a-repeat", policy.ApprovalOnce)
+			execute(c, "c-new", securitypolicy.ApprovalOnce)
+			execute(other, "other-workspace", securitypolicy.ApprovalOnce)
+			execute(a, "a-repeat", securitypolicy.ApprovalOnce)
 			wantOthers, wantOwn, wantRules := 1, 1, 0
-			if scope == policy.ApprovalAlways {
+			if scope == securitypolicy.ApprovalAlways {
 				wantOthers, wantRules = 0, 1
 			}
-			if scope == policy.ApprovalOnce {
+			if scope == securitypolicy.ApprovalOnce {
 				wantOwn = 2
 			}
 			if counts[a] != wantOwn || counts[b] != wantOthers || counts[c] != wantOthers ||
@@ -120,13 +119,13 @@ func TestAlwaysPermissionSharedAcrossWorkspaceGuards(t *testing.T) {
 			if len(frozen.User) != 0 {
 				t.Fatal("persistent update changed an already frozen policy snapshot")
 			}
-			if scope == policy.ApprovalAlways && b.Policy().CloneSampling().Revision <= frozen.Revision {
+			if scope == securitypolicy.ApprovalAlways && b.Policy().CloneSampling().Revision <= frozen.Revision {
 				t.Fatal("workspace permission update did not advance policy revision")
 			}
 			for g, code := range restricted {
 				_, err := g.Execute(t.Context(), code, "web_fetch",
 					json.RawMessage(`{"url":"https://example.com/a"}`))
-				var denied *policy.DecisionError
+				var denied *securitypolicy.DecisionError
 				if !errors.As(err, &denied) || denied.Code != code {
 					t.Fatalf("restriction %s changed after approval: %v", code, err)
 				}

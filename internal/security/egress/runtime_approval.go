@@ -182,7 +182,7 @@ func (g *Gate) discover(ctx context.Context, request Target) error {
 	if approver == nil {
 		return errNoRuntimeApprover
 	}
-	if g.UseCallScope {
+	if g.mode == gateCallScoped {
 		scope, _ := ctx.Value(scopeKey{}).(*callScope)
 		if scope == nil {
 			return deniedTarget(request, reasonTargetNotGranted)

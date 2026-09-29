@@ -176,9 +176,9 @@ type Index struct {
 // Execution configures the main agent loop. MaxOutputTokens is an optional
 // operator ceiling; zero uses an adaptive ceiling bounded by the active model.
 type Execution struct {
-	Provider  string `json:"provider" toml:"provider"`
-	Model     string `json:"model" toml:"model"`
-	Protocol  string `json:"protocol" toml:"protocol"`
+	Provider string `json:"provider" toml:"provider"`
+	Model    string `json:"model" toml:"model"`
+	Protocol string `json:"protocol" toml:"protocol"`
 	// BaseURL is the explicit OpenAI-compatible endpoint of the configured
 	// provider. Every model connection is user-declared; there is no bundled
 	// provider directory to resolve endpoints from.
@@ -186,8 +186,8 @@ type Execution struct {
 	// ModelMetadata is an optional path to a JSON file declaring the
 	// configured model's identity, limits, and capabilities.
 	ModelMetadata string `json:"model_metadata" toml:"model_metadata"`
-	Mode           string `json:"mode" toml:"mode"`
-	Workspace      string `json:"workspace" toml:"workspace"`
+	Mode          string `json:"mode" toml:"mode"`
+	Workspace     string `json:"workspace" toml:"workspace"`
 	// BaseSystem overrides the default base system prompt. Empty uses the
 	// built-in persona plus the probed environment fingerprint; the
 	// base_system partition budget still bounds whatever is configured.
@@ -277,10 +277,6 @@ type ExecutionEnvironment struct {
 	// through the same chain as adapter output and do not require an
 	// ecosystem adapter. Only trusted configuration may set this list.
 	Resources []EnvironmentResource `json:"resources,omitempty" toml:"resources,omitempty"`
-	// AuthServices bind out-of-process protocol auth. Only trusted
-	// configuration may set this list. The first registered protocol is
-	// goproxy; unknown protocols are rejected.
-	AuthServices []EnvironmentAuthService `json:"auth_services,omitempty" toml:"auth_services,omitempty"`
 }
 
 // MaxDeclaredEnvironmentResources is the public safety ceiling for
@@ -305,33 +301,6 @@ type EnvironmentResource struct {
 	Purpose   string   `json:"purpose,omitempty" toml:"purpose,omitempty"`
 	Required  *bool    `json:"required,omitempty" toml:"required,omitempty"`
 	Lifecycle string   `json:"lifecycle,omitempty" toml:"lifecycle,omitempty"`
-}
-
-// MaxDeclaredAuthServices is the public safety ceiling for
-// [[execution.environment.auth_services]]. Excess entries are rejected.
-const MaxDeclaredAuthServices = 8
-
-// MaxAuthServicePrefixes is the public safety ceiling for one service's
-// module-path prefixes.
-const MaxAuthServicePrefixes = 32
-
-// EnvironmentAuthService binds one protocol auth service. Credentials are
-// references only; secret material stays out of configuration.
-type EnvironmentAuthService struct {
-	Protocol string   `json:"protocol" toml:"protocol"`
-	Upstream string   `json:"upstream" toml:"upstream"`
-	Prefixes []string `json:"prefixes" toml:"prefixes"`
-	// UpstreamTimeoutMS bounds one upstream fetch in milliseconds. Zero
-	// keeps the documented goproxy default ceiling; negative values are
-	// rejected. Large module archives may need a higher bound.
-	UpstreamTimeoutMS int64                     `json:"upstream_timeout_ms,omitempty" toml:"upstream_timeout_ms,omitempty"`
-	Credential        EnvironmentAuthCredential `json:"credential" toml:"credential"`
-}
-
-// EnvironmentAuthCredential names a host credential without storing it.
-type EnvironmentAuthCredential struct {
-	Kind string `json:"kind" toml:"kind"`
-	Name string `json:"name" toml:"name"`
 }
 
 // RateLimitWaitBudget is the cumulative 429 wait bound used by the engine.

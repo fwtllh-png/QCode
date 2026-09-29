@@ -4,14 +4,16 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+
+	"github.com/fwtllh-png/QCode/internal/security/envpolicy"
 )
 
-// PlatformPATHDirectories returns absolute PATH directories from the process
+// PlatformPATHDirectories returns absolute PATH directories from the supplied
 // environment plus platform path sources. It does not scan Home.
-func PlatformPATHDirectories() []string {
+func PlatformPATHDirectories(sourceEnv []string) []string {
 	var result []string
 	for _, directory := range append(
-		filepath.SplitList(os.Getenv("PATH")),
+		filepath.SplitList(envpolicy.Value(sourceEnv, "PATH")),
 		extraPlatformPATHDirectories()...,
 	) {
 		if directory == "" || !filepath.IsAbs(directory) {
@@ -48,7 +50,7 @@ func exposePATHExecutables(
 		}
 		path := filepath.Join(directory, entry.Name())
 		info, err := os.Stat(path)
-		if err != nil || info.IsDir() || info.Mode().Perm()&0o111 == 0 {
+		if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
 			continue
 		}
 		resolved, err := filepath.EvalSymlinks(path)
@@ -56,6 +58,9 @@ func exposePATHExecutables(
 			continue
 		}
 		resolved = filepath.Clean(resolved)
+		for _, dependency := range executableRuntimeDependencies(resolved) {
+			addToolchainReadFile(&exposure.ReadFiles, dependency, workspace)
+		}
 		if resolved == filepath.Clean(path) {
 			continue
 		}

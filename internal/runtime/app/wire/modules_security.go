@@ -7,9 +7,7 @@ import (
 
 	"github.com/fwtllh-png/QCode/internal/observability/diagnostics"
 	"github.com/fwtllh-png/QCode/internal/observability/verify"
-	"github.com/fwtllh-png/QCode/internal/security/constitution"
-	"github.com/fwtllh-png/QCode/internal/security/permissions"
-	"github.com/fwtllh-png/QCode/internal/security/policy"
+	securitypolicy "github.com/fwtllh-png/QCode/internal/security/policy"
 )
 
 type securityModule struct{}
@@ -25,8 +23,9 @@ func (securityModule) Build(
 	}
 	session := state.session
 	execution := state.config.execution
-	securityRuntime := policy.DefaultRuntime(policy.Mode(execution.Mode), policy.Permission(state.options.Permission))
+	securityRuntime := securitypolicy.DefaultRuntime(securitypolicy.Mode(execution.Mode), securitypolicy.Permission(state.options.Permission))
 	securityRuntime.SetDisableAutoReview(os.Getenv("QCODE_DISABLE_APPROVAL_AUTO_REVIEW") == "1")
+	securityRuntime.SetForceEditPlanApproval(state.options.ForceEditPlanApproval)
 	session.security = securityRuntime
 	journal, err := openWorkspaceJournal(
 		ctx,
@@ -44,12 +43,12 @@ func (securityModule) Build(
 		state.config.diagnosticCommands,
 	)
 	commandRunner := &verify.ReceiptRunner{Root: execution.Workspace, Command: execution.Verify.Command}
-	constitutionBundle, err := constitution.Load(execution.Workspace, "")
+	constitutionBundle, err := securitypolicy.LoadConstitution(execution.Workspace, "")
 	if err != nil {
 		return fmt.Errorf("constitution: %w", err)
 	}
 	session.Constitution = constitutionBundle.Status
-	var repositoryRules []policy.Rule
+	var repositoryRules []securitypolicy.Rule
 	if state.options.RepositoryRulesPath != "" {
 		repositoryRules, err = loadRepositoryRules(
 			state.options.RepositoryRulesPath,
@@ -58,13 +57,10 @@ func (securityModule) Build(
 			return fmt.Errorf("repository rules: %w", err)
 		}
 	}
-	if len(constitutionBundle.Rules) > 0 {
-		repositoryRules = append(
-			append([]policy.Rule{}, constitutionBundle.Rules...),
-			repositoryRules...,
-		)
+	if _, err := securityRuntime.SetConstitution(constitutionBundle.Rules); err != nil {
+		return fmt.Errorf("constitution: %w", err)
 	}
-	permissionStore, err := permissions.OpenWorkspaceStore(securityStateDataDir(state), execution.Workspace)
+	permissionStore, err := securitypolicy.OpenWorkspacePermissions(securityStateDataDir(state), execution.Workspace)
 	if err != nil {
 		return fmt.Errorf("permissions: %w", err)
 	}
@@ -79,10 +75,8 @@ func (securityModule) Build(
 		workspace: execution.Workspace, workspaceID: state.config.workspaceStateID,
 		journal: journal, diagnostics: diagnosticRunner,
 		permissions: permissionStore, leaseAuthority: state.platform.leaseAuthority, leaseTTL: execution.LeaseTimeout, approvalTTL: execution.ApprovalTimeout,
-		onNetworkAllow:  toolNetworkAllow(state.platform.webEgress),
-		forceEditReview: state.options.ForceEditPlanApproval,
-		moduleProxy:     state.platform.moduleProxy,
-		authBindReport:  state.platform.authBindReport,
+		onNetworkAllow:   toolNetworkAllow(state.platform.webEgress),
+		preparationFacts: state.platform.preparationFacts,
 	}
 	guard, err := factory.Build(ctx)
 	if err != nil {

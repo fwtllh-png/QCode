@@ -9,7 +9,6 @@ import (
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
 	"github.com/fwtllh-png/QCode/internal/security/egress"
 	"github.com/fwtllh-png/QCode/internal/security/netpolicy"
-	"github.com/fwtllh-png/QCode/internal/security/policy"
 )
 
 // An approved URL carries private reach only as its host resolves at grant
@@ -27,23 +26,21 @@ func TestURLGrantPrivateReachFollowsGrantTimeResolution(t *testing.T) {
 		return []net.IP{net.ParseIP(address)}, nil
 	}}
 	dialTime := "10.9.9.9"
-	gate := &egress.Gate{
-		UseCallScope: true,
-		LookupIP: func(context.Context, string) ([]net.IP, error) {
-			return []net.IP{net.ParseIP(dialTime)}, nil
-		},
+	gate := egress.NewCallScopedGate()
+	gate.LookupIP = func(context.Context, string) ([]net.IP, error) {
+		return []net.IP{net.ParseIP(dialTime)}, nil
 	}
 	authorize := func(rawURL string) error {
 		t.Helper()
 		ctx, closeScope := egress.WithScope(t.Context())
 		defer closeScope()
-		guard.grantNetworkHosts(ctx, policy.Invocation{
+		guard.grantNetworkHosts(ctx, resolvePolicyFixture(policyInvocationFixture{
 			Capability: tool.CapabilityNetwork,
 			Resources: []tool.Resource{{
 				Kind: "url", ID: rawURL, Access: tool.AccessRead,
 				Methods: []string{"GET"},
 			}},
-		})
+		}))
 		target, err := netpolicy.ParseTarget(rawURL)
 		if err != nil {
 			t.Fatalf("parse %s: %v", rawURL, err)

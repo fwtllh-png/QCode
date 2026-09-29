@@ -16,7 +16,7 @@ import (
 
 	"github.com/creack/pty"
 	"github.com/fwtllh-png/QCode/internal/observability/tracecontext"
-	"github.com/fwtllh-png/QCode/internal/security/controlmatrix"
+	"github.com/fwtllh-png/QCode/internal/security/envpolicy"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
 )
 
@@ -173,25 +173,31 @@ func NewCommand(ctx context.Context, options Options) (*exec.Cmd, error) {
 			return nil, err
 		}
 	}
-	environment, err := SanitizedEnvironment(options.Env)
+	if err := ValidateDeclaredEnvironment(options.Env); err != nil {
+		return nil, err
+	}
+	policy, hasPolicy := sandbox.BackendPolicy(options.Sandbox)
+	var environment []string
+	if hasPolicy {
+		if err := envpolicy.ValidatePreparedEnvironment(policy.EnvironmentValues); err != nil {
+			return nil, err
+		}
+		if err := envpolicy.ValidatePreparedEnvironment(policy.Toolchains.Environment); err != nil {
+			return nil, err
+		}
+		environment, err = envpolicy.Merge(policy.Toolchains.Environment, policy.EnvironmentValues, options.Env)
+	} else if options.TrustedRuntimeHelper {
+		environment, err = SanitizedEnvironment(options.Env)
+	} else {
+		environment, err = envpolicy.Merge(options.Env)
+	}
 	if err != nil {
 		return nil, err
 	}
 	if options.TrustedRuntimeHelper {
-		environment = append(
-			environment,
-			tracecontext.Environment(ctx)...,
-		)
+		environment = append(environment, tracecontext.Environment(ctx)...)
 	}
-	policy, hasPolicy := sandbox.BackendPolicy(options.Sandbox)
 	if hasPolicy {
-		environment = dropHostLanguageEnvironment(environment, options.Env)
-		environment = applyPreparedEnvironment(
-			environment, policy.EnvironmentValues, options.Env,
-		)
-		environment = applyPreparedEnvironment(
-			environment, policy.Toolchains.Environment, options.Env,
-		)
 		if policy.PrivateTemp != "" {
 			if policy.EnvironmentProfile == "isolated" {
 				environment = setEnvironmentValue(environment, "HOME", policy.PrivateTemp)
@@ -202,18 +208,12 @@ func NewCommand(ctx context.Context, options Options) (*exec.Cmd, error) {
 				environment = setEnvironmentValue(environment, "TEMP", policy.PrivateTemp)
 			}
 		}
-		// Toolchain bins resolve before the platform git directory; the
-		// sandboxed child and preflight (ToolchainSearchPath) share this
-		// order so verdicts name the file the child runs.
-		environment = ensureGitToolchain(environment)
-		environment = prependPATH(environment, policy.Toolchains.BinDirs...)
 	} else {
 		environment = ensurePlatformToolchainPATH(environment)
 		environment = ensureGitToolchain(environment)
 	}
 	if options.WorkspaceReadOnly {
 		environment = setEnvironmentValue(environment, "GIT_OPTIONAL_LOCKS", "0")
-		environment = setEnvironmentValue(environment, "PYTHONDONTWRITEBYTECODE", "1")
 	}
 	if strings.TrimSpace(options.Dir) == "" {
 		return nil, errors.New("child process directory is required")
@@ -240,6 +240,7 @@ func NewCommand(ctx context.Context, options Options) (*exec.Cmd, error) {
 	}
 	if authorityBound {
 		commandSpec.AuthorityDigest = executionAuthority.Digest
+		commandSpec.CompiledNetwork = executionAuthority.EffectiveControls.Network
 	}
 	if options.DirFile != nil {
 		commandSpec.DirectoryFD = 3
@@ -302,16 +303,10 @@ func NewCommand(ctx context.Context, options Options) (*exec.Cmd, error) {
 			return nil, errors.New("sandbox backend returned an unverified prepared policy")
 		}
 		if authorityBound {
-			if executionAuthority.EffectiveControls !=
-				(controlmatrix.Matrix{}) {
-				commandSpec.PreparedControls.ArtifactOrigin =
-					executionAuthority.EffectiveControls.ArtifactOrigin
-				commandSpec.PreparedControls.DurableRecovery =
-					executionAuthority.EffectiveControls.DurableRecovery
-			}
-			if err := executionAuthority.RequiredControls.SatisfiedBy(
+			commandSpec.PreparedControls, err = executionAuthority.VerifyPrepared(
 				commandSpec.PreparedControls,
-			); err != nil {
+			)
+			if err != nil {
 				return nil, sandbox.Denied(sandbox.Denial{
 					Backend:    options.Sandbox.Capability().Backend,
 					Operation:  sandbox.DenialProcess,
@@ -387,14 +382,14 @@ func validateExecutionAuthority(
 		return err
 	}
 	switch authority.Enforcement {
-	case "strong":
+	case sandbox.EnforcementStrong:
 		if !options.RequireSandbox || options.Sandbox == nil {
 			return sandbox.Denied(sandbox.Denial{
 				Operation: sandbox.DenialProcess, Resource: "strong_sandbox",
 				ReasonCode: sandbox.ReasonEnforcementMismatch,
 			}, errors.New("strong execution authority requires strong sandbox enforcement"))
 		}
-	case "none":
+	case sandbox.EnforcementNone:
 		if options.RequireSandbox {
 			return sandbox.Denied(sandbox.Denial{
 				Operation: sandbox.DenialProcess, Resource: "unsandboxed",
@@ -537,24 +532,13 @@ func proxyEnvironmentEntry(entry string) bool {
 // python installations behave identically. Sandboxed commands get their
 // PATH from the policy's discovered toolchain exposure instead.
 func ensurePlatformToolchainPATH(environment []string) []string {
-	return prependPATH(environment, sandbox.PlatformPATHDirectories()...)
+	return setEnvironmentValue(environment, "PATH", strings.Join(sandbox.PlatformPATHDirectories(environment), string(os.PathListSeparator)))
 }
 
-// ToolchainSearchPath returns the ordered directories a sandboxed child's
-// PATH resolves through: toolchain bin directories first, then the platform
-// git directory, then the inherited host PATH. Empty entries are dropped
-// (an empty PATH entry means the current directory) and alias-resolved
-// duplicates (/var vs /private/var) collapse, so a verdict about an
-// executable names the same file the child will run. The child PATH is
-// built from the same order; preflight must use this, not its own guess.
-func ToolchainSearchPath(binDirs []string) []string {
-	ordered := make([]string, 0, len(binDirs)+8)
-	ordered = append(ordered, binDirs...)
-	if dir := gitToolchainDirectory(); dir != "" {
-		ordered = append(ordered, dir)
-	}
-	ordered = append(ordered, filepath.SplitList(os.Getenv("PATH"))...)
-	return dedupePathEntries(ordered)
+// ToolchainSearchPath uses only the execution environment already bound to the
+// policy. Preflight must not re-read the host PATH after preparation.
+func ToolchainSearchPath(environment []string) []string {
+	return dedupePathEntries(filepath.SplitList(environmentValue(environment, "PATH")))
 }
 
 // pathEntryKey resolves symlink aliases so the same directory cannot appear

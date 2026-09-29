@@ -11,8 +11,8 @@
 声明作为干扰；正例应保留应当命中的声明，防止分析器通过不产出任何关系过关。
 
 执行 `make repository-understanding-eval`。新增样例前应独立核对语言作用域和
-目标声明，避免仅按当前实现填写答案。详细指标和边界见
-[专项评测说明](../../docs/zh-CN/repository-understanding-evaluation.md)。
+目标声明，避免仅按当前实现填写答案。指标与样例执行入口见
+[仓库索引评测测试](../../internal/persist/repoindex)。
 
 `tasks.json` 是另一组真实 QCode 源码任务标注，使用源码路径允许列表而非复制
 片段。它记录任务描述、预期文件、必要测试、证据锚点和两条固定工具路线。

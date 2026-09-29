@@ -9,11 +9,21 @@ import (
 	"strings"
 
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
-	"github.com/fwtllh-png/QCode/internal/platform/environment"
+	"github.com/fwtllh-png/QCode/internal/environment"
 	"github.com/fwtllh-png/QCode/internal/security/egress"
-	"github.com/fwtllh-png/QCode/internal/security/goproxy"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
 )
+
+func attachPreparationFacts(ctx context.Context, result *tool.Result) {
+	facts := environment.PreparationFactsFrom(ctx)
+	if len(facts) == 0 {
+		return
+	}
+	if result.Metadata == nil {
+		result.Metadata = make(map[string]any)
+	}
+	result.Metadata["environment_preparation_facts"] = facts
+}
 
 func (p *commandProtocol) rememberNetwork(id string, session egress.ProcessSession) {
 	if p == nil || id == "" || session == nil {
@@ -46,9 +56,7 @@ func (p *commandProtocol) sessionNetwork(id string) egress.ProcessSession {
 }
 
 func (p *commandProtocol) sessionEnvironmentFacts(
-	ctx context.Context,
 	sessionID string,
-	priorAuth []environment.Fact,
 ) []environment.Fact {
 	var facts []environment.Fact
 	if session := p.sessionNetwork(sessionID); session != nil {
@@ -56,39 +64,7 @@ func (p *commandProtocol) sessionEnvironmentFacts(
 			facts = environmentFactsFromReceipts(gate.Receipts())
 		}
 	}
-	return append(facts, authServiceFactsSince(ctx, priorAuth)...)
-}
-
-func authServiceFactsSince(ctx context.Context, prior []environment.Fact) []environment.Fact {
-	var facts []environment.Fact
-	// Bind-time facts predate the command, so they are not part of the
-	// service cursor: they attach whenever a process result fails.
-	if report := goproxy.BindReportFrom(ctx); report != nil {
-		facts = append(facts, report.Facts()...)
-	}
-	if service := goproxy.ServiceFrom(ctx); service != nil {
-		facts = append(facts, serviceFactsSinceCursor(prior, service.Facts())...)
-	}
 	return facts
-}
-
-// serviceFactsSinceCursor reports the facts that postdate a prior snapshot.
-// Length alone lies when the service's list is ever truncated or reset: the
-// prefix is compared, and a rotated list re-reports everything rather than
-// silently dropping facts the model has not seen.
-func serviceFactsSinceCursor(prior, current []environment.Fact) []environment.Fact {
-	if len(current) <= len(prior) {
-		if len(current) == 0 {
-			return nil
-		}
-		return current
-	}
-	for index := range prior {
-		if prior[index] != current[index] {
-			return current
-		}
-	}
-	return current[len(prior):]
 }
 
 func inheritedEnvironmentNetwork(backend sandbox.Backend) []egress.Target {
@@ -135,12 +111,11 @@ func openProcessNetwork(
 	backend sandbox.Backend,
 	denyNetwork bool,
 	targets []egress.Target,
-	needSession bool,
 ) (egress.ProcessSession, error) {
 	if backend == nil {
 		return nil, nil
 	}
-	if !needSession && (denyNetwork || len(targets) == 0) {
+	if denyNetwork || len(targets) == 0 {
 		return nil, nil
 	}
 	if !sandbox.SupportsManagedNetworkProxy() {
@@ -151,13 +126,6 @@ func openProcessNetwork(
 		)
 	}
 	if !backend.Capability().ManagedProxy {
-		if needSession {
-			return nil, fmt.Errorf(
-				"%w: %s",
-				egress.ErrProcessSessionUnsupported,
-				environment.CategoryBackendCapabilityUnsupported,
-			)
-		}
 		return nil, nil
 	}
 	opener, ok := egress.LookupProcessSessionOpener(backend)

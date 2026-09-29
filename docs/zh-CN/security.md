@@ -39,6 +39,108 @@ QCode 会根据模型选择在源码上执行工具。目标不是让任意代�
 
 任何一层都不能被描述为另一层的替代品。
 
+## 资源评估与 Effect 判定表
+
+Guard 解析并校验参数、路径和可信 Binding 后，通过 `tool.AssessResources` 映射到
+类型化安全资源，并仅调用一次纯函数 `model.Assess`。`model.PreparedInvocation` 携带
+不可变 Assessment；其资源、网络目标、方法和固定 Effect 都做深复制。Policy、Grant、
+审批展示、Authority 和回执读取同一快照，未评估的调用在 L0 拒绝。
+参数替换、运行时新出网目标、追加权限属于新的授权输入，必须显式重新评估。
+
+安全核心不依赖工具适配、Runtime 协议或持久化实现。`security/model` 定义
+来源、Subject 和 Prepared 输入；适配层校验 Catalog 引用并投影身份，安全层只消费
+快照。Subject 摘要绑定目录来源、代次、修订与内部授权身份；参数使用独立副本。
+默认内置工具来源使用 `builtin:`，不保留旧来源前缀兼容路径。
+
+共享契约与评估位于 `model`；规则加载、Constitution 和持久 Grant 位于 `policy`，
+其中 `LoadConstitution`、`OpenWorkspacePermissions` 负责来源加载，`Runtime.Decide`
+只消费规则与 Assessment 快照。控制面路径保护归 `pathpolicy.ControlPlane`，
+凭据引用与系统 Keyring 归 `credential`。合包不改变审批层级、Grant Key 或 Lease 合同。
+
+按下表自上而下命中第一行；除前两行外，“已声明”要求 Access 与 Sandbox 声明齐全。
+
+| 顺序 | 规则 | 条件 | Effect / 风险 / 可逆性 |
+| --- | --- | --- | --- |
+| 1 | `declared_read_only` | 固定效果且命中 Binding 的只读参数声明 | 固定 Kind / low / reversible |
+| 2 | `fixed` | 固定效果 | 使用可信 Binding 的完整效果 |
+| 3 | `undeclared_read` | 声明不全，Read 能力 | workspace.read / low / reversible |
+| 4 | `undeclared_write` | 声明不全，Write 能力 | external.mutation / medium / bounded |
+| 5 | `undeclared_effectful` | 声明不全，Process、Network 或 External 能力 | external.mutation / high / irreversible |
+| 6 | `undeclared_unknown` | 声明不全，未知能力 | external.mutation / critical / irreversible |
+| 7 | `read` | Read 能力 | workspace.read / low / reversible |
+| 8 | `plan_only` | Write 能力且唯一副作用是会话计划 | session.mutation / low / reversible |
+| 9 | `agent` | Agent 资源 | agent.lifecycle / high / bounded |
+| 10 | `loopback_only` | Strong Sandbox 进程，仅 loopback、无工作区写 | network.read / medium / bounded |
+| 11 | `network_read` | 有网络能力或目标，Access=Read、无工作区写；进程还须出网仅安全读 | network.read / medium / bounded |
+| 12 | `network_mutating` | 其余网络能力或目标 | network.mutating / high / irreversible |
+| 13 | `process_read_only` | Strong Sandbox 进程且无工作区写 | process.read_only / low / reversible |
+| 14 | `process_mutating` | 其余进程能力或资源 | process.mutating / high / bounded |
+| 15 | `journaled_edit` | Write 能力、工作区写且有 Journal | workspace.edit / low / reversible |
+| 16 | `external` | 其余已声明操作 | external.mutation / high / irreversible |
+
+loopback 是独立资源类，作用域为本机任意端口，不是端口为零的网络端点。
+Profile 用 Loopback 标志，Operation 的 Network Intent 用 `loopback_any` 标志表达；
+网络 Targets 仅列真实端点。控制名为 `loopback_any`，绝不自动审查。
+精确 Grant Key 保持资源与命令身份，避免 Effect 变化使已有 deny 失效；
+可复用的命令前缀 Scope 额外绑定 Effect/Facets 摘要，不能跨写权限或网络效果扩大授权。
+
+## 决策分层
+
+`policy.Runtime.Decide` 采样一次策略快照，依序执行 L0–L8；先出现的终止拒绝不可由
+后层覆盖。Guard 只消费 Decision，不改写 Action。
+
+| 层 | 标识 | 规则 |
+| --- | --- | --- |
+| L0 | `input` | 校验调用、Schema 验证状态、Assessment、可信来源、能力、Stage 与路径写根 |
+| L1 | `hard_constraint` | 控制面写保护、Constitution、Managed Grant；无 Grant 即拒绝 |
+| L2 | `repository` | 仓库只能 deny、hold、ask，不能 allow |
+| L3 | `user` | 用户权限规则；不能覆盖前层拒绝或仓库 ask |
+| L4 | `mode` | 工作模式和计划门；计划 ask 直接进入绑定审批 |
+| L5 | `posture` | suggest、auto、bypass、never 与评估效果 |
+| L6 | `surface` | Sandbox、Rules、Skills、MCP 的进一步收紧 |
+| L7 | `binding` | 一次审批及强制新编辑计划；运行时出网目标阶段跳过绑定审批 |
+| L8 | `auto_review` | 满足下表全部条件时，允许可自动审查的有界操作 |
+
+| 条件 | 含义 |
+| --- | --- |
+| `auto_review_enabled` | 自动审查总开关启用 |
+| `posture_requested_approval` | ask 来自 Posture，非 Managed 或 Repository ask |
+| `medium_risk` | 风险为 medium |
+| `bounded_effect` | 效果为 agent.lifecycle 或 network.read |
+| `network_read_under_auto` | network.read 仅在 auto Posture 下自动审查 |
+| `public_network_target` | 网络读不是本机目标或 loopback 权限 |
+| `reusable_binding_approval` | 绑定未要求新的一次审批或新编辑计划 |
+| `exact_typed_grant` | 存在可计算的精确类型化 Grant |
+
+`fresh` 与 `fresh_once` 均不读取旧审批缓存；新的同意仅完成本次调用，不写缓存。
+二者仅允许 once scope 并禁止参数替换。普通可复用审批替换参数后，先重新解析、评估
+并检查策略。Journal 写还必须重建 Edit Plan 校验内容漂移。
+
+路径规则支持段内 `*`、`?`、`[...]`、独占一段的 `**` 和反斜杠转义。
+未转义花括号、非法字符类、混合 `**` 拒绝加载；工作区字面花括号须正确转义。
+restrictive 目录写规则按“授权子树与保护模式是否相交”判定，包含未来可创建的文件，
+因此对 `app` 的树写不能绕过 `**/.env`。allow 必须覆盖被授权资源，不能用子路径的
+允许扩大到整个目录。最终规范化 ResourcePath 也必须通过语法验证。
+Guard 在独立的策略快照上解析规则路径，不改写共享 Runtime；不同工作区使用各自的
+路径基准。新授权会采样最新规则与权限，已用于执行的快照保持不变。
+
+## 一次授权编译
+
+`authority.Compile` 验证 Prepared 与 Policy 共享同一 Assessment 和参数，然后一次
+产生 Profile、Required Controls 和 ExecutionOperation。网络 Reach 从 Assessment
+Facets 得到一次；Command Prepare 验证实际控制不宽于编译的控制，不重新解释资源。
+独立后端能力探针没有执行 Lease，只能如实报告实测控制。
+普通工具执行只通过 Compile 构造 Operation；File/Process Broker 的内部受管操作
+使用各自的显式构造入口。工作区 Broker 与 Journal 的组合位于 orchestration，
+底层租约消费和结算仍由安全 Broker 负责。
+
+`Authority.Bind` 只附加 Artifact 与 File Mutation 证据、更新必要控制和摘要，
+不读取文件或重新解析路径；`WithProfile` 使用已冻结绝对路径验证新根并重绑身份。
+文件内容身份仍是初次编译时的 SHA-256；后续执行漂移由 Broker/Lease 校验。
+Profile Schema 为 5，Operation Schema 为 3；旧回执不参与执行校验，不增加兼容迁移。
+Darwin `/bin/sh` here-document 的平台例外在 `platform/oscontract` 数据表中维护，
+包含来源说明，沙箱编译器不再按具体可执行文件名分支。
+
 ## Posture 建议
 
 - `never`：首次检查仓库和不可信 Workspace 最安全。
@@ -61,39 +163,18 @@ Web Markdown 不执行原始 HTML 或危险 URL。同源图片可以直接显示
   Runtime 外部状态目录中的 Journal 恢复。
 - Workspace State 分为互不重叠的 `control`、`sandbox-home` 和 `artifacts`；
   在这三个状态域中，Sandbox 只获得 `sandbox-home` 写权限。
-  `[execution.environment]` 默认 `v1` + `native`：准备链物化已批准的宿主配置
-  只读、缓存分区和 `credential`+`use`，主 Agent 保留 HOME 变量，但不开放整个
-  Home。准备器会把启动 PATH 与平台路径源（Darwin 的 `/etc/paths`、存在的
-  Homebrew bin）合并后写入进程 PATH，并把这些目录列为 `host_toolchain`。
-  策略跟随 PATH 目录中指向目录外的可执行符号链接，只读暴露解析后的安装根，
-  不开放整个包管理器前缀。`native` 按 Git 文档位置精确暴露已存在的用户 git
-  配置文件（`~/.gitconfig` 或 `~/.config/git/config`），不暴露
-  `.git-credentials`、`.netrc` 或 `~/.ssh`。宿主 `go env GOPROXY` 已有的 userinfo 或宿主
-  `~/.netrc` 由 runtime 在进程外认证服务上使用，并改写沙箱 `GOPROXY` 为
-  loopback 代理通道（URL 中只带该通道的临时凭据）；宿主凭证不进进程环境，`.netrc`
-  也不进入 Seatbelt。
-  可信配置里的 `[[execution.environment.auth_services]]` 覆盖该宿主绑定。
-  不能把 token 写进 `$TMPDIR/.netrc`。
-  子 Agent 仍 isolated，看不到宿主 git 配置。
-  `shared_user_temp` 仍默认关，是显式安全合同变更。`contract` 只接受
-  `v1`。见
-  [Sandbox 执行环境重构方案](./sandbox-execution-environment-plan.md)。
-  进程出网拒绝由 Session Gate 写成 `network_target_unapproved` /
-  `approve_network_target`；代理 403 使用同一结构化回执，不把
-  Forbidden 说成上游响应。连接前审批走现有 Approval；探测
-  `Authorize` 不能补授权。同一执行内同一 origin 只问一次，超时或拒绝后
-  `retry_original=false`，进程命令不整段重放。连接前审批只在发起它的工具调用
-  存续期间有效：`exec_command` 返回后，仍在后台运行的进程再发现新目标会直接拒绝，
-  尚未答复的审批也随调用结束而取消，不会挂到已结束的调用或后续 Turn 上。属主
-  Thread 用 `write_stdin` 轮询该 Session 时，在这次调用期间可以重新发起审批。绑定 GOPROXY 认证服务后，上游 401/403 写成
-  `credential_rejected` / `bind_credential`，前缀外模块写成
-  `trust_validation_failed`；这两类不与未批准 CONNECT 混淆。
-  对已绑定上游主机的 CONNECT 或绝对形式请求同样写成
-  `trust_validation_failed`，避免绕过 Session 认证服务后把上游 401 误判成宿主没有凭证。
-  不能把 token 写进 `$TMPDIR/.netrc`，也不要向用户索要 GOPROXY token。
-  无权威事实的失败保持 `unknown`。
-  `[[execution.environment.auth_services]]` 只接受可信配置中的 `goproxy`，
-  凭证引用不得写入配置值或进程环境。
+  `[execution.environment]` 使用 `v1` 契约，主 Agent 默认 `native`，子 Agent 为
+  `isolated`。HOME 变量不等于整个宿主 Home 的读写权限；工具链、配置、缓存和网络
+  依照可信的 `resources` 声明与平台事实绑定。启动时不执行语言探测，不读取包清单。
+  来源在准备时冻结，进程启动不重新读取宿主环境。`shared_user_temp` 默认关闭。
+  Git 适配器在 native 下声明已存在的精确用户配置，凭证文件继续禁止暴露。
+  内置 GOPROXY 服务和 `auth_services` 配置已删除；私有制品认证由显式接入的受限
+  外部服务负责。`credential/use` 只表达使用身份，无绑定器时报告未绑定。
+  详见[执行环境配置](./configuration.md#执行环境)与[执行环境通用化方案](./environment-language-neutral-plan.md)。
+  进程连接前审批只在所属工具调用存续期间有效；工具返回或取消后，新目标拒绝，
+  未完成审批也取消。所属 Thread 轮询 Session 时，可在这次调用期间重新发起审批。
+  代理拒绝使用 `network_target_unapproved` / `approve_network_target`，不把代理
+  403 误报为上游故障，也不整段重放已执行命令。
 - 受保护的控制面目录名与宿主凭据位置只在 `internal/security/pathpolicy` 定义一次，
   控制面分类、File Broker、Authority 的写拒绝根、MCP 隐藏路径、Seatbelt Profile
   与注入根校验都从这里读取。凭据位置按路径段、大小写不敏感匹配（`~/.config/ghostty`
@@ -113,8 +194,8 @@ Web Markdown 不执行原始 HTML 或危险 URL。同源图片可以直接显示
   会更换 Revision/Authority，使采样时的旧 Catalog Binding 失效。
 - Trusted Binding 和 ExecutionOperation 使用十维 Required Controls：
   Filesystem Read/Write、Network、Process Tree、Cross Process、Syscall、IPC、
-  Path Identity、Artifact Origin 与 Durable Recovery。Sandbox Probe、Policy 和具体
-  Command 共同产生 Effective Controls，Lease 只在每个要求都被满足时签发。
+  Path Identity、Artifact Origin 与 Durable Recovery。Sandbox Probe 与授权编译产生 Effective Controls，具体
+  Command 只验证控制一致性，Lease 只在每个要求都被满足时签发。
 - Backend 完成 `Prepare` 后，Process Owner 再次核对本次命令的 Prepared Controls。
   旧 `Strength` 能力与 Receipt 字段已删除，不能单独证明或授予执行权限。
 - 副作用 Inventory 同时检查系统进程 API 和 `internal/platform/process` 的构造入口；
@@ -189,8 +270,7 @@ Web Markdown 不执行原始 HTML 或危险 URL。同源图片可以直接显示
   仍各自隔离。持久权限不覆盖 Managed/Repository Deny、只读模式或子 Agent 的工具
   限制；已冻结的执行快照不被追溯修改，其他工作区不订阅该规则源。
 - Attempt Receipt 持久记录 Operation Digest、Lease ID/State、Effect、Workspace、
-  Subject、Policy 和 Sandbox 绑定。当前兼容 Facade 保持原有 Policy Decision、
-  Approval Scope、Typed Denial 与 Amendment 语义不变。
+  Subject、Policy 和 Sandbox 绑定。Policy Decision 同时记录 Action、Layer 与 Code；审批前拒绝记录 PolicyDenial。
 - Artifact Broker 只接受 Workspace 或 Sandbox Home 内的常规可执行文件，拒绝
   Symlink、Hardlink、特殊文件与 Device Boundary 变化，并复制到 Broker-only
   Artifact Staging。复制前后复核源身份，Manifest 绑定 Workspace Generation、
@@ -224,7 +304,7 @@ Web Markdown 不执行原始 HTML 或危险 URL。同源图片可以直接显示
   推断。获批目标的 Effective Profile 保留代理端口，进程环境注入 Runtime 代理；
   没有声明目标且没有用户声明环境网络时，命令仍禁网，也不注入代理变量。
   用户声明的环境网络资源可被空 `network_targets` 继承到当前 Session Gate；
-  适配器发现的 GOPROXY 主机不自动获得 CONNECT。
+  工具配置或环境变量中的主机名本身不授予 CONNECT。
 - 测试 Fixture 或本地开发服务必须绑定并连接临时 Localhost 端口时，
   `exec_command` 可声明 `allow_loopback`。
   该能力默认关闭。Seatbelt 只能按“本机任意端口”放行，无法限定到 Fixture 端口，
@@ -236,10 +316,10 @@ Web Markdown 不执行原始 HTML 或危险 URL。同源图片可以直接显示
   macOS Profile 只增加 Localhost Inbound/Outbound Seatbelt Rule；非 Loopback
   流量仍必须声明精确 Proxy Target。Loopback-only Effective Profile 不绑定托管
   代理端口；执行器不得因为 enclosing sandbox 仍持有 Runtime Proxy 而拒绝已批准的
-  Localhost Grant。该调用的命令策略与环境均移除代理配置，Prepared Controls 根据
-  后端已探测能力声明 `loopback_exact`；同时获批 Proxy Target 与 Loopback 的调用
+  Localhost Grant。该调用的命令策略与环境均移除代理配置，Prepared Controls 验证
+  编译出的 `loopback_any`；同时获批 Proxy Target 与 Loopback 的调用
   仍使用 `proxy_targets` 并保留代理端口。共享 Workspace Policy 不随单次调用改变。
-  Guard 在汇总全部网络资源后确定租约的 Required Controls，与 Effective Profile
+  Authority 编译时从统一 Assessment 确定租约的 Required Controls，与 Effective Profile
   保持一致；主机排序和参数顺序不改变混合调用的控制要求，也不隐式授予 Loopback。
   若代理端口仍与 Profile 错位，工具结果必须带
   `required_action=keep_allow_loopback_omit_network_targets`，不能把临时端口
@@ -272,9 +352,10 @@ Web Markdown 不执行原始 HTML 或危险 URL。同源图片可以直接显示
     即使获授权也不能解析进这类地址。
   - 已知限制：通过代理的 `ws://` 以 CONNECT 发起，本地开发服务的 WebSocket（如 HMR）
     不匹配 `http://` 授权，会被拒绝；页面本身仍可加载。
-  - 已知残余风险：Chromium 的 `--proxy-server` 无法携带代理凭据，浏览器代理通道
-    不做凭据认证。浏览器运行期间，获批 `allow_loopback` 的命令可以经该通道使用
-    浏览器 Gate（公网目标和本次浏览器会话已授权的目标）。
+  - 浏览器代理也使用独立随机凭据。Chrome 启动参数中的代理地址不含 userinfo；
+    Runtime 经私有 CDP pipe 响应代理认证，只向本通道端口、指定 realm 的 Basic
+    Proxy 挑战提供凭据。源站挑战、其他代理和重复挑战均拒绝。CDP 不监听 TCP 端口。
+    持有 `allow_loopback` 的其他命令能连接端口，但无凭据时返回 407。
 - 权限规则保留原始 Resource。文件资源使用 Guard 解析出的规范化路径匹配，主机、
   URL 等 ID 资源使用原值匹配；通配工具或同时涉及文件和网络的工具也遵循该区分。
   相对文件规则继续拒绝 `..` 逃逸并解析符号链接，不根据名称是否含点猜测资源类型。
@@ -425,14 +506,15 @@ make secret-leak-test
   Darwin 上每个 Process Session 绑定独立 loopback 端口和 Session Gate；兄弟命令、
   子 Agent 和 Workspace 共享端口不能消费该 Session 的目标。
   每个代理通道（Workspace 通道和每个 Session 通道）在创建时生成独立的随机凭据，
-  只注入该通道所属命令的 `HTTP_PROXY`/`HTTPS_PROXY`/`GOPROXY` URL userinfo，
+  只注入该通道所属命令的 `HTTP_PROXY`/`HTTPS_PROXY` URL userinfo，
   不写入 Receipt 或 Journal，通道关闭即失效。CONNECT 与 absolute-form 请求必须以
-  `Proxy-Authorization: Basic` 出示本通道凭据，否则返回 407；GOPROXY 的
-  origin-form 请求可用 `Authorization` 或 `Proxy-Authorization` 出示，否则返回
-  401，认证头在交给认证服务前移除。持有 `allow_loopback` 的命令能连上任意通道端口，
-  但拿不到其他通道的凭据。命令自身可以读取并输出自己的代理 URL，该凭据只对本通道和本
-  Gate 有效。
-  取消或关闭 Session 会停止 listen 并回收已 hijack 的 CONNECT。
+  `Proxy-Authorization: Basic` 出示本通道凭据，否则返回 407。认证后的 origin-form
+  请求返回 400；代理认证头不传给上游，普通目标的 Authorization 保留原义。
+  持有 `allow_loopback` 的命令拿不到其他通道凭据；命令能读取自己的代理 URL，
+  该临时凭据仅在自己的通道和 Gate 中有效。
+  取消或关闭 Session 会先标记通道关闭、停止监听并回收已 hijack 的 CONNECT。
+  登记隧道和关闭共享同一把锁；已关闭通道拒绝新连接，不在 Close 返回后确认隧道。
+  Workspace 代理关闭后也不能创建新的 Session。
 - Native/Web Search Result 仍是不可信内容。
 - 可记录 Endpoint Inventory，但不能记录 Credential。
 

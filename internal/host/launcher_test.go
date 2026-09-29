@@ -23,8 +23,7 @@ import (
 	"github.com/fwtllh-png/QCode/internal/config"
 	"github.com/fwtllh-png/QCode/internal/platform/ownerlease"
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
-	"github.com/fwtllh-png/QCode/internal/security/credential"
-	"github.com/fwtllh-png/QCode/internal/security/keyring"
+	securitycredential "github.com/fwtllh-png/QCode/internal/security/credential"
 )
 
 func TestMain(m *testing.M) {
@@ -144,7 +143,7 @@ func TestLoadWebConfigToolDefaultsAndExplicitSettings(t *testing.T) {
 			selection := webSetupSelection{Connections: []webSetupConnection{
 				{ID: "openai", Model: "fixture-model", Protocol: "openai_chat"},
 			}}
-			reloaded, err := loadWebSetupConfig(options, selection, credential.Reference{})
+			reloaded, err := loadWebSetupConfig(options, selection, securitycredential.Reference{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -672,9 +671,9 @@ func TestAddConnectionKeepsDefaultCredentialOwnership(t *testing.T) {
 	}
 	// A key-less probe reopens the connection's credential control with no
 	// selected reference; an un-activated staged key would be reaped here.
-	_, recovered, err := credential.OpenControl(
+	_, recovered, err := securitycredential.OpenControl(
 		t.Context(), dataDir, webSupervisorScope, second.Provider,
-		credential.Reference{}, credential.Reference{},
+		securitycredential.Reference{}, securitycredential.Reference{},
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -682,7 +681,7 @@ func TestAddConnectionKeepsDefaultCredentialOwnership(t *testing.T) {
 	if recovered != *second.Credential {
 		t.Fatalf("recovered credential = %+v, want activated %+v", recovered, *second.Credential)
 	}
-	if _, err := keyring.New().Lookup(t.Context(), second.Credential.Name); err != nil {
+	if _, err := securitycredential.NewKeyringStore().Lookup(t.Context(), second.Credential.Name); err != nil {
 		t.Fatalf("added connection key was removed: %v", err)
 	}
 	stop()

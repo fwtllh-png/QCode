@@ -12,8 +12,7 @@ import (
 
 	"github.com/fwtllh-png/QCode/internal/platform/process"
 	"github.com/fwtllh-png/QCode/internal/security/authority"
-	"github.com/fwtllh-png/QCode/internal/security/controlmatrix"
-	"github.com/fwtllh-png/QCode/internal/security/effect"
+	securitymodel "github.com/fwtllh-png/QCode/internal/security/model"
 	"github.com/fwtllh-png/QCode/internal/security/pathpolicy"
 	"github.com/fwtllh-png/QCode/internal/security/processbroker"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
@@ -117,18 +116,18 @@ func (r *RuntimeAuthority) Start(
 	}
 	required := authority.RequiredControls{}
 	capability := sandbox.Capability{Backend: "host"}
-	enforcement := "none"
+	enforcement := sandbox.EnforcementNone
 	if strong {
 		capability = r.Sandbox.Capability()
-		enforcement = "strong"
+		enforcement = sandbox.EnforcementStrong
 		required = authority.RequiredControls{
-			FilesystemRead: controlmatrix.FilesystemReadDeclaredRoots,
-			Network:        controlmatrix.NetworkDenied,
-			ProcessTree:    controlmatrix.ProcessTreeGroupKill,
-			PathIdentity:   controlmatrix.PathIdentityDescriptorRelative,
+			FilesystemRead: securitymodel.FilesystemReadDeclaredRoots,
+			Network:        securitymodel.NetworkDenied,
+			ProcessTree:    securitymodel.ProcessTreeGroupKill,
+			PathIdentity:   securitymodel.PathIdentityDescriptorRelative,
 		}
 		if allowWrite {
-			required.FilesystemWrite = controlmatrix.FilesystemWriteExactPaths
+			required.FilesystemWrite = securitymodel.FilesystemWriteExactPaths
 		}
 	}
 	operation, err := authority.BuildManagedProcessOperation(
@@ -140,7 +139,7 @@ func (r *RuntimeAuthority) Start(
 			Subject:             subject, Executable: config.Command,
 			Args: config.Args, WorkingDirectory: directory,
 			Environment: environment,
-			Effect:      authority.ManagedProcessEffect(effect.RiskHigh),
+			Effect:      authority.ManagedProcessEffect(securitymodel.RiskHigh),
 			Required:    required,
 		},
 	)
@@ -148,6 +147,10 @@ func (r *RuntimeAuthority) Start(
 		return nil, err
 	}
 	readPaths := mcpExecutableReadPaths(config.Command)
+	controls, err := sandbox.CommandControls(capability, sandboxPolicy, sandbox.Command{WorkspaceReadOnly: !allowWrite, DenyNetwork: !allowNetwork})
+	if err != nil {
+		return nil, err
+	}
 	profile, err := authority.BuildManagedProcessProfile(
 		authority.ManagedProfileInput{
 			Operation: operation, Revision: generation,
@@ -158,14 +161,7 @@ func (r *RuntimeAuthority) Start(
 			NetworkTargets:     mcpNetworkTargets(config.PermissionProfile),
 			ManagedProxyPort:   sandboxPolicy.ManagedProxyPort,
 			Enforcement:        enforcement, Backend: capability.Backend,
-			Controls: sandbox.CommandControls(
-				capability,
-				sandboxPolicy,
-				sandbox.Command{
-					WorkspaceReadOnly: !allowWrite,
-					DenyNetwork:       !allowNetwork,
-				},
-			),
+			Controls: controls,
 		},
 	)
 	if err != nil {

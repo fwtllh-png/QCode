@@ -3,17 +3,29 @@ package sandbox
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"slices"
 	"strings"
 
-	"github.com/fwtllh-png/QCode/internal/security/controlmatrix"
-	"github.com/fwtllh-png/QCode/internal/security/resource"
+	securitymodel "github.com/fwtllh-png/QCode/internal/security/model"
 )
+
+// Enforcement is whether an execution runs inside the OS sandbox.
+type Enforcement string
+
+const (
+	EnforcementStrong Enforcement = "strong"
+	EnforcementNone   Enforcement = "none"
+)
+
+func (e Enforcement) Valid() bool {
+	return e == EnforcementStrong || e == EnforcementNone
+}
 
 type ExecutionAuthority struct {
 	Digest              string
-	Enforcement         string
+	Enforcement         Enforcement
 	WorkspaceRoot       string
 	WorkspaceBaseWrite  bool
 	ReadPaths           []string
@@ -23,29 +35,53 @@ type ExecutionAuthority struct {
 	AllowLoopback       bool
 	AllowNetwork        bool
 	AllowProcess        bool
-	RequiredControls    controlmatrix.Requirements
-	EffectiveControls   controlmatrix.Matrix
+	RequiredControls    securitymodel.RequiredControls
+	EffectiveControls   securitymodel.Controls
 }
 
 func (a ExecutionAuthority) Validate() error {
 	if len(a.Digest) != 64 {
 		return errors.New("execution authority requires a SHA-256 digest")
 	}
-	if a.Enforcement != "strong" && a.Enforcement != "none" {
+	if !a.Enforcement.Valid() {
 		return errors.New("execution authority enforcement is invalid")
 	}
-	if a.Enforcement == "strong" && strings.TrimSpace(a.WorkspaceRoot) == "" {
+	if a.Enforcement == EnforcementStrong && strings.TrimSpace(a.WorkspaceRoot) == "" {
 		return errors.New("strong execution authority requires a workspace")
 	}
 	if err := a.RequiredControls.Validate(); err != nil {
 		return err
 	}
-	if a.EffectiveControls != (controlmatrix.Matrix{}) {
+	if a.EffectiveControls != (securitymodel.Controls{}) {
 		if err := a.EffectiveControls.Validate(); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// VerifyPrepared checks the controls a backend reports for a prepared command
+// against this compiled authority. Required controls must hold, and the
+// prepared network control may be stricter than, but never broader than, the
+// compiled one. Both sides come from NetworkControl, so a mismatch means the
+// backend and the authority disagree about the same execution.
+func (a ExecutionAuthority) VerifyPrepared(
+	prepared securitymodel.Controls,
+) (securitymodel.Controls, error) {
+	if a.EffectiveControls != (securitymodel.Controls{}) {
+		prepared.ArtifactOrigin = a.EffectiveControls.ArtifactOrigin
+		prepared.DurableRecovery = a.EffectiveControls.DurableRecovery
+	}
+	if err := a.RequiredControls.SatisfiedBy(prepared); err != nil {
+		return prepared, err
+	}
+	if a.Enforcement == EnforcementStrong && a.EffectiveControls.Network != "" {
+		ceiling := securitymodel.RequiredControls{Network: a.EffectiveControls.Network}
+		if err := ceiling.SatisfiedBy(prepared); err != nil {
+			return prepared, fmt.Errorf("prepared network exceeds the compiled authority: %w", err)
+		}
+	}
+	return prepared, nil
 }
 
 func (a ExecutionAuthority) AllowsWritePaths(paths []string) bool {
@@ -80,15 +116,7 @@ func (a ExecutionAuthority) DeniedWritePath(paths []string) (string, bool) {
 // managed egress proxy. Outbound HTTP(S) targets still require a matching
 // proxy port on the effective profile.
 func (a ExecutionAuthority) LoopbackOnly() bool {
-	if !a.AllowLoopback || a.ManagedProxyPort != 0 {
-		return false
-	}
-	for _, target := range a.NetworkTargets {
-		if !resource.IsLoopbackTarget(target) {
-			return false
-		}
-	}
-	return true
+	return a.AllowLoopback && a.ManagedProxyPort == 0 && len(a.NetworkTargets) == 0
 }
 
 func deniedPath(requested, allowed []string) (string, bool) {

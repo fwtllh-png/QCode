@@ -701,20 +701,37 @@ Fail Closed。
 | `shared_user_temp` | `false` | 允许当前用户系统临时区。仅 `profile=native` 可开；打开后不再承诺 Agent/Workspace 临时文件隔离 |
 | `source` | 空 | 空表示使用启动 QCode 的进程环境；非空是用户显式绑定的来源 ID |
 | `resources` | 空 | 用户声明的精确环境资源（`host_config` / `host_toolchain` / `cache` / `network` / `credential`+`use` / `shared_user_temp`）。不经适配器即可准备。`namespace=network` 可被空 `network_targets` 继承到 Session Gate。最多 64 条。`workspace` 仍走命令 `write_paths`。仅可信配置可设；未信任仓库文件忽略。准备器还会合并平台 PATH 源并把这些目录列为 `host_toolchain`。`native` 下 Git 适配器还会加入已存在的用户 git 配置文件，不加入凭证文件 |
-| `auth_services` | 空 | 进程外制品源认证协议。当前只接受 `protocol = "goproxy"`。最多 8 条声明，实现只绑定 1 个 GOPROXY 服务。仅可信配置可设；未信任仓库文件忽略。第二种协议未开放。配置为空时，runtime 仍会绑定宿主 `go env GOPROXY` 已有的 userinfo 或宿主 `~/.netrc`；没有宿主凭证才保持未绑定。绑定后对同一上游主机的 CONNECT / 绝对形式请求会被拒绝，避免绕过认证服务 |
+
+默认准备链不调用 `go env`、不读取 `go.mod`，不自动配置 Go 缓存或代理变量。
+语言工具需要的变量、配置文件与缓存目录使用 `resources` 显式声明；任务需要查询
+工具版本时通过普通受控工具执行。宿主已有私有模块认证不会自动迁入沙箱，需要
+使用用户显式接入且已经授权的外部服务。
+
+PATH 可执行文件的实际动态库依赖由平台按精确文件只读绑定；这不会自动开放
+工具的配置目录。若工具依赖额外配置（例如 OpenSSL 配置文件），使用 `host_config`
+声明文件并通过对应变量指定；缓存使用 `cache` 声明。共享临时区的写权限包含
+创建条目所需的元数据读取，已有共享文件的内容读取仍需单独授权。
+
+环境在准备时确定，后续受控命令不重新继承宿主环境变化。普通变量的优先级为
+平台与来源基线 < `resources` 声明 < 单次命令 `env`；同一层同名异值报错，
+重复资源名也会报错，空字符串可以显式覆盖已有值。HOME、TMPDIR、TMP、TEMP
+由 Profile 与沙箱目录决定，不能通过普通声明改写；HTTP 代理变量由当前执行的
+受管通道生成。变量本身不授予路径或网络访问，相关资源仍需独立声明和授权。
+秘密名与解释器预加载变量在可信声明和命令声明中使用同一套拒绝规则。
+只读命令不自动注入 `PYTHONDONTWRITEBYTECODE`；如工具需要该设置，可显式声明。
 
 对应环境变量为 `QCODE_ENVIRONMENT_CONTRACT`、`QCODE_ENVIRONMENT_PROFILE`、
 `QCODE_ENVIRONMENT_SHARED_USER_TEMP` 和 `QCODE_ENVIRONMENT_SOURCE`，来源进入
-configuration provenance。声明列表和认证服务没有环境变量入口，只能写在可信
-配置文件里。`isolated` 与 `shared_user_temp=true` 组合拒绝加载。声明了
-`shared_user_temp` 资源时必须同时打开该开关。GOPROXY 认证服务把长期凭证留在
-宿主解析器，执行进程只看到 loopback 本地 `GOPROXY`（指向 workspace
-级稳定通道端口，沙箱配置预授权，模块拉取不需要 `allow_loopback`）；
-`upstream` 禁止嵌入
-userinfo，`|direct` 不会随重写进入进程。单次上游获取上限为拨号 10s、
-TLS 握手 10s、客户端默认 30s；`upstream_timeout_ms`（0 保持默认，负值拒绝）
-可按仓库调高以覆盖大体积模块归档。认证服务按 30 分钟 TTL 缓存成功响应、
-按 5 分钟 TTL 缓存 404/410 负面响应（总预算 32 MiB），跨命令复用模块下载。
+configuration provenance。资源声明列表没有环境变量入口，只能写在可信配置文件里。
+`isolated` 与 `shared_user_temp=true` 组合拒绝加载，声明 `shared_user_temp` 资源时
+必须同时打开该开关。`credential/use` 只描述资源身份；当前没有通用凭证绑定器，
+这类资源标记为未绑定，必需资源产生 `credential_binder_unavailable` 准备事实。
+声明凭证不会交付秘密或授予网络访问。
+
+旧 `execution.environment.auth_services` 字段已删除，可信和未信任配置中的该字段
+均报未知字段错误，空列表也不例外。没有迁移或兼容回退。私有制品源认证可使用用户
+显式接入的受限外部服务；目标仍须通过现有网络授权，QCode 不自动创建该服务。
+
 声明示例：
 
 ```toml
@@ -736,18 +753,14 @@ path = "sandbox-home/cache/tool"
 env = "TOOL_CACHE"
 tree = true
 
-[[execution.environment.auth_services]]
-protocol = "goproxy"
-upstream = "https://goproxy.example"
-prefixes = ["example.com/qcode/"]
-upstream_timeout_ms = 120000
-credential = { kind = "env", name = "GOPROXY_TOKEN" }
 ```
 
 探测超时和输出上限继续使用已有的 `ToolchainProbeTimeout` 与
 `ToolchainProbeMaxOutputBytes`，不另设隐藏阈值。进程失败的
 `error_category` / `required_action` 只来自 Gate 或后端事实，
-不从命令文本推断。完整设计见
+不从命令文本推断。准备时未绑定资源作为独立的
+`environment_preparation_facts` 工具 Metadata 保留，成功和失败回执均可携带；
+这些事实本身不证明当前命令的失败原因，不覆盖 `error_category`。完整设计见
 [Sandbox 执行环境重构方案](./sandbox-execution-environment-plan.md)。
 
 stdio MCP 配置示例：

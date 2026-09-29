@@ -33,7 +33,7 @@ func (providerModule) Build(ctx context.Context, state *buildState) error {
 	if err != nil {
 		return err
 	}
-	egressGate := &egress.Gate{}
+	egressGate := egress.NewStaticGate()
 	grantRouteHosts(egressGate, routes)
 	client := configureProviderClient(
 		execution,

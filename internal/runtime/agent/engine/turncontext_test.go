@@ -17,7 +17,7 @@ import (
 	"github.com/fwtllh-png/QCode/internal/observability/verify"
 	"github.com/fwtllh-png/QCode/internal/runtime/agent/turnkernel"
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
-	"github.com/fwtllh-png/QCode/internal/security/controlmatrix"
+	securitymodel "github.com/fwtllh-png/QCode/internal/security/model"
 	"github.com/fwtllh-png/QCode/internal/security/policy"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
 )
@@ -437,17 +437,17 @@ type turnContextBackend struct{}
 func (turnContextBackend) Capability() sandbox.Capability {
 	return sandbox.Capability{
 		Platform: "test", Backend: "test", Available: true,
-		Effective: controlmatrix.Matrix{
-			FilesystemRead:  controlmatrix.FilesystemReadDeclaredRoots,
-			FilesystemWrite: controlmatrix.FilesystemWriteExactPaths,
-			Network:         controlmatrix.NetworkDenied,
-			ProcessTree:     controlmatrix.ProcessTreeGroupKill,
-			CrossProcess:    controlmatrix.CrossProcessUnrestricted,
-			Syscall:         controlmatrix.SyscallDenyDangerous,
-			IPC:             controlmatrix.IPCUnrestricted,
-			PathIdentity:    controlmatrix.PathIdentityDescriptorRelative,
-			ArtifactOrigin:  controlmatrix.ArtifactOriginUnverifiedPath,
-			DurableRecovery: controlmatrix.DurableRecoveryMemoryOnly,
+		Effective: securitymodel.Controls{
+			FilesystemRead:  securitymodel.FilesystemReadDeclaredRoots,
+			FilesystemWrite: securitymodel.FilesystemWriteExactPaths,
+			Network:         securitymodel.NetworkDenied,
+			ProcessTree:     securitymodel.ProcessTreeGroupKill,
+			CrossProcess:    securitymodel.CrossProcessUnrestricted,
+			Syscall:         securitymodel.SyscallDenyDangerous,
+			IPC:             securitymodel.IPCUnrestricted,
+			PathIdentity:    securitymodel.PathIdentityDescriptorRelative,
+			ArtifactOrigin:  securitymodel.ArtifactOriginUnverifiedPath,
+			DurableRecovery: securitymodel.DurableRecoveryMemoryOnly,
 		},
 	}
 }

@@ -1,6 +1,6 @@
 //go:build capability && darwin
 
-package process
+package process_test
 
 import (
 	"context"
@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/fwtllh-png/QCode/internal/adapter/envprep"
+	"github.com/fwtllh-png/QCode/internal/platform/process"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
 )
 
@@ -22,7 +24,20 @@ func TestSandboxCompilerUsesPrivateTempAndHostTmpRemainsDenied(t *testing.T) {
 	if err := exec.Command("/usr/bin/xcrun", "--find", "clang++").Run(); err != nil {
 		t.Skipf("xcrun clang++ unavailable: %v", err)
 	}
-	root := t.TempDir()
+	t.Setenv("TMPDIR", "/var/folders/host/T")
+	t.Setenv("TMP", "/tmp")
+	t.Setenv("TEMP", "/private/tmp")
+	root, err := os.MkdirTemp("/private/tmp", "qcode-compiler-workspace-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	private, err := os.MkdirTemp("/private/tmp", "qcode-compiler-private-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(private) })
+
 	if err := os.WriteFile(
 		filepath.Join(root, "probe.cc"),
 		[]byte("#include <cassert>\n#include <vector>\nint main() { std::vector<int> v(1, 42); assert(v[0] == 42); }\n"),
@@ -30,13 +45,20 @@ func TestSandboxCompilerUsesPrivateTempAndHostTmpRemainsDenied(t *testing.T) {
 	); err != nil {
 		t.Fatal(err)
 	}
-	backend, err := sandbox.NewPlatformBackend(sandbox.Options{
-		WorkspaceRoot:       root,
-		PrivateTemp:         t.TempDir(),
-		AllowNetwork:        false,
-		EnvironmentContract: "v1",
-		EnvironmentProfile:  "isolated",
+	prepared, err := envprep.Prepare(t.Context(), envprep.Options{
+		Sandbox: sandbox.Options{
+			WorkspaceRoot:       root,
+			PrivateTemp:         private,
+			AllowNetwork:        false,
+			EnvironmentContract: "v1",
+			EnvironmentProfile:  "isolated",
+		},
+		SourceEnv: os.Environ(),
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend, err := sandbox.NewPlatformBackend(prepared.Sandbox)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,7 +83,7 @@ func TestSandboxCompilerUsesPrivateTempAndHostTmpRemainsDenied(t *testing.T) {
 	hostTmpTarget := fmt.Sprintf("/tmp/qcode-private-temp-%d", os.Getpid())
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	result, err := Run(ctx, Options{
+	result, err := process.Run(ctx, process.Options{
 		Dir: workspace.Root(), DirFile: directory,
 		Command: fmt.Sprintf(
 			`printf '%%s\n' "$TMPDIR" "$TMP" "$TEMP"; `+
@@ -70,11 +92,6 @@ func TestSandboxCompilerUsesPrivateTempAndHostTmpRemainsDenied(t *testing.T) {
 				`clang++ probe.cc -o "$TMPDIR/probe.o" && "$TMPDIR/probe.o"`,
 			hostTmpTarget,
 		),
-		Env: []string{
-			"TMPDIR=/var/folders/host/T",
-			"TMP=/tmp",
-			"TEMP=/private/tmp",
-		},
 		Sandbox: backend, RequireSandbox: true, WorkspaceReadOnly: true,
 	})
 	if err != nil {
@@ -97,7 +114,7 @@ func TestSandboxCompilerUsesPrivateTempAndHostTmpRemainsDenied(t *testing.T) {
 			t.Fatalf("private temp artifact %s: %v", name, err)
 		}
 	}
-	baseline, baselineErr := Run(ctx, Options{
+	baseline, baselineErr := process.Run(ctx, process.Options{
 		Dir: workspace.Root(), DirFile: directory,
 		Command: `unset SDKROOT
 clang++ probe.cc -o "$TMPDIR/probe-without-sdk"`,

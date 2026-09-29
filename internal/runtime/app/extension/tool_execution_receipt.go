@@ -24,10 +24,22 @@ func ProjectToolExecutionReceipt(
 		TeardownMS: source.TeardownMS, TeardownTimedOut: source.TeardownTimedOut,
 		Attempts: make([]protocol.ToolAttemptReceipt, len(source.Attempts)),
 	}
+	projected.PolicyDenial = projectToolPolicyDecision(source.PolicyDenial)
 	for index, attempt := range source.Attempts {
 		projected.Attempts[index] = projectToolAttemptReceipt(attempt)
 	}
 	return projected
+}
+
+func projectToolPolicyDecision(
+	source *tool.PolicyDecisionReceipt,
+) *protocol.ToolPolicyDecision {
+	if source == nil {
+		return nil
+	}
+	return &protocol.ToolPolicyDecision{
+		Action: source.Action, Layer: source.Layer, Code: source.Code,
+	}
 }
 
 func projectToolAttemptReceipt(
@@ -49,6 +61,7 @@ func projectToolAttemptReceipt(
 		SubjectDigest:           source.SubjectDigest,
 		SubjectGeneration:       source.SubjectGeneration,
 		PolicyRevision:          source.PolicyRevision,
+		Policy:                  projectToolPolicyDecision(source.Policy),
 		SandboxPolicyID:         source.SandboxPolicyID,
 		EffectKind:              source.EffectKind,
 		EffectRisk:              source.EffectRisk,

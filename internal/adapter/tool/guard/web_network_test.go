@@ -29,11 +29,9 @@ func (f networkTransport) RoundTripPinned(r *http.Request, _ []net.IP) (*http.Re
 
 func networkFixture(t *testing.T, rules []policy.Rule, base networkTransport) (*Guard, *egress.Gate) {
 	t.Helper()
-	gate := &egress.Gate{
-		UseCallScope: true,
-		LookupIP: func(context.Context, string) ([]net.IP, error) {
-			return []net.IP{net.ParseIP("93.184.216.34")}, nil
-		},
+	gate := egress.NewCallScopedGate()
+	gate.LookupIP = func(context.Context, string) ([]net.IP, error) {
+		return []net.IP{net.ParseIP("93.184.216.34")}, nil
 	}
 	registry := tool.NewRegistry(nil, nil)
 	t.Cleanup(func() { _ = registry.Close() })
@@ -285,10 +283,10 @@ func TestWebRedirectPermissionIsolation(t *testing.T) {
 		{"fixed_target", false, false, true, true},
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
-			grant, ok := policy.GrantForInvocation(policy.Invocation{
+			grant, ok := policy.GrantForInvocation(resolvePolicyFixture(policyInvocationFixture{
 				Tool: "web_fetch", Capability: tool.CapabilityNetwork,
 				Resources: []tool.Resource{{Kind: "url", ID: "https://denied.example/data", Access: tool.AccessRead}},
-			})
+			}))
 			if !ok {
 				t.Fatal("missing network grant")
 			}
@@ -419,10 +417,10 @@ func TestRuleResourceNamespaces(t *testing.T) {
 				resources = append(resources, tool.Resource{Kind: "file", Path: test.path, Access: tool.AccessRead})
 			}
 			for _, resource := range resources {
-				decision := runtime.Evaluate(policy.Invocation{
+				decision := runtime.Decide(resolvePolicyFixture(policyInvocationFixture{
 					CallID: "namespace", Tool: "mixed", Capability: tool.CapabilityRead,
 					Resources: []tool.Resource{resource}, Validated: true,
-				})
+				}))
 				if decision.Action != policy.ActionDeny || decision.Code != "repository_rule_denied" {
 					t.Fatalf("resource=%+v decision=%+v", resource, decision)
 				}

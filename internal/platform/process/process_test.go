@@ -16,7 +16,7 @@ import (
 	"time"
 
 	"github.com/fwtllh-png/QCode/internal/observability/tracecontext"
-	"github.com/fwtllh-png/QCode/internal/security/controlmatrix"
+	securitymodel "github.com/fwtllh-png/QCode/internal/security/model"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
 )
 
@@ -376,7 +376,7 @@ func TestV1DropsHostLanguageEnvironmentUnlessExtraOrPrepared(t *testing.T) {
 	backend := &recordingBackend{
 		root:                root,
 		environmentContract: "v1",
-		environmentValues:   []string{"GOROOT=/prepared/go"},
+		environmentValues:   []string{"GOROOT=/prepared/go", "LANG=C", "PATH=/usr/bin:/bin"},
 	}
 	result, err := Run(t.Context(), Options{
 		Command: "printf ok", Dir: root, DirFile: directory,
@@ -534,7 +534,7 @@ func TestRunPropagatesAndVerifiesReadOnlyRestrictions(t *testing.T) {
 		t.Fatalf("result=%+v command=%+v", result, backend.command)
 	}
 	if environmentValue(backend.command.Env, "GIT_OPTIONAL_LOCKS") != "0" ||
-		environmentValue(backend.command.Env, "PYTHONDONTWRITEBYTECODE") != "1" {
+		environmentValue(backend.command.Env, "PYTHONDONTWRITEBYTECODE") != "" {
 		t.Fatalf("read-only environment = %v", backend.command.Env)
 	}
 }
@@ -591,7 +591,8 @@ func TestRunVerifiesEffectiveExecutionAuthority(t *testing.T) {
 	}
 	defer directoryFile.Close()
 	ctx, err := sandbox.WithExecutionAuthority(t.Context(), sandbox.ExecutionAuthority{
-		Digest: strings.Repeat("a", 64), Enforcement: "strong",
+		EffectiveControls: testNetworkControls(securitymodel.NetworkDenied),
+		Digest:            strings.Repeat("a", 64), Enforcement: "strong",
 		WorkspaceRoot: root, AllowNetwork: false, AllowProcess: true,
 	})
 	if err != nil {
@@ -627,17 +628,18 @@ func TestRunRejectsPreparedControlsBelowAuthority(t *testing.T) {
 	}
 	defer directoryFile.Close()
 	ctx, err := sandbox.WithExecutionAuthority(t.Context(), sandbox.ExecutionAuthority{
-		Digest: strings.Repeat("e", 64), Enforcement: "strong",
+		EffectiveControls: testNetworkControls(securitymodel.NetworkDenied),
+		Digest:            strings.Repeat("e", 64), Enforcement: "strong",
 		WorkspaceRoot: root, AllowProcess: true,
-		RequiredControls: controlmatrix.Requirements{
-			Network: controlmatrix.NetworkDenied,
+		RequiredControls: securitymodel.RequiredControls{
+			Network: securitymodel.NetworkDenied,
 		},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	weaker := testControlMatrix()
-	weaker.Network = controlmatrix.NetworkDirect
+	weaker.Network = securitymodel.NetworkDirect
 	_, err = Run(ctx, Options{
 		Command: "true", Dir: root, DirFile: directoryFile,
 		Sandbox: &recordingBackend{
@@ -655,7 +657,8 @@ func TestRunRejectsPreparedControlsBelowAuthority(t *testing.T) {
 func TestRunRejectsProcessBroaderThanEffectiveAuthority(t *testing.T) {
 	root := t.TempDir()
 	ctx, err := sandbox.WithExecutionAuthority(t.Context(), sandbox.ExecutionAuthority{
-		Digest: strings.Repeat("b", 64), Enforcement: "strong",
+		EffectiveControls: testNetworkControls(securitymodel.NetworkDenied),
+		Digest:            strings.Repeat("b", 64), Enforcement: "strong",
 		WorkspaceRoot: root, AllowNetwork: false, AllowProcess: true,
 	})
 	if err != nil {
@@ -679,7 +682,8 @@ func TestRunProducesAmendableTypedPathDenial(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx, err := sandbox.WithExecutionAuthority(t.Context(), sandbox.ExecutionAuthority{
-		Digest: strings.Repeat("c", 64), Enforcement: "strong",
+		EffectiveControls: testNetworkControls(securitymodel.NetworkDirect),
+		Digest:            strings.Repeat("c", 64), Enforcement: "strong",
 		WorkspaceRoot: root, AllowNetwork: true, AllowProcess: true,
 		ReadPaths: []string{root},
 	})
@@ -718,7 +722,8 @@ func TestRunAppliesApprovedAdditionalReadPath(t *testing.T) {
 	}
 	defer directoryFile.Close()
 	ctx, err := sandbox.WithExecutionAuthority(t.Context(), sandbox.ExecutionAuthority{
-		Digest: strings.Repeat("d", 64), Enforcement: "strong",
+		EffectiveControls: testNetworkControls(securitymodel.NetworkDenied),
+		Digest:            strings.Repeat("d", 64), Enforcement: "strong",
 		WorkspaceRoot: root, AllowNetwork: false, AllowProcess: true,
 		ReadPaths: []string{root, path},
 	})
@@ -744,7 +749,8 @@ func TestRunInjectsOnlyVerifiedManagedProxy(t *testing.T) {
 	}
 	defer directoryFile.Close()
 	ctx, err := sandbox.WithExecutionAuthority(t.Context(), sandbox.ExecutionAuthority{
-		Digest: strings.Repeat("e", 64), Enforcement: "strong",
+		EffectiveControls: testNetworkControls(securitymodel.NetworkProxyTargets),
+		Digest:            strings.Repeat("e", 64), Enforcement: "strong",
 		WorkspaceRoot: root, AllowNetwork: true, AllowProcess: true,
 		ReadPaths: []string{root}, ManagedProxyPort: 43128,
 	})
@@ -775,7 +781,8 @@ func TestRunAllowsDeniedNetworkAuthorityOnManagedProxyBackend(t *testing.T) {
 	}
 	defer directoryFile.Close()
 	ctx, err := sandbox.WithExecutionAuthority(t.Context(), sandbox.ExecutionAuthority{
-		Digest: strings.Repeat("e", 64), Enforcement: "strong",
+		EffectiveControls: testNetworkControls(securitymodel.NetworkDenied),
+		Digest:            strings.Repeat("e", 64), Enforcement: "strong",
 		WorkspaceRoot: root, AllowNetwork: false, AllowProcess: true,
 		ReadPaths: []string{root},
 	})
@@ -798,7 +805,8 @@ func TestRunAllowsDeniedNetworkAuthorityOnManagedProxyBackend(t *testing.T) {
 func TestRunRejectsNetworkAuthorityWithoutManagedProxyBinding(t *testing.T) {
 	root := t.TempDir()
 	ctx, err := sandbox.WithExecutionAuthority(t.Context(), sandbox.ExecutionAuthority{
-		Digest: strings.Repeat("e", 64), Enforcement: "strong",
+		EffectiveControls: testNetworkControls(securitymodel.NetworkDirect),
+		Digest:            strings.Repeat("e", 64), Enforcement: "strong",
 		WorkspaceRoot: root, AllowNetwork: true, AllowProcess: true,
 		ReadPaths: []string{root},
 	})
@@ -825,7 +833,8 @@ func TestRunAllowsNetworkDeniedCommandWithStaleManagedProxyAuthority(t *testing.
 	}
 	defer directoryFile.Close()
 	ctx, err := sandbox.WithExecutionAuthority(t.Context(), sandbox.ExecutionAuthority{
-		Digest: strings.Repeat("e", 64), Enforcement: "strong",
+		EffectiveControls: testNetworkControls(securitymodel.NetworkProxyTargets),
+		Digest:            strings.Repeat("e", 64), Enforcement: "strong",
 		WorkspaceRoot: root, AllowNetwork: true, AllowProcess: true,
 		ReadPaths: []string{root}, ManagedProxyPort: 43129,
 	})
@@ -853,12 +862,13 @@ func TestRunAllowsLoopbackOnlyAuthorityOnManagedProxyBackend(t *testing.T) {
 	}
 	defer directoryFile.Close()
 	ctx, err := sandbox.WithExecutionAuthority(t.Context(), sandbox.ExecutionAuthority{
-		Digest: strings.Repeat("f", 64), Enforcement: "strong",
+		EffectiveControls: testNetworkControls(securitymodel.NetworkLoopbackAny),
+		Digest:            strings.Repeat("f", 64), Enforcement: "strong",
 		WorkspaceRoot: root, AllowNetwork: true, AllowProcess: true,
 		ReadPaths: []string{root}, AllowLoopback: true,
-		NetworkTargets: []string{"loopback://localhost:0"},
-		RequiredControls: controlmatrix.Requirements{
-			Network: controlmatrix.NetworkLoopbackExact,
+		NetworkTargets: nil,
+		RequiredControls: securitymodel.RequiredControls{
+			Network: securitymodel.NetworkLoopbackAny,
 		},
 	})
 	if err != nil {
@@ -894,7 +904,8 @@ func TestRunBindsApprovedLoopbackToSandboxCommand(t *testing.T) {
 	}
 	defer directoryFile.Close()
 	ctx, err := sandbox.WithExecutionAuthority(t.Context(), sandbox.ExecutionAuthority{
-		Digest: strings.Repeat("f", 64), Enforcement: "strong",
+		EffectiveControls: testNetworkControls(securitymodel.NetworkProxyTargets),
+		Digest:            strings.Repeat("f", 64), Enforcement: "strong",
 		WorkspaceRoot: root, AllowNetwork: true, AllowProcess: true,
 		ReadPaths: []string{root}, ManagedProxyPort: 43128,
 		AllowLoopback: true,
@@ -922,7 +933,7 @@ type recordingBackend struct {
 	proxyPort           uint16
 	environmentContract string
 	environmentValues   []string
-	preparedControls    *controlmatrix.Matrix
+	preparedControls    *securitymodel.Controls
 	ignoreRestrictions  bool
 	ignoreWritePaths    bool
 	ignoreAuthority     bool
@@ -930,7 +941,7 @@ type recordingBackend struct {
 
 func (b *recordingBackend) Capability() sandbox.Capability {
 	return sandbox.Capability{
-		Platform: "fixture", Backend: "recording",
+		Platform: "fixture", Backend: "recording", ManagedProxy: b.proxyPort != 0,
 		Available: true,
 		Effective: testControlMatrix(),
 	}
@@ -939,9 +950,13 @@ func (b *recordingBackend) Capability() sandbox.Capability {
 func (b *recordingBackend) Prepare(_ context.Context, command sandbox.Command) (sandbox.Command, error) {
 	b.command = command
 	command.PreparedPolicyID = "fixture-policy"
-	command.PreparedControls = sandbox.CommandControls(
+	var err error
+	command.PreparedControls, err = sandbox.CommandControls(
 		b.Capability(), b.Policy(), command,
 	)
+	if err != nil {
+		return sandbox.Command{}, err
+	}
 	if b.preparedControls != nil {
 		command.PreparedControls = *b.preparedControls
 	}
@@ -966,18 +981,18 @@ func (b *recordingBackend) Prepare(_ context.Context, command sandbox.Command) (
 	return command, nil
 }
 
-func testControlMatrix() controlmatrix.Matrix {
-	return controlmatrix.Matrix{
-		FilesystemRead:  controlmatrix.FilesystemReadDeclaredRoots,
-		FilesystemWrite: controlmatrix.FilesystemWriteExactPaths,
-		Network:         controlmatrix.NetworkDenied,
-		ProcessTree:     controlmatrix.ProcessTreeGroupKill,
-		CrossProcess:    controlmatrix.CrossProcessRestricted,
-		Syscall:         controlmatrix.SyscallDenyDangerous,
-		IPC:             controlmatrix.IPCUnixOnly,
-		PathIdentity:    controlmatrix.PathIdentityDescriptorRelative,
-		ArtifactOrigin:  controlmatrix.ArtifactOriginVerifiedManifest,
-		DurableRecovery: controlmatrix.DurableRecoveryExternalJournal,
+func testControlMatrix() securitymodel.Controls {
+	return securitymodel.Controls{
+		FilesystemRead:  securitymodel.FilesystemReadDeclaredRoots,
+		FilesystemWrite: securitymodel.FilesystemWriteExactPaths,
+		Network:         securitymodel.NetworkDenied,
+		ProcessTree:     securitymodel.ProcessTreeGroupKill,
+		CrossProcess:    securitymodel.CrossProcessRestricted,
+		Syscall:         securitymodel.SyscallDenyDangerous,
+		IPC:             securitymodel.IPCUnixOnly,
+		PathIdentity:    securitymodel.PathIdentityDescriptorRelative,
+		ArtifactOrigin:  securitymodel.ArtifactOriginVerifiedManifest,
+		DurableRecovery: securitymodel.DurableRecoveryExternalJournal,
 	}
 }
 
@@ -986,7 +1001,7 @@ func (b *recordingBackend) Policy() sandbox.Policy {
 		Version: 1, ID: "fixture-policy", WorkspaceRoot: b.root,
 		PrivateTemp: b.root, ManagedProxyPort: b.proxyPort,
 		EnvironmentContract: b.environmentContract,
-		EnvironmentValues:   append([]string(nil), b.environmentValues...),
+		EnvironmentValues:   recordingEnvironment(b.environmentValues),
 	}
 }
 
@@ -997,7 +1012,7 @@ func TestEnsurePlatformToolchainPATHPrependsPlatformDirectories(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+"/usr/bin:/bin")
-	env := ensurePlatformToolchainPATH([]string{"PATH=/nonexistent-only", "LANG=C"})
+	env := ensurePlatformToolchainPATH([]string{"PATH=" + bin, "LANG=C"})
 	path := environmentValue(env, "PATH")
 	canonical, err := filepath.EvalSymlinks(bin)
 	if err != nil {
@@ -1022,7 +1037,7 @@ func TestPreparedToolchainExposurePrependsPathAndEnv(t *testing.T) {
 	first := filepath.Join(t.TempDir(), "first")
 	second := filepath.Join(t.TempDir(), "second")
 	env := prependPATH([]string{"PATH=/usr/bin:/bin", "LANG=C"}, first, second)
-	env = applyPreparedEnvironment(env, []string{"TOOLCHAIN_HOME=/host/toolchain"}, nil)
+	env = setEnvironmentValue(env, "TOOLCHAIN_HOME", "/host/toolchain")
 	path := environmentValue(env, "PATH")
 	wantPrefix := strings.Join(
 		[]string{first, second, "/usr/bin", "/bin"},
@@ -1057,4 +1072,17 @@ func TestShellRestoresSelectedGitToolchainAfterLoginProfile(t *testing.T) {
 		!strings.Contains(result.Stdout, filepath.Dir(git)+"/git") {
 		t.Fatalf("result = %+v", result)
 	}
+}
+
+func recordingEnvironment(values []string) []string {
+	if environmentValue(values, "PATH") != "" {
+		return append([]string(nil), values...)
+	}
+	return append([]string{"PATH=/usr/bin:/bin"}, values...)
+}
+
+func testNetworkControls(network securitymodel.Network) securitymodel.Controls {
+	controls := testControlMatrix()
+	controls.Network = network
+	return controls
 }

@@ -11,7 +11,7 @@ import (
 func TestApprovalCacheHostScopedSessionReuse(t *testing.T) {
 	cache := NewApprovalCache()
 	now := time.Now()
-	first := Invocation{
+	first := invocationFixture{
 		CallID: "c1", Tool: "web_fetch",
 		Arguments: json.RawMessage(`{"url":"https://example.com/a"}`),
 		Resources: []tool.Resource{
@@ -20,14 +20,14 @@ func TestApprovalCacheHostScopedSessionReuse(t *testing.T) {
 		},
 		Capability: CapabilityNetwork, Validated: true,
 	}
-	request, err := NewApprovalRequestForScope(first, ApprovalSession, now.Add(time.Hour))
+	request, err := NewApprovalRequestForScope(resolveFixture(first), ApprovalSession, now.Add(time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := cache.Add(request, ApprovalSession); err != nil {
 		t.Fatal(err)
 	}
-	second := Invocation{
+	second := invocationFixture{
 		CallID: "c2", Tool: "web_fetch",
 		Arguments: json.RawMessage(`{"url":"https://example.com/b"}`),
 		Resources: []tool.Resource{
@@ -36,10 +36,10 @@ func TestApprovalCacheHostScopedSessionReuse(t *testing.T) {
 		},
 		Capability: CapabilityNetwork, Validated: true,
 	}
-	if !cache.MatchInvocation(second, now) {
+	if !cache.MatchInvocation(resolveFixture(second), now) {
 		t.Fatal("same host should reuse session approval")
 	}
-	other := Invocation{
+	other := invocationFixture{
 		CallID: "c3", Tool: "web_fetch",
 		Arguments: json.RawMessage(`{"url":"https://other.com/"}`),
 		Resources: []tool.Resource{
@@ -48,7 +48,7 @@ func TestApprovalCacheHostScopedSessionReuse(t *testing.T) {
 		},
 		Capability: CapabilityNetwork, Validated: true,
 	}
-	if cache.MatchInvocation(other, now) {
+	if cache.MatchInvocation(resolveFixture(other), now) {
 		t.Fatal("different host must not reuse")
 	}
 }

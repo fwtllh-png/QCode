@@ -8,7 +8,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/fwtllh-png/QCode/internal/security/controlmatrix"
+	securitymodel "github.com/fwtllh-png/QCode/internal/security/model"
+	"github.com/fwtllh-png/QCode/internal/security/sandbox"
 )
 
 type LeaseState string
@@ -144,7 +145,7 @@ func (a *LeaseAuthority) Issue(request LeaseIssueRequest) (ExecutionLease, error
 	if request.Profile.Tool != request.Operation.Tool {
 		return ExecutionLease{}, errors.New("lease operation does not match permission tool")
 	}
-	if request.Profile.Process.Enforcement == "strong" &&
+	if request.Profile.Process.Enforcement == sandbox.EnforcementStrong &&
 		request.SandboxPolicyID == "" {
 		return ExecutionLease{}, errors.New("strong execution lease requires a sandbox policy")
 	}
@@ -360,13 +361,13 @@ func validateLeaseCurrent(lease ExecutionLease, current LeaseValidation) error {
 func effectiveControls(
 	profile EffectivePermissionProfile,
 	operation ExecutionOperation,
-) controlmatrix.Matrix {
+) securitymodel.Controls {
 	controls := profile.Controls
 	if operation.Artifact != nil {
-		controls.ArtifactOrigin = controlmatrix.ArtifactOriginBrokerSnapshot
+		controls.ArtifactOrigin = securitymodel.ArtifactOriginBrokerSnapshot
 	}
 	if operation.Effect.WorkspaceTransaction == WorkspaceTransactionBeforeImage {
-		controls.DurableRecovery = controlmatrix.DurableRecoveryExternalJournal
+		controls.DurableRecovery = securitymodel.DurableRecoveryExternalJournal
 	}
 	return controls
 }

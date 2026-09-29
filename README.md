@@ -126,7 +126,7 @@ testdata/                Hermetic Provider 与 Benchmark Fixture
 | 本地开发 | [本地开发](./docs/zh-CN/development.md) |
 | Agent 上下文 | [Agent 指南](./docs/zh-CN/agent-guide.md) |
 | 源码导读 | [源码阅读指南](./docs/zh-CN/reading-guide.md) |
-| 产品方向 | [后续规划](./docs/zh-CN/roadmap.md) |
+| 产品现状 | [能力概览](./docs/zh-CN/overview.md) |
 
 ## 开发
 

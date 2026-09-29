@@ -152,7 +152,7 @@ func TestExecutionReceiptAuthorityEvidenceRoundTripsJSON(t *testing.T) {
 		Enforcement:             "strong",
 		Backend:                 "seatbelt",
 		ReadRoots:               []string{"/workspace"},
-		NetworkMode:             "managed",
+		NetworkMode:             "proxy_targets",
 		Provenance: []tool.PermissionProvenance{{
 			Kind: "policy", Value: "snapshot", Revision: 7,
 		}},
@@ -180,7 +180,7 @@ func TestExecutionReceiptAuthorityEvidenceRoundTripsJSON(t *testing.T) {
 		attempt.PermissionDigest != strings.Repeat("a", 64) ||
 		attempt.Enforcement != "strong" ||
 		attempt.Backend != "seatbelt" ||
-		attempt.NetworkMode != "managed" ||
+		attempt.NetworkMode != "proxy_targets" ||
 		attempt.Provenance[0].Revision != 7 ||
 		attempt.Amendment.AmendedPermissionDigest != strings.Repeat("a", 64) {
 		t.Fatalf("round-tripped authority evidence = %+v", attempt)

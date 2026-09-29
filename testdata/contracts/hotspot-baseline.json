@@ -67,7 +67,6 @@
         "context_admission": "admission.go"
       },
       "allowed_internal_imports": [
-        "internal/adapter/content",
         "internal/adapter/mcp",
         "internal/adapter/model",
         "internal/adapter/provider",
@@ -167,11 +166,11 @@
         "provenance": "provenance.go"
       },
       "allowed_internal_imports": [
-        "internal/platform/environment",
+        "internal/environment",
         "internal/runtime/protocol"
       ],
       "required_test_assets": [
-        "internal/config/config_test.go",
+        "internal/config/load_test.go",
         "internal/config/schema.go",
         "internal/config/defaults.go",
         "internal/config/load.go",
@@ -180,8 +179,13 @@
         "internal/config/overrides.go",
         "internal/config/validate.go",
         "internal/config/provenance.go",
-        "internal/config/config_trust_test.go",
-        "internal/config/route_test.go"
+        "internal/config/defaults_test.go",
+        "internal/config/environment_resources_test.go",
+        "internal/config/environment_test.go",
+        "internal/config/file_loader_test.go",
+        "internal/config/overrides_test.go",
+        "internal/config/provenance_test.go",
+        "internal/config/validate_test.go"
       ]
     },
     {

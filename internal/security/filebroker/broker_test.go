@@ -14,7 +14,8 @@ import (
 
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
 	"github.com/fwtllh-png/QCode/internal/security/authority"
-	"github.com/fwtllh-png/QCode/internal/security/effect"
+	securitymodel "github.com/fwtllh-png/QCode/internal/security/model"
+	"github.com/fwtllh-png/QCode/internal/security/policy"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
 )
 
@@ -316,19 +317,32 @@ func testRequest(
 	invocation.Binding = tool.TrustedBindingFromDescriptor(
 		invocation.Descriptor,
 	)
-	operation, err := authority.BuildExecutionOperation(authority.OperationInput{
-		WorkspaceRoot: root, WorkspaceID: workspaceID,
-		WorkspaceGeneration: 1, Invocation: invocation,
-		Effect: effect.Effect{
-			Kind: effect.WorkspaceEdit, Risk: effect.RiskMedium,
-			Reversibility: effect.Reversible,
+	invocation.Binding.Effect.WorkspaceTransaction = tool.TransactionBeforeImage
+	invocation.Assessment = tool.AssessResources(invocation.Binding, securitymodel.Declared{}, invocation.Resources)
+	prepared, err := invocation.SecurityInvocation()
+	if err != nil {
+		t.Fatal(err)
+	}
+	compiled, err := authority.Compile(authority.CompileInput{
+		Runtime: policy.DefaultRuntime(policy.ModeAct, policy.PermissionBypass),
+		Invocation: policy.Invocation{
+			CallID: prepared.CallID, Tool: prepared.Tool, Arguments: prepared.Arguments,
+			Source:     tool.CatalogSourceKind(invocation.Tool, invocation.Ref.Source),
+			Assessment: prepared.Assessment, Validated: true, Workspace: root,
 		},
-		Journaled: true, RequireReadBeforeWrite: true,
-		FileMutationDigest: plan.Digest,
+		Prepared: prepared, Authorized: true, Revision: 1,
+		Decision: policy.Decision{Action: policy.ActionAllow}, Enforcement: sandbox.EnforcementNone,
+		SandboxPolicy: sandbox.Policy{WorkspaceRoot: root},
+		WorkspaceID:   workspaceID, WorkspaceGeneration: 1,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
+	compiled, err = compiled.Bind(authority.Evidence{FileMutationDigest: plan.Digest})
+	if err != nil {
+		t.Fatal(err)
+	}
+	operation := compiled.Operation
 	profile, err := authority.BuildManagedProcessProfile(
 		authority.ManagedProfileInput{
 			Operation: operation, Revision: 1, WorkspaceRoot: root,

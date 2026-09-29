@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/fwtllh-png/QCode/internal/adapter/tool"
+	securitymodel "github.com/fwtllh-png/QCode/internal/security/model"
 )
 
 type ApprovalScope string
@@ -23,16 +23,16 @@ const (
 )
 
 type ApprovalRequest struct {
-	RequestID       string          `json:"request_id"`
-	CallID          string          `json:"call_id"`
-	Tool            string          `json:"tool"`
-	Arguments       json.RawMessage `json:"arguments"`
-	ArgumentsDigest string          `json:"arguments_digest"`
-	Resources       []tool.Resource `json:"resources"`
-	Scope           ApprovalScope   `json:"scope"`
-	Fingerprint     string          `json:"fingerprint"`
-	ExpiresAt       time.Time       `json:"expires_at"`
-	Grant           *Grant          `json:"grant,omitempty"`
+	RequestID       string                   `json:"request_id"`
+	CallID          string                   `json:"call_id"`
+	Tool            string                   `json:"tool"`
+	Arguments       json.RawMessage          `json:"arguments"`
+	ArgumentsDigest string                   `json:"arguments_digest"`
+	Resources       []securitymodel.Resource `json:"resources"`
+	Scope           ApprovalScope            `json:"scope"`
+	Fingerprint     string                   `json:"fingerprint"`
+	ExpiresAt       time.Time                `json:"expires_at"`
+	Grant           *Grant                   `json:"grant,omitempty"`
 }
 
 type approvalEntry struct {
@@ -77,11 +77,14 @@ func NewApprovalRequest(invocation Invocation, expiresAt time.Time) (ApprovalReq
 func NewApprovalRequestForScope(
 	invocation Invocation, scope ApprovalScope, expiresAt time.Time,
 ) (ApprovalRequest, error) {
+	if !invocation.Assessment.Valid() {
+		return ApprovalRequest{}, errors.New("resolved resource assessment is required")
+	}
 	arguments, err := canonicalJSON(invocation.Arguments)
 	if err != nil {
 		return ApprovalRequest{}, err
 	}
-	resources := append([]tool.Resource(nil), invocation.Resources...)
+	resources := invocation.Assessment.Resources()
 	sort.Slice(resources, func(i, j int) bool { return resources[i].Key() < resources[j].Key() })
 	resources = compactResources(resources)
 	argumentsHash := sha256.Sum256(arguments)
@@ -262,7 +265,7 @@ func approvalBaseFingerprint(request ApprovalRequest) string {
 		return ""
 	}
 	writeFingerprintField(hash, string(arguments))
-	resources := append([]tool.Resource(nil), request.Resources...)
+	resources := append([]securitymodel.Resource(nil), request.Resources...)
 	sort.Slice(resources, func(i, j int) bool { return resources[i].Key() < resources[j].Key() })
 	for _, resource := range compactResources(resources) {
 		encoded, _ := json.Marshal(resource)
@@ -276,7 +279,7 @@ func approvalBaseFingerprint(request ApprovalRequest) string {
 	return hex.EncodeToString(hash.Sum(nil))
 }
 
-func compactResources(values []tool.Resource) []tool.Resource {
+func compactResources(values []securitymodel.Resource) []securitymodel.Resource {
 	result := values[:0]
 	for _, value := range values {
 		if len(result) == 0 || result[len(result)-1].Key() != value.Key() {

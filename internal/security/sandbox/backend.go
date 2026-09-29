@@ -17,9 +17,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/fwtllh-png/QCode/internal/security/controlmatrix"
-	"github.com/fwtllh-png/QCode/internal/security/controlplane"
-	"github.com/fwtllh-png/QCode/internal/security/pathpolicy"
+	"github.com/fwtllh-png/QCode/internal/platform/oscontract"
+	securitymodel "github.com/fwtllh-png/QCode/internal/security/model"
+	securitypaths "github.com/fwtllh-png/QCode/internal/security/pathpolicy"
 )
 
 const ErrUnavailableCode = "sandbox_unavailable"
@@ -31,10 +31,10 @@ const ErrUnavailableCode = "sandbox_unavailable"
 const MaxExactWorkspaceWritePaths = 512
 
 type Capability struct {
-	Platform  string               `json:"platform"`
-	Backend   string               `json:"backend"`
-	Available bool                 `json:"available"`
-	Effective controlmatrix.Matrix `json:"effective_controls"`
+	Platform  string                 `json:"platform"`
+	Backend   string                 `json:"backend"`
+	Available bool                   `json:"available"`
+	Effective securitymodel.Controls `json:"effective_controls"`
 	// ManagedProxy is advertised only after an exact-port allow/deny probe.
 	ManagedProxy bool   `json:"managed_proxy,omitempty"`
 	Reason       string `json:"reason,omitempty"`
@@ -54,9 +54,10 @@ type Command struct {
 	AllowLoopback           bool
 	LoopbackOnly            bool // Removes the workspace proxy grant for this command.
 	AuthorityDigest         string
+	CompiledNetwork         securitymodel.Network
 	PreparedPolicyID        string
 	PreparedAuthorityDigest string
-	PreparedControls        controlmatrix.Matrix
+	PreparedControls        securitymodel.Controls
 	PreparedReadOnly        bool
 	PreparedReadPaths       []string
 	PreparedWritePaths      []string
@@ -82,35 +83,15 @@ type PolicyBackend interface {
 	Policy() Policy
 }
 
-// maxBackendWrapperDepth bounds how many backend wrapper layers
-// BackendPolicy unwraps. The construction chain (managed, session-bound,
-// close-binding, policy-binding) is four deep today; the bound stops a
-// self-referential wrapper from looping forever. Public contract constant.
-const maxBackendWrapperDepth = 8
-
+// BackendPolicy reports the policy a backend is bound to. Composed backends
+// expose their policy directly; nothing is unwrapped.
 func BackendPolicy(backend Backend) (Policy, bool) {
-	current := backend
-	for range maxBackendWrapperDepth {
-		if current == nil {
-			return Policy{}, false
-		}
-		if policyBackend, ok := current.(PolicyBackend); ok {
-			policy := policyBackend.Policy()
-			if policy.ID != "" {
-				return policy, true
-			}
-		}
-		wrapper, ok := current.(interface{ InnerBackend() Backend })
-		if !ok {
-			return Policy{}, false
-		}
-		next := wrapper.InnerBackend()
-		if next == nil || next == current {
-			return Policy{}, false
-		}
-		current = next
+	policyBackend, ok := backend.(PolicyBackend)
+	if !ok || policyBackend == nil {
+		return Policy{}, false
 	}
-	return Policy{}, false
+	policy := policyBackend.Policy()
+	return policy, policy.ID != ""
 }
 
 type UnavailableError struct {
@@ -130,19 +111,19 @@ func (e *UnavailableError) Error() string {
 	return message
 }
 
-func DefaultProcessRequirements() controlmatrix.Requirements {
-	return controlmatrix.Requirements{
-		FilesystemRead:  controlmatrix.FilesystemReadDeclaredRoots,
-		FilesystemWrite: controlmatrix.FilesystemWriteExactPaths,
-		Network:         controlmatrix.NetworkDenied,
-		ProcessTree:     controlmatrix.ProcessTreeGroupKill,
-		PathIdentity:    controlmatrix.PathIdentityDescriptorRelative,
+func DefaultProcessRequirements() securitymodel.RequiredControls {
+	return securitymodel.RequiredControls{
+		FilesystemRead:  securitymodel.FilesystemReadDeclaredRoots,
+		FilesystemWrite: securitymodel.FilesystemWriteExactPaths,
+		Network:         securitymodel.NetworkDenied,
+		ProcessTree:     securitymodel.ProcessTreeGroupKill,
+		PathIdentity:    securitymodel.PathIdentityDescriptorRelative,
 	}
 }
 
 func RequireControls(
 	backend Backend,
-	required controlmatrix.Requirements,
+	required securitymodel.RequiredControls,
 ) error {
 	capability := Capability{
 		Platform: runtime.GOOS, Backend: "none",
@@ -167,26 +148,26 @@ func Probe() Capability {
 	return probedCapability
 }
 
-func platformControls(platform string) controlmatrix.Matrix {
-	controls := controlmatrix.Matrix{
-		FilesystemRead:  controlmatrix.FilesystemReadUnrestricted,
-		FilesystemWrite: controlmatrix.FilesystemWriteUnrestricted,
-		Network:         controlmatrix.NetworkDirect,
-		ProcessTree:     controlmatrix.ProcessTreeUnmanaged,
-		CrossProcess:    controlmatrix.CrossProcessUnrestricted,
-		Syscall:         controlmatrix.SyscallUnrestricted,
-		IPC:             controlmatrix.IPCUnrestricted,
-		PathIdentity:    controlmatrix.PathIdentityLexical,
-		ArtifactOrigin:  controlmatrix.ArtifactOriginUnverifiedPath,
-		DurableRecovery: controlmatrix.DurableRecoveryMemoryOnly,
+func platformControls(platform string) securitymodel.Controls {
+	controls := securitymodel.Controls{
+		FilesystemRead:  securitymodel.FilesystemReadUnrestricted,
+		FilesystemWrite: securitymodel.FilesystemWriteUnrestricted,
+		Network:         securitymodel.NetworkDirect,
+		ProcessTree:     securitymodel.ProcessTreeUnmanaged,
+		CrossProcess:    securitymodel.CrossProcessUnrestricted,
+		Syscall:         securitymodel.SyscallUnrestricted,
+		IPC:             securitymodel.IPCUnrestricted,
+		PathIdentity:    securitymodel.PathIdentityLexical,
+		ArtifactOrigin:  securitymodel.ArtifactOriginUnverifiedPath,
+		DurableRecovery: securitymodel.DurableRecoveryMemoryOnly,
 	}
 	switch platform {
 	case "darwin":
-		controls.FilesystemRead = controlmatrix.FilesystemReadDeclaredRoots
-		controls.FilesystemWrite = controlmatrix.FilesystemWriteExactPaths
-		controls.Network = controlmatrix.NetworkDenied
-		controls.ProcessTree = controlmatrix.ProcessTreeGroupKill
-		controls.PathIdentity = controlmatrix.PathIdentityDescriptorRelative
+		controls.FilesystemRead = securitymodel.FilesystemReadDeclaredRoots
+		controls.FilesystemWrite = securitymodel.FilesystemWriteExactPaths
+		controls.Network = securitymodel.NetworkDenied
+		controls.ProcessTree = securitymodel.ProcessTreeGroupKill
+		controls.PathIdentity = securitymodel.PathIdentityDescriptorRelative
 	}
 	return controls
 }
@@ -284,6 +265,10 @@ func (b *seatbeltBackend) Prepare(ctx context.Context, command Command) (Command
 	if err := refuseUndeliveredManagedNetwork(b.policy, command); err != nil {
 		return Command{}, err
 	}
+	controls, err := CommandControls(b.capability, b.policy, command)
+	if err != nil {
+		return Command{}, err
+	}
 	policy := ApplySessionProxyPort(b.policy, command)
 	profile := seatbeltProfileForCommand(
 		policy,
@@ -310,7 +295,7 @@ func (b *seatbeltBackend) Prepare(ctx context.Context, command Command) (Command
 		DirectoryFD: command.DirectoryFD, PreparedPolicyID: b.policy.ID,
 		AuthorityDigest:         command.AuthorityDigest,
 		PreparedAuthorityDigest: command.AuthorityDigest,
-		PreparedControls:        CommandControls(b.capability, b.policy, command),
+		PreparedControls:        controls,
 		WorkspaceReadOnly:       command.WorkspaceReadOnly,
 		AdditionalReadPaths:     append([]string(nil), readPaths...),
 		WorkspaceWritePaths:     writePathsString(writePaths),
@@ -341,29 +326,6 @@ func CloseBackend(backend Backend) error {
 	}
 	return nil
 }
-
-type closeBinding struct {
-	Backend
-	close func() error
-}
-
-func WithClose(backend Backend, close func() error) Backend {
-	if backend == nil || close == nil {
-		return backend
-	}
-	return &closeBinding{Backend: backend, close: close}
-}
-
-func (b *closeBinding) Close() error {
-	return errors.Join(CloseBackend(b.Backend), b.close())
-}
-
-func (b *closeBinding) Policy() Policy {
-	policy, _ := BackendPolicy(b.Backend)
-	return policy
-}
-
-func (b *closeBinding) InnerBackend() Backend { return b.Backend }
 
 func seatbeltProfile(policy Policy, executable string) string {
 	return seatbeltProfileForCommand(
@@ -415,48 +377,26 @@ func seatbeltProfileForCommand(
 	}
 	for _, root := range policy.HostWriteRoots {
 		profile.WriteString(seatbeltWriteGrant(root))
+		// Creating entries requires metadata lookup of the declared write tree.
+		// This does not grant reads of existing shared temporary file contents.
+		fmt.Fprintf(&profile, "(allow file-read-metadata (subpath %s))\n", seatbeltQuote(root))
 	}
 	fmt.Fprintf(
 		&profile,
 		"(allow file-write* (subpath %s))\n",
 		seatbeltQuote(policy.PrivateTemp),
 	)
-	if filepath.Clean(executable) == "/bin/sh" {
-		// Darwin's /bin/sh ignores TMPDIR for here-document backing files. The
-		// system bash opens /var/tmp, which lsof reports as /private/var/tmp.
-		// Retain /private/tmp for compatible sh variants. Keep every grant
-		// filename-scoped.
-		profile.WriteString("(allow file-write* (literal \"/var/tmp\"))\n")
-		profile.WriteString(
-			"(allow file-write* (regex #\"^/var/tmp/sh-thd-[0-9]+$\"))\n",
-		)
-		profile.WriteString(
-			"(allow file-read* (regex #\"^/var/tmp/sh-thd-[0-9]+$\"))\n",
-		)
-		profile.WriteString("(allow file-write* (literal \"/private/var/tmp\"))\n")
-		profile.WriteString(
-			"(allow file-write* (regex #\"^/private/var/tmp/sh-thd-[0-9]+$\"))\n",
-		)
-		profile.WriteString(
-			"(allow file-read-metadata (subpath \"/private/var/tmp\"))\n",
-		)
-		profile.WriteString(
-			"(allow file-read* (regex #\"^/private/var/tmp/sh-thd-[0-9]+$\"))\n",
-		)
-		profile.WriteString("(allow file-write* (literal \"/private/tmp\"))\n")
-		profile.WriteString(
-			"(allow file-write* (regex #\"^/private/tmp/sh-thd-[0-9]+$\"))\n",
-		)
-		profile.WriteString(
-			"(allow file-read* (regex #\"^/private/tmp/sh-thd-[0-9]+$\"))\n",
-		)
+	if contract, ok := oscontract.DarwinExecutable(executable); ok {
+		profile.WriteString(contract.SeatbeltRules)
 	}
+
 	// macOS tools often lstat ancestors (/private, /private/var, …) while
 	// resolving realpaths. subpath grants do not cover those parents, which
 	// surfaces as "lstat /private: operation not permitted". Metadata-only
 	// grants preserve read isolation while allowing a permitted root to be
 	// resolved.
 	writeSeatbeltAncestorMetadata(&profile, readRoots...)
+	writeSeatbeltAncestorMetadata(&profile, policy.HostWriteRoots...)
 	// Write trees may contain control-plane entries (.git inside a generated
 	// tree): the classifier protects them at settlement, so the OS grant
 	// must not be broader than the approval model. Denies come after the
@@ -465,7 +405,7 @@ func seatbeltProfileForCommand(
 		if pinned.kind != writePathTree {
 			continue
 		}
-		for _, name := range pathpolicy.ControlPlaneNames() {
+		for _, name := range securitypaths.ControlPlaneNames() {
 			fmt.Fprintf(
 				&profile,
 				"(deny file-write* (subpath %s))\n",
@@ -490,7 +430,7 @@ func seatbeltProfileForCommand(
 		}
 	}
 	if home, err := os.UserHomeDir(); err == nil {
-		for _, sensitive := range pathpolicy.HomeCredentialRoots(home) {
+		for _, sensitive := range securitypaths.HomeCredentialRoots(home) {
 			fmt.Fprintf(&profile, "(deny file-read* file-write* (subpath %s))\n", seatbeltQuote(sensitive))
 		}
 	}
@@ -610,7 +550,7 @@ func validateExactWorkspaceWritePaths(
 			MaxExactWorkspaceWritePaths,
 		)
 	}
-	classifier, err := controlplane.New(workspace.Root())
+	classifier, err := securitypaths.NewControlPlane(workspace.Root())
 	if err != nil {
 		return nil, err
 	}
@@ -680,7 +620,7 @@ func materializeMissingExactWritePaths(
 	workspace *Workspace,
 	pinned []workspaceWritePath,
 ) error {
-	classifier, err := controlplane.New(workspace.Root())
+	classifier, err := securitypaths.NewControlPlane(workspace.Root())
 	if err != nil {
 		return err
 	}
@@ -969,7 +909,7 @@ func runAttackProbe() Capability {
 		base.Reason = "no supported platform sandbox backend"
 		return base
 	}
-	if _, err := exec.LookPath("sandbox-exec"); err != nil {
+	if _, err := resolveExecutableLiteral("/usr/bin/sandbox-exec", nil); err != nil {
 		base.Reason = err.Error()
 		return base
 	}
@@ -1005,7 +945,10 @@ func runAttackProbe() Capability {
 		base.Reason = err.Error()
 		return base
 	}
-	policy, err := BuildPolicy(Options{WorkspaceRoot: workspace, PrivateTemp: privateTemp})
+	policy, err := BuildPolicy(Options{
+		WorkspaceRoot: workspace, PrivateTemp: privateTemp,
+		SkipPATHReadRoots: true, EnvironmentValues: []string{"PATH=/usr/bin:/bin:/usr/sbin:/sbin"},
+	})
 	if err != nil {
 		base.Reason = err.Error()
 		return base
@@ -1131,7 +1074,7 @@ func validateWorkspaceLinks(ctx context.Context, workspace *Workspace) error {
 				if !filepath.IsAbs(target) {
 					target = filepath.Join(filepath.Dir(path), target)
 				}
-				resolved, err = pathpolicy.CanonicalAllowMissing(target)
+				resolved, err = securitypaths.CanonicalAllowMissing(target)
 			}
 			if err != nil {
 				return fmt.Errorf("workspace symbolic link %q is invalid: %w", path, err)

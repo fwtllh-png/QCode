@@ -11,7 +11,7 @@ import (
 
 	"github.com/fwtllh-png/QCode/internal/observability/diagnostics"
 	"github.com/fwtllh-png/QCode/internal/observability/verify"
-	"github.com/fwtllh-png/QCode/internal/security/controlmatrix"
+	securitymodel "github.com/fwtllh-png/QCode/internal/security/model"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
 )
 
@@ -116,16 +116,17 @@ func DispositionFor(executor Executor) ExecutionDisposition {
 // PreparedInvocation is immutable after Guard preparation. Replacement
 // arguments always produce a new value and repeat policy authorization.
 type PreparedInvocation struct {
-	Identity    InvocationIdentity   `json:"identity"`
-	CallID      string               `json:"call_id"`
-	Tool        string               `json:"tool"`
-	Ref         ToolRef              `json:"tool_ref"`
-	Arguments   json.RawMessage      `json:"arguments"`
-	Resources   []Resource           `json:"resources"`
-	Descriptor  Descriptor           `json:"descriptor"`
-	Binding     TrustedBinding       `json:"trusted_binding"`
-	Source      InvocationSource     `json:"source"`
-	Disposition ExecutionDisposition `json:"disposition"`
+	Assessment  securitymodel.Assessment `json:"-"`
+	Identity    InvocationIdentity       `json:"identity"`
+	CallID      string                   `json:"call_id"`
+	Tool        string                   `json:"tool"`
+	Ref         ToolRef                  `json:"tool_ref"`
+	Arguments   json.RawMessage          `json:"arguments"`
+	Resources   []Resource               `json:"resources"`
+	Descriptor  Descriptor               `json:"descriptor"`
+	Binding     TrustedBinding           `json:"trusted_binding"`
+	Source      InvocationSource         `json:"source"`
+	Disposition ExecutionDisposition     `json:"disposition"`
 }
 
 type OutcomeStatus string
@@ -361,6 +362,13 @@ type PermissionAmendmentReceipt struct {
 	AmendedPermissionDigest string     `json:"amended_permission_digest,omitempty"`
 }
 
+// PolicyDecisionReceipt records which policy decision layer decided a call.
+type PolicyDecisionReceipt struct {
+	Action string `json:"action"`
+	Layer  string `json:"layer"`
+	Code   string `json:"code,omitempty"`
+}
+
 type AttemptReceipt struct {
 	Sequence                uint32                      `json:"sequence"`
 	Sandbox                 string                      `json:"sandbox"`
@@ -379,6 +387,7 @@ type AttemptReceipt struct {
 	SubjectDigest           string                      `json:"subject_digest,omitempty"`
 	SubjectGeneration       uint64                      `json:"subject_generation,omitempty"`
 	PolicyRevision          uint64                      `json:"policy_revision,omitempty"`
+	Policy                  *PolicyDecisionReceipt      `json:"policy,omitempty"`
 	SandboxPolicyID         string                      `json:"sandbox_policy_id,omitempty"`
 	EffectKind              string                      `json:"effect_kind,omitempty"`
 	EffectRisk              string                      `json:"effect_risk,omitempty"`
@@ -391,7 +400,7 @@ type AttemptReceipt struct {
 	PermissionAccess        AccessMode                  `json:"permission_access,omitempty"`
 	Enforcement             string                      `json:"enforcement,omitempty"`
 	Backend                 string                      `json:"backend,omitempty"`
-	EffectiveControls       controlmatrix.Matrix        `json:"effective_controls"`
+	EffectiveControls       securitymodel.Controls      `json:"effective_controls"`
 	WorkspaceRoot           string                      `json:"workspace_root,omitempty"`
 	ReadRoots               []string                    `json:"read_roots,omitempty"`
 	WritePaths              []string                    `json:"write_paths,omitempty"`
@@ -414,19 +423,20 @@ type AttemptReceipt struct {
 }
 
 type ExecutionReceipt struct {
-	Tool                           ToolRef              `json:"tool"`
-	Source                         InvocationSource     `json:"source"`
-	Disposition                    ExecutionDisposition `json:"disposition"`
-	VerificationEvidenceAuthorized bool                 `json:"verification_evidence_authorized,omitempty"`
-	Attempts                       []AttemptReceipt     `json:"attempts"`
-	ApprovalWait                   time.Duration        `json:"approval_wait,omitempty"`
-	DispatchWait                   time.Duration        `json:"dispatch_wait,omitempty"`
-	ClaimWait                      time.Duration        `json:"claim_wait,omitempty"`
-	TerminalStatus                 OutcomeStatus        `json:"terminal_status"`
-	TerminalOwner                  TerminalOwner        `json:"terminal_owner"`
-	Teardown                       time.Duration        `json:"teardown,omitempty"`
-	TeardownMS                     int64                `json:"teardown_ms,omitempty"`
-	TeardownTimedOut               bool                 `json:"teardown_timed_out,omitempty"`
+	Tool                           ToolRef                `json:"tool"`
+	Source                         InvocationSource       `json:"source"`
+	Disposition                    ExecutionDisposition   `json:"disposition"`
+	VerificationEvidenceAuthorized bool                   `json:"verification_evidence_authorized,omitempty"`
+	PolicyDenial                   *PolicyDecisionReceipt `json:"policy_denial,omitempty"`
+	Attempts                       []AttemptReceipt       `json:"attempts"`
+	ApprovalWait                   time.Duration          `json:"approval_wait,omitempty"`
+	DispatchWait                   time.Duration          `json:"dispatch_wait,omitempty"`
+	ClaimWait                      time.Duration          `json:"claim_wait,omitempty"`
+	TerminalStatus                 OutcomeStatus          `json:"terminal_status"`
+	TerminalOwner                  TerminalOwner          `json:"terminal_owner"`
+	Teardown                       time.Duration          `json:"teardown,omitempty"`
+	TeardownMS                     int64                  `json:"teardown_ms,omitempty"`
+	TeardownTimedOut               bool                   `json:"teardown_timed_out,omitempty"`
 }
 
 func CloneExecutionReceipt(source *ExecutionReceipt) *ExecutionReceipt {
@@ -434,6 +444,10 @@ func CloneExecutionReceipt(source *ExecutionReceipt) *ExecutionReceipt {
 		return nil
 	}
 	cloned := *source
+	if source.PolicyDenial != nil {
+		denial := *source.PolicyDenial
+		cloned.PolicyDenial = &denial
+	}
 	cloned.Attempts = make([]AttemptReceipt, len(source.Attempts))
 	for index := range source.Attempts {
 		cloned.Attempts[index] = cloneAttemptReceipt(source.Attempts[index])
@@ -448,6 +462,10 @@ func cloneAttemptReceipt(source AttemptReceipt) AttemptReceipt {
 	cloned.DeniedWriteRoots = append([]string(nil), source.DeniedWriteRoots...)
 	cloned.NetworkTargets = append([]string(nil), source.NetworkTargets...)
 	cloned.Provenance = append([]PermissionProvenance(nil), source.Provenance...)
+	if source.Policy != nil {
+		decision := *source.Policy
+		cloned.Policy = &decision
+	}
 	if source.Denial != nil {
 		denial := *source.Denial
 		cloned.Denial = &denial

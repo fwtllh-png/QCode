@@ -12,6 +12,7 @@ import (
 	reverttool "github.com/fwtllh-png/QCode/internal/adapter/tool/revert"
 	"github.com/fwtllh-png/QCode/internal/observability/verify"
 	"github.com/fwtllh-png/QCode/internal/orchestration/subagent"
+	"github.com/fwtllh-png/QCode/internal/platform/envprobe"
 	agentengine "github.com/fwtllh-png/QCode/internal/runtime/agent/engine"
 	promptcontext "github.com/fwtllh-png/QCode/internal/runtime/agent/prompt"
 	"github.com/fwtllh-png/QCode/internal/runtime/app"
@@ -42,7 +43,7 @@ func (agentModule) Build(ctx context.Context, state *buildState) error {
 	baseSystem := strings.TrimSpace(execution.BaseSystem)
 	if baseSystem == "" {
 		baseSystem = promptcontext.DefaultBaseSystem(
-			execution.Workspace, environmentFingerprint(state.platform.moduleProxy),
+			execution.Workspace, envprobe.Fingerprint(),
 		)
 	}
 	home := ""

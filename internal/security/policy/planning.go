@@ -1,11 +1,10 @@
 package policy
 
 import (
-	"encoding/json"
 	"fmt"
 	"strings"
 
-	"github.com/fwtllh-png/QCode/internal/security/effect"
+	securitymodel "github.com/fwtllh-png/QCode/internal/security/model"
 )
 
 type PlanningPolicy string
@@ -90,11 +89,11 @@ func (r *Runtime) ResetPlanState() uint64 {
 
 func planningDecision(
 	r *Runtime,
-	invocation Invocation,
-	eff effect.Effect,
+	assessment securitymodel.Assessment,
 ) *Decision {
+	eff := assessment.Effect()
 	if r == nil ||
-		planningExemptTool(invocation.Tool) ||
+		assessment.Facets().PlanningExempt ||
 		!consequentialPlanningEffect(eff.Kind) {
 		return nil
 	}
@@ -111,12 +110,12 @@ func planningDecision(
 	}
 	required := r.PlanningPolicy == PlanningRequired ||
 		(r.PlanningPolicy == PlanningAdaptive &&
-			adaptivePlanningRequired(eff, invocation))
+			adaptivePlanningRequired(assessment))
 	if !required && !r.PlanSubmitted {
 		return nil
 	}
 	if !r.PlanSubmitted {
-		if declaredVerification(invocation) {
+		if assessment.Facets().DeclaredVerification {
 			// Verification is the checking step of a plan: downgrade the
 			// gate from a hard Hold to one approval instead of forcing a
 			// plan re-submission before every build or test run.
@@ -133,33 +132,6 @@ func planningDecision(
 	return nil
 }
 
-// declaredVerification reports an exec_command invocation that declared
-// verification semantics (kind plus exact covered paths). The declaration
-// is schema-validated before policy runs, so both fields are trustworthy.
-func declaredVerification(invocation Invocation) bool {
-	if invocation.Tool != "exec_command" {
-		return false
-	}
-	var payload struct {
-		Verification string   `json:"verification"`
-		CoveredPaths []string `json:"covered_paths"`
-	}
-	if json.Unmarshal(invocation.Arguments, &payload) != nil {
-		return false
-	}
-	return strings.TrimSpace(payload.Verification) != "" &&
-		len(payload.CoveredPaths) != 0
-}
-
-func planningExemptTool(name string) bool {
-	switch name {
-	case "git_push":
-		return true
-	default:
-		return false
-	}
-}
-
 func validatePlanning(planning PlanningPolicy) error {
 	if planning != PlanningOff && planning != PlanningAdaptive &&
 		planning != PlanningRequired {
@@ -168,41 +140,24 @@ func validatePlanning(planning PlanningPolicy) error {
 	return nil
 }
 
-func consequentialPlanningEffect(kind effect.Kind) bool {
+func consequentialPlanningEffect(kind securitymodel.EffectKind) bool {
 	switch kind {
-	case effect.WorkspaceRead, effect.ProcessReadOnly,
-		effect.SessionMutation, effect.AgentMessage:
+	case securitymodel.WorkspaceRead, securitymodel.ProcessReadOnly,
+		securitymodel.SessionMutation, securitymodel.AgentMessage:
 		return false
 	default:
 		return true
 	}
 }
 
-func adaptivePlanningRequired(eff effect.Effect, invocation Invocation) bool {
-	if readOnlySpawn(invocation) {
+func adaptivePlanningRequired(assessment securitymodel.Assessment) bool {
+	if assessment.Facets().ReadOnlyDeclared {
 		return false
 	}
-	return eff.Risk == effect.RiskHigh || eff.Risk == effect.RiskCritical ||
-		eff.Kind == effect.NetworkMutating ||
-		eff.Kind == effect.ExternalMutation ||
-		eff.Kind == effect.AgentLifecycle ||
-		eff.Reversibility == effect.Irreversible
-}
-
-func readOnlySpawn(invocation Invocation) bool {
-	if invocation.Tool != "spawn_agent" {
-		return false
-	}
-	var payload struct {
-		Role string `json:"role"`
-	}
-	if json.Unmarshal(invocation.Arguments, &payload) != nil {
-		return false
-	}
-	switch strings.ToLower(strings.TrimSpace(payload.Role)) {
-	case "review", "explore", "awaiter":
-		return true
-	default:
-		return false
-	}
+	eff := assessment.Effect()
+	return eff.Risk == securitymodel.RiskHigh || eff.Risk == securitymodel.RiskCritical ||
+		eff.Kind == securitymodel.NetworkMutating ||
+		eff.Kind == securitymodel.ExternalMutation ||
+		eff.Kind == securitymodel.AgentLifecycle ||
+		eff.Reversibility == securitymodel.Irreversible
 }

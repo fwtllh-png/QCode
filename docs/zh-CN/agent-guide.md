@@ -45,6 +45,7 @@
 - Subagent 生命周期只写入 Agent Graph，不建立并行的后台任务生命周期。
 - 日志、指标或 Trace 持久化失败不能改变 Turn 的业务结果。
 - 受 Git 跟踪的 Config、Log、Fixture、Docs 中不保存原始凭证。
+- 测试辅助类型和构造函数放在使用包的 `_test.go` 文件中，不为测试复用新增普通生产包。
 - 不读取、打印、总结、Patch 或强制添加被忽略的
   `docs/DEEPSEEK-LIVE.zh-CN.md` 本机 Runbook。
 - 有结构化 Parser 时，不用脆弱字符串逻辑解析结构化格式。
@@ -200,8 +201,15 @@ Trust 时：
    不要在核心增加语言变量白名单或语言名称分支，也不要建立第二套授权模型。
    产品默认是 `v1` + `native`；不要静默打开 `shared_user_temp`、凭证目录或
    任意出网。子 Agent 保持 isolated。
-   新工具走 `ResourceRequest` 声明；适配器只翻译公开接口，不是准入条件。
-   需要进程外认证时按协议加服务（当前只有 GOPROXY），不要为新语言写插件。
+   新工具走 `ResourceRequest` 声明。准备器不维护语言发现器；Git 集成负责生成自己的
+   配置声明，由 wire 组合。准备后使用策略中的环境值，不在命令启动时读取宿主环境。
+   环境安全规则复用 `security/envpolicy`，普通变量按来源、可信声明、命令声明覆盖，
+   同层冲突报错，HOME/临时目录/受管代理继续由策略决定。
+   默认准备链不探测语言工具或自动绑定宿主认证；语言工具的配置和缓存使用可信资源
+   声明。内置 GOPROXY 服务与 `auth_services` 已删除，不在 Runtime/Guard/Shell
+   中增加语言认证分支。`credential/use` 无实际绑定器时必须明确未绑定。
+   准备事实经不可变快照传递，并与当前执行失败分类分开；子环境使用自己的事实。
+   详见[执行环境通用化优化方案](./environment-language-neutral-plan.md)。
    进程失败类别只接受权威组件事实，禁止从 stderr 扫描 `401` /
    `permission denied` 改判。运行中新主机必须先批准再连接；同一缺失不要
    再生成一遍审批，也不要重放已有副作用的安装/构建命令。

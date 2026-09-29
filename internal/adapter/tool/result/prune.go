@@ -3,7 +3,6 @@ package result
 import (
 	"encoding/json"
 
-	adaptercontent "github.com/fwtllh-png/QCode/internal/adapter/content"
 	"github.com/fwtllh-png/QCode/internal/adapter/provider"
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
 )
@@ -69,7 +68,7 @@ func PruneSurfaces(
 					continue
 				}
 				block.ToolResult.Content = pruned.Content
-				block.ToolResult.Admission = adaptercontent.CloneAdmissionReceipt(
+				block.ToolResult.Admission = provider.CloneAdmissionReceipt(
 					pruned.Admission,
 				)
 				stats.Results++
@@ -96,7 +95,7 @@ func PruneSurfaces(
 			stats.Bytes += len(block.ToolResult.Content) - len(encoded)
 			block.ToolResult.Content = string(encoded)
 			block.ToolResult.IsError = projected.IsError
-			block.ToolResult.Admission = adaptercontent.CloneAdmissionReceipt(
+			block.ToolResult.Admission = provider.CloneAdmissionReceipt(
 				projected.Admission,
 			)
 			window, err = measure(*history)
@@ -164,7 +163,7 @@ func CollapseSurfacesBefore(
 			stats.Bytes += len(block.ToolResult.Content) - len(encoded)
 			block.ToolResult.Content = string(encoded)
 			block.ToolResult.IsError = projected.IsError
-			block.ToolResult.Admission = adaptercontent.CloneAdmissionReceipt(
+			block.ToolResult.Admission = provider.CloneAdmissionReceipt(
 				projected.Admission,
 			)
 		}

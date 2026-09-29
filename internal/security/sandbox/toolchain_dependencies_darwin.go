@@ -15,15 +15,16 @@ type machoRuntimeMetadata struct {
 	rpaths    []string
 }
 
-func executableRuntimeDependencies(executable string) ([]string, []string) {
+// Bind only files referenced by the executable's load commands. Adjacent
+// configuration, package data and writable state require explicit declarations.
+func executableRuntimeDependencies(executable string) []string {
 	executable, err := filepath.EvalSymlinks(executable)
 	if err != nil {
-		return nil, nil
+		return nil
 	}
 	executableDir := filepath.Dir(executable)
 	pending := []string{executable}
 	visited := make(map[string]bool)
-	var roots []string
 	var files []string
 	for len(pending) > 0 {
 		current := pending[0]
@@ -48,27 +49,20 @@ func executableRuntimeDependencies(executable string) ([]string, []string) {
 				continue
 			}
 			info, err := os.Stat(dependency)
-			if err != nil || info.IsDir() {
+			if err != nil || !info.Mode().IsRegular() {
 				continue
-			}
-			directory := filepath.Dir(dependency)
-			if !slices.Contains(roots, directory) {
-				roots = append(roots, directory)
 			}
 			canonical, err := filepath.EvalSymlinks(dependency)
 			if err != nil {
 				continue
 			}
-			canonicalDirectory := filepath.Dir(canonical)
-			if !slices.Contains(roots, canonicalDirectory) {
-				roots = append(roots, canonicalDirectory)
+			if validateSensitivePath(dependency) != nil || validateSensitivePath(canonical) != nil {
+				continue
 			}
-			for _, root := range homebrewRuntimeRoots(canonical) {
-				if !slices.Contains(roots, root) {
-					roots = append(roots, root)
-				}
+			if _, err := readMachORuntimeMetadata(canonical); err != nil {
+				continue
 			}
-			for _, path := range homebrewRuntimeReadFiles(canonical) {
+			for _, path := range dependencyReadPaths(dependency, canonical) {
 				if !slices.Contains(files, path) {
 					files = append(files, path)
 				}
@@ -78,7 +72,32 @@ func executableRuntimeDependencies(executable string) ([]string, []string) {
 			}
 		}
 	}
-	return roots, files
+	return files
+}
+
+// dyld can check a path after resolving its directory but before resolving the
+// final library symlink. Include those exact aliases as well as the real file.
+func dependencyReadPaths(path, canonical string) []string {
+	paths := []string{path, canonical}
+	for {
+		directory, err := filepath.EvalSymlinks(filepath.Dir(path))
+		if err != nil {
+			return paths
+		}
+		path = filepath.Join(directory, filepath.Base(path))
+		if slices.Contains(paths[1:], path) {
+			return paths
+		}
+		paths = append(paths, path)
+		target, err := os.Readlink(path)
+		if err != nil {
+			return paths
+		}
+		if !filepath.IsAbs(target) {
+			target = filepath.Join(directory, target)
+		}
+		path = target
+	}
 }
 
 func readMachORuntimeMetadata(path string) (machoRuntimeMetadata, error) {
@@ -142,6 +161,9 @@ func resolveMachOLibrary(
 		suffix := strings.TrimPrefix(library, "@rpath/")
 		for _, rpath := range rpaths {
 			base := resolveMachORPath(rpath, loader, executableDir)
+			if base == "" {
+				continue
+			}
 			if dependency := existingFile(filepath.Join(base, suffix)); dependency != "" {
 				return dependency
 			}
@@ -179,56 +201,8 @@ func existingFile(path string) string {
 	}
 	path = filepath.Clean(path)
 	info, err := os.Stat(path)
-	if err != nil || info.IsDir() {
+	if err != nil || !info.Mode().IsRegular() {
 		return ""
 	}
 	return path
-}
-
-func homebrewRuntimeRoots(path string) []string {
-	parts := strings.Split(filepath.Clean(path), string(filepath.Separator))
-	cellar := slices.Index(parts, "Cellar")
-	if cellar <= 0 || cellar+2 >= len(parts) {
-		return nil
-	}
-	prefix := filepath.Join(append([]string{string(filepath.Separator)}, parts[1:cellar]...)...)
-	formula := parts[cellar+1]
-	versionRoot := filepath.Join(
-		append(
-			[]string{string(filepath.Separator)},
-			parts[1:cellar+3]...,
-		)...,
-	)
-	roots := []string{versionRoot}
-	shared := filepath.Join(prefix, "share", formula)
-	if info, err := os.Stat(shared); err == nil && info.IsDir() {
-		roots = append(roots, shared)
-	}
-	return roots
-}
-
-func homebrewRuntimeReadFiles(path string) []string {
-	parts := strings.Split(filepath.Clean(path), string(filepath.Separator))
-	cellar := slices.Index(parts, "Cellar")
-	if cellar <= 0 || cellar+2 >= len(parts) {
-		return nil
-	}
-	prefix := filepath.Join(append([]string{string(filepath.Separator)}, parts[1:cellar]...)...)
-	configRoot := filepath.Join(prefix, "etc", parts[cellar+1])
-	entries, err := os.ReadDir(configRoot)
-	if err != nil {
-		return nil
-	}
-	files := make([]string, 0, len(entries))
-	for _, entry := range entries {
-		if entry.Type()&os.ModeSymlink != 0 {
-			continue
-		}
-		path := filepath.Join(configRoot, entry.Name())
-		info, err := os.Stat(path)
-		if err == nil && info.Mode().IsRegular() {
-			files = append(files, path)
-		}
-	}
-	return files
 }

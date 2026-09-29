@@ -11,27 +11,27 @@ import (
 func TestAuthoritySourcePriorityCannotOverrideHigherDeny(t *testing.T) {
 	runtime := DefaultRuntime(ModeAct, PermissionSuggest)
 	runtime.Grants = []Rule{{
-		Tool: "exec_command", Action: ActionDeny,
+		Tool: "run_command", Action: ActionDeny,
 	}}
 	if _, err := runtime.ReloadSources(
-		[]Rule{{Tool: "exec_command", Action: ActionAllow}},
+		[]Rule{{Tool: "run_command", Action: ActionAllow}},
 		nil,
 	); err != nil {
 		t.Fatal(err)
 	}
-	decision := runtime.Evaluate(processInvocation("git status"))
+	decision := runtime.Decide(resolveFixture(processInvocation("git status")))
 	if decision.Action != ActionDeny || decision.Code != "tool_grant_denied" {
 		t.Fatalf("decision = %+v", decision)
 	}
 
 	runtime.Grants = []Rule{{Tool: "*", Resource: "*", Action: ActionAllow}}
 	if _, err := runtime.ReloadSources(
-		[]Rule{{Tool: "exec_command", Action: ActionAllow}},
-		[]Rule{{Tool: "exec_command", Action: ActionDeny}},
+		[]Rule{{Tool: "run_command", Action: ActionAllow}},
+		[]Rule{{Tool: "run_command", Action: ActionDeny}},
 	); err != nil {
 		t.Fatal(err)
 	}
-	decision = runtime.Evaluate(processInvocation("git status"))
+	decision = runtime.Decide(resolveFixture(processInvocation("git status")))
 	if decision.Action != ActionDeny || decision.Code != "repository_rule_denied" {
 		t.Fatalf("decision = %+v", decision)
 	}
@@ -46,7 +46,7 @@ func TestReloadSourcesPublishesWholeSnapshots(t *testing.T) {
 		go func() {
 			defer wait.Done()
 			for iteration := 0; iteration < 100; iteration++ {
-				decision := runtime.Evaluate(call)
+				decision := runtime.Decide(resolveFixture(call))
 				if decision.Action != ActionAllow && decision.Action != ActionDeny &&
 					decision.Action != ActionAsk {
 					t.Errorf("partial decision = %+v", decision)
@@ -58,10 +58,10 @@ func TestReloadSourcesPublishesWholeSnapshots(t *testing.T) {
 	for iteration := 0; iteration < 100; iteration++ {
 		repository := []Rule(nil)
 		if iteration%2 == 0 {
-			repository = []Rule{{Tool: "exec_command", Action: ActionDeny}}
+			repository = []Rule{{Tool: "run_command", Action: ActionDeny}}
 		}
 		if _, err := runtime.ReloadSources(
-			[]Rule{{Tool: "exec_command", Action: ActionAllow}},
+			[]Rule{{Tool: "run_command", Action: ActionAllow}},
 			repository,
 		); err != nil {
 			t.Fatal(err)
@@ -73,7 +73,7 @@ func TestReloadSourcesPublishesWholeSnapshots(t *testing.T) {
 func TestReloadSourcesIsAtomicAndRevisioned(t *testing.T) {
 	runtime := DefaultRuntime(ModeAct, PermissionSuggest)
 	revision, err := runtime.ReloadSources(
-		[]Rule{{Tool: "exec_command", Action: ActionAllow}},
+		[]Rule{{Tool: "run_command", Action: ActionAllow}},
 		nil,
 	)
 	if err != nil {
@@ -84,7 +84,7 @@ func TestReloadSourcesIsAtomicAndRevisioned(t *testing.T) {
 		t.Fatalf("revision = %d snapshot=%d", revision, old.Revision)
 	}
 	if _, err := runtime.ReloadSources(nil, []Rule{{
-		Tool: "exec_command", Action: ActionAllow,
+		Tool: "run_command", Action: ActionAllow,
 	}}); err == nil {
 		t.Fatal("repository allow was accepted")
 	}
@@ -93,7 +93,7 @@ func TestReloadSourcesIsAtomicAndRevisioned(t *testing.T) {
 		t.Fatalf("failed reload changed snapshot: %+v", current)
 	}
 	if _, err := runtime.ReloadSources(nil, []Rule{{
-		Tool: "exec_command", Action: ActionDeny,
+		Tool: "run_command", Action: ActionDeny,
 	}}); err != nil {
 		t.Fatal(err)
 	}
@@ -105,14 +105,14 @@ func TestReloadSourcesIsAtomicAndRevisioned(t *testing.T) {
 func TestValidateRulesRejectsUnsafePersistentPrefix(t *testing.T) {
 	for _, prefix := range []string{"bash", "python3 script.py", "git", "rm"} {
 		err := ValidateRules(SourceUser, []Rule{{
-			Tool: "exec_command", CommandPrefix: prefix, Action: ActionAllow,
+			Tool: "run_command", CommandPrefix: prefix, Action: ActionAllow,
 		}})
 		if err == nil {
 			t.Fatalf("unsafe prefix accepted: %q", prefix)
 		}
 	}
 	if err := ValidateRules(SourceUser, []Rule{{
-		Tool: "exec_command", CommandPrefix: "git status", Action: ActionAllow,
+		Tool: "run_command", CommandPrefix: "git status", Action: ActionAllow,
 	}}); err != nil {
 		t.Fatal(err)
 	}
@@ -120,33 +120,33 @@ func TestValidateRulesRejectsUnsafePersistentPrefix(t *testing.T) {
 
 func TestAdvertisesToolHidesBlanketDenyAndKeepsPrefixDeny(t *testing.T) {
 	runtime := DefaultRuntime(ModeAct, PermissionSuggest)
-	if !runtime.AdvertisesTool("exec_command") {
-		t.Fatal("default grant hid exec_command")
+	if !runtime.AdvertisesTool("run_command") {
+		t.Fatal("default grant hid run_command")
 	}
 	if _, err := runtime.AppendManagedRule(Rule{
-		Tool: "exec_command", Resource: "*", Action: ActionDeny,
+		Tool: "run_command", Resource: "*", Action: ActionDeny,
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if runtime.AdvertisesTool("exec_command") {
-		t.Fatal("blanket deny still advertised exec_command")
+	if runtime.AdvertisesTool("run_command") {
+		t.Fatal("blanket deny still advertised run_command")
 	}
 
 	prefixed := DefaultRuntime(ModeAct, PermissionSuggest)
 	if _, err := prefixed.AppendManagedRule(Rule{
-		Tool: "exec_command", CommandPrefix: "rm", Action: ActionDeny,
+		Tool: "run_command", CommandPrefix: "rm", Action: ActionDeny,
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if !prefixed.AdvertisesTool("exec_command") {
-		t.Fatal("command-prefix deny hid the whole exec_command catalog entry")
+	if !prefixed.AdvertisesTool("run_command") {
+		t.Fatal("command-prefix deny hid the whole run_command catalog entry")
 	}
 }
 
-func processInvocation(command string) Invocation {
+func processInvocation(command string) invocationFixture {
 	arguments, _ := json.Marshal(map[string]string{"command": command})
-	return Invocation{
-		CallID: "call", Tool: "exec_command", Arguments: arguments,
+	return invocationFixture{
+		CallID: "call", Tool: "run_command", Arguments: arguments,
 		Capability: tool.CapabilityProcess, Access: tool.AccessRead,
 		Sandbox: tool.SandboxStrong, Validated: true,
 		Resources: []tool.Resource{{

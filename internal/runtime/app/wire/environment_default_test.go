@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	"github.com/fwtllh-png/QCode/internal/config"
-	platformenv "github.com/fwtllh-png/QCode/internal/platform/environment"
+	"github.com/fwtllh-png/QCode/internal/environment"
 	"github.com/fwtllh-png/QCode/internal/platform/process"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
 )
@@ -17,11 +17,10 @@ func TestDefaultEnvironmentIsV1NativeWithoutSharedTempOrAuth(t *testing.T) {
 	defaults := config.Defaults().Execution.Environment
 	if defaults.Contract != config.EnvironmentContractV1 ||
 		defaults.Profile != config.EnvironmentProfileNative ||
-		defaults.SharedUserTemp ||
-		len(defaults.AuthServices) != 0 {
+		defaults.SharedUserTemp {
 		t.Fatalf("product default = %+v", defaults)
 	}
-	if platformenv.ChildProfile(defaults.Profile) != platformenv.ProfileIsolated {
+	if environment.ChildProfile(defaults.Profile) != environment.ProfileIsolated {
 		t.Fatal("child profile must stay isolated after the default switch")
 	}
 }
@@ -39,7 +38,7 @@ func TestDefaultNativeDoesNotOpenHostHomeRoot(t *testing.T) {
 		EnvironmentContract: defaults.Contract,
 		EnvironmentProfile:  defaults.Profile,
 		SharedUserTemp:      defaults.SharedUserTemp,
-	}, defaults, "", sandboxHome)
+	}, defaults, "", sandboxHome, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -106,6 +105,16 @@ func fileExists(path string) bool {
 	return err == nil && info.Mode().IsRegular()
 }
 
+func environmentEntryValue(environment []string, name string) string {
+	prefix := name + "="
+	for _, entry := range environment {
+		if strings.HasPrefix(entry, prefix) {
+			return strings.TrimPrefix(entry, prefix)
+		}
+	}
+	return ""
+}
+
 func TestDefaultChildStaysIsolatedWhenParentIsNative(t *testing.T) {
 	defaults := config.Defaults().Execution.Environment
 	childHome := t.TempDir()
@@ -113,13 +122,13 @@ func TestDefaultChildStaysIsolatedWhenParentIsNative(t *testing.T) {
 		WorkspaceRoot:       t.TempDir(),
 		PrivateTemp:         childHome,
 		EnvironmentContract: defaults.Contract,
-		EnvironmentProfile:  platformenv.ChildProfile(defaults.Profile),
+		EnvironmentProfile:  environment.ChildProfile(defaults.Profile),
 		SharedUserTemp:      false,
-	}, defaults, "", childHome)
+	}, defaults, "", childHome, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if options.EnvironmentProfile != platformenv.ProfileIsolated || options.SharedUserTemp {
+	if options.EnvironmentProfile != environment.ProfileIsolated || options.SharedUserTemp {
 		t.Fatalf("child options = %+v", options)
 	}
 	if environmentEntryValue(options.EnvironmentValues, "HOME") != childHome {
@@ -129,13 +138,26 @@ func TestDefaultChildStaysIsolatedWhenParentIsNative(t *testing.T) {
 	}
 }
 
-func TestDefaultContractCompilesSpecifiedPackageAgainstHost(t *testing.T) {
-	if _, err := exec.LookPath("go"); err != nil {
+func TestDeclaredEnvironmentCompilesSpecifiedPackageAgainstHost(t *testing.T) {
+	goExecutable, err := exec.LookPath("go")
+	if err != nil {
 		t.Skip("go executable is required")
 	}
 	defaults := config.Defaults().Execution.Environment
-	workspace := writeP6SampleModule(t)
-	workspace, err := filepath.EvalSymlinks(workspace)
+	probe := exec.Command(goExecutable, "env", "GOROOT")
+	probe.Env = append(os.Environ(), "GOTOOLCHAIN=local")
+	goRoot, err := probe.Output()
+	if err != nil {
+		t.Fatalf("read test toolchain root: %v", err)
+	}
+	defaults.Resources = []config.EnvironmentResource{
+		{Name: "test-go-root", Namespace: "host_toolchain", Access: "read", Path: strings.TrimSpace(string(goRoot)), Env: "GOROOT"},
+		{Name: "test-go-build", Namespace: "cache", Access: "write", Path: "sandbox-home/cache/build", Env: "GOCACHE", Tree: true},
+		{Name: "test-go-modules", Namespace: "cache", Access: "write", Path: "sandbox-home/cache/modules", Env: "GOMODCACHE", Tree: true},
+		{Name: "test-go-temp", Namespace: "cache", Access: "write", Path: "sandbox-home/cache/temp", Env: "GOTMPDIR", Tree: true},
+	}
+	workspace := writeDeclaredToolchainSampleModule(t)
+	workspace, err = filepath.EvalSymlinks(workspace)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -149,12 +171,12 @@ func TestDefaultContractCompilesSpecifiedPackageAgainstHost(t *testing.T) {
 		EnvironmentContract: defaults.Contract,
 		EnvironmentProfile:  defaults.Profile,
 		SharedUserTemp:      defaults.SharedUserTemp,
-	}, defaults, "", sandboxHome)
+	}, defaults, "", sandboxHome, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	host := exec.Command("go", "test", "-count=1", ".")
+	host := exec.Command(goExecutable, "test", "-count=1", ".")
 	host.Dir = workspace
 	host.Env = append(os.Environ(), "GOPROXY=off", "GOTOOLCHAIN=local")
 	hostOut, hostErr := host.CombinedOutput()
@@ -201,11 +223,11 @@ func TestDefaultContractCompilesSpecifiedPackageAgainstHost(t *testing.T) {
 	}
 }
 
-func writeP6SampleModule(t *testing.T) string {
+func writeDeclaredToolchainSampleModule(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
 	files := map[string]string{
-		"go.mod": `module qcode.local/p6sample
+		"go.mod": `module qcode.local/declaredsample
 
 go 1.22
 `,

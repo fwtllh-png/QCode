@@ -5,12 +5,13 @@ import (
 	"slices"
 	"testing"
 
+	securitymodel "github.com/fwtllh-png/QCode/internal/security/model"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
 )
 
 func TestAmendAddsOnePathWithoutRemovingDenies(t *testing.T) {
 	input := fixtureCompileInput(t)
-	base, err := Compile(input)
+	base, err := compileProfileForTest(input)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -38,7 +39,7 @@ func TestAmendAddsOnePathWithoutRemovingDenies(t *testing.T) {
 
 func TestAmendRejectsControlPlaneAndCrossProfileRequest(t *testing.T) {
 	input := fixtureCompileInput(t)
-	base, err := Compile(input)
+	base, err := compileProfileForTest(input)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,7 +68,7 @@ func TestAmendRejectsControlPlaneAndCrossProfileRequest(t *testing.T) {
 }
 
 func TestNetworkAmendmentIsHostPortScoped(t *testing.T) {
-	base, err := Compile(fixtureCompileInput(t))
+	base, err := compileProfileForTest(fixtureCompileInput(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,13 +87,13 @@ func TestNetworkAmendmentIsHostPortScoped(t *testing.T) {
 	if !slices.Contains(
 		amended.Network.Targets,
 		"https://api.example.com:443",
-	) || amended.Network.Mode != "denied" {
+	) || amended.Controls.Network != securitymodel.NetworkDenied {
 		t.Fatalf("network authority = %+v", amended.Network)
 	}
 }
 
 func TestNonAmendableDenialFailsClosed(t *testing.T) {
-	base, err := Compile(fixtureCompileInput(t))
+	base, err := compileProfileForTest(fixtureCompileInput(t))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -64,12 +65,11 @@ type executionFileConfig struct {
 		RecoverOnStart *bool `toml:"recover_on_start"`
 	} `toml:"journal"`
 	Environment struct {
-		Contract       *string                   `toml:"contract"`
-		Profile        *string                   `toml:"profile"`
-		SharedUserTemp *bool                     `toml:"shared_user_temp"`
-		Source         *string                   `toml:"source"`
-		Resources      *[]EnvironmentResource    `toml:"resources"`
-		AuthServices   *[]EnvironmentAuthService `toml:"auth_services"`
+		Contract       *string                `toml:"contract"`
+		Profile        *string                `toml:"profile"`
+		SharedUserTemp *bool                  `toml:"shared_user_temp"`
+		Source         *string                `toml:"source"`
+		Resources      *[]EnvironmentResource `toml:"resources"`
 	} `toml:"environment"`
 }
 
@@ -216,6 +216,15 @@ func applyFile(
 	decoder := toml.NewDecoder(strings.NewReader(string(data)))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&input); err != nil {
+		var unknown *toml.StrictMissingError
+		if errors.As(err, &unknown) {
+			keys := make([]string, 0, len(unknown.Errors))
+			for _, field := range unknown.Errors {
+				keys = append(keys, strings.Join(field.Key(), "."))
+			}
+			// Report field names, never TOML excerpts that may contain secrets.
+			return fmt.Errorf("decode config %q: unknown fields %s: %w", path, strings.Join(keys, ", "), err)
+		}
 		return fmt.Errorf("decode config %q: %w", path, err)
 	}
 	applyInt(input.Runtime.OperationBuffer, &config.Runtime.OperationBuffer, fieldOperationBuffer, source, provenance)
@@ -492,10 +501,6 @@ func applyExecutionFile(
 	if trusted && input.Environment.Resources != nil {
 		env.Resources = cloneEnvironmentResources(*input.Environment.Resources)
 		provenance[fieldEnvironmentResources] = source
-	}
-	if trusted && input.Environment.AuthServices != nil {
-		env.AuthServices = cloneEnvironmentAuthServices(*input.Environment.AuthServices)
-		provenance[fieldEnvironmentAuthServices] = source
 	}
 }
 

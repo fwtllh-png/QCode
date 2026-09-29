@@ -40,6 +40,7 @@ Web
 | Persistence | `internal/persist` | 关系状态、Event、CAS、Session、Snapshot、Journal |
 | Observability | `internal/observability` | Usage、Trace、Receipt、Diagnostics、Verify、Telemetry |
 | Platform | `internal/platform` | 进程、PTY、操作系统差异 |
+| Environment Contract | `internal/environment` | 环境声明、校验、结构化事实与准备事实快照 |
 | Configuration | `internal/config` | 默认值、TOML、环境变量、校验、Provenance |
 
 ## 硬依赖规则
@@ -65,6 +66,9 @@ Web
     （活跃槽位、预留、花费、累计 Spawn）每次都由 Agent 状态折叠得到，不维护
     手工计数器；`childrun` 不做准入或记账。Manager 不在持锁时创建或删除
     Worktree。
+13. `internal/security` 不导入 Adapter、Runtime、Persistence 或 Host；
+    `TestSecurityImportDirection` 无允许清单。调用方把目录身份、资源和协议信息
+    投影为安全层自己的输入类型，再调用决策与执行授权。
 
 Architecture Test 会检查重要 Import 限制：第 9 条由 `TestOnlyHostsImportHostPackages`
 检查，第 10 条由 `TestWebHostDoesNotScanEventHistory` 检查，第 11 条由
@@ -101,23 +105,53 @@ Child Engine，统一完成 Security Clone、Guard Factory 绑定、Workspace Id
 适配和构造失败回滚；Child 的 Role、Budget、Toolset 与 Worktree Authority 仍以显式
 `ChildSpec` 覆盖，不能扩大 Parent Authority。
 
-`internal/security/authority` 拥有执行授权数据模型。它把已验证的 Tool Invocation
-规范化为带 Resource Namespace、Root Generation、Subject、Effect Contract 和
-Required Controls 的 `ExecutionOperation`，并由 Runtime 共享的 `LeaseAuthority`
-签发单次 `ExecutionLease`。Guard 保留 `ExecuteBound` 作为兼容 Facade，但每个实际
+`internal/security/authority` 拥有执行授权数据模型。`authority.Compile` 从
+Guard 提交的 `model.PreparedInvocation` 一次编译出 `Authority`：Effective Permission
+Profile、Required Controls，以及带 Resource Namespace、Root Generation、Subject
+和 Effect Contract 的 `ExecutionOperation`，三者不再分别推导。Broker 在编译后才
+得到的 Artifact 快照或 File Plan 摘要经 `Authority.Bind` 附加，追加权限后的 Profile
+经 `Authority.WithProfile` 替换，均保留编译时冻结的文件身份，不重新读取文件。Runtime 共享的 `LeaseAuthority`
+为绑定后的 Operation 签发单次 `ExecutionLease`。网络控制只由
+`sandbox.NetworkControl` 在编译时推导，后端 Prepare 对照编译结果校验实际命令控制，执行层用
+`ExecutionAuthority.VerifyPrepared` 核对 Prepared Controls 满足 Required Controls
+且网络控制不宽于编译结果。Guard 保留 `ExecuteBound` 作为兼容 Facade，但每个实际
 Attempt 都会先签发和消费 Lease，再把 Operation/Lease/Settlement 证据投影到
 `tool.result.execution`。Process Broker 接管 stdio MCP 生命周期，模型侧不再开放
 宿主进程冒烟工具；File/VCS Broker 接管模型文件工具、Agent/Chat Merge、生成型 Workspace
-输出和 Git Metadata Mutation。`workspacebroker.Runtime` 只组合窄能力，不把 Broker
-业务逻辑放入 `wire`。
+输出和 Git Metadata Mutation。`orchestration/workspacebroker.Runtime` 组合 File/VCS
+Broker 与 Journal，不把组合逻辑放入 `wire` 或安全核心。
 
-安全层共用的词汇放在四个只依赖标准库的叶子包中：`resource`（Access、路径/网络
-Kind、loopback 伪资源）、`effect`（Effect Kind、Risk、Reversibility）、`netpolicy`
-（网络目标解析、默认端口、地址分类）和 `pathpolicy`（控制面目录名、宿主凭据位置、
-允许缺失的路径规范化）。`adapter/tool` 的 Effect 与 Access 类型是它们的别名。
+`internal/security` 按契约、决策、授权和执行职责组织。共享的资源、Effect、评估、
+调用身份和控制矩阵集中在 `model`，同一模型内的阶段用类型和文件划分：
+`Resource`、`Effect`、`Assessment`、`PreparedInvocation`、`Controls` 和 `RequiredControls`。
+`model` 的项目内依赖只有 `netpolicy`；后者统一网络目标解析、默认端口、地址分类和
+出网能否携带数据。`pathpolicy` 统一路径规范化、凭据位置和控制面路径检查，
+`envpolicy` 统一变量选择与校验。
+`adapter/tool` 的 Capability、Effect 与 Access 类型引用 `model`；
+`tool.Resource.Security()` 是适配器资源到类型化资源的唯一映射。
+`model.Assess` 从 Trusted Binding、Guard 解析的声明与类型化资源得出 Facets 和 Effect，
+判定表见 [安全文档](./security.md#资源评估与-effect-判定表)。Guard 在资源解析后调用
+一次 `tool.AssessResources`；Policy、Grant、审批与 Authority 消费同一不可变 Assessment。
+`model` 同时拥有来源枚举、Subject 和 Prepared 输入；适配层
+`PreparedInvocation.SecurityInvocation()` 校验目录引用并生成 Subject 摘要，复制参数，
+保留同一 Assessment。安全层不读取 Catalog 或解释来源字符串。默认注册来源使用
+`builtin:`，未知安全来源在 L0 拒绝。`sandbox.VerifyPlanBaseline` 通过受控 Workspace
+读取基线，返回 `PlanDriftError`，调用方负责映射为协议冲突。
+`policy.Runtime.Decide` 是唯一决策入口，按 L0–L8 分层求值并在 `Decision.Layer`
+标明结论出处，分层见 [安全文档](./security.md#决策分层)；Guard 不改写决策动作。
+Constitution 加载与持久权限规则同属 `policy`，分别由 `LoadConstitution`、
+`PermissionsStore` 提供规则来源，决策仍消费已加载的快照。`credential` 统一凭据
+引用、轮换恢复和 `KeyringStore`，Provider 从同一包取得系统 Keyring。
+Egress Gate 由构造函数决定查询范围：`NewStaticGate`（Provider、进程代理与
+Process Session，只看自身授权）、`NewCallScopedGate`（Web 工具，调用内使用 Guard
+调用授权）、`NewBrowserGate`（浏览器会话，公网直通、非公网需授权），不再组合布尔
+标志。Workspace 沙箱后端是显式组合的 `egress.Backend`：沙箱后端、绑定的 Policy、
+Process Session 分配器和关闭函数都是构造时写入的字段，调用方用直接的
+接口断言取用，不再沿 `InnerBackend()` 链解包。代理仅处理经过 Gate 授权的
+HTTP absolute-form 与 CONNECT；origin-form 请求被拒绝，不再承载语言认证协议。
 `internal/security/architecture_test.go` 约束 `internal/security` 的生产代码不导入
 `internal/adapter`、`internal/runtime`、`internal/persist` 与 `internal/host`；
-现存违规登记在允许清单中，清单只减不增。
+该检查没有允许清单；另有 `model` 纯计算依赖检查，防止合包引入执行或规则加载依赖。
 
 Builtin、Skill、Memory 与 MCP Tool 共享同一个 Registry 实例。Composition Root
 按固定顺序直接构造 Skill Catalog、Memory Store 和 MCP Pool，并只向后续模块发布
@@ -135,7 +169,7 @@ Trusted Binding 以十维 Required Controls 描述操作需求，Sandbox Probe�
 Command 共同产出 Effective Controls。Authority 在 Lease 签发时执行逐维集合比较，
 Process Owner 在 Backend `Prepare` 后再次校验本次命令的 Prepared Controls。
 旧 `Strength` 能力字段已删除；展示和缓存身份直接由 Effective Controls 派生。
-十维的枚举、校验、满足关系、投影与 Identity 顺序由 `controlmatrix` 的单一规格表
+十维的枚举、校验、满足关系、投影与 Identity 顺序由 `model/control_dimensions.go` 的单一规格表
 声明；新增维度必须同步扩展该表，字段级完备性测试会锁定遗漏。
 
 Broker 副作用统一经过 `authority` 的 `RunSettled` 事务骨架：消费租约、以失败为
@@ -1055,10 +1089,11 @@ Turn Admission 冻结当前 Generation，按显式 Pin、精确 Scope、词法�
 ### 3. Constitution
 
 普通 Session 配置不能绕过的硬约束。
-`deny_write_globs` 的每一条是工作区相对路径或绝对路径，按路径前缀匹配所有工具的写入资源；
-结尾的 `/`、`/*`、`/**` 都表示保护整棵子树。其他通配符（如 `*.pem`、`**/.env`）
-不受支持，含有它们的 constitution 会加载失败并报出具体条目，Session 不会在规则缺失的
-情况下启动。
+`deny_write_globs` 的每一条是工作区相对路径或绝对路径，匹配所有工具的写入资源及其
+整棵子树；结尾的 `/`、`/*`、`/**` 与不带结尾等价。条目可使用段内 `*`、`?`、`[...]`
+与独占一段的 `**`（如 `*.pem`、`**/.env`），语法见安全文档“路径规则语法”。花括号等
+不支持的语法会让 constitution 加载失败并报出具体条目，Session 不会在规则缺失的情况下
+启动。Constitution 规则单独交给 `policy.Runtime`，在决策 L1 先于 Managed Grant 求值。
 
 ### 4. Tool Guard
 
@@ -1092,25 +1127,44 @@ Home 混用。Sandbox 只继承 PATH 目录、Darwin `/etc/paths` 与存在的 H
 SDK（`SDKROOT`），不再按语言名探测安装根。PATH 目录里指向目录外的可执行符号
 链接会把解析后的 `bin` 及其父级（若目录名为 `bin`）只读加入，以覆盖 Homebrew
 Cellar 这类布局；证书发现走准备链。平台适配器还会解析可执行文件的传递运行时依赖；
-例如 macOS 会读取 Mach-O 依赖和 RPATH，并将经过校验的动态库、包版本根、共享资源
-目录和顶层配置文件精确地只读暴露，而不是开放整个包管理器配置目录或包内私有
-子目录。凭证目录和整个宿主 Home 始终不开放。主 Agent 与子 Agent 使用同一模型，
-但各自拥有独立的 Workspace 范围私有 Home。
+macOS 读取 Mach-O 依赖和 RPATH，递归绑定实际动态库及加载所需的符号链接别名，
+只授予精确文件读取；不因动态库依赖开放相邻目录、包配置或共享状态。非 Mach-O
+文件和凭证路径不能作为依赖绑定。工具额外需要的配置（例如 OpenSSL 配置）仍须
+显式声明。凭证目录和整个宿主 Home 始终不开放。主 Agent 与子 Agent 使用同一模型，
+但各自拥有独立的 Workspace 范围私有 Home。临时 Runtime 也会在声明编译前建立
+独立环境状态目录，子 Agent 在其中分配各自的 Home；会话关闭或构造回滚时清理。
 
 将私有 Home 过滤模型替换为可授权环境契约的设计见
 [Sandbox 执行环境重构方案](./sandbox-execution-environment-plan.md)。
-`internal/platform/environment` 统一承载环境契约、资源校验与编译、结构化失败事实
-和平台准备；`internal/adapter/environment` 保留 Go/Git 资源发现实现，通过
-`Discoverer` 接口由 `wire` 组装。通用准备链不依赖具体生态适配器。
-EDS 夹具和静态平台能力矩阵仅用于测试，放在 `_test.go` 中。
+`internal/environment` 只承载环境声明、校验与结构化失败事实，生产代码
+仅依赖标准库。`internal/adapter/envprep` 负责来源快照、声明编译、路径物化与
+最终 `sandbox.Options` 投影，编译器直接使用 `security/model` 的访问词汇。
+Git 配置文件声明由 `adapter/tool/git` 生成，`wire` 将它们与可信配置组合，
+准备器不再维护 Discoverer 接口或发现器注册表。
+
+准备时只捕获一次来源；PATH、SDK、证书与 Git 配置均从同一份来源解析。
+沙箱策略和受控进程使用准备后的选择结果，不在命令启动时重新读取宿主环境。
+子 Agent 继承父策略的已选环境值与平台绑定，并对自己的隔离 Home 重新绑定缓存。
+完整宿主快照不进入准备结果或策略。`SourceEnv` 的显式空切片不恢复宿主变量，
+仍可补充平台公开路径与 SDK；来源名字只标识来源，不代表远端解析或变更检测。
+
+`security/envpolicy` 统一变量选择与安全校验：普通变量按来源基线、可信声明、
+单次命令声明依次覆盖，同层同名异值报错。HOME、临时目录与受管代理由策略决定；
+变量值不授予文件或网络权限。秘密名、预加载变量与非法变量声明继续拒绝。
+默认准备链不运行 `go env`、不扫描 `go.mod`，也不为语言工具自动分配缓存；
+只读命令不再自动设置 Python 字节码开关，由文件系统权限执行只读约束。
+Runtime 的环境指纹只包含运行平台事实，不执行语言工具或 Git 版本命令，
+也不将宿主登录 Shell 当作实际执行 Shell。任务需要工具版本时通过普通受控工具查询。
+环境编译通过通用资源声明测试验证；平台能力通过实际后端和 capability 测试验证。
 产品默认现为 `execution.environment.contract=v1` 与 `profile=native`：
 准备器按通用 `host_config` / `cache` / `shared_user_temp` / `credential`+`use`
 资源物化环境；主 Agent 保留宿主 HOME 变量，但不开放整个 Home。
 Git 适配器只翻译文档中的用户配置文件位置；`.git-credentials` 不进入策略。
-`shared_user_temp` 仍须显式打开。GOPROXY 认证在宿主已有凭证时由 runtime
-绑定。`contract` 只接受 `v1`。
+`shared_user_temp` 仍须显式打开，`contract` 只接受 `v1`。共享临时区的写树附带
+创建目录所需的元数据读取，不授予已有共享文件的内容读取。`credential/use` 声明
+保留资源身份，但没有绑定器时明确未绑定，不承诺已向进程交付凭证。
 用户或可信配置的 `[[execution.environment.resources]]` 即可接入，
-Go 适配器只是可选翻译器。`exec_command` 的 `write_paths` 还可指向已存在的
+无需语言适配器。`exec_command` 的 `write_paths` 还可指向已存在的
 工作区子目录，授予有界树写而不打开整个工作区。带写树的命令在隔离执行工作区
 运行，真实 cwd 写入 `isolated_cwd`，退出后经 File Broker / Journal 三方结算；
 用户并发修改不自动算 Agent 修改。进程不再无条件重写 HOME / 缓存，
@@ -1120,14 +1174,16 @@ Go 适配器只是可选翻译器。`exec_command` 的 `write_paths` 还可指�
 不从命令输出中的 `401` 或 `permission denied` 改判。
 Darwin 进程出网走 Workspace 代理进程上的 Session 端口与 Session Gate，
 Seatbelt 只放行该端口；`contract=v1` 时空 `network_targets` 继承用户声明
-的环境网络资源，不继承适配器发现的 GOPROXY 主机。
+的环境网络资源，不自动授予工具配置中出现的其他主机。
 主/子 Agent、PTY 与后台共用该契约；子 Agent 固定 `isolated`，Skill 仍在
 `sandbox-home`。
-GOPROXY 认证服务挂在同一 Session loopback 上处理 origin-form 模块请求，
-不写共享 Gate，也不把长期凭证放进进程环境。对已绑定上游主机的 CONNECT
-或绝对形式请求会被拒绝并记 `trust_validation_failed`，避免绕过认证服务。
-可信配置 `[[execution.environment.auth_services]]` 可覆盖绑定；否则 runtime
-使用宿主 `go env GOPROXY` 的 userinfo 或宿主 `~/.netrc`。第二种制品协议尚未开放。
+内置 GOPROXY 服务、`auth_services` 配置和 Guard/Shell 的服务注入均已删除；
+Shell 不改写语言代理变量，也不因某个认证服务存在而保持联网。
+环境准备事实由 Runtime 保存为不可变切片，经 Guard 执行上下文传入 Shell，
+在 `environment_preparation_facts` Metadata 中独立展示，不参与无关命令的失败分类。
+子 Agent 使用自己环境准备的事实；共享父执行环境的只读或串行子任务继承对应事实。
+快照写入和读取均复制切片，不使用可变全局报告。详见
+[执行环境通用化优化方案](./environment-language-neutral-plan.md)。
 运行中新发现的出网目标在拨号前走现有 Approval；同一执行内同一 origin 不重复
 询问。获批只修订当前 Session / Call Scope。已开始的进程命令不会因出网缺失
 被整段重放。

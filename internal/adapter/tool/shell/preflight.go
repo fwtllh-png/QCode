@@ -7,7 +7,7 @@ import (
 	"strings"
 
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
-	"github.com/fwtllh-png/QCode/internal/platform/environment"
+	"github.com/fwtllh-png/QCode/internal/environment"
 	"github.com/fwtllh-png/QCode/internal/platform/process"
 	securitypolicy "github.com/fwtllh-png/QCode/internal/security/policy"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
@@ -23,6 +23,7 @@ func (p *commandProtocol) preflightExecutables(
 	command string,
 	directory string,
 	coveredPaths []string,
+	declaredEnv map[string]string,
 ) (tool.Result, bool) {
 	policyValue, ok := sandbox.BackendPolicy(backend)
 	if !ok {
@@ -43,7 +44,11 @@ func (p *commandProtocol) preflightExecutables(
 	// The same ordered construction the child's PATH uses: preflight
 	// verdicts must name the same file the child resolves, not a different
 	// inode from a differently ordered search.
-	search := process.ToolchainSearchPath(policyValue.Toolchains.BinDirs)
+	executionEnv := append([]string(nil), policyValue.EnvironmentValues...)
+	if path, ok := declaredEnv["PATH"]; ok {
+		executionEnv = []string{"PATH=" + path}
+	}
+	search := process.ToolchainSearchPath(executionEnv)
 	for _, segment := range analysis.Segments {
 		if segment.Dynamic || len(segment.Argv) == 0 {
 			continue

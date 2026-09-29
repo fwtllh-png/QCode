@@ -571,7 +571,7 @@ func TestCatalogToolIDIsStableAndBindingChecked(t *testing.T) {
 	if !ok {
 		t.Fatal("stable_id is missing")
 	}
-	if !strings.HasPrefix(entry.Source, "legacy:stable_id:") {
+	if !strings.HasPrefix(entry.Source, "builtin:stable_id:") {
 		t.Fatalf("source = %q", entry.Source)
 	}
 	binding, ok := snapshot.Binding("stable_id")

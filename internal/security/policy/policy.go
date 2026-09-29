@@ -9,8 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/fwtllh-png/QCode/internal/adapter/tool"
-	"github.com/fwtllh-png/QCode/internal/security/effect"
+	securitymodel "github.com/fwtllh-png/QCode/internal/security/model"
 )
 
 type Mode string
@@ -26,14 +25,14 @@ const (
 	PermissionNever   Permission = "never"
 )
 
-type Capability = tool.Capability
+type Capability = securitymodel.Capability
 
 const (
-	CapabilityRead     = tool.CapabilityRead
-	CapabilityWrite    = tool.CapabilityWrite
-	CapabilityProcess  = tool.CapabilityProcess
-	CapabilityNetwork  = tool.CapabilityNetwork
-	CapabilityExternal = tool.CapabilityExternal
+	CapabilityRead     = securitymodel.CapabilityRead
+	CapabilityWrite    = securitymodel.CapabilityWrite
+	CapabilityProcess  = securitymodel.CapabilityProcess
+	CapabilityNetwork  = securitymodel.CapabilityNetwork
+	CapabilityExternal = securitymodel.CapabilityExternal
 )
 
 type Action string
@@ -47,16 +46,21 @@ const (
 
 type Invocation struct {
 	CallID, Tool string
-	Source       string
+	Source       securitymodel.SourceKind
 	Arguments    json.RawMessage
-	Resources    []tool.Resource
-	Capability   tool.Capability
-	Access       tool.AccessMode
-	Sandbox      tool.SandboxRequirement
-	Effect       tool.EffectContract
-	Journaled    bool
+	Assessment   securitymodel.Assessment
+	Approval     securitymodel.ApprovalMode
 	Validated    bool
+	// Workspace is the canonical workspace root; path writes are classified
+	// against it.
+	Workspace string
+	Stage     Stage
 }
+
+func (i Invocation) Capability() securitymodel.Capability { return i.Assessment.Binding().Capability }
+func (i Invocation) Access() securitymodel.Access         { return i.Assessment.Binding().Access }
+func (i Invocation) Journaled() bool                      { return i.Assessment.Facets().Journaled }
+func (i Invocation) StrongSandbox() bool                  { return i.Assessment.Facets().StrongSandbox }
 
 type Rule struct {
 	Tool     string `json:"tool"`
@@ -84,16 +88,25 @@ type Runtime struct {
 	PlanningPolicy    PlanningPolicy
 	PlanSubmitted     bool
 	// DisableAutoReview is the fail-closed operational kill switch.
-	DisableAutoReview        bool
+	DisableAutoReview bool
+	// ForceEditPlanApproval makes every journaled write ask for a fresh
+	// edit-plan approval and stops cached approvals from satisfying any ask.
+	ForceEditPlanApproval    bool
 	Grants, User, Repository []Rule
-	Approvals                *ApprovalCache
-	Granular                 Granular
-	Now                      func() time.Time
+	// Constitution rules are hard constraints evaluated before managed grants.
+	Constitution []Rule
+	Approvals    *ApprovalCache
+	Granular     Granular
+	Now          func() time.Time
 }
 
 type Decision struct {
 	Action       Action
 	Code, Reason string
+	Layer        Layer
+	Approval     ApprovalRequirement
+	// Resource is the canonical location behind a control-plane denial.
+	Resource string
 }
 
 type DecisionError struct {
@@ -146,6 +159,19 @@ func (r *Runtime) SetGranular(granular Granular) uint64 {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.Granular = granular
+	return r.bumpRevisionLocked()
+}
+
+func (r *Runtime) SetForceEditPlanApproval(forced bool) uint64 {
+	if r == nil {
+		return 0
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.ForceEditPlanApproval == forced {
+		return r.Revision
+	}
+	r.ForceEditPlanApproval = forced
 	return r.bumpRevisionLocked()
 }
 
@@ -217,21 +243,16 @@ func (r *Runtime) CloneSampling() *Runtime {
 	r.refreshUserRulesLocked()
 	return &Runtime{
 		Revision: r.Revision, Mode: r.Mode, Permission: r.Permission,
-		PlanningPolicy:    r.PlanningPolicy,
-		PlanSubmitted:     r.PlanSubmitted,
-		DisableAutoReview: r.DisableAutoReview,
-		Grants:            append([]Rule(nil), r.Grants...),
-		User:              append([]Rule(nil), r.User...),
-		Repository:        append([]Rule(nil), r.Repository...),
-		Approvals:         r.Approvals, Granular: r.Granular, Now: r.Now,
+		PlanningPolicy:        r.PlanningPolicy,
+		PlanSubmitted:         r.PlanSubmitted,
+		DisableAutoReview:     r.DisableAutoReview,
+		ForceEditPlanApproval: r.ForceEditPlanApproval,
+		Grants:                append([]Rule(nil), r.Grants...),
+		User:                  append([]Rule(nil), r.User...),
+		Repository:            append([]Rule(nil), r.Repository...),
+		Constitution:          append([]Rule(nil), r.Constitution...),
+		Approvals:             r.Approvals, Granular: r.Granular, Now: r.Now,
 	}
-}
-
-func (r *Runtime) Evaluate(invocation Invocation) Decision {
-	if r == nil {
-		return deny("policy_unavailable", "security runtime is required")
-	}
-	return r.CloneSampling().evaluate(invocation)
 }
 
 func (r *Runtime) ManagedGrant(invocation Invocation) (Rule, bool) {
@@ -256,94 +277,6 @@ func (r *Runtime) AdvertisesTool(name string) bool {
 	return grant.Action != ActionDeny && grant.Action != ActionHold
 }
 
-func (r *Runtime) evaluate(invocation Invocation) Decision {
-	if invocation.CallID == "" || invocation.Tool == "" {
-		return deny("policy_invalid_invocation", "call id and tool are required")
-	}
-	if !invocation.Validated {
-		return deny("policy_unvalidated_invocation", "schema and resources must be validated before policy")
-	}
-	if invocation.Capability == "" {
-		return deny("policy_unknown_capability", "descriptor capability is required")
-	}
-	grant, ok := strongestMatch(r.Grants, invocation)
-	if !ok {
-		return deny("tool_grant_missing", "no matching managed tool grant")
-	}
-	if grant.Action == ActionDeny || grant.Action == ActionHold {
-		return deny("tool_grant_denied", "managed tool grant denied this invocation")
-	}
-	repositoryAsk := false
-	if rule, ok := strongestMatch(r.Repository, invocation); ok {
-		switch rule.Action {
-		case ActionDeny:
-			return deny("repository_rule_denied", "repository deny rule matched")
-		case ActionHold:
-			code := rule.Code
-			if code == "" {
-				code = "repository_hold"
-			}
-			return deny(code, "repository mechanical hold matched")
-		case ActionAsk:
-			repositoryAsk = true
-		case ActionAllow:
-			return deny("repository_source_invalid", "repository authority cannot allow")
-		}
-	}
-	userAsk, userAllow := false, false
-	if rule, ok := strongestMatch(r.User, invocation); ok {
-		switch rule.Action {
-		case ActionDeny, ActionHold:
-			return deny("user_rule_denied", "user authority denied this invocation")
-		case ActionAsk:
-			userAsk = true
-		case ActionAllow:
-			userAllow = true
-		}
-	}
-	eff := NormalizeEffect(invocation)
-	if err := validateMode(r.Mode); err != nil {
-		return decisionFromError(err)
-	}
-	if decision := planningDecision(r, invocation, eff); decision != nil {
-		return *decision
-	}
-	permissionAction, err := permissionDecision(
-		r.Permission,
-		invocation.Capability,
-		eff,
-	)
-	if err != nil {
-		return decisionFromError(err)
-	}
-	needsApproval := repositoryAsk || userAsk || grant.Action == ActionAsk ||
-		(permissionAction == ActionAsk && !userAllow)
-	decision := Decision{Action: ActionAllow}
-	if needsApproval {
-		decision = Decision{Action: ActionAsk, Code: "approval_required", Reason: "approval is required"}
-		eff := NormalizeEffect(invocation)
-		_, typed := GrantForInvocation(invocation)
-		// Loopback services and cloud metadata are never auto-reviewed: model
-		// input naming them is the classic request-forgery path.
-		if !r.DisableAutoReview && permissionAction == ActionAsk &&
-			!repositoryAsk && grant.Action != ActionAsk && typed &&
-			eff.Risk == effect.RiskMedium &&
-			(eff.Kind == effect.AgentLifecycle ||
-				(eff.Kind == effect.NetworkRead && r.Permission == PermissionAuto &&
-					!targetsHostLocal(invocation.Resources))) {
-			decision = Decision{
-				Action: ActionAllow, Code: "auto_review_allowed",
-				Reason: "bounded medium-risk effect has an exact typed grant",
-			}
-		}
-	}
-	decision = ApplySurfaceTightening(
-		decision, ClassifySurface(invocation.Source, invocation.Capability),
-		r.Granular, eff,
-	)
-	return decision
-}
-
 func deny(code, reason string) Decision {
 	return Decision{Action: ActionDeny, Code: code, Reason: reason}
 }
@@ -365,25 +298,25 @@ func validateMode(mode Mode) error {
 
 func permissionDecision(
 	permission Permission,
-	capability tool.Capability,
-	eff effect.Effect,
+	capability securitymodel.Capability,
+	eff securitymodel.Effect,
 ) (Action, error) {
 	if permission != PermissionSuggest && permission != PermissionAuto &&
 		permission != PermissionBypass && permission != PermissionNever {
 		return ActionDeny, decisionError("permission_unknown", "unknown permission is denied")
 	}
 	if permission == PermissionNever {
-		if capability == tool.CapabilityRead ||
-			eff.Kind == effect.ProcessReadOnly {
+		if capability == securitymodel.CapabilityRead ||
+			eff.Kind == securitymodel.ProcessReadOnly {
 			return ActionAllow, nil
 		}
 		return ActionDeny, decisionError("permission_denied", "never posture denies side effects")
 	}
-	if eff.Risk == effect.RiskCritical {
+	if eff.Risk == securitymodel.RiskCritical {
 		return ActionDeny, decisionError("permission_denied", "critical-risk execution is denied")
 	}
-	if permission == PermissionBypass || capability == tool.CapabilityRead ||
-		eff.Risk == effect.RiskLow {
+	if permission == PermissionBypass || capability == securitymodel.CapabilityRead ||
+		eff.Risk == securitymodel.RiskLow {
 		return ActionAllow, nil
 	}
 	return ActionAsk, nil
@@ -407,20 +340,25 @@ func ruleMatches(rule Rule, invocation Invocation) bool {
 	}
 	if rule.Resource != "" && rule.Resource != "*" {
 		matched := false
-		for _, resource := range invocation.Resources {
+		for _, resource := range invocation.Assessment.Resources() {
 			if rule.RequireWrite && !resource.Access.Writes() {
 				continue
 			}
 			value := resource.Path
 			pattern := rule.Resource
 			if value == "" {
-				value = resource.ID
+				value = resource.Location()
+				if resource.Network != nil {
+					value = resource.Network.Host
+				}
+				if resource.URL != "" {
+					value = resource.URL
+				}
 			} else if rule.ResourcePath != "" {
 				pattern = rule.ResourcePath
 			}
-			value = filepath.ToSlash(filepath.Clean(value))
-			pattern = filepath.ToSlash(filepath.Clean(pattern))
-			if value == pattern || strings.HasPrefix(value, strings.TrimSuffix(pattern, "/")+"/") {
+			tree := resource.Writes() && resource.Tree
+			if resourceMatchesAuthority(pattern, value, tree, rule.Action != ActionAllow) {
 				matched = true
 				break
 			}
@@ -447,6 +385,29 @@ func ruleMatches(rule Rule, invocation Invocation) bool {
 	return true
 }
 
+// resourceMatches applies a path pattern to path-like rules and literal
+// subtree matching to identifiers such as URLs. Validation rejects malformed
+// path patterns, so a pattern that fails to compile here matches nothing.
+func resourceMatches(pattern, value string) bool {
+	return resourceMatchesAuthority(pattern, value, false, false)
+}
+
+func resourceMatchesAuthority(pattern, value string, tree, restrictive bool) bool {
+	if IsPathPattern(pattern) {
+		compiled, err := CompilePathPattern(pattern)
+		if err != nil {
+			return restrictive
+		}
+		if tree {
+			return compiled.IntersectsTree(value)
+		}
+		return compiled.Match(value)
+	}
+	value = filepath.ToSlash(filepath.Clean(value))
+	pattern = filepath.ToSlash(filepath.Clean(pattern))
+	return value == pattern || strings.HasPrefix(value, strings.TrimSuffix(pattern, "/")+"/")
+}
+
 func actionPriority(action Action) int {
 	return map[Action]int{
 		ActionAllow: 1, ActionAsk: 2, ActionDeny: 3, ActionHold: 4,
@@ -465,8 +426,8 @@ func Validate(runtime *Runtime) error {
 	if err := validateMode(runtime.Mode); err != nil {
 		return fmt.Errorf("mode: %w", err)
 	}
-	if _, err := permissionDecision(runtime.Permission, tool.CapabilityRead, effect.Effect{
-		Kind: effect.WorkspaceRead, Risk: effect.RiskLow, Reversibility: effect.Reversible,
+	if _, err := permissionDecision(runtime.Permission, securitymodel.CapabilityRead, securitymodel.Effect{
+		Kind: securitymodel.WorkspaceRead, Risk: securitymodel.RiskLow, Reversibility: securitymodel.Reversible,
 	}); err != nil {
 		return fmt.Errorf("permission: %w", err)
 	}
@@ -480,6 +441,9 @@ func Validate(runtime *Runtime) error {
 		return err
 	}
 	if err := ValidateRules(SourceRepository, runtime.Repository); err != nil {
+		return err
+	}
+	if err := ValidateRules(SourceConstitution, runtime.Constitution); err != nil {
 		return err
 	}
 	return nil

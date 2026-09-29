@@ -17,7 +17,6 @@ import (
 	"time"
 
 	"github.com/fwtllh-png/QCode/internal/security/egress"
-	"github.com/fwtllh-png/QCode/internal/security/goproxy"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
 )
 
@@ -37,7 +36,7 @@ func TestProcessSessionsIsolateGrantedTargets(t *testing.T) {
 	}))
 	t.Cleanup(right.Close)
 
-	workspace := &egress.Gate{}
+	workspace := egress.NewStaticGate()
 	proxy, err := egress.StartManagedNetworkProxy(workspace)
 	if err != nil {
 		t.Fatal(err)
@@ -86,7 +85,7 @@ func TestProcessSessionCloseRecyclesCONNECT(t *testing.T) {
 		accepted <- conn
 	}()
 	address := listener.Addr().(*net.TCPAddr)
-	proxy, err := egress.StartManagedNetworkProxy(&egress.Gate{})
+	proxy, err := egress.StartManagedNetworkProxy(egress.NewStaticGate())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,129 +129,95 @@ func TestProcessSessionCloseRecyclesCONNECT(t *testing.T) {
 	}
 }
 
-type boundOriginHandler struct {
-	host string
-	http.Handler
-}
-
-func (h boundOriginHandler) BoundHost() string { return h.host }
-
-func TestProcessSessionDeniesConnectToBoundGoproxyHost(t *testing.T) {
-	workspace := &egress.Gate{}
-	proxy, err := egress.StartManagedNetworkProxy(workspace)
+func TestProxyChannelsRejectOriginForm(t *testing.T) {
+	proxy, err := egress.StartManagedNetworkProxy(egress.NewStaticGate())
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = proxy.Close(context.Background()) })
-	proxy.BindProtocolHandler(boundOriginHandler{
-		host: "goproxy.example",
-		Handler: http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
-			http.Error(writer, "protocol should not see CONNECT", http.StatusBadRequest)
-		}),
-	})
-	session, err := proxy.OpenSession([]egress.Target{{
-		Host: "goproxy.example", Protocol: "https", Port: 443,
-		Methods: []string{http.MethodConnect}, AllowPrivate: true,
-	}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = session.Close() })
-
-	_, _, status := dialConnect(t, session, "goproxy.example:443")
-	if !strings.Contains(status, "403") {
-		t.Fatalf("CONNECT status = %q", status)
-	}
-	receipts := session.Gate().Receipts()
-	if len(receipts) == 0 || receipts[0].Category != "trust_validation_failed" {
-		t.Fatalf("receipts = %+v", receipts)
-	}
-	if strings.Contains(status, "401") {
-		t.Fatal("bound-origin CONNECT returned an upstream 401")
-	}
-}
-
-func TestProcessSessionDeniesAbsoluteFormToBoundGoproxyHost(t *testing.T) {
-	workspace := &egress.Gate{}
-	proxy, err := egress.StartManagedNetworkProxy(workspace)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = proxy.Close(context.Background()) })
-	proxy.BindProtocolHandler(boundOriginHandler{host: "goproxy.example"})
-	session, err := proxy.OpenSession([]egress.Target{{
-		Host: "goproxy.example", Protocol: "http", Port: 80,
-		Methods: []string{http.MethodGet}, AllowPrivate: true,
-	}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = session.Close() })
-	assertProxyStatus(
-		t, session, "http://goproxy.example/", http.StatusForbidden,
-	)
-	receipts := session.Gate().Receipts()
-	if len(receipts) == 0 || receipts[0].Category != "trust_validation_failed" {
-		t.Fatalf("receipts = %+v", receipts)
-	}
-}
-
-func TestProtocolHandlerServesOriginFormOnWorkspaceAndSessionChannels(t *testing.T) {
-	workspace := &egress.Gate{}
-	proxy, err := egress.StartManagedNetworkProxy(workspace)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = proxy.Close(context.Background()) })
-	// Binding after startup is the production order: the wire binds the
-	// GOPROXY auth service once the workspace channel is already serving.
-	// The stable channel must serve it from that moment on, or every
-	// origin-form module fetch through GOPROXY dies at the workspace port.
-	proxy.BindProtocolHandler(http.HandlerFunc(func(
-		writer http.ResponseWriter,
-		request *http.Request,
-	) {
-		if request.URL.Path != "/example.com/qcode/testmod/@v/v1.2.3.info" {
-			http.Error(writer, "unexpected path", http.StatusBadRequest)
-			return
-		}
-		_, _ = io.WriteString(writer, `{"Version":"v1.2.3"}`)
-	}))
-
+	t.Cleanup(func() { _ = proxy.Close(t.Context()) })
 	session, err := proxy.OpenSession(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = session.Close() })
+	client := &http.Client{Transport: &http.Transport{Proxy: nil}, Timeout: 5 * time.Second}
+	t.Cleanup(client.CloseIdleConnections)
+	for _, endpoint := range []proxyEndpoint{proxy, session} {
+		for _, authenticated := range []bool{false, true} {
+			request, err := http.NewRequest(http.MethodGet,
+				fmt.Sprintf("http://127.0.0.1:%d/example/module/@v/list", endpoint.Port()), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			request.Host = "artifacts.example"
+			// Origin Authorization cannot authenticate a local proxy channel.
+			request.SetBasicAuth(sandbox.ManagedProxyUser, endpoint.Credential())
+			want := http.StatusProxyAuthRequired
+			if authenticated {
+				request.Header.Set("Proxy-Authorization", request.Header.Get("Authorization"))
+				want = http.StatusBadRequest
+			}
+			response, err := client.Do(request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			response.Body.Close()
+			if response.StatusCode != want {
+				t.Fatalf("origin-form authenticated=%v status=%d want=%d", authenticated, response.StatusCode, want)
+			}
+		}
+	}
+	if len(session.Gate().Receipts()) != 0 {
+		t.Fatal("origin-form request reached the network gate")
+	}
+}
 
-	direct, err := http.Get(originFormURL(session))
+func TestForwardProxySeparatesChannelAndUpstreamCredentials(t *testing.T) {
+	var reached atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		reached.Add(1)
+		if request.Header.Get("Proxy-Authorization") != "" || request.Header.Get("Authorization") != "Bearer fixture-upstream" {
+			t.Error("channel credential leaked or upstream Authorization changed")
+			writer.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		_, _ = io.WriteString(writer, "ok")
+	}))
+	t.Cleanup(upstream.Close)
+	proxy, err := egress.StartManagedNetworkProxy(egress.NewStaticGate())
 	if err != nil {
 		t.Fatal(err)
 	}
-	body, err := io.ReadAll(direct.Body)
-	direct.Body.Close()
-	if err != nil || direct.StatusCode != http.StatusOK ||
-		!strings.Contains(string(body), "v1.2.3") {
-		t.Fatalf("origin-form status=%d body=%s err=%v", direct.StatusCode, body, err)
-	}
-
-	stable, err := http.Get(originFormURL(proxy))
+	t.Cleanup(func() { _ = proxy.Close(t.Context()) })
+	session, err := proxy.OpenSession([]egress.Target{httpTarget(t, upstream.URL, http.MethodGet)})
 	if err != nil {
 		t.Fatal(err)
 	}
-	stableBody, err := io.ReadAll(stable.Body)
-	stable.Body.Close()
-	if err != nil || stable.StatusCode != http.StatusOK ||
-		!strings.Contains(string(stableBody), "v1.2.3") {
-		t.Fatalf("stable channel status=%d body=%s err=%v", stable.StatusCode, stableBody, err)
+	t.Cleanup(func() { _ = session.Close() })
+	for _, endpoint := range []proxyEndpoint{proxy, foreignEndpoint{port: session.Port()}, session} {
+		request, err := http.NewRequest(http.MethodGet, upstream.URL, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		request.Header.Set("Authorization", "Bearer fixture-upstream")
+		want := http.StatusOK
+		if endpoint == proxy {
+			want = http.StatusForbidden
+		} else if endpoint.Credential() == "" {
+			request.SetBasicAuth(sandbox.ManagedProxyUser, session.Credential())
+			want = http.StatusProxyAuthRequired
+		}
+		response, err := proxyClient(t, endpoint).Do(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		response.Body.Close()
+		if response.StatusCode != want {
+			t.Fatalf("forward status=%d want=%d", response.StatusCode, want)
+		}
 	}
-
-	assertProxyStatus(t, session, "http://goproxy.example/", http.StatusForbidden)
-	if _, err := workspace.Authorize(t.Context(), egress.Target{
-		Host: "goproxy.example", Protocol: "https", Port: 443,
-		Methods: []string{http.MethodConnect},
-	}, "test"); err == nil {
-		t.Fatal("protocol session leaked a grant onto the workspace gate")
+	if reached.Load() != 1 {
+		t.Fatalf("upstream reached %d times, want only the granted session", reached.Load())
 	}
 }
 
@@ -266,7 +231,7 @@ func TestProxyChannelsRequireTheirOwnCredential(t *testing.T) {
 		_, _ = io.WriteString(writer, "ok")
 	}))
 	t.Cleanup(upstream.Close)
-	proxy, err := egress.StartManagedNetworkProxy(&egress.Gate{})
+	proxy, err := egress.StartManagedNetworkProxy(egress.NewStaticGate())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -322,70 +287,7 @@ func TestProxyChannelsRequireTheirOwnCredential(t *testing.T) {
 	assertProxyBody(t, sessionB, upstream.URL, http.StatusOK, "ok")
 }
 
-func TestProtocolHandlerRequiresChannelCredential(t *testing.T) {
-	var served atomic.Int32
-	var leaked atomic.Bool
-	proxy, err := egress.StartManagedNetworkProxy(&egress.Gate{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = proxy.Close(context.Background()) })
-	proxy.BindProtocolHandler(http.HandlerFunc(func(
-		writer http.ResponseWriter,
-		request *http.Request,
-	) {
-		served.Add(1)
-		if request.Header.Get("Authorization") != "" ||
-			request.Header.Get("Proxy-Authorization") != "" {
-			leaked.Store(true)
-		}
-		_, _ = io.WriteString(writer, `{"Version":"v1.2.3"}`)
-	}))
-	session, err := proxy.OpenSession(nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = session.Close() })
-
-	for name, endpoint := range map[string]proxyEndpoint{
-		"no credential":   foreignEndpoint{port: session.Port()},
-		"workspace creds": foreignEndpoint{session.Port(), proxy.Credential()},
-	} {
-		response, err := http.Get(originFormURL(endpoint))
-		if err != nil {
-			t.Fatal(err)
-		}
-		response.Body.Close()
-		if response.StatusCode != http.StatusUnauthorized ||
-			!strings.HasPrefix(response.Header.Get("WWW-Authenticate"), "Basic ") {
-			t.Fatalf("%s: origin-form status=%d", name, response.StatusCode)
-		}
-	}
-	if served.Load() != 0 {
-		t.Fatal("protocol handler served an unauthenticated request")
-	}
-
-	request, err := http.NewRequest(http.MethodGet, originFormURL(foreignEndpoint{port: session.Port()}), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	request.Header.Set("Proxy-Authorization", "Basic "+base64.StdEncoding.EncodeToString(
-		[]byte(sandbox.ManagedProxyUser+":"+session.Credential()),
-	))
-	response, err := http.DefaultClient.Do(request)
-	if err != nil {
-		t.Fatal(err)
-	}
-	response.Body.Close()
-	if response.StatusCode != http.StatusOK || served.Load() != 1 {
-		t.Fatalf("Proxy-Authorization origin-form status=%d served=%d", response.StatusCode, served.Load())
-	}
-	if leaked.Load() {
-		t.Fatal("channel credential reached the protocol handler")
-	}
-}
-
-func TestUnauthenticatedProxyAcceptsClientsWithoutCredential(t *testing.T) {
+func TestBrowserProxyDoesNotShareAdoptedGrantsWithForeignClients(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(
 		writer http.ResponseWriter,
 		_ *http.Request,
@@ -393,20 +295,34 @@ func TestUnauthenticatedProxyAcceptsClientsWithoutCredential(t *testing.T) {
 		_, _ = io.WriteString(writer, "ok")
 	}))
 	t.Cleanup(upstream.Close)
-	proxy, err := egress.StartUnauthenticatedNetworkProxy(&egress.Gate{})
+	gate := egress.NewBrowserGate()
+	ctx, release := egress.WithScope(t.Context())
+	egress.AllowInScope(ctx, httpTarget(t, upstream.URL, http.MethodGet))
+	gate.AdoptScope(ctx)
+	release()
+	proxy, err := egress.StartManagedNetworkProxy(gate)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = proxy.Close(context.Background()) })
-	if proxy.Credential() != "" || strings.Contains(proxy.URL(), "@") {
-		t.Fatalf("unauthenticated proxy URL = %q", proxy.URL())
+	if proxy.Credential() == "" {
+		t.Fatal("browser proxy has no credential")
 	}
-	session, err := proxy.OpenSession([]egress.Target{httpTarget(t, upstream.URL, http.MethodGet)})
+	assertProxyStatus(t, foreignEndpoint{port: proxy.Port()}, upstream.URL, http.StatusProxyAuthRequired)
+	assertProxyBody(t, proxy, upstream.URL, http.StatusOK, "ok")
+}
+
+func TestProxyCannotOpenSessionAfterClose(t *testing.T) {
+	proxy, err := egress.StartManagedNetworkProxy(egress.NewStaticGate())
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = session.Close() })
-	assertProxyBody(t, session, upstream.URL, http.StatusOK, "ok")
+	if err := proxy.Close(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if session, err := proxy.OpenSession(nil); err == nil || session != nil {
+		t.Fatal("closed proxy allocated a new session")
+	}
 }
 
 func httpTarget(t *testing.T, endpoint, method string) egress.Target {
@@ -453,11 +369,6 @@ func proxyClient(t *testing.T, endpoint proxyEndpoint) *http.Client {
 	}}
 	t.Cleanup(client.CloseIdleConnections)
 	return client
-}
-
-func originFormURL(endpoint proxyEndpoint) string {
-	return sandbox.ManagedProxyURL(endpoint.Port(), endpoint.Credential()) +
-		"/example.com/qcode/testmod/@v/v1.2.3.info"
 }
 
 func dialConnect(t *testing.T, endpoint proxyEndpoint, authority string) (net.Conn, *bufio.Reader, string) {
@@ -511,81 +422,5 @@ func assertProxyStatus(t *testing.T, endpoint proxyEndpoint, target string, want
 	response.Body.Close()
 	if response.StatusCode != want {
 		t.Fatalf("port %d %s: status=%d, want %d", endpoint.Port(), target, response.StatusCode, want)
-	}
-}
-
-func TestProcessSessionDeniesTrailingDotConnectToBoundHost(t *testing.T) {
-	workspace := &egress.Gate{}
-	proxy, err := egress.StartManagedNetworkProxy(workspace)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = proxy.Close(context.Background()) })
-	proxy.BindProtocolHandler(boundOriginHandler{host: "goproxy.example"})
-	session, err := proxy.OpenSession([]egress.Target{{
-		Host: "goproxy.example", Protocol: "https", Port: 443,
-		Methods: []string{http.MethodConnect}, AllowPrivate: true,
-	}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = session.Close() })
-
-	// FQDN trailing dot: same origin after normalization, spelling chosen to
-	// sidestep a naive equality check.
-	_, _, status := dialConnect(t, session, "goproxy.example.:443")
-	if !strings.Contains(status, "403") {
-		t.Fatalf("trailing-dot CONNECT status = %q", status)
-	}
-	receipts := session.Gate().Receipts()
-	if len(receipts) == 0 || receipts[0].Category != "trust_validation_failed" {
-		t.Fatalf("receipts = %+v", receipts)
-	}
-}
-
-func TestGoproxyServiceServesStableWorkspaceChannel(t *testing.T) {
-	// End-to-end A1 reproduction: a real GOPROXY auth service bound after
-	// startup, fetched in origin form through the stable workspace channel —
-	// the exact shape `GOPROXY=http://127.0.0.1:<managed port>` produces.
-	var seenAuth string
-	upstream := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		seenAuth = request.Header.Get("Authorization")
-		if request.URL.Path != "/example.com/qcode/testmod/@v/v1.2.3.info" {
-			http.NotFound(writer, request)
-			return
-		}
-		writer.Header().Set("Content-Type", "application/json")
-		_, _ = writer.Write([]byte(`{"Version":"v1.2.3"}`))
-	}))
-	t.Cleanup(upstream.Close)
-	service, err := goproxy.New(goproxy.Binding{
-		Upstream:   upstream.URL,
-		Prefixes:   []string{"example.com/qcode/"},
-		Credential: goproxy.CredentialRef{Kind: "env", Name: "TEST_GOPROXY_TOKEN"},
-	}, func(context.Context, string, string) (string, error) {
-		return "user:secret-token", nil
-	}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	proxy, err := egress.StartManagedNetworkProxy(&egress.Gate{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = proxy.Close(context.Background()) })
-	proxy.BindProtocolHandler(service)
-
-	response, err := http.Get(originFormURL(proxy))
-	if err != nil {
-		t.Fatal(err)
-	}
-	body, err := io.ReadAll(response.Body)
-	response.Body.Close()
-	if err != nil || response.StatusCode != http.StatusOK ||
-		!strings.Contains(string(body), "v1.2.3") {
-		t.Fatalf("stable channel status=%d body=%s err=%v", response.StatusCode, body, err)
-	}
-	if seenAuth == "" {
-		t.Fatal("auth service did not reach the upstream")
 	}
 }

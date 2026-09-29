@@ -269,6 +269,9 @@ func (t *mutationTool) TrustedBinding() tool.TrustedBinding {
 		Reversibility: reversibility, WorkspaceTransaction: tool.TransactionNone,
 		Approval: approval,
 	}
+	if t.kind == "git_push" {
+		binding.Effect.Planning = tool.PlanningExempt
+	}
 	return binding
 }
 

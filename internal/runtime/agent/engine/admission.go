@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"reflect"
 
-	adaptercontent "github.com/fwtllh-png/QCode/internal/adapter/content"
 	"github.com/fwtllh-png/QCode/internal/adapter/provider"
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
 	toolresult "github.com/fwtllh-png/QCode/internal/adapter/tool/result"
@@ -37,7 +36,7 @@ func (e *Engine) admitToolResultHistory(
 					IsError: block.ToolResult.IsError,
 				}
 			}
-			previous := adaptercontent.CloneAdmissionReceipt(
+			previous := provider.CloneAdmissionReceipt(
 				block.ToolResult.Admission,
 			)
 			value.Admission = previous
@@ -45,7 +44,7 @@ func (e *Engine) admitToolResultHistory(
 			value, _ = e.options.Tools.AdmitResultWithin(name, value, limit)
 			block.ToolResult.IsError = value.IsError
 			block.ToolResult.Admission =
-				adaptercontent.CloneAdmissionReceipt(value.Admission)
+				provider.CloneAdmissionReceipt(value.Admission)
 			// A receipt that already covers the parsed content survives
 			// admission unchanged, and deterministic encoding means the
 			// block's existing bytes are exactly what re-marshaling would

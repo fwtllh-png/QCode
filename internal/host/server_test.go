@@ -29,6 +29,7 @@ import (
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
 	gittool "github.com/fwtllh-png/QCode/internal/adapter/tool/git"
 	"github.com/fwtllh-png/QCode/internal/adapter/tool/guard"
+	"github.com/fwtllh-png/QCode/internal/orchestration/workspacebroker"
 	"github.com/fwtllh-png/QCode/internal/persist/repoindex"
 	"github.com/fwtllh-png/QCode/internal/persist/state"
 	sqlitestate "github.com/fwtllh-png/QCode/internal/persist/state/sqlite"
@@ -39,11 +40,10 @@ import (
 	apppersistence "github.com/fwtllh-png/QCode/internal/runtime/app/persistence"
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
 	"github.com/fwtllh-png/QCode/internal/security/authority"
-	"github.com/fwtllh-png/QCode/internal/security/controlmatrix"
+	securitymodel "github.com/fwtllh-png/QCode/internal/security/model"
 	"github.com/fwtllh-png/QCode/internal/security/policy"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
 	"github.com/fwtllh-png/QCode/internal/security/vcsbroker"
-	"github.com/fwtllh-png/QCode/internal/security/workspacebroker"
 )
 
 func TestWebInlineContextAcceptsOnlyPersistedToolResultForThread(t *testing.T) {
@@ -1503,20 +1503,16 @@ func (webTestBackend) Capability() sandbox.Capability {
 	return sandbox.Capability{
 		Platform: "test", Backend: "passthrough",
 		Available: true,
-		Effective: controlmatrix.Matrix{FilesystemRead: controlmatrix.FilesystemReadDeclaredRoots,
+		Effective: securitymodel.Controls{FilesystemRead: securitymodel.FilesystemReadDeclaredRoots,
 
-			FilesystemWrite: controlmatrix.
-				FilesystemWriteExactPaths,
+			FilesystemWrite: securitymodel.FilesystemWriteExactPaths,
 
-			Network: controlmatrix.
-				NetworkDenied,
+			Network: securitymodel.NetworkDenied,
 
-			ProcessTree: controlmatrix.ProcessTreeGroupKill,
+			ProcessTree: securitymodel.ProcessTreeGroupKill,
 
-			CrossProcess: controlmatrix.
-				CrossProcessUnrestricted, Syscall: controlmatrix.SyscallDenyDangerous, IPC: controlmatrix.
-				IPCUnrestricted, PathIdentity:     controlmatrix.PathIdentityDescriptorRelative,
-			ArtifactOrigin: controlmatrix.ArtifactOriginUnverifiedPath, DurableRecovery: controlmatrix.DurableRecoveryMemoryOnly},
+			CrossProcess: securitymodel.CrossProcessUnrestricted, Syscall: securitymodel.SyscallDenyDangerous, IPC: securitymodel.IPCUnrestricted, PathIdentity: securitymodel.PathIdentityDescriptorRelative,
+			ArtifactOrigin: securitymodel.ArtifactOriginUnverifiedPath, DurableRecovery: securitymodel.DurableRecoveryMemoryOnly},
 	}
 }
 
@@ -1903,18 +1899,13 @@ func (eventAuthorizationBackend) Capability() sandbox.Capability {
 	return sandbox.Capability{
 		Platform: "test", Backend: "passthrough",
 		Available: true,
-		Effective: controlmatrix.
-			Matrix{
-			FilesystemRead: controlmatrix.
-				FilesystemReadDeclaredRoots,
-			FilesystemWrite: controlmatrix.
-				FilesystemWriteExactPaths,
-			Network: controlmatrix.
-				NetworkDenied, ProcessTree: controlmatrix.ProcessTreeGroupKill,
-			CrossProcess: controlmatrix.CrossProcessUnrestricted, Syscall: controlmatrix.
-					SyscallDenyDangerous, IPC: controlmatrix.IPCUnrestricted,
-			PathIdentity: controlmatrix.PathIdentityDescriptorRelative, ArtifactOrigin: controlmatrix.ArtifactOriginUnverifiedPath,
-			DurableRecovery: controlmatrix.DurableRecoveryMemoryOnly},
+		Effective: securitymodel.Controls{
+			FilesystemRead:  securitymodel.FilesystemReadDeclaredRoots,
+			FilesystemWrite: securitymodel.FilesystemWriteExactPaths,
+			Network:         securitymodel.NetworkDenied, ProcessTree: securitymodel.ProcessTreeGroupKill,
+			CrossProcess: securitymodel.CrossProcessUnrestricted, Syscall: securitymodel.SyscallDenyDangerous, IPC: securitymodel.IPCUnrestricted,
+			PathIdentity: securitymodel.PathIdentityDescriptorRelative, ArtifactOrigin: securitymodel.ArtifactOriginUnverifiedPath,
+			DurableRecovery: securitymodel.DurableRecoveryMemoryOnly},
 	}
 }
 

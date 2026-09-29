@@ -22,7 +22,7 @@ import (
 	"github.com/fwtllh-png/QCode/internal/persist/workspacejournal"
 	"github.com/fwtllh-png/QCode/internal/platform/process"
 	agentengine "github.com/fwtllh-png/QCode/internal/runtime/agent/engine"
-	"github.com/fwtllh-png/QCode/internal/security/controlplane"
+	securitypaths "github.com/fwtllh-png/QCode/internal/security/pathpolicy"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
 )
 
@@ -181,7 +181,7 @@ func (s *session) PrepareBackend(
 		EnvironmentContract:    policy.EnvironmentContract,
 		EnvironmentProfile:     policy.EnvironmentProfile,
 		SharedUserTemp:         policy.SharedUserTemp,
-		EnvironmentValues:      append([]string(nil), policy.EnvironmentValues...),
+		EnvironmentValues:      append([]string{}, policy.EnvironmentValues...),
 		Toolchains:             &inherited,
 		SkipPATHReadRoots:      true,
 	})
@@ -300,7 +300,7 @@ func copyWorkspace(source, target string) error {
 	if resolved, err := filepath.EvalSymlinks(source); err == nil {
 		source = resolved
 	}
-	classifier, err := controlplane.New(source)
+	classifier, err := securitypaths.NewControlPlane(source)
 	if err != nil {
 		return err
 	}

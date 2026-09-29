@@ -16,7 +16,7 @@ import (
 )
 
 func TestAuthorizeProbeDoesNotAskApprover(t *testing.T) {
-	gate := &egress.Gate{}
+	gate := egress.NewStaticGate()
 	gate.SetRuntimeApprover(func(context.Context, egress.Target) error {
 		t.Fatal("probe Authorize must not start an approval")
 		return nil
@@ -138,7 +138,7 @@ func TestProcessSessionApprovesConnectBeforeDial(t *testing.T) {
 	}))
 	t.Cleanup(upstream.Close)
 
-	workspace := &egress.Gate{}
+	workspace := egress.NewStaticGate()
 	proxy, err := egress.StartManagedNetworkProxy(workspace)
 	if err != nil {
 		t.Fatal(err)

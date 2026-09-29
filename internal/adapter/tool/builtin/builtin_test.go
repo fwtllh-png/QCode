@@ -14,7 +14,7 @@ import (
 	"github.com/fwtllh-png/QCode/internal/adapter/tool/toolsearch"
 	"github.com/fwtllh-png/QCode/internal/persist/contentstore"
 	"github.com/fwtllh-png/QCode/internal/platform/process"
-	"github.com/fwtllh-png/QCode/internal/security/controlmatrix"
+	securitymodel "github.com/fwtllh-png/QCode/internal/security/model"
 	"github.com/fwtllh-png/QCode/internal/security/policy"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
 	"github.com/fwtllh-png/QCode/testutil/tooltest"
@@ -166,16 +166,11 @@ func (builtinTestBackend) Capability() sandbox.Capability {
 	return sandbox.Capability{
 		Platform: "fixture", Backend: "passthrough",
 		Available: true,
-		Effective: controlmatrix.Matrix{FilesystemRead: controlmatrix.FilesystemReadDeclaredRoots,
+		Effective: securitymodel.Controls{FilesystemRead: securitymodel.FilesystemReadDeclaredRoots,
 
-			FilesystemWrite: controlmatrix.
-				FilesystemWriteExactPaths, Network: controlmatrix.NetworkDenied,
-			ProcessTree: controlmatrix.ProcessTreeGroupKill, CrossProcess: controlmatrix.
-					CrossProcessUnrestricted, Syscall: controlmatrix.SyscallDenyDangerous,
-			IPC: controlmatrix.IPCUnrestricted, PathIdentity: controlmatrix.
-				PathIdentityDescriptorRelative, ArtifactOrigin: controlmatrix.
-				ArtifactOriginUnverifiedPath, DurableRecovery: controlmatrix.
-				DurableRecoveryMemoryOnly},
+			FilesystemWrite: securitymodel.FilesystemWriteExactPaths, Network: securitymodel.NetworkDenied,
+			ProcessTree: securitymodel.ProcessTreeGroupKill, CrossProcess: securitymodel.CrossProcessUnrestricted, Syscall: securitymodel.SyscallDenyDangerous,
+			IPC: securitymodel.IPCUnrestricted, PathIdentity: securitymodel.PathIdentityDescriptorRelative, ArtifactOrigin: securitymodel.ArtifactOriginUnverifiedPath, DurableRecovery: securitymodel.DurableRecoveryMemoryOnly},
 	}
 }
 

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"net/url"
 	"path/filepath"
 	"reflect"
 	"sort"
@@ -17,12 +18,12 @@ import (
 	"sync"
 	"unicode/utf8"
 
-	adaptercontent "github.com/fwtllh-png/QCode/internal/adapter/content"
 	"github.com/fwtllh-png/QCode/internal/adapter/provider"
 	"github.com/fwtllh-png/QCode/internal/observability/diagnostics"
 	"github.com/fwtllh-png/QCode/internal/persist/contentstore"
 	"github.com/fwtllh-png/QCode/internal/platform/tokenestimate"
-	securityresource "github.com/fwtllh-png/QCode/internal/security/resource"
+	securitymodel "github.com/fwtllh-png/QCode/internal/security/model"
+	"github.com/fwtllh-png/QCode/internal/security/netpolicy"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
 	"github.com/santhosh-tekuri/jsonschema/v6"
 )
@@ -106,23 +107,23 @@ const (
 	VisibleHidden   Visibility = "hidden"
 )
 
-type Capability string
+type Capability = securitymodel.Capability
 
 const (
-	CapabilityRead     Capability = "read"
-	CapabilityWrite    Capability = "write"
-	CapabilityProcess  Capability = "process"
-	CapabilityNetwork  Capability = "network"
-	CapabilityExternal Capability = "external"
+	CapabilityRead     = securitymodel.CapabilityRead
+	CapabilityWrite    = securitymodel.CapabilityWrite
+	CapabilityProcess  = securitymodel.CapabilityProcess
+	CapabilityNetwork  = securitymodel.CapabilityNetwork
+	CapabilityExternal = securitymodel.CapabilityExternal
 )
 
-type AccessMode = securityresource.Access
+type AccessMode = securitymodel.Access
 
 const (
-	AccessRead  = securityresource.Read
-	AccessWrite = securityresource.Write
-	AccessTree  = securityresource.Tree
-	AccessUse   = securityresource.Use
+	AccessRead  = securitymodel.Read
+	AccessWrite = securitymodel.Write
+	AccessTree  = securitymodel.Tree
+	AccessUse   = securitymodel.Use
 )
 
 type ParallelPolicy string
@@ -228,16 +229,68 @@ func (r Resource) Key() string {
 	}, "\x00")
 }
 
+// Security is the only mapping from the adapter resource representation to
+// security vocabulary. It reports false for scheduling-only resources, which
+// carry no authority.
+func (r Resource) Security() (securitymodel.Resource, bool) {
+	value := r.Path
+	if value == "" {
+		value = r.ID
+	}
+	typed := securitymodel.Resource{Access: r.Access, Tree: r.Tree, Methods: append([]string(nil), r.Methods...), AllowPrivate: r.AllowPrivate}
+	switch {
+	case r.Kind == "parallel":
+		return securitymodel.Resource{}, false
+	case securitymodel.IsPathKind(r.Kind):
+		typed.Class, typed.Path = securitymodel.ClassPath, value
+		typed.Tree = r.Tree || r.Access == AccessTree || r.Kind != securitymodel.KindFile
+	case securitymodel.IsLoopback(r.Kind, r.Protocol):
+		typed.Class = securitymodel.ClassLoopback
+	case securitymodel.IsNetworkKind(r.Kind):
+		typed.Class = securitymodel.ClassNetwork
+		typed.Methods = append([]string(nil), r.Methods...)
+		typed.AllowPrivate = r.AllowPrivate
+		target, err := netpolicy.ParseTarget(value)
+		if r.Kind == securitymodel.KindURL {
+			typed.URL = value
+			if parsed, parseErr := url.Parse(strings.TrimSpace(value)); parseErr != nil ||
+				parsed.User != nil || parsed.Scheme == "" {
+				err = errors.New("network URL resource is invalid")
+			}
+		}
+		if r.Kind == securitymodel.KindHost && r.Protocol != "" {
+			target = netpolicy.Target{Scheme: r.Protocol, Host: r.ID, Port: r.Port}
+			err = nil
+		}
+		if err != nil {
+			typed.ID = value
+		} else {
+			typed.Network = &target
+		}
+	case r.Kind == "process":
+		typed.Class, typed.ID = securitymodel.ClassProcess, value
+	case r.Kind == "agent":
+		typed.Class, typed.ID = securitymodel.ClassAgent, value
+	case r.Kind == "plan":
+		typed.Class, typed.ID = securitymodel.ClassPlan, value
+	case r.Kind == "session":
+		typed.Class, typed.ID = securitymodel.ClassSession, value
+	default:
+		typed.Class, typed.Name, typed.ID = securitymodel.ClassNamed, r.Kind, value
+	}
+	return typed, true
+}
+
 type Result struct {
-	Content       string                           `json:"content"`
-	IsError       bool                             `json:"is_error,omitempty"`
-	Metadata      map[string]any                   `json:"metadata,omitempty"`
-	Outcome       *Outcome                         `json:"outcome,omitempty"`
-	Execution     *ExecutionReceipt                `json:"execution,omitempty"`
-	Truncated     bool                             `json:"truncated,omitempty"`
-	OriginalBytes int                              `json:"original_bytes,omitempty"`
-	Handle        string                           `json:"handle,omitempty"`
-	Admission     *adaptercontent.AdmissionReceipt `json:"admission,omitempty"`
+	Content       string                     `json:"content"`
+	IsError       bool                       `json:"is_error,omitempty"`
+	Metadata      map[string]any             `json:"metadata,omitempty"`
+	Outcome       *Outcome                   `json:"outcome,omitempty"`
+	Execution     *ExecutionReceipt          `json:"execution,omitempty"`
+	Truncated     bool                       `json:"truncated,omitempty"`
+	OriginalBytes int                        `json:"original_bytes,omitempty"`
+	Handle        string                     `json:"handle,omitempty"`
+	Admission     *provider.AdmissionReceipt `json:"admission,omitempty"`
 	// Attachments are projected as bounded Provider image input after the tool
 	// result. They are not serialized into the textual tool-result payload.
 	Attachments []provider.Attachment `json:"-"`
@@ -451,7 +504,7 @@ func (r *Registry) Register(executor Executor) error {
 		return errors.New("tool executor is required")
 	}
 	registration := NewRegistration(executor)
-	return r.registerOne(nextLegacySource(executor.Descriptor().Name), registration)
+	return r.registerOne(nextBuiltinSource(executor.Descriptor().Name), registration)
 }
 
 func (r *Registry) RegisterTrusted(
@@ -826,7 +879,7 @@ func (r *Registry) PruneRawSurface(
 func (r *Registry) AdmitResult(
 	name string,
 	result Result,
-) (Result, adaptercontent.AdmissionReceipt) {
+) (Result, provider.AdmissionReceipt) {
 	return r.results.Admit(name, result)
 }
 
@@ -834,7 +887,7 @@ func (r *Registry) AdmitResultWithin(
 	name string,
 	result Result,
 	maxTokens uint64,
-) (Result, adaptercontent.AdmissionReceipt) {
+) (Result, provider.AdmissionReceipt) {
 	return r.results.AdmitWithin(name, result, maxTokens)
 }
 
@@ -1114,7 +1167,7 @@ func (s *ResultStore) RouteFor(name string, result Result) Result {
 func (s *ResultStore) Admit(
 	name string,
 	result Result,
-) (Result, adaptercontent.AdmissionReceipt) {
+) (Result, provider.AdmissionReceipt) {
 	return s.AdmitWithin(name, result, 0)
 }
 
@@ -1122,10 +1175,10 @@ func (s *ResultStore) AdmitWithin(
 	name string,
 	result Result,
 	maxTokens uint64,
-) (Result, adaptercontent.AdmissionReceipt) {
+) (Result, provider.AdmissionReceipt) {
 	if s.validAdmission(result) &&
 		(maxTokens == 0 || result.Admission.TokenLimit <= maxTokens) {
-		result.Admission = adaptercontent.CloneAdmissionReceipt(result.Admission)
+		result.Admission = provider.CloneAdmissionReceipt(result.Admission)
 		return result, *result.Admission
 	}
 	result.Admission = nil
@@ -1144,7 +1197,7 @@ func (s *ResultStore) AdmitWithin(
 	originalBytes := len(original)
 	originalTokens := estimateResultTokens(original)
 	limit, kind, tokens := s.projectionLimit(name, original, maxTokens)
-	receipt := adaptercontent.AdmissionReceipt{
+	receipt := provider.AdmissionReceipt{
 		Kind: kind, Reason: "inline", Digest: resultDigest(original),
 		OriginalBytes: originalBytes, RetainedBytes: originalBytes,
 		OriginalTokens: originalTokens, RetainedTokens: originalTokens,
@@ -1337,7 +1390,7 @@ func (s *ResultStore) PruneSurface(
 	result.Metadata["handle"] = handle
 	result.Metadata["projection_kind"] = "context_surface"
 	retainedTokens := estimateResultTokens(result.Content)
-	result.Admission = &adaptercontent.AdmissionReceipt{
+	result.Admission = &provider.AdmissionReceipt{
 		Kind: "context_surface", Reason: "pressure_limit",
 		Digest: resultDigest(full.Content), Handle: handle,
 		OriginalBytes: len(full.Content), RetainedBytes: len(result.Content),
@@ -1401,7 +1454,7 @@ func (s *ResultStore) PruneRawSurface(
 			"original_bytes": len(content), "truncated": true,
 			"handle": handle, "projection_kind": "raw_surface",
 		},
-		Admission: &adaptercontent.AdmissionReceipt{
+		Admission: &provider.AdmissionReceipt{
 			Kind: "raw_surface", Reason: "pressure_limit",
 			Digest: resultDigest(content), Handle: handle,
 			OriginalBytes: len(content), RetainedBytes: len(retained),
@@ -2005,7 +2058,7 @@ func removeClaimWaiter(queue *[]*claimWaiter, target *claimWaiter) bool {
 }
 
 func resourcesOverlap(left, right Resource) bool {
-	if securityresource.IsPathKind(left.Kind) && securityresource.IsPathKind(right.Kind) {
+	if securitymodel.IsPathKind(left.Kind) && securitymodel.IsPathKind(right.Kind) {
 		leftPath, rightPath := filepath.Clean(left.Path), filepath.Clean(right.Path)
 		if leftPath == rightPath {
 			return true

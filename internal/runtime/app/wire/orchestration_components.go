@@ -41,12 +41,16 @@ func buildChildOrchestration(
 	if err != nil {
 		return fmt.Errorf("resolve repository Git metadata: %w", err)
 	}
+	environmentStateRoot := state.config.workspaceStateRoot
+	if environmentStateRoot == "" {
+		environmentStateRoot = session.environmentStateDir
+	}
 	output.childToolsets = newChildToolsets(
 		session.content, state.platform.web,
 		execution.Verify, execution.Journal, state.config.diagnosticCommands,
 		state.config.diagnosticReadRoots, state.config.diagnosticReadFiles,
 		gitCommonDir, sandbox.BackendManagedProxyPort(state.platform.backend),
-		state.config.workspaceStateRoot,
+		environmentStateRoot,
 		state.config.skillPaths,
 	)
 	output.childToolsets.environment = execution.Environment

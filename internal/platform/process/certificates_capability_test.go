@@ -16,6 +16,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/fwtllh-png/QCode/internal/adapter/envprep"
+	"github.com/fwtllh-png/QCode/internal/environment"
 	"github.com/fwtllh-png/QCode/internal/platform/process"
 	"github.com/fwtllh-png/QCode/internal/security/egress"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
@@ -39,7 +41,7 @@ func TestSandboxNodeUsesValidatedCertificateDependencies(t *testing.T) {
 	t.Setenv("NODE_EXTRA_CA_CERTS", caPath)
 	target, _ := url.Parse(server.URL)
 	port, _ := strconv.ParseUint(target.Port(), 10, 16)
-	gate := &egress.Gate{}
+	gate := egress.NewStaticGate()
 	gate.AllowTarget(egress.Target{
 		Host: target.Hostname(), Protocol: "https", Port: uint16(port),
 		Methods: []string{"CONNECT"}, AllowPrivate: true,
@@ -49,10 +51,19 @@ func TestSandboxNodeUsesValidatedCertificateDependencies(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer proxy.Close(context.Background())
-	backend, err := sandbox.NewPlatformBackend(sandbox.Options{
-		WorkspaceRoot: t.TempDir(), ManagedProxyPort: proxy.Port(),
-		ManagedProxyCredential: proxy.Credential(),
+	prepared, err := envprep.Prepare(t.Context(), envprep.Options{
+		Sandbox: sandbox.Options{
+			EnvironmentProfile: environment.ProfileNative,
+			WorkspaceRoot:      t.TempDir(), ManagedProxyPort: proxy.Port(),
+			ManagedProxyCredential: proxy.Credential(),
+			PrivateTemp:            t.TempDir(),
+		},
+		Declarations: []environment.ResourceRequest{declaredTLSConfig(t)},
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend, err := sandbox.NewPlatformBackend(prepared.Sandbox)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,7 +85,8 @@ for(const file of JSON.parse(process.argv[1])) fs.readFileSync(file);
 try { fs.writeFileSync(process.env.NODE_EXTRA_CA_CERTS,'modified'); process.exit(90); }
 catch(e) { if(e.code!=='EPERM'&&e.code!=='EACCES') throw e; }
 const target=new URL(process.argv[2]),proxy=new URL(process.env.HTTPS_PROXY);
-const req=http.request({hostname:proxy.hostname,port:proxy.port,method:'CONNECT',path:target.host});
+const auth=Buffer.from(decodeURIComponent(proxy.username)+':'+decodeURIComponent(proxy.password)).toString('base64');
+const req=http.request({hostname:proxy.hostname,port:proxy.port,method:'CONNECT',path:target.host,headers:{'Proxy-Authorization':'Basic '+auth}});
 req.on('connect',(res,socket)=>{
  if(res.statusCode!==200) process.exit(91);
  const secure=tls.connect({socket,servername:'example.com'},()=>{

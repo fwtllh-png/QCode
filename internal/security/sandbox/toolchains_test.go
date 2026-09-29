@@ -179,7 +179,7 @@ func TestDiscoverToolchainsDoesNotInjectGOROOT(t *testing.T) {
 	}
 	t.Setenv("PATH", bin)
 	t.Setenv("GOROOT", "")
-	exposure := discoverToolchains(filepath.Join(root, "workspace"), nil, nil)
+	exposure := discoverToolchains(filepath.Join(root, "workspace"), nil, nil, os.Environ())
 	for _, entry := range exposure.Environment {
 		if strings.HasPrefix(entry, "GOROOT=") {
 			t.Fatalf("GOROOT leaked: %v", exposure.Environment)

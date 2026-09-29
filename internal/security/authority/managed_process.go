@@ -5,9 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/fwtllh-png/QCode/internal/adapter/tool"
-	"github.com/fwtllh-png/QCode/internal/security/controlmatrix"
-	"github.com/fwtllh-png/QCode/internal/security/effect"
+	securitymodel "github.com/fwtllh-png/QCode/internal/security/model"
+	"github.com/fwtllh-png/QCode/internal/security/sandbox"
 )
 
 type ManagedProcessInput struct {
@@ -55,7 +54,7 @@ func BuildManagedProcessOperation(
 		Subject:             input.Subject, Effect: input.Effect, Required: input.Required,
 		Resources: []Resource{{
 			Namespace: NamespaceProcess, Kind: "process",
-			ID: input.Tool, Access: tool.AccessWrite,
+			ID: input.Tool, Access: securitymodel.Write,
 		}},
 		Process: &ProcessIntent{
 			Kind: "tool", Tool: input.Tool,
@@ -97,34 +96,28 @@ type ManagedProfileInput struct {
 	AllowNetwork       bool
 	NetworkTargets     []string
 	ManagedProxyPort   uint16
-	Enforcement        string
+	Enforcement        sandbox.Enforcement
 	Backend            string
-	Controls           controlmatrix.Matrix
+	Controls           securitymodel.Controls
 }
 
 func BuildManagedProcessProfile(
 	input ManagedProfileInput,
 ) (EffectivePermissionProfile, error) {
-	if input.Controls == (controlmatrix.Matrix{}) && input.Enforcement == "none" {
+	if input.Controls == (securitymodel.Controls{}) && input.Enforcement == sandbox.EnforcementNone {
 		input.Controls = unrestrictedControls()
 	}
-	networkMode := "denied"
+	if !input.AllowNetwork {
+		input.Controls.Network = securitymodel.NetworkDenied
+	}
 	proxyPort := uint16(0)
-	if input.AllowNetwork {
-		switch {
-		case input.ManagedProxyPort != 0:
-			networkMode = "managed"
-			proxyPort = input.ManagedProxyPort
-		case input.Enforcement == "none":
-			networkMode = "unrestricted"
-		default:
-			networkMode = "direct"
-		}
+	if input.Controls.Network == securitymodel.NetworkProxyTargets {
+		proxyPort = input.ManagedProxyPort
 	}
 	profile := EffectivePermissionProfile{
 		SchemaVersion: SchemaVersion, Revision: input.Revision,
-		Tool: input.Operation.Tool, Capability: tool.CapabilityProcess,
-		Access: tool.AccessRead,
+		Tool: input.Operation.Tool, Capability: securitymodel.CapabilityProcess,
+		Access: securitymodel.Read,
 		Filesystem: FilesystemAuthority{
 			WorkspaceRoot: input.WorkspaceRoot,
 			ReadRoots: append(
@@ -133,7 +126,7 @@ func BuildManagedProcessProfile(
 			),
 			WorkspaceBaseWrite: input.WorkspaceBaseWrite,
 		},
-		Network: NetworkAuthority{Mode: networkMode,
+		Network: NetworkAuthority{
 			Targets:   append([]string(nil), input.NetworkTargets...),
 			ProxyPort: proxyPort,
 		},
@@ -157,10 +150,10 @@ func BuildManagedProcessProfile(
 	return profile, profile.Validate()
 }
 
-func ManagedProcessEffect(risk effect.Risk) EffectContract {
+func ManagedProcessEffect(risk securitymodel.Risk) EffectContract {
 	return EffectContract{
-		Kind:          effect.ProcessReadOnly,
-		Reversibility: effect.Bounded,
+		Kind:          securitymodel.ProcessReadOnly,
+		Reversibility: securitymodel.Bounded,
 		Risk:          risk, WorkspaceTransaction: WorkspaceTransactionNone,
 	}
 }

@@ -9,8 +9,7 @@ import (
 	"time"
 
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
-	"github.com/fwtllh-png/QCode/internal/security/controlmatrix"
-	"github.com/fwtllh-png/QCode/internal/security/effect"
+	securitymodel "github.com/fwtllh-png/QCode/internal/security/model"
 	"github.com/fwtllh-png/QCode/internal/security/policy"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
 )
@@ -18,8 +17,8 @@ import (
 func TestCompileProducesDeterministicEffectiveProfile(t *testing.T) {
 	root := t.TempDir()
 	runtime := policy.DefaultRuntime(policy.ModeAct, policy.PermissionSuggest)
-	invocation := policy.Invocation{
-		CallID: "call-1", Tool: "exec_command",
+	invocation := resolvePolicyFixture(policyInvocationFixture{
+		CallID: "call-1", Tool: "run_command",
 		Arguments:  json.RawMessage(`{"command":"go test ./..."}`),
 		Capability: tool.CapabilityProcess,
 		Access:     tool.AccessWrite,
@@ -30,36 +29,34 @@ func TestCompileProducesDeterministicEffectiveProfile(t *testing.T) {
 			{Kind: "repo", Path: root, Access: tool.AccessRead, Tree: true},
 			{Kind: "process", ID: "workspace", Access: tool.AccessWrite, Tree: true},
 		},
-	}
+	})
 	input := CompileInput{
 		Runtime: runtime, Invocation: invocation,
 		Decision:   policy.Decision{Action: policy.ActionAsk},
 		Authorized: true, Revision: 1, Enforcement: "strong",
 		Capability: sandbox.Capability{
 			Backend: "seatbelt", Available: true,
-			Effective: controlmatrix.Matrix{FilesystemRead: controlmatrix.
-				FilesystemReadDeclaredRoots,
+			Effective: securitymodel.Controls{FilesystemRead: securitymodel.FilesystemReadDeclaredRoots,
 
-				FilesystemWrite: controlmatrix.FilesystemWriteExactPaths, Network: controlmatrix.
-							NetworkDenied, ProcessTree: controlmatrix.ProcessTreeGroupKill,
-				CrossProcess: controlmatrix.CrossProcessUnrestricted,
-				Syscall:      controlmatrix.SyscallDenyDangerous, IPC: controlmatrix.
-						IPCUnrestricted, PathIdentity: controlmatrix.PathIdentityDescriptorRelative,
-				ArtifactOrigin: controlmatrix.ArtifactOriginUnverifiedPath, DurableRecovery: controlmatrix.
-						DurableRecoveryMemoryOnly},
+				FilesystemWrite: securitymodel.FilesystemWriteExactPaths, Network: securitymodel.NetworkDenied, ProcessTree: securitymodel.ProcessTreeGroupKill,
+				CrossProcess: securitymodel.CrossProcessUnrestricted,
+				Syscall:      securitymodel.SyscallDenyDangerous, IPC: securitymodel.IPCUnrestricted, PathIdentity: securitymodel.PathIdentityDescriptorRelative,
+				ArtifactOrigin: securitymodel.ArtifactOriginUnverifiedPath, DurableRecovery: securitymodel.DurableRecoveryMemoryOnly},
 		},
 		SandboxPolicy: sandbox.Policy{
 			ID: "sandbox-policy", WorkspaceRoot: root,
 			RuntimeReadRoots: []string{"/usr", "/bin"}, AllowNetwork: true,
 		},
 	}
-	first, err := Compile(input)
+	input.Prepared = preparedForPolicy(input.Invocation)
+	first, err := compileProfileForTest(input)
 	if err != nil {
 		t.Fatal(err)
 	}
-	input.Invocation.Resources[0], input.Invocation.Resources[1] =
-		input.Invocation.Resources[1], input.Invocation.Resources[0]
-	second, err := Compile(input)
+	resolved := input.Prepared.Assessment.Input()
+	resolved.Resources[0], resolved.Resources[1] = resolved.Resources[1], resolved.Resources[0]
+	input.Prepared.Assessment = securitymodel.Assess(resolved)
+	second, err := compileProfileForTest(input)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,7 +64,7 @@ func TestCompileProducesDeterministicEffectiveProfile(t *testing.T) {
 		t.Fatalf("digests first=%q second=%q", first.Digest, second.Digest)
 	}
 	if !first.Process.Allowed || first.Process.Enforcement != "strong" ||
-		first.Network.Mode != "denied" ||
+		first.Controls.Network != securitymodel.NetworkDenied ||
 		!slices.Contains(first.Filesystem.WritePaths, filepath.Join(root, "report.txt")) {
 		t.Fatalf("profile = %+v", first)
 	}
@@ -89,10 +86,10 @@ func TestCompileDirectoryWriteDoesNotOpenWorkspace(t *testing.T) {
 	if err := os.Mkdir(generated, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	input.Invocation.Resources = append(input.Invocation.Resources, tool.Resource{
+	appendFixtureResources(&input.Prepared, tool.Resource{
 		Kind: "directory", Path: generated, Access: tool.AccessWrite, Tree: true,
 	})
-	profile, err := Compile(input)
+	profile, err := compileProfileForTest(input)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,12 +104,12 @@ func TestCompileDirectoryWriteDoesNotOpenWorkspace(t *testing.T) {
 func TestCompileRejectsUnauthorizedAndDeniedInvocation(t *testing.T) {
 	input := fixtureCompileInput(t)
 	input.Authorized = false
-	if _, err := Compile(input); err == nil {
+	if _, err := compileProfileForTest(input); err == nil {
 		t.Fatal("unauthorized invocation compiled")
 	}
 	input.Authorized = true
 	input.Decision = policy.Decision{Action: policy.ActionDeny}
-	if _, err := Compile(input); err == nil {
+	if _, err := compileProfileForTest(input); err == nil {
 		t.Fatal("denied invocation compiled")
 	}
 }
@@ -120,30 +117,30 @@ func TestCompileRejectsUnauthorizedAndDeniedInvocation(t *testing.T) {
 func TestCompileCarriesExplicitLoopbackAuthority(t *testing.T) {
 	input := fixtureCompileInput(t)
 	input.SandboxPolicy.ManagedProxyPort = 43128
-	input.Invocation.Resources = append(input.Invocation.Resources, tool.Resource{
+	appendFixtureResources(&input.Prepared, tool.Resource{
 		Kind: "host", ID: "localhost", Access: tool.AccessWrite,
-		Protocol: "loopback", Methods: []string{"BIND", "CONNECT"},
+		Protocol: securitymodel.LoopbackProtocol, Methods: []string{"BIND", "CONNECT"},
 		AllowPrivate: true,
 	})
-	profile, err := Compile(input)
+	profile, err := compileProfileForTest(input)
 	if err != nil {
 		t.Fatal(err)
 	}
 	execution := profile.executionAuthority(RequiredControls{})
-	if !profile.Network.Loopback || profile.Network.Mode != "loopback" ||
+	if !profile.Network.Loopback || profile.Controls.Network != securitymodel.NetworkLoopbackAny ||
 		profile.Network.ProxyPort != 0 || !execution.AllowLoopback ||
 		execution.ManagedProxyPort != 0 || !execution.LoopbackOnly() ||
-		!slices.Contains(profile.Network.Targets, "loopback://localhost:0") {
+		len(profile.Network.Targets) != 0 {
 		t.Fatalf("loopback profile = %+v execution = %+v", profile.Network, execution)
 	}
 }
 
 func TestProfileDigestDetectsMutation(t *testing.T) {
-	profile, err := Compile(fixtureCompileInput(t))
+	profile, err := compileProfileForTest(fixtureCompileInput(t))
 	if err != nil {
 		t.Fatal(err)
 	}
-	profile.Network.Mode = "unrestricted"
+	profile.Controls.Network = securitymodel.NetworkDirect
 	if err := profile.Validate(); err == nil {
 		t.Fatal("mutated profile was accepted")
 	}
@@ -151,25 +148,25 @@ func TestProfileDigestDetectsMutation(t *testing.T) {
 
 func TestLeaseRejectsInsufficientControls(t *testing.T) {
 	input := fixtureCompileInput(t)
-	input.Capability.Effective.Network = controlmatrix.NetworkDirect
+	input.Capability.Effective.Network = securitymodel.NetworkDirect
 	input.SandboxPolicy.AllowNetwork = true
-	profile, err := Compile(input)
+	profile, err := compileProfileForTest(input)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if profile.Controls.Network != controlmatrix.NetworkDirect {
+	if profile.Controls.Network != securitymodel.NetworkDirect {
 		t.Fatalf("profile did not derive partial controls: %+v", profile)
 	}
-	operation, err := BuildExecutionOperation(OperationInput{
+	operation, err := buildFixtureOperation(operationInput{
 		WorkspaceRoot:       input.SandboxPolicy.WorkspaceRoot,
 		WorkspaceGeneration: 1,
-		Invocation:          fixturePreparedInvocation(input.SandboxPolicy.WorkspaceRoot),
-		Effect: effect.Effect{
-			Kind: effect.ProcessReadOnly, Risk: effect.RiskLow,
-			Reversibility: effect.Reversible,
+		Invocation:          resolvePreparedFixture(fixturePreparedInvocation(input.SandboxPolicy.WorkspaceRoot)),
+		Effect: securitymodel.Effect{
+			Kind: securitymodel.ProcessReadOnly, Risk: securitymodel.RiskLow,
+			Reversibility: securitymodel.Reversible,
 		},
 		Required: RequiredControls{
-			Network: controlmatrix.NetworkDenied,
+			Network: securitymodel.NetworkDenied,
 		},
 	})
 	if err != nil {
@@ -188,16 +185,20 @@ func TestLeaseRejectsInsufficientControls(t *testing.T) {
 
 func TestReplacementArgumentsProduceDifferentProfileDigest(t *testing.T) {
 	input := fixtureCompileInput(t)
-	first, err := Compile(input)
+	input.Prepared = preparedForPolicy(input.Invocation)
+	first, err := compileProfileForTest(input)
 	if err != nil {
 		t.Fatal(err)
 	}
 	input.Invocation.Arguments = json.RawMessage(`{"command":"go env"}`)
-	input.Invocation.Resources = []tool.Resource{{
+	resolved := input.Prepared.Assessment.Input()
+	resolved.Resources = nil
+	input.Prepared.Assessment = securitymodel.Assess(resolved)
+	appendFixtureResources(&input.Prepared, tool.Resource{
 		Kind: "file", Path: filepath.Join(t.TempDir(), "other.txt"),
 		Access: tool.AccessWrite,
-	}}
-	second, err := Compile(input)
+	})
+	second, err := compileProfileForTest(input)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -208,7 +209,8 @@ func TestReplacementArgumentsProduceDifferentProfileDigest(t *testing.T) {
 
 func TestProfileBindsPolicySourceRevision(t *testing.T) {
 	input := fixtureCompileInput(t)
-	first, err := Compile(input)
+	input.Prepared = preparedForPolicy(input.Invocation)
+	first, err := compileProfileForTest(input)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -220,7 +222,7 @@ func TestProfileBindsPolicySourceRevision(t *testing.T) {
 		t.Fatal(err)
 	}
 	input.Runtime = input.Runtime.CloneSampling()
-	second, err := Compile(input)
+	second, err := compileProfileForTest(input)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -241,35 +243,103 @@ func TestProfileBindsPolicySourceRevision(t *testing.T) {
 	}
 }
 
+func TestProfileProvenanceBindsConstitutionAndDecisionLayer(t *testing.T) {
+	input := fixtureCompileInput(t)
+	input.Decision.Layer = policy.LayerPosture
+	input.Prepared = preparedForPolicy(input.Invocation)
+	first, err := compileProfileForTest(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := input.Runtime.SetConstitution([]policy.Rule{{
+		Tool: "*", Resource: "secrets/", Action: policy.ActionDeny,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	input.Runtime = input.Runtime.CloneSampling()
+	second, err := compileProfileForTest(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sources := map[string]AuthoritySource{}
+	for _, source := range second.Provenance {
+		sources[source.Kind] = source
+	}
+	if first.Digest == second.Digest || sources["constitution"].Digest == "" ||
+		sources["decision_layer"].Value != string(policy.LayerPosture) {
+		t.Fatalf("provenance = %+v", second.Provenance)
+	}
+}
+
 func fixtureCompileInput(t *testing.T) CompileInput {
 	t.Helper()
 	root := t.TempDir()
-	return CompileInput{
+	input := CompileInput{
 		Runtime: policy.DefaultRuntime(policy.ModeAct, policy.PermissionBypass),
-		Invocation: policy.Invocation{
-			CallID: "fixture", Tool: "exec_command",
+		Invocation: resolvePolicyFixture(policyInvocationFixture{
+			CallID: "fixture", Tool: "run_command",
 			Arguments: json.RawMessage(`{"command":"go test ./..."}`),
 			Resources: []tool.Resource{{
 				Kind: "repo", Path: root, Access: tool.AccessRead, Tree: true,
 			}},
 			Capability: tool.CapabilityProcess, Access: tool.AccessRead,
 			Sandbox: tool.SandboxStrong, Validated: true,
-		},
+		}),
 		Decision:   policy.Decision{Action: policy.ActionAllow},
 		Authorized: true, Revision: 1, Enforcement: "strong",
 		Capability: sandbox.Capability{
 			Backend: "seatbelt", Available: true,
-			Effective: controlmatrix.Matrix{FilesystemRead: controlmatrix.
-				FilesystemReadDeclaredRoots,
+			Effective: securitymodel.Controls{FilesystemRead: securitymodel.FilesystemReadDeclaredRoots,
 
-				FilesystemWrite: controlmatrix.FilesystemWriteExactPaths, Network: controlmatrix.
-							NetworkDenied, ProcessTree: controlmatrix.ProcessTreeGroupKill,
-				CrossProcess: controlmatrix.CrossProcessUnrestricted,
-				Syscall:      controlmatrix.SyscallDenyDangerous, IPC: controlmatrix.
-						IPCUnrestricted, PathIdentity: controlmatrix.PathIdentityDescriptorRelative,
-				ArtifactOrigin: controlmatrix.ArtifactOriginUnverifiedPath, DurableRecovery: controlmatrix.
-						DurableRecoveryMemoryOnly},
+				FilesystemWrite: securitymodel.FilesystemWriteExactPaths, Network: securitymodel.NetworkDenied, ProcessTree: securitymodel.ProcessTreeGroupKill,
+				CrossProcess: securitymodel.CrossProcessUnrestricted,
+				Syscall:      securitymodel.SyscallDenyDangerous, IPC: securitymodel.IPCUnrestricted, PathIdentity: securitymodel.PathIdentityDescriptorRelative,
+				ArtifactOrigin: securitymodel.ArtifactOriginUnverifiedPath, DurableRecovery: securitymodel.DurableRecoveryMemoryOnly},
 		},
 		SandboxPolicy: sandbox.Policy{ID: "sandbox", WorkspaceRoot: root},
 	}
+	input.Prepared = preparedForPolicy(input.Invocation)
+	return input
+}
+
+func compileProfileForTest(input CompileInput) (EffectivePermissionProfile, error) {
+	compiled, err := Compile(resolveCompileFixture(input))
+	return compiled.Profile, err
+}
+
+func preparedForPolicy(invocation policy.Invocation) securitymodel.PreparedInvocation {
+	prepared := tool.PreparedInvocation{
+		CallID: invocation.CallID, Tool: invocation.Tool,
+		Ref: tool.ToolRef{
+			Name: invocation.Tool, Source: "builtin:" + invocation.Tool,
+			CatalogID: "catalog-1", Generation: 1, Revision: 1, Authority: 1,
+		},
+		Arguments:  invocation.Arguments,
+		Assessment: invocation.Assessment,
+		Descriptor: tool.Descriptor{
+			Name: invocation.Tool, Capability: invocation.Capability(),
+			AccessMode: invocation.Access(), SandboxRequirement: fixtureSandbox(invocation),
+		},
+		Source: tool.InvocationSourceModel,
+	}
+	prepared.Binding = tool.TrustedBindingFromDescriptor(prepared.Descriptor)
+	return resolvePreparedFixture(prepared)
+}
+
+func fixtureSandbox(invocation policy.Invocation) tool.SandboxRequirement {
+	if invocation.StrongSandbox() {
+		return tool.SandboxStrong
+	}
+	return tool.SandboxNone
+}
+
+// resolveCompileFixture models Guard preparation after a test changes its
+// declared resources. Compile itself must reject unassessed inputs.
+func resolveCompileFixture(input CompileInput) CompileInput {
+	if input.Prepared.Tool == "" {
+		input.Prepared = preparedForPolicy(input.Invocation)
+	}
+	input.Prepared.CallID, input.Prepared.Tool, input.Prepared.Arguments = input.Invocation.CallID, input.Invocation.Tool, input.Invocation.Arguments
+	input.Invocation.Assessment = input.Prepared.Assessment
+	return input
 }

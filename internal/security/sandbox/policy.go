@@ -16,7 +16,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/fwtllh-png/QCode/internal/security/controlmatrix"
+	"github.com/fwtllh-png/QCode/internal/security/envpolicy"
+	securitymodel "github.com/fwtllh-png/QCode/internal/security/model"
 	"github.com/fwtllh-png/QCode/internal/security/pathpolicy"
 )
 
@@ -53,7 +54,7 @@ const ManagedProxyUser = "qcode"
 
 // ManagedProxyURL is the loopback proxy URL a sandboxed command is given.
 // The credential travels as URL userinfo, which HTTP clients send as Basic
-// Proxy-Authorization (proxy form) or Authorization (origin form).
+// Proxy-Authorization; origin-form requests are rejected.
 func ManagedProxyURL(port uint16, credential string) string {
 	endpoint := &url.URL{Scheme: "http", Host: net.JoinHostPort("127.0.0.1", strconv.Itoa(int(port)))}
 	if credential != "" {
@@ -92,9 +93,11 @@ type Options struct {
 	SharedUserTemp      bool
 	HostWriteRoots      []string
 	// EnvironmentNetwork is the user-declared Session Gate Grant. Adapter
-	// discoveries such as GOPROXY hosts stay off this list.
+	// targets inferred from tool configuration stay off this list.
 	EnvironmentNetwork []EnvironmentNetworkTarget
-	// EnvironmentValues are bindable NAME=value entries from the preparer.
+	// EnvironmentValues are selected NAME=value entries from preparation.
+	// Nil captures a source once here; non-nil (including empty) never
+	// inherits the live host environment. Raw source snapshots are not retained.
 	EnvironmentValues []string
 }
 
@@ -132,6 +135,11 @@ type Policy struct {
 }
 
 func BuildPolicy(options Options) (Policy, error) {
+	sourceEnv := options.EnvironmentValues
+	if sourceEnv == nil {
+		sourceEnv = os.Environ()
+	}
+
 	if strings.TrimSpace(options.WorkspaceRoot) == "" {
 		return Policy{}, errors.New("sandbox workspace root is required")
 	}
@@ -148,7 +156,12 @@ func BuildPolicy(options Options) (Policy, error) {
 	privateTemp := options.PrivateTemp
 	ownsPrivateTemp := false
 	if privateTemp == "" {
-		created, createErr := os.MkdirTemp("", "qcode-sandbox-")
+		tempRoot := envpolicy.Value(sourceEnv, "TMPDIR")
+		if tempRoot == "" {
+			// macOS documented default when TMPDIR is absent.
+			tempRoot = "/tmp"
+		}
+		created, createErr := os.MkdirTemp(tempRoot, "qcode-sandbox-")
 		if createErr != nil {
 			return Policy{}, fmt.Errorf("create private sandbox temp: %w", createErr)
 		}
@@ -158,8 +171,8 @@ func BuildPolicy(options Options) (Policy, error) {
 		}
 		// macOS MkdirTemp returns /var/folders/... while /var is a symlink to
 		// /private/var. Seatbelt + Go's MkdirAll then fail with
-		// "mkdir /var: file exists" when creating GOMODCACHE under that path.
-		// Always store the realpath so HOME/TMPDIR/GO*CACHE stay writable.
+		// "mkdir /var: file exists" when creating a private cache under that path.
+		// Store the realpath so private directories remain writable.
 		privateTemp, err = canonicalDirectory(created)
 		if err != nil {
 			_ = os.RemoveAll(created)
@@ -236,14 +249,24 @@ func BuildPolicy(options Options) (Policy, error) {
 			Environment: append([]string(nil), options.Toolchains.Environment...),
 		}
 	}
+	environmentValues := options.EnvironmentValues
+	if environmentValues == nil {
+		environmentValues = envpolicy.WithoutManagedProxy(envpolicy.Baseline(sourceEnv))
+	}
+	if err := envpolicy.ValidatePreparedEnvironment(environmentValues); err != nil {
+		return Policy{}, err
+	}
 	if !options.SkipPATHReadRoots {
-		for _, root := range pathHostReadRoots(workspace, runtimeRoots, hostRoots) {
-			hostRoots = append(hostRoots, root)
-		}
-		toolchains = discoverToolchains(workspace, runtimeRoots, hostRoots)
-		if err := configuredCertificateFiles(&toolchains, workspace); err != nil {
+		var platformValues []string
+		toolchains, platformValues, err = PreparePlatformEnvironment(workspace, sourceEnv)
+		if err != nil {
 			return Policy{}, err
 		}
+		environmentValues, err = envpolicy.Merge(platformValues, options.EnvironmentValues)
+		if err != nil {
+			return Policy{}, err
+		}
+
 		for _, root := range append(
 			append([]string(nil), toolchains.BinDirs...),
 			toolchains.ReadRoots...,
@@ -264,6 +287,15 @@ func BuildPolicy(options Options) (Policy, error) {
 		}
 		hostFiles = append(hostFiles, toolchains.ReadFiles...)
 	}
+	if err := envpolicy.ValidatePreparedEnvironment(toolchains.Environment); err != nil {
+		return Policy{}, err
+	}
+	environmentValues, err = envpolicy.Merge(toolchains.Environment, environmentValues)
+	if err != nil {
+		return Policy{}, err
+	}
+	environmentValues = envpolicy.WithoutManagedProxy(environmentValues)
+
 	slices.Sort(runtimeRoots)
 	slices.Sort(hostRoots)
 	slices.Sort(hostFiles)
@@ -310,7 +342,7 @@ func BuildPolicy(options Options) (Policy, error) {
 		SharedUserTemp:      options.SharedUserTemp,
 		HostWriteRoots:      writeRoots,
 		EnvironmentNetwork:  normalizeEnvironmentNetwork(options.EnvironmentNetwork),
-		EnvironmentValues:   normalizeEnvironmentValues(options.EnvironmentValues),
+		EnvironmentValues:   environmentValues,
 		ownsPrivateTemp:     ownsPrivateTemp,
 	}
 	if policy.ManagedProxyPort != 0 {
@@ -383,36 +415,10 @@ func normalizeEnvironmentNetwork(
 	return out
 }
 
-func normalizeEnvironmentValues(values []string) []string {
-	if len(values) == 0 {
-		return nil
-	}
-	byName := make(map[string]string, len(values))
-	for _, entry := range values {
-		name, value, ok := strings.Cut(entry, "=")
-		name = strings.TrimSpace(name)
-		if !ok || name == "" {
-			continue
-		}
-		byName[name] = value
-	}
-	names := make([]string, 0, len(byName))
-	for name := range byName {
-		names = append(names, name)
-	}
-	slices.Sort(names)
-	out := make([]string, 0, len(names))
-	for _, name := range names {
-		out = append(out, name+"="+byName[name])
-	}
-	return out
-}
-
 // refuseUndeliveredManagedNetwork reports honestly when a v1 environment
 // network grant or proxy port cannot be delivered. The
-// stable workspace channel delivers the declared environment network (the
-// bound auth service answers origin-form requests on it), so a managed
-// port satisfies delivery without a per-command session.
+// stable workspace channel delivers declared environment targets through
+// its Gate, so a managed port satisfies delivery without a per-command session.
 func refuseUndeliveredManagedNetwork(policy Policy, command Command) error {
 	if command.DenyNetwork {
 		return nil
@@ -457,8 +463,6 @@ type policyBinding struct {
 
 func (b *policyBinding) Policy() Policy { return b.policy }
 
-func (b *policyBinding) InnerBackend() Backend { return b.Backend }
-
 func (b *policyBinding) Prepare(ctx context.Context, command Command) (Command, error) {
 	prepared, err := b.Backend.Prepare(ctx, command)
 	if err != nil {
@@ -467,35 +471,65 @@ func (b *policyBinding) Prepare(ctx context.Context, command Command) (Command, 
 	prepared.PreparedPolicyID = b.policy.ID
 	prepared.PreparedAuthorityDigest = command.AuthorityDigest
 	capability := b.Backend.Capability()
-	prepared.PreparedControls = CommandControls(capability, b.policy, command)
+	prepared.PreparedControls, err = CommandControls(capability, b.policy, command)
+	if err != nil {
+		return Command{}, err
+	}
 	return prepared, nil
 }
 
 func EffectiveControls(
 	capability Capability,
 	policy Policy,
-) controlmatrix.Matrix {
+) securitymodel.Controls {
 	controls := capability.Effective
-	desired := controlmatrix.NetworkDenied
-	switch {
-	case policy.ManagedProxyPort != 0:
-		desired = controlmatrix.NetworkProxyTargets
-	case policy.AllowNetwork:
-		desired = controlmatrix.NetworkDirect
+	controls.Network = NetworkControl(capability, policy, ReachTargets)
+	return controls
+}
+
+// NetworkReach is the network reach one execution asks for.
+type NetworkReach uint8
+
+const (
+	ReachNone NetworkReach = iota
+	ReachLoopback
+	ReachTargets
+)
+
+// NetworkControl is the single derivation of the network control an execution
+// runs under. Authority compilation and backend Prepare both call it, so the
+// prepared control can be checked against the compiled one instead of being
+// computed independently.
+func NetworkControl(
+	capability Capability,
+	policy Policy,
+	reach NetworkReach,
+) securitymodel.Network {
+	desired := securitymodel.NetworkDenied
+	switch reach {
+	case ReachLoopback:
+		desired = securitymodel.NetworkLoopbackAny
+	case ReachTargets:
+		switch {
+		case policy.ManagedProxyPort != 0:
+			desired = securitymodel.NetworkProxyTargets
+		case policy.AllowNetwork:
+			desired = securitymodel.NetworkDirect
+		}
 	}
 	if CanEnforceNetwork(capability, desired) {
-		controls.Network = desired
+		return desired
 	}
-	return controls
+	return capability.Effective.Network
 }
 
 // CanEnforceNetwork separates a backend's probed ability to allow a managed
 // proxy from its default network-denied execution posture.
-func CanEnforceNetwork(capability Capability, desired controlmatrix.Network) bool {
-	if desired == controlmatrix.NetworkProxyTargets && capability.ManagedProxy {
+func CanEnforceNetwork(capability Capability, desired securitymodel.Network) bool {
+	if desired == securitymodel.NetworkProxyTargets && capability.ManagedProxy {
 		return capability.Available
 	}
-	return controlmatrix.CanEnforceNetwork(capability.Effective.Network, desired)
+	return securitymodel.CanEnforceNetwork(capability.Effective.Network, desired)
 }
 
 // CommandNetworkPolicy narrows the base policy for one execution. The base
@@ -526,39 +560,55 @@ func CommandControls(
 	capability Capability,
 	policy Policy,
 	command Command,
-) controlmatrix.Matrix {
+) (securitymodel.Controls, error) {
 	policy = CommandNetworkPolicy(policy, command)
-	controls := EffectiveControls(capability, policy)
-	if command.DenyNetwork {
-		if CanEnforceNetwork(
-			capability,
-			controlmatrix.NetworkDenied,
-		) {
-			controls.Network = controlmatrix.NetworkDenied
+	controls := capability.Effective
+	// These are the flags the backend actually emits. For an authorized
+	// execution they validate the already-compiled network ceiling; they do
+	// not reinterpret resource declarations or select a new authority.
+	requested := securitymodel.NetworkDenied
+	switch {
+	case command.DenyNetwork:
+	case policy.ManagedProxyPort != 0:
+		requested = securitymodel.NetworkProxyTargets
+	case command.AllowLoopback:
+		requested = securitymodel.NetworkLoopbackAny
+	case policy.AllowNetwork:
+		requested = securitymodel.NetworkDirect
+	}
+	if command.AuthorityDigest != "" {
+		if command.CompiledNetwork == "" {
+			return securitymodel.Controls{}, errors.New("command has no compiled network control")
 		}
-	} else if command.AllowLoopback && policy.ManagedProxyPort == 0 {
-		if CanEnforceNetwork(
-			capability,
-			controlmatrix.NetworkLoopbackExact,
-		) {
-			controls.Network = controlmatrix.NetworkLoopbackExact
+		if !CanEnforceNetwork(capability, requested) {
+			return securitymodel.Controls{}, errors.New("backend cannot enforce the command network control")
+		}
+		controls.Network = requested
+		if err := (securitymodel.RequiredControls{Network: command.CompiledNetwork}).SatisfiedBy(controls); err != nil {
+			return securitymodel.Controls{}, fmt.Errorf("command network exceeds compiled control: %w", err)
+		}
+	} else {
+		// Standalone capability probes carry no execution lease and report the
+		// backend's actual control, including an inability to isolate networking.
+		if CanEnforceNetwork(capability, requested) {
+			controls.Network = requested
 		}
 	}
-	desiredWrite := controlmatrix.FilesystemWriteWorkspace
+	desiredWrite := securitymodel.FilesystemWriteWorkspace
 	if command.WorkspaceReadOnly {
 		if len(command.WorkspaceWritePaths) == 0 {
-			desiredWrite = controlmatrix.FilesystemWriteDenied
+			desiredWrite = securitymodel.FilesystemWriteDenied
 		} else {
-			desiredWrite = controlmatrix.FilesystemWriteExactPaths
+			desiredWrite = securitymodel.FilesystemWriteExactPaths
 		}
 	}
-	if controlmatrix.CanEnforceFilesystemWrite(
+	if securitymodel.CanEnforceFilesystemWrite(
 		controls.FilesystemWrite,
 		desiredWrite,
 	) {
 		controls.FilesystemWrite = desiredWrite
 	}
-	return controls
+	return controls, nil
 }
 
 func (b *policyBinding) Close() error {
@@ -775,31 +825,6 @@ func platformRuntimeRoots(goos string) []string {
 	default:
 		return nil
 	}
-}
-
-// pathHostReadRoots returns absolute PATH directories that are safe to expose as
-// read-only host roots. Invalid / sensitive / already-covered entries are skipped.
-func pathHostReadRoots(workspace string, runtimeRoots, existing []string) []string {
-	added := make([]string, 0, 8)
-	seen := make(map[string]bool, len(runtimeRoots)+len(existing))
-	for _, root := range runtimeRoots {
-		seen[root] = true
-	}
-	for _, root := range existing {
-		seen[root] = true
-	}
-	for _, directory := range PlatformPATHDirectories() {
-		canonical, err := canonicalExisting(directory)
-		if err != nil || seen[canonical] {
-			continue
-		}
-		if err := validateInjectedRoot(canonical, workspace); err != nil {
-			continue
-		}
-		seen[canonical] = true
-		added = append(added, canonical)
-	}
-	return added
 }
 
 // ExecutableReadable reports whether the OS sandbox profile built from this

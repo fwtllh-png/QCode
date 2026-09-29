@@ -17,8 +17,8 @@ import (
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
 	"github.com/fwtllh-png/QCode/internal/platform/process"
 	"github.com/fwtllh-png/QCode/internal/security/authority"
-	"github.com/fwtllh-png/QCode/internal/security/controlmatrix"
 	"github.com/fwtllh-png/QCode/internal/security/egress"
+	securitymodel "github.com/fwtllh-png/QCode/internal/security/model"
 	"github.com/fwtllh-png/QCode/internal/security/policy"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
 )
@@ -40,7 +40,7 @@ func TestRealManagedProxyBlocksDirectEgress(t *testing.T) {
 	defer upstream.Close()
 	targetURL, _ := url.Parse(upstream.URL)
 	portValue, _ := strconv.ParseUint(targetURL.Port(), 10, 16)
-	gate := &egress.Gate{}
+	gate := egress.NewStaticGate()
 	gate.AllowTarget(egress.Target{
 		Host: targetURL.Hostname(), Protocol: "http", Port: uint16(portValue),
 		Methods: []string{http.MethodGet}, AllowPrivate: true,
@@ -70,9 +70,9 @@ func TestRealManagedProxyBlocksDirectEgress(t *testing.T) {
 	}
 	defer pinned.Close()
 	sandboxPolicy, _ := sandbox.BackendPolicy(backend)
-	profile, err := authority.Compile(authority.CompileInput{
+	profile, err := compileTestProfile(authority.CompileInput{
 		Runtime: policy.DefaultRuntime(policy.ModeAct, policy.PermissionSuggest),
-		Invocation: policy.Invocation{
+		Invocation: resolvePolicyFixture(policyInvocationFixture{
 			CallID: "approved-network", Tool: "exec_command",
 			Arguments: json.RawMessage(`{"command":"curl"}`), Validated: true,
 			Capability: tool.CapabilityProcess, Access: tool.AccessRead,
@@ -83,7 +83,7 @@ func TestRealManagedProxyBlocksDirectEgress(t *testing.T) {
 					Port: uint16(portValue), Methods: []string{"GET"}, AllowPrivate: true,
 					Access: tool.AccessWrite},
 			},
-		},
+		}),
 		Authorized: true, Decision: policy.Decision{Action: policy.ActionAsk},
 		Revision: 1, Enforcement: "strong",
 		Capability: backend.Capability(), SandboxPolicy: sandboxPolicy,
@@ -91,11 +91,11 @@ func TestRealManagedProxyBlocksDirectEgress(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if profile.Network.Mode != "managed" || profile.Network.ProxyPort != proxy.Port() {
+	if profile.Controls.Network != securitymodel.NetworkProxyTargets || profile.Network.ProxyPort != proxy.Port() {
 		t.Fatalf("approved target lost proxy authority: %+v", profile.Network)
 	}
 	execution := profile.ExecutionAuthorityFor(authority.ExecutionOperation{
-		Required: authority.RequiredControls{Network: controlmatrix.NetworkProxyTargets},
+		Required: authority.RequiredControls{Network: securitymodel.NetworkProxyTargets},
 	})
 	ctx, err := sandbox.WithExecutionAuthority(t.Context(), execution)
 	if err != nil {
@@ -154,7 +154,7 @@ func TestRealSessionProxyIsolatesSiblingPorts(t *testing.T) {
 	defer right.Close()
 	root := t.TempDir()
 	backend, err := egress.NewManagedBackend(
-		&egress.Gate{},
+		egress.NewStaticGate(),
 		sandbox.Options{WorkspaceRoot: root},
 		sandbox.NewPlatformBackend,
 	)
@@ -251,18 +251,18 @@ func TestRealSessionProxyIsolatesSiblingPorts(t *testing.T) {
 func sandboxedLoopbackContext(t *testing.T, backend sandbox.Backend, root string) context.Context {
 	t.Helper()
 	sandboxPolicy, _ := sandbox.BackendPolicy(backend)
-	profile, err := authority.Compile(authority.CompileInput{
+	profile, err := compileTestProfile(authority.CompileInput{
 		Runtime: policy.DefaultRuntime(policy.ModeAct, policy.PermissionSuggest),
-		Invocation: policy.Invocation{
+		Invocation: resolvePolicyFixture(policyInvocationFixture{
 			CallID: "loopback-probe", Tool: "exec_command",
 			Arguments: json.RawMessage(`{"command":"curl"}`), Validated: true,
 			Capability: tool.CapabilityProcess, Access: tool.AccessRead,
 			Sandbox: tool.SandboxStrong,
 			Resources: []tool.Resource{
 				{Kind: "repo", Path: root, Access: tool.AccessRead, Tree: true},
-				{Kind: "host", ID: "localhost", Protocol: "loopback", Access: tool.AccessRead},
+				{Kind: "host", ID: "localhost", Protocol: securitymodel.LoopbackProtocol, Access: tool.AccessRead},
 			},
-		},
+		}),
 		Authorized: true, Decision: policy.Decision{Action: policy.ActionAsk},
 		Revision: 1, Enforcement: "strong",
 		Capability: backend.Capability(), SandboxPolicy: sandboxPolicy,
@@ -271,7 +271,7 @@ func sandboxedLoopbackContext(t *testing.T, backend sandbox.Backend, root string
 		t.Fatal(err)
 	}
 	execution := profile.ExecutionAuthorityFor(authority.ExecutionOperation{
-		Required: authority.RequiredControls{Network: controlmatrix.NetworkLoopbackExact},
+		Required: authority.RequiredControls{Network: securitymodel.NetworkLoopbackAny},
 	})
 	ctx, err := sandbox.WithExecutionAuthority(t.Context(), execution)
 	if err != nil {
@@ -306,14 +306,14 @@ func sandboxedProxyContext(
 			Access: tool.AccessWrite,
 		})
 	}
-	profile, err := authority.Compile(authority.CompileInput{
+	profile, err := compileTestProfile(authority.CompileInput{
 		Runtime: policy.DefaultRuntime(policy.ModeAct, policy.PermissionSuggest),
-		Invocation: policy.Invocation{
+		Invocation: resolvePolicyFixture(policyInvocationFixture{
 			CallID: "session-isolation", Tool: "exec_command",
 			Arguments: json.RawMessage(`{"command":"curl"}`), Validated: true,
 			Capability: tool.CapabilityProcess, Access: tool.AccessRead,
 			Sandbox: tool.SandboxStrong, Resources: resources,
-		},
+		}),
 		Authorized: true, Decision: policy.Decision{Action: policy.ActionAsk},
 		Revision: 1, Enforcement: "strong",
 		Capability: backend.Capability(), SandboxPolicy: sandboxPolicy,
@@ -322,7 +322,7 @@ func sandboxedProxyContext(
 		t.Fatal(err)
 	}
 	execution := profile.ExecutionAuthorityFor(authority.ExecutionOperation{
-		Required: authority.RequiredControls{Network: controlmatrix.NetworkProxyTargets},
+		Required: authority.RequiredControls{Network: securitymodel.NetworkProxyTargets},
 	})
 	ctx, err := sandbox.WithExecutionAuthority(t.Context(), execution)
 	if err != nil {
@@ -349,4 +349,37 @@ func httpTarget(t *testing.T, endpoint, method string) egress.Target {
 
 func shellQuote(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
+}
+
+func compileTestProfile(input authority.CompileInput) (authority.EffectivePermissionProfile, error) {
+	invocation := input.Invocation
+	prepared := tool.PreparedInvocation{
+		CallID: invocation.CallID, Tool: invocation.Tool,
+		Ref: tool.ToolRef{
+			Name: invocation.Tool, Source: "builtin:" + invocation.Tool,
+			CatalogID: "catalog", Generation: 1, Revision: 1, Authority: 1,
+		},
+		Arguments: invocation.Arguments,
+		Descriptor: tool.Descriptor{
+			Name: invocation.Tool, Capability: invocation.Capability(),
+			AccessMode: invocation.Access(), SandboxRequirement: fixtureSandboxRequirement(invocation),
+		},
+		Source: tool.InvocationSourceModel,
+	}
+	prepared.Binding = tool.TrustedBindingFromDescriptor(prepared.Descriptor)
+	prepared.Assessment = input.Invocation.Assessment
+	resolved, err := prepared.SecurityInvocation()
+	if err != nil {
+		return authority.EffectivePermissionProfile{}, err
+	}
+	input.Prepared = resolved
+	compiled, err := authority.Compile(input)
+	return compiled.Profile, err
+}
+
+func fixtureSandboxRequirement(invocation policy.Invocation) tool.SandboxRequirement {
+	if invocation.StrongSandbox() {
+		return tool.SandboxStrong
+	}
+	return tool.SandboxNone
 }

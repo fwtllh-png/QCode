@@ -166,7 +166,7 @@ func deepSeekLiveRuntimeWithRoute(
 		t.Skipf("DeepSeek live control skipped: configured credential is unavailable: %v", err)
 	}
 
-	gate := &egress.Gate{}
+	gate := egress.NewStaticGate()
 	if !gate.AllowURL(route.Endpoint()) {
 		t.Fatalf("cannot grant DeepSeek endpoint %q", route.Endpoint())
 	}

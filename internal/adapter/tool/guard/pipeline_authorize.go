@@ -10,7 +10,6 @@ import (
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
 	"github.com/fwtllh-png/QCode/internal/security/pathpolicy"
 	"github.com/fwtllh-png/QCode/internal/security/policy"
-	securityresource "github.com/fwtllh-png/QCode/internal/security/resource"
 )
 
 var errWorkspaceUnchanged = errors.New("workspace edit produces no changes")
@@ -33,127 +32,93 @@ func (g *Guard) authorize(
 	binding tool.CatalogBinding,
 ) (preparedExecution, error) {
 	arguments := append(json.RawMessage(nil), raw...)
+	invocation, executor, err := g.prepare(ctx, name, callID, arguments, binding)
+	if err != nil {
+		return preparedExecution{}, err
+	}
 	var approvalWait time.Duration
 	for {
-		invocation, executor, err := g.prepare(ctx, name, callID, arguments, binding)
+		// An approval wait may change policy or the catalog. Recheck them against
+		// the frozen invocation without resolving paths or assessing it again.
+		if _, err := g.registry.ResolveTrustedBinding(invocation.Ref); err != nil {
+			return preparedExecution{}, err
+		}
+		policyInvocation := g.policyInput(callID, invocation)
+		started := g.now()
+		runtime, err := g.samplePolicy()
 		if err != nil {
 			return preparedExecution{}, err
 		}
-		if err := g.checkControlPlaneWrites(invocation.Resources); err != nil {
-			return preparedExecution{
-				invocation: invocation, executor: executor, arguments: arguments,
-				waited: approvalWait,
-			}, err
-		}
-		if err := g.preflightFileWrites(invocation); err != nil {
-			return preparedExecution{
-				invocation: invocation, executor: executor, arguments: arguments,
-				waited: approvalWait,
-			}, err
-		}
-		policyInvocation := policyInput(callID, invocation)
-		started := g.now()
-		runtime := g.Policy().CloneSampling()
-		decision := runtime.Evaluate(policyInvocation)
+		decision := runtime.Decide(policyInvocation)
 		reviewLatency := g.now().Sub(started)
-		if g.forceEditPlanApproval && invocation.Binding.Journaled() &&
-			decision.Action == policy.ActionAllow {
-			decision.Action = policy.ActionAsk
-			decision.Code = "edit_plan_required"
-			decision.Reason = "workspace writes require a fresh edit plan approval"
-		}
-		hostProcessApproval :=
-			invocation.Binding.Effect.Approval == tool.ApprovalPolicyOnce
-		if hostProcessApproval &&
-			decision.Action != policy.ActionDeny &&
-			decision.Action != policy.ActionHold {
-			decision.Action = policy.ActionAsk
-			decision.Code = "host_process_approval_required"
-			decision.Reason = "host process execution requires one-time user approval"
+		prepared := preparedExecution{
+			invocation: invocation, executor: executor,
+			arguments: arguments, runtime: runtime,
+			decision: decision, waited: approvalWait,
 		}
 		g.observeApproval("evaluated", policyInvocation, decision, 0)
 		switch decision.Action {
 		case policy.ActionDeny, policy.ActionHold:
 			g.observeApproval("denied", policyInvocation, decision, 0)
-			return preparedExecution{
-					invocation: invocation, executor: executor,
-					arguments: arguments, runtime: runtime,
-					decision: decision, waited: approvalWait,
-				}, &policy.DecisionError{
-					Code: decision.Code, Reason: decision.Reason,
-				}
-		case policy.ActionAllow:
+			return prepared, g.decisionError(decision)
+		case policy.ActionAllow, policy.ActionAsk:
+		default:
+			return preparedExecution{}, errors.New("tool guard received invalid policy action")
+		}
+		if err := g.preflightFileWrites(invocation); err != nil {
+			return prepared, err
+		}
+		if decision.Action == policy.ActionAllow {
 			if decision.Code == "auto_review_allowed" {
 				g.observeApproval("auto_allowed", policyInvocation, decision, reviewLatency)
 			}
 			g.grantNetworkHosts(ctx, policyInvocation)
-			return preparedExecution{
-				invocation: invocation, executor: executor,
-				arguments: arguments, runtime: runtime,
-				decision: decision, waited: approvalWait,
-			}, nil
-		case policy.ActionAsk:
-			authorized, replacement, waited, err := g.authorizeAsk(
-				ctx,
-				invocation,
-				executor,
-				policyInvocation,
-				decision,
-				reviewLatency,
-			)
-			approvalWait += waited
-			if err != nil {
-				return preparedExecution{
-					invocation: invocation, executor: executor,
-					arguments: arguments, runtime: runtime,
-					decision: decision, waited: approvalWait,
-				}, err
+			return prepared, nil
+		}
+		authorized, replacement, waited, err := g.authorizeAsk(
+			ctx,
+			invocation,
+			executor,
+			policyInvocation,
+			decision,
+			reviewLatency,
+		)
+		approvalWait += waited
+		prepared.waited = approvalWait
+		if err != nil {
+			return prepared, err
+		}
+		if authorized {
+			if _, err := g.registry.ResolveTrustedBinding(invocation.Ref); err != nil {
+				return prepared, err
 			}
-			if authorized {
-				if invocation.Binding.Capability == tool.CapabilityNetwork {
-					g.grantNetworkHosts(ctx, policyInvocation)
-				}
-				return preparedExecution{
-					invocation: invocation, executor: executor,
-					arguments: arguments, runtime: runtime,
-					decision: decision, waited: approvalWait,
-				}, nil
+			if invocation.Binding.Capability == tool.CapabilityNetwork {
+				g.grantNetworkHosts(ctx, policyInvocation)
 			}
-			if len(replacement) != 0 {
-				arguments = replacement
-			}
-		default:
-			return preparedExecution{}, errors.New("tool guard received invalid policy action")
+			return prepared, nil
+		}
+		if replacement != nil {
+			invocation, executor, arguments = replacement.invocation, replacement.executor, replacement.arguments
 		}
 	}
 }
 
-func (g *Guard) checkControlPlaneWrites(resources []tool.Resource) error {
-	for _, resource := range resources {
-		if !resource.Access.Writes() ||
-			!securityresource.IsPathKind(resource.Kind) ||
-			resource.Path == "" {
-			continue
-		}
-		tree := resource.Tree || resource.Kind != "file"
-		if err := g.controlPlane.CheckWrite(resource.Path, tree); err != nil {
-			decision := &policy.DecisionError{
-				Code:   "control_plane_protected",
-				Reason: err.Error(),
-			}
-			classification, protected, classifyErr :=
-				g.controlPlane.Classify(resource.Path)
-			if classifyErr == nil && protected && classification.Root == pathpolicy.GitDir {
-				return tool.WithRecoveryHint(decision, tool.RecoveryHint{
-					ErrorCategory:  "control_plane_protected",
-					RequiredAction: "use_git_tool",
-					RetryOriginal:  false,
-				})
-			}
-			return decision
-		}
+// decisionError reports a terminal policy decision. A protected write into
+// Git metadata also points the model at the dedicated Git tools.
+func (g *Guard) decisionError(decision policy.Decision) error {
+	err := &policy.DecisionError{Code: decision.Code, Reason: decision.Reason}
+	if decision.Code != "control_plane_protected" || decision.Resource == "" {
+		return err
 	}
-	return nil
+	classification, protected, classifyErr := g.controlPlane.Classify(decision.Resource)
+	if classifyErr != nil || !protected || classification.Root != pathpolicy.GitDir {
+		return err
+	}
+	return tool.WithRecoveryHint(err, tool.RecoveryHint{
+		ErrorCategory:  "control_plane_protected",
+		RequiredAction: "use_git_tool",
+		RetryOriginal:  false,
+	})
 }
 
 func (g *Guard) authorizeAsk(
@@ -163,11 +128,9 @@ func (g *Guard) authorizeAsk(
 	policyInvocation policy.Invocation,
 	decision policy.Decision,
 	reviewLatency time.Duration,
-) (authorized bool, replacement json.RawMessage, waited time.Duration, err error) {
+) (authorized bool, replacement *preparedExecution, waited time.Duration, err error) {
 	now := g.now()
-	hostProcessApproval :=
-		invocation.Binding.Effect.Approval == tool.ApprovalPolicyOnce
-	if !g.forceEditPlanApproval && !hostProcessApproval &&
+	if decision.Approval == policy.ApprovalReusable &&
 		g.policy.Approvals != nil &&
 		g.policy.Approvals.MatchInvocation(policyInvocation, now) {
 		g.observeApproval("grant_hit", policyInvocation, decision, 0)
@@ -186,7 +149,7 @@ func (g *Guard) authorizeAsk(
 		ask.DisableReplace = true
 		ask.EditPlan = editPlan
 	}
-	if hostProcessApproval {
+	if decision.Approval != policy.ApprovalReusable {
 		ask.AllowedScopes = []policy.ApprovalScope{policy.ApprovalOnce}
 		ask.DisableReplace = true
 	}
@@ -203,19 +166,24 @@ func (g *Guard) authorizeAsk(
 		}
 		return true, nil, waited, nil
 	}
-	if hostProcessApproval {
+	if decision.Approval != policy.ApprovalReusable {
 		return true, nil, waited, nil
 	}
 	if len(approval.ReplacementArguments) != 0 {
-		replacement = append(json.RawMessage(nil), approval.ReplacementArguments...)
-		prepared, _, prepareErr := g.prepare(
-			ctx, invocation.Tool, invocation.CallID, replacement, invocation.Ref.Binding(),
+		arguments := append(json.RawMessage(nil), approval.ReplacementArguments...)
+		prepared, executor, prepareErr := g.prepare(
+			ctx, invocation.Tool, invocation.CallID, arguments, invocation.Ref.Binding(),
 		)
 		if prepareErr != nil {
 			return false, nil, waited, fmt.Errorf("replacement arguments: %w", prepareErr)
 		}
-		replacementInvocation := policyInput(invocation.CallID, prepared)
-		replacementDecision := g.policy.Evaluate(replacementInvocation)
+		replacement = &preparedExecution{invocation: prepared, executor: executor, arguments: arguments}
+		replacementInvocation := g.policyInput(invocation.CallID, prepared)
+		runtime, err := g.samplePolicy()
+		if err != nil {
+			return false, nil, waited, err
+		}
+		replacementDecision := runtime.Decide(replacementInvocation)
 		switch replacementDecision.Action {
 		case policy.ActionAllow:
 			return false, replacement, waited, nil
@@ -225,9 +193,7 @@ func (g *Guard) authorizeAsk(
 			}
 			return false, replacement, waited, nil
 		default:
-			return false, nil, waited, &policy.DecisionError{
-				Code: replacementDecision.Code, Reason: replacementDecision.Reason,
-			}
+			return false, nil, waited, g.decisionError(replacementDecision)
 		}
 	}
 	if err := g.cacheApproval(ctx, policyInvocation, approval); err != nil {

@@ -122,7 +122,7 @@ func TestVerifiedAppendMatchesLegacyEncoding(t *testing.T) {
 		if string(verified[index]) != string(legacy[index]) {
 			t.Fatalf(
 				"fact %d differs between verified and legacy encoding:\n"+
-					"verified: %s\nlegacy:   %s",
+					"verified: %s\nbuiltin:   %s",
 				index+1,
 				verified[index],
 				legacy[index],

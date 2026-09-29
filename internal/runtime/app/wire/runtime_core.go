@@ -38,6 +38,7 @@ func (b runtimeCoreBuilder) BuildChild(spec app.ChildSpec) (*app.EngineAdapter, 
 			return nil, err
 		}
 		openedToolset = spec.Workspace
+		b.guardFactory.preparationFacts = toolset.preparationFacts
 		options.Tools = toolset.registry
 		options.TurnSnapshots.SkillSelection = func(
 			query string,

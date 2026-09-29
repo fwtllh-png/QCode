@@ -19,6 +19,7 @@ import (
 	interacttool "github.com/fwtllh-png/QCode/internal/adapter/tool/interact"
 	webtool "github.com/fwtllh-png/QCode/internal/adapter/tool/web"
 	"github.com/fwtllh-png/QCode/internal/config"
+	"github.com/fwtllh-png/QCode/internal/environment"
 	"github.com/fwtllh-png/QCode/internal/observability/diagnostics"
 	"github.com/fwtllh-png/QCode/internal/observability/verify"
 	"github.com/fwtllh-png/QCode/internal/orchestration/chatmerge"
@@ -26,7 +27,6 @@ import (
 	"github.com/fwtllh-png/QCode/internal/persist/contentstore"
 	"github.com/fwtllh-png/QCode/internal/persist/joblog"
 	"github.com/fwtllh-png/QCode/internal/persist/workspacejournal"
-	platformenv "github.com/fwtllh-png/QCode/internal/platform/environment"
 	"github.com/fwtllh-png/QCode/internal/platform/process"
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
 	"github.com/fwtllh-png/QCode/internal/security/egress"
@@ -308,16 +308,17 @@ func worktreeGitReadRoots(root, expectedCommonDir string) ([]string, error) {
 // childToolset roots one child's registry, sandbox and journal at its worktree;
 // reusing the parent's registry would redirect child writes into the parent.
 type childToolset struct {
-	registry     *tool.Registry
-	backend      sandbox.Backend
-	processes    *process.SessionManager
-	journal      *workspacejournal.Manager
-	jobLogs      *joblog.Store
-	inputHost    *interacttool.Host
-	diagnostics  diagnostics.Runner
-	verify       verify.Runner
-	files        *filetool.Tools
-	skillCatalog *skill.Catalog
+	preparationFacts []environment.Fact
+	registry         *tool.Registry
+	backend          sandbox.Backend
+	processes        *process.SessionManager
+	journal          *workspacejournal.Manager
+	jobLogs          *joblog.Store
+	inputHost        *interacttool.Host
+	diagnostics      diagnostics.Runner
+	verify           verify.Runner
+	files            *filetool.Tools
+	skillCatalog     *skill.Catalog
 }
 
 func (t *childToolset) close() {
@@ -451,7 +452,16 @@ func (c *childToolsets) open(
 	if err != nil {
 		return nil, fmt.Errorf("child state layout: %w", err)
 	}
-	options, _, err := bindEnvironmentSandbox(sandbox.Options{
+	// Inherit only the parent's selected execution values and platform binding.
+	// Recompile configured resource paths against this child's isolated home.
+	sourceEnv := []string{}
+	var inherited *sandbox.ToolchainExposure
+	if policy, ok := sandbox.BackendPolicy(parentSandbox); ok {
+		sourceEnv = append(sourceEnv, policy.EnvironmentValues...)
+		exposure := policy.Toolchains
+		inherited = &exposure
+	}
+	options, preparationFacts, err := bindEnvironmentSandbox(sandbox.Options{
 		WorkspaceRoot:          root,
 		PrivateTemp:            stateLayout.SandboxHome,
 		ManagedProxyPort:       c.managedProxyPort,
@@ -459,9 +469,11 @@ func (c *childToolsets) open(
 		HostReadRoots:          hostReadRoots,
 		HostReadFiles:          c.diagnosticReadFiles,
 		EnvironmentContract:    c.environment.Contract,
-		EnvironmentProfile:     platformenv.ChildProfile(c.environment.Profile),
+		EnvironmentProfile:     environment.ChildProfile(c.environment.Profile),
 		SharedUserTemp:         false,
-	}, c.environment, "", stateLayout.SandboxHome)
+		Toolchains:             inherited,
+		SkipPATHReadRoots:      inherited != nil,
+	}, c.environment, "", stateLayout.SandboxHome, sourceEnv)
 	if err != nil {
 		return nil, fmt.Errorf("child environment: %w", err)
 	}
@@ -470,7 +482,12 @@ func (c *childToolsets) open(
 		return nil, fmt.Errorf("child sandbox: %w", err)
 	}
 	if opener, ok := egress.LookupProcessSessionOpener(parentSandbox); ok {
-		backend = egress.BindSessionOpener(backend, opener)
+		composed, composeErr := egress.NewSessionBackend(backend, opener)
+		if composeErr != nil {
+			_ = sandbox.CloseBackend(backend)
+			return nil, fmt.Errorf("child sandbox: %w", composeErr)
+		}
+		backend = composed
 	}
 	// Child process journals stay isolated from the parent and sibling roots.
 	processes := process.NewSessionManager(0)
@@ -540,7 +557,8 @@ func (c *childToolsets) open(
 		}
 	}
 	toolset := &childToolset{
-		registry: registry, backend: backend, processes: processes, journal: journal,
+		preparationFacts: preparationFacts,
+		registry:         registry, backend: backend, processes: processes, journal: journal,
 		jobLogs: jobs, inputHost: inputHost,
 		diagnostics: diagnostics.NewCommandRunner(root, backend, c.diagnosticCommands),
 		verify:      runner, files: files,

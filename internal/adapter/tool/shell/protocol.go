@@ -13,12 +13,10 @@ import (
 
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
 	"github.com/fwtllh-png/QCode/internal/adapter/tool/typed"
-	"github.com/fwtllh-png/QCode/internal/platform/environment"
 	"github.com/fwtllh-png/QCode/internal/platform/process"
 	"github.com/fwtllh-png/QCode/internal/platform/tokenestimate"
-	"github.com/fwtllh-png/QCode/internal/security/controlmatrix"
 	"github.com/fwtllh-png/QCode/internal/security/egress"
-	"github.com/fwtllh-png/QCode/internal/security/goproxy"
+	securitymodel "github.com/fwtllh-png/QCode/internal/security/model"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
 )
 
@@ -80,14 +78,16 @@ type protocolExecutor struct {
 	runtime                    outcomeRuntime
 	expand                     bool
 	validateMissingWriteParent bool
+	verificationField          string
 }
 
 func (e *protocolExecutor) TrustedBinding() tool.TrustedBinding {
 	binding := tool.TrustedBindingFromDescriptor(e.runtime.Descriptor())
 	binding.Capability = tool.CapabilityProcess
 	binding.ValidateMissingWriteParent = e.validateMissingWriteParent
-	binding.Required.ProcessTree = controlmatrix.ProcessTreeGroupKill
+	binding.Required.ProcessTree = securitymodel.ProcessTreeGroupKill
 	binding.ProducesVerificationEvidence = true
+	binding.VerificationField = e.verificationField
 	return binding
 }
 
@@ -142,6 +142,7 @@ func registerProcessProtocol(
 			runtime:                    execOutcome,
 			expand:                     true,
 			validateMissingWriteParent: true,
+			verificationField:          "verification",
 		}); err != nil {
 		return err
 	}
@@ -454,7 +455,8 @@ func (e *protocolExecutor) ExpandArguments(
 func (p *commandProtocol) execCommand(
 	ctx context.Context,
 	input execCommandInput,
-) (tool.Result, error) {
+) (out tool.Result, outErr error) {
+	defer func() { attachPreparationFacts(ctx, &out) }()
 	if token := unsupportedPOSIXShellSyntax(input.Command); token != "" {
 		return unsupportedSyntaxResult(token), nil
 	}
@@ -539,7 +541,7 @@ func (p *commandProtocol) execCommand(
 		command = wrapSandboxTempCommand(command)
 	}
 	if result, denied := p.preflightExecutables(
-		sandboxBackend, command, directory, input.CoveredPaths,
+		sandboxBackend, command, directory, input.CoveredPaths, input.Env,
 	); denied {
 		return result, nil
 	}
@@ -562,30 +564,13 @@ func (p *commandProtocol) execCommand(
 	if err != nil {
 		return tool.Result{}, err
 	}
-	authService := goproxy.ServiceFrom(ctx)
-	var priorAuth []environment.Fact
-	if authService != nil {
-		priorAuth = authService.Facts()
-	}
 	sessionTargets := resolveProcessNetworkTargets(sandboxBackend, input.NetworkTargets)
-	// PTY, background, and foreground exec share this path. v1 inherits
-	// user-declared environment network onto the Session Gate; empty model
-	// targets are not an implicit offline signal when a Grant exists, and a
-	// bound auth service itself keeps module fetches online (the contract:
-	// undeclared targets are offline only without grants, an auth service,
-	// and allow_loopback).
-	denyNetwork := len(sessionTargets) == 0 && !input.AllowLoopback &&
-		authService == nil
-	// Session channels gate the command's declared external targets. The
-	// GOPROXY rewrite does not need one when the stable workspace channel
-	// exists: its managed port is pre-authorized by the sandbox profile.
-	needSession := authService != nil &&
-		sandbox.BackendManagedProxyPort(sandboxBackend) == 0
+	// All process modes use declared or inherited targets and explicit loopback authority.
+	denyNetwork := len(sessionTargets) == 0 && !input.AllowLoopback
 	network, err := openProcessNetwork(
 		sandboxBackend,
 		denyNetwork,
 		sessionTargets,
-		needSession,
 	)
 	if err != nil {
 		if result, ok := unsupportedSessionNetworkResult(err); ok {
@@ -598,32 +583,6 @@ func (p *commandProtocol) execCommand(
 	if network != nil {
 		sessionPort, sessionCredential = network.Port(), network.Credential()
 		defer network.Gate().BindRuntimeApprover(egress.RuntimeApproverFrom(ctx))()
-	}
-	if authService != nil {
-		// Point GOPROXY at the stable workspace channel: the managed port is
-		// pre-authorized by the sandbox profile, the bound auth service
-		// enforces its own scope, and module fetches stop forcing
-		// allow_loopback (and its approval) onto otherwise offline-shaped
-		// commands. The per-command session port remains the fallback where
-		// no managed channel exists.
-		proxyListen, proxyCredential := sessionPort, sessionCredential
-		if managed := sandbox.BackendManagedProxyPort(sandboxBackend); managed != 0 {
-			proxyListen = managed
-			proxyCredential = sandbox.BackendManagedProxyCredential(sandboxBackend)
-		}
-		if proxyListen == 0 {
-			if result, ok := unsupportedSessionNetworkResult(fmt.Errorf(
-				"%w: %s",
-				egress.ErrProcessSessionUnsupported,
-				environment.CategoryBackendCapabilityUnsupported,
-			)); ok {
-				return result, nil
-			}
-		}
-		env = authService.RewriteProcessEnv(
-			env,
-			sandbox.ManagedProxyURL(proxyListen, proxyCredential),
-		)
 	}
 	id, err := p.manager.Create(
 		context.WithoutCancel(ctx),
@@ -706,7 +665,7 @@ func (p *commandProtocol) execCommand(
 	}
 	attachMissingCapability(
 		&result,
-		p.sessionEnvironmentFacts(ctx, id, priorAuth),
+		p.sessionEnvironmentFacts(id),
 	)
 	if isolated.session != nil {
 		attachIsolatedCWD(&result, isolated.session)
@@ -927,7 +886,8 @@ func sessionLookupHint(err error) error {
 func (p *commandProtocol) writeStdin(
 	ctx context.Context,
 	input writeStdinInput,
-) (tool.Result, error) {
+) (out tool.Result, outErr error) {
+	defer func() { attachPreparationFacts(ctx, &out) }()
 	yield, err := processYield(input.YieldTimeMS, defaultInteractionWait)
 	if err != nil {
 		return tool.Result{}, err
@@ -979,10 +939,6 @@ func (p *commandProtocol) writeStdin(
 	if network := p.sessionNetwork(input.SessionID); network != nil &&
 		threadID != "" && p.manager.OwnerThread(input.SessionID) == threadID {
 		defer network.Gate().BindRuntimeApprover(egress.RuntimeApproverFrom(ctx))()
-	}
-	var priorAuth []environment.Fact
-	if service := goproxy.ServiceFrom(ctx); service != nil {
-		priorAuth = service.Facts()
 	}
 	if input.Rows != 0 {
 		if err := sessionLookupHint(p.manager.Resize(
@@ -1051,7 +1007,7 @@ func (p *commandProtocol) writeStdin(
 	}
 	attachMissingCapability(
 		&result,
-		p.sessionEnvironmentFacts(ctx, input.SessionID, priorAuth),
+		p.sessionEnvironmentFacts(input.SessionID),
 	)
 	if !wait.Running {
 		// Settle before closing: the process already exited, and the

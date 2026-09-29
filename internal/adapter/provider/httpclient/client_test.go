@@ -995,7 +995,7 @@ func TestClientStreamIdleTimeoutAndNonIdempotentRetry(t *testing.T) {
 func testClient() *Client {
 	client := New()
 	client.Credentials = staticCredentials("")
-	client.Egress = &egress.Gate{}
+	client.Egress = egress.NewStaticGate()
 	client.Egress.SetRuntimeApprover(func(context.Context, egress.Target) error { return nil })
 	return client
 }

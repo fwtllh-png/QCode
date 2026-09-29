@@ -10,7 +10,7 @@ import (
 	"strings"
 
 	"github.com/fwtllh-png/QCode/internal/adapter/model"
-	"github.com/fwtllh-png/QCode/internal/security/keyring"
+	securitycredential "github.com/fwtllh-png/QCode/internal/security/credential"
 )
 
 const maxCredentialBytes = 64 << 10
@@ -35,7 +35,7 @@ func DefaultCredentials() Credentials {
 	return Credentials{
 		LookupEnv: os.LookupEnv,
 		SecretDir: secretDir,
-		Keyring:   keyring.New(),
+		Keyring:   securitycredential.NewKeyringStore(),
 	}
 }
 

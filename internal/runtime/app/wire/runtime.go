@@ -48,9 +48,6 @@ type ExecOptions struct {
 	// WorkspaceIdentity binds editor-visible URI identity for editor hosts.
 	// Non-editor hosts leave it empty and retain local file URI behavior.
 	WorkspaceIdentity protocol.WorkspaceIdentity
-	// SkipHostGoproxyAuth keeps tests from binding the machine GOPROXY
-	// credential onto the process session protocol handler.
-	SkipHostGoproxyAuth bool
 	// ExtraConnections 注入默认连接之外的可选模型路由：每条连接带各自的
 	// 凭证引用与模型清单，进入 SelectableRoutes 与模型目录，会话可按
 	// (provider, model) 热切换。默认连接仍承担 act 路由与凭证热轮换。

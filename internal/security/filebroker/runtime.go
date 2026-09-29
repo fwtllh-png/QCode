@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/fwtllh-png/QCode/internal/security/authority"
-	"github.com/fwtllh-png/QCode/internal/security/effect"
+	securitymodel "github.com/fwtllh-png/QCode/internal/security/model"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
 )
 
@@ -75,7 +75,7 @@ func (r *Runtime) Commit(
 			Tool: toolName, WorkspaceRoot: r.workspace.Root(),
 			WorkspaceID: r.workspaceID, WorkspaceGeneration: 1,
 			Subject: subject, Paths: planPaths(plan),
-			MutationDigest: plan.Digest, Risk: effect.RiskHigh,
+			MutationDigest: plan.Digest, Risk: securitymodel.RiskHigh,
 		},
 	)
 	if err != nil {

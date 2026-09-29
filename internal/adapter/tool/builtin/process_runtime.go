@@ -6,7 +6,7 @@ import (
 	"github.com/fwtllh-png/QCode/internal/platform/workspacequery"
 	"github.com/fwtllh-png/QCode/internal/security/authority"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
-	"github.com/fwtllh-png/QCode/internal/security/workspacebroker"
+	"github.com/fwtllh-png/QCode/internal/orchestration/workspacebroker"
 )
 
 func NewWorkspaceBroker(

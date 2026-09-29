@@ -7,30 +7,10 @@ import (
 	"testing"
 
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
-	"github.com/fwtllh-png/QCode/internal/platform/environment"
 	"github.com/fwtllh-png/QCode/internal/platform/process"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
 	"github.com/fwtllh-png/QCode/testutil/tooltest"
 )
-
-func TestServiceFactsSinceCursorSurvivesRotation(t *testing.T) {
-	first := environment.Fact{Resource: "a", Category: "c1"}
-	second := environment.Fact{Resource: "b", Category: "c2"}
-	if got := serviceFactsSinceCursor(nil, []environment.Fact{first}); len(got) != 1 {
-		t.Fatalf("empty prior: %+v", got)
-	}
-	if got := serviceFactsSinceCursor(
-		[]environment.Fact{first}, []environment.Fact{first, second},
-	); len(got) != 1 || got[0] != second {
-		t.Fatalf("append cursor: %+v", got)
-	}
-	// Rotation (service list reset): length heuristics would drop facts;
-	// the cursor must re-report everything current.
-	rotated := []environment.Fact{{Resource: "z", Category: "c3"}}
-	if got := serviceFactsSinceCursor([]environment.Fact{first, second}, rotated); len(got) != 1 || got[0] != rotated[0] {
-		t.Fatalf("rotation cursor: %+v", got)
-	}
-}
 
 func TestSandboxedChildPATHMatchesPreflightSearchOrder(t *testing.T) {
 	workspace := t.TempDir()
@@ -69,7 +49,7 @@ func TestSandboxedChildPATHMatchesPreflightSearchOrder(t *testing.T) {
 		t.Fatal("backend has no policy")
 	}
 	expected := strings.Join(
-		process.ToolchainSearchPath(policy.Toolchains.BinDirs),
+		process.ToolchainSearchPath(policy.EnvironmentValues),
 		string(os.PathListSeparator),
 	)
 	if strings.TrimSpace(result.Content) != expected {

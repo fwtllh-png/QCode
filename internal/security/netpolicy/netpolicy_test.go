@@ -194,3 +194,22 @@ func TestNormalizeMethods(t *testing.T) {
 		t.Fatal("method with whitespace was accepted")
 	}
 }
+
+func TestCanCarryData(t *testing.T) {
+	plaintext := Target{Scheme: "http", Host: "example.com", Port: 80}
+	for _, test := range []struct {
+		target  Target
+		methods []string
+		want    bool
+	}{
+		{plaintext, []string{"GET", "head", "OPTIONS"}, false},
+		{plaintext, nil, true},
+		{plaintext, []string{"GET", "POST"}, true},
+		{Target{Scheme: "https", Host: "example.com", Port: 443}, []string{"GET"}, true},
+		{Target{Host: "example.com"}, []string{"GET"}, true},
+	} {
+		if got := test.target.CanCarryData(test.methods); got != test.want {
+			t.Fatalf("%s %v CanCarryData = %v, want %v", test.target.Key(), test.methods, got, test.want)
+		}
+	}
+}

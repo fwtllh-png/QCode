@@ -11,16 +11,13 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/fwtllh-png/QCode/internal/adapter/tool"
-	"github.com/fwtllh-png/QCode/internal/security/controlmatrix"
-	"github.com/fwtllh-png/QCode/internal/security/netpolicy"
+	securitymodel "github.com/fwtllh-png/QCode/internal/security/model"
 	"github.com/fwtllh-png/QCode/internal/security/pathpolicy"
 	"github.com/fwtllh-png/QCode/internal/security/policy"
-	securityresource "github.com/fwtllh-png/QCode/internal/security/resource"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
 )
 
-const SchemaVersion = 3
+const SchemaVersion = 5
 
 type FilesystemAuthority struct {
 	WorkspaceRoot      string   `json:"workspace_root"`
@@ -30,17 +27,18 @@ type FilesystemAuthority struct {
 	WorkspaceBaseWrite bool     `json:"workspace_base_write,omitempty"`
 }
 
+// NetworkAuthority lists the declared reach. The enforced network mode is
+// EffectivePermissionProfile.Controls.Network.
 type NetworkAuthority struct {
-	Mode      string   `json:"mode"`
 	Targets   []string `json:"targets,omitempty"`
 	ProxyPort uint16   `json:"proxy_port,omitempty"`
 	Loopback  bool     `json:"loopback,omitempty"`
 }
 
 type ProcessAuthority struct {
-	Allowed     bool   `json:"allowed"`
-	Enforcement string `json:"enforcement"`
-	Backend     string `json:"backend"`
+	Allowed     bool                `json:"allowed"`
+	Enforcement sandbox.Enforcement `json:"enforcement"`
+	Backend     string              `json:"backend"`
 }
 
 type AuthoritySource struct {
@@ -51,48 +49,31 @@ type AuthoritySource struct {
 }
 
 type EffectivePermissionProfile struct {
-	SchemaVersion int                  `json:"schema_version"`
-	Revision      uint64               `json:"revision"`
-	Tool          string               `json:"tool"`
-	Capability    tool.Capability      `json:"capability"`
-	Access        tool.AccessMode      `json:"access"`
-	Filesystem    FilesystemAuthority  `json:"filesystem"`
-	Network       NetworkAuthority     `json:"network"`
-	Process       ProcessAuthority     `json:"process"`
-	Controls      controlmatrix.Matrix `json:"controls"`
-	Provenance    []AuthoritySource    `json:"provenance"`
-	Digest        string               `json:"digest"`
+	SchemaVersion int                      `json:"schema_version"`
+	Revision      uint64                   `json:"revision"`
+	Tool          string                   `json:"tool"`
+	Capability    securitymodel.Capability `json:"capability"`
+	Access        securitymodel.Access     `json:"access"`
+	Filesystem    FilesystemAuthority      `json:"filesystem"`
+	Network       NetworkAuthority         `json:"network"`
+	Process       ProcessAuthority         `json:"process"`
+	Controls      securitymodel.Controls   `json:"controls"`
+	Provenance    []AuthoritySource        `json:"provenance"`
+	Digest        string                   `json:"digest"`
 }
 
-type CompileInput struct {
-	Runtime       *policy.Runtime
-	Invocation    policy.Invocation
-	Decision      policy.Decision
-	Authorized    bool
-	Revision      uint64
-	Enforcement   string
-	Capability    sandbox.Capability
-	SandboxPolicy sandbox.Policy
-}
-
-func Compile(input CompileInput) (EffectivePermissionProfile, error) {
-	if input.Runtime == nil || !input.Invocation.Validated || !input.Authorized {
-		return EffectivePermissionProfile{}, errors.New("authorized validated policy input is required")
-	}
-	if input.Decision.Action == policy.ActionDeny ||
-		input.Decision.Action == policy.ActionHold {
-		return EffectivePermissionProfile{}, errors.New("denied invocation has no effective authority")
-	}
-	if input.Revision == 0 || (input.Enforcement != "strong" && input.Enforcement != "none") {
-		return EffectivePermissionProfile{}, errors.New("authority revision and enforcement are required")
-	}
+func compileProfile(
+	input CompileInput,
+	resources []securitymodel.Resource,
+	reach sandbox.NetworkReach,
+) (EffectivePermissionProfile, error) {
 	capability := input.Capability
 	profile := EffectivePermissionProfile{
 		SchemaVersion: SchemaVersion,
 		Revision:      input.Revision,
 		Tool:          input.Invocation.Tool,
-		Capability:    input.Invocation.Capability,
-		Access:        input.Invocation.Access,
+		Capability:    input.Invocation.Capability(),
+		Access:        input.Invocation.Access(),
 		Filesystem: FilesystemAuthority{
 			WorkspaceRoot: input.SandboxPolicy.WorkspaceRoot,
 		},
@@ -105,8 +86,8 @@ func Compile(input CompileInput) (EffectivePermissionProfile, error) {
 			input.SandboxPolicy,
 		),
 	}
-	compileResources(&profile, input.Invocation)
-	compileSandboxCeiling(&profile, input)
+	compileResources(&profile, input.Invocation, resources)
+	compileSandboxCeiling(&profile, input, reach)
 	profile.Provenance = provenance(input)
 	normalize(&profile)
 	digest, err := profileDigest(profile)
@@ -129,7 +110,10 @@ func (p EffectivePermissionProfile) Validate() error {
 	if expected != p.Digest {
 		return errors.New("effective permission profile digest mismatch")
 	}
-	if p.Process.Enforcement == "strong" && p.Process.Backend == "" {
+	if !p.Process.Enforcement.Valid() {
+		return errors.New("effective permission profile enforcement is invalid")
+	}
+	if p.Process.Enforcement == sandbox.EnforcementStrong && p.Process.Backend == "" {
 		return errors.New("controlled profile has no sandbox backend")
 	}
 	if err := p.Controls.Validate(); err != nil {
@@ -146,15 +130,15 @@ func (p EffectivePermissionProfile) executionAuthority(
 		Enforcement:   p.Process.Enforcement,
 		WorkspaceRoot: p.Filesystem.WorkspaceRoot,
 		WorkspaceBaseWrite: p.Filesystem.WorkspaceBaseWrite ||
-			p.Process.Enforcement == "none",
+			p.Process.Enforcement == sandbox.EnforcementNone,
 		ReadPaths:           append([]string(nil), p.Filesystem.ReadRoots...),
 		WorkspaceWritePaths: append([]string(nil), p.Filesystem.WritePaths...),
 		NetworkTargets:      append([]string(nil), p.Network.Targets...),
 		ManagedProxyPort:    p.Network.ProxyPort,
 		AllowLoopback:       p.Network.Loopback,
-		AllowNetwork:        p.Network.Mode != "denied",
+		AllowNetwork:        p.Controls.Network != securitymodel.NetworkDenied,
 		AllowProcess:        p.Process.Allowed,
-		RequiredControls:    controlmatrix.Requirements(required),
+		RequiredControls:    securitymodel.RequiredControls(required),
 		EffectiveControls:   p.Controls,
 	}
 }
@@ -167,57 +151,52 @@ func (p EffectivePermissionProfile) ExecutionAuthorityFor(
 	return result
 }
 
-func compileResources(profile *EffectivePermissionProfile, invocation policy.Invocation) {
-	for _, resource := range invocation.Resources {
-		value := resource.Path
-		if value == "" {
-			value = resource.ID
-		}
-		switch resource.Kind {
-		case "file", "directory", "repo", "workspace":
-			if resource.Access == tool.AccessRead {
-				profile.Filesystem.ReadRoots = append(profile.Filesystem.ReadRoots, value)
-			} else if resource.Kind == "directory" ||
-				(resource.Kind == "file" && resource.Tree) {
-				profile.Filesystem.WritePaths = append(profile.Filesystem.WritePaths, value)
-			} else if resource.Kind != "file" || invocation.Journaled {
+// compileResources maps typed resources onto the profile. A tree write at the
+// Workspace root opens the Workspace base; any other tree write stays an exact
+// write root. A single-file write opens the base only when the Workspace
+// journal records it.
+func compileResources(
+	profile *EffectivePermissionProfile,
+	invocation policy.Invocation,
+	resources []securitymodel.Resource,
+) {
+	workspaceRoot := canonicalRoot(profile.Filesystem.WorkspaceRoot)
+	for _, resource := range resources {
+		switch resource.Class {
+		case securitymodel.ClassPath:
+			switch {
+			case !resource.Writes():
+				profile.Filesystem.ReadRoots = append(profile.Filesystem.ReadRoots, resource.Path)
+			case resource.Tree && workspaceRoot != "" && canonicalRoot(resource.Path) == workspaceRoot:
 				profile.Filesystem.WorkspaceBaseWrite = true
-			} else {
-				profile.Filesystem.WritePaths = append(profile.Filesystem.WritePaths, value)
+			case !resource.Tree && invocation.Journaled():
+				profile.Filesystem.WorkspaceBaseWrite = true
+			default:
+				profile.Filesystem.WritePaths = append(profile.Filesystem.WritePaths, resource.Path)
 			}
-		case "host", "url":
-			if securityresource.IsLoopback(resource.Kind, resource.Protocol) {
-				profile.Network.Loopback = true
-				profile.Network.Targets = append(
-					profile.Network.Targets, securityresource.LoopbackTarget,
-				)
-				continue
+		case securitymodel.ClassLoopback:
+			profile.Network.Loopback = true
+		case securitymodel.ClassNetwork:
+			if resource.Network != nil {
+				profile.Network.Targets = append(profile.Network.Targets, resource.Network.Key())
 			}
-			target, err := netpolicy.ParseTarget(value)
-			if resource.Kind == "host" && resource.Protocol != "" {
-				target = netpolicy.Target{
-					Scheme: resource.Protocol, Host: resource.ID,
-					Port: resource.Port,
-				}
-				err = nil
-			}
-			if err == nil {
-				profile.Network.Targets = append(profile.Network.Targets, target.Key())
-			}
-		case "process":
+		case securitymodel.ClassProcess:
 			profile.Process.Allowed = true
 		}
 	}
-	if invocation.Capability == tool.CapabilityProcess ||
-		invocation.Capability == tool.CapabilityExternal ||
-		invocation.Sandbox == tool.SandboxStrong {
+	if invocation.Capability() == securitymodel.CapabilityProcess ||
+		invocation.Capability() == securitymodel.CapabilityExternal ||
+		invocation.StrongSandbox() {
 		profile.Process.Allowed = true
 	}
 }
 
-func compileSandboxCeiling(profile *EffectivePermissionProfile, input CompileInput) {
-	if input.Enforcement == "none" {
-		profile.Network.Mode = "unrestricted"
+func compileSandboxCeiling(
+	profile *EffectivePermissionProfile,
+	input CompileInput,
+	reach sandbox.NetworkReach,
+) {
+	if input.Enforcement == sandbox.EnforcementNone {
 		profile.Process.Backend = "none"
 		profile.Controls = unrestrictedControls()
 		return
@@ -245,49 +224,35 @@ func compileSandboxCeiling(profile *EffectivePermissionProfile, input CompileInp
 			filepath.Join(policyValue.WorkspaceRoot, name),
 		)
 	}
-	hasNetworkTargets := false
-	for _, target := range profile.Network.Targets {
-		if !securityresource.IsLoopbackTarget(target) {
-			hasNetworkTargets = true
-			break
-		}
-	}
-	desiredMode := "denied"
-	desiredControl := controlmatrix.NetworkDenied
-	switch {
-	case !hasNetworkTargets && !profile.Network.Loopback:
-	case profile.Network.Loopback && !hasNetworkTargets:
-		desiredMode = "loopback"
-		desiredControl = controlmatrix.NetworkLoopbackExact
-	case policyValue.ManagedProxyPort != 0:
-		desiredMode = "managed"
-		desiredControl = controlmatrix.NetworkProxyTargets
+	profile.Controls.Network = sandbox.NetworkControl(input.Capability, policyValue, reach)
+	if profile.Controls.Network == securitymodel.NetworkProxyTargets {
 		profile.Network.ProxyPort = policyValue.ManagedProxyPort
-	case policyValue.AllowNetwork:
-		desiredMode = "direct"
-		desiredControl = controlmatrix.NetworkDirect
-	}
-	if sandbox.CanEnforceNetwork(input.Capability, desiredControl) {
-		profile.Network.Mode = desiredMode
-		profile.Controls.Network = desiredControl
-	} else {
-		profile.Network.Mode = string(profile.Controls.Network)
-		profile.Network.ProxyPort = 0
 	}
 }
 
-func unrestrictedControls() controlmatrix.Matrix {
-	return controlmatrix.Matrix{
-		FilesystemRead:  controlmatrix.FilesystemReadUnrestricted,
-		FilesystemWrite: controlmatrix.FilesystemWriteUnrestricted,
-		Network:         controlmatrix.NetworkDirect,
-		ProcessTree:     controlmatrix.ProcessTreeUnmanaged,
-		CrossProcess:    controlmatrix.CrossProcessUnrestricted,
-		Syscall:         controlmatrix.SyscallUnrestricted,
-		IPC:             controlmatrix.IPCUnrestricted,
-		PathIdentity:    controlmatrix.PathIdentityLexical,
-		ArtifactOrigin:  controlmatrix.ArtifactOriginUnverifiedPath,
-		DurableRecovery: controlmatrix.DurableRecoveryMemoryOnly,
+func canonicalRoot(path string) string {
+	if strings.TrimSpace(path) == "" {
+		return ""
+	}
+	canonical, err := pathpolicy.CanonicalAllowMissing(path)
+	if err != nil {
+		return filepath.Clean(path)
+	}
+	return canonical
+}
+
+func unrestrictedControls() securitymodel.Controls {
+	return securitymodel.Controls{
+		FilesystemRead:  securitymodel.FilesystemReadUnrestricted,
+		FilesystemWrite: securitymodel.FilesystemWriteUnrestricted,
+		Network:         securitymodel.NetworkDirect,
+		ProcessTree:     securitymodel.ProcessTreeUnmanaged,
+		CrossProcess:    securitymodel.CrossProcessUnrestricted,
+		Syscall:         securitymodel.SyscallUnrestricted,
+		IPC:             securitymodel.IPCUnrestricted,
+		PathIdentity:    securitymodel.PathIdentityLexical,
+		ArtifactOrigin:  securitymodel.ArtifactOriginUnverifiedPath,
+		DurableRecovery: securitymodel.DurableRecoveryMemoryOnly,
 	}
 }
 
@@ -297,11 +262,13 @@ func provenance(input CompileInput) []AuthoritySource {
 		{Kind: "mode", Value: string(input.Runtime.Mode)},
 		{Kind: "permission", Value: string(input.Runtime.Permission)},
 		{Kind: "tool", Value: input.Invocation.Tool},
+		{Kind: "constitution", Value: "rules", Digest: digestJSON(input.Runtime.Constitution)},
 		{Kind: "managed", Value: "rules", Digest: digestJSON(input.Runtime.Grants)},
 		{Kind: "user", Value: "rules", Digest: digestJSON(input.Runtime.User)},
 		{Kind: "repository", Value: "rules", Digest: digestJSON(input.Runtime.Repository)},
 		{Kind: "authorization", Value: string(input.Decision.Action)},
-		{Kind: "sandbox", Value: input.Enforcement, Digest: input.SandboxPolicy.ID},
+		{Kind: "decision_layer", Value: string(input.Decision.Layer)},
+		{Kind: "sandbox", Value: string(input.Enforcement), Digest: input.SandboxPolicy.ID},
 	}
 	if grant, ok := input.Runtime.ManagedGrant(input.Invocation); ok {
 		sources = append(sources, AuthoritySource{

@@ -7,8 +7,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/fwtllh-png/QCode/internal/security/keyring"
 )
 
 const maxSecretBytes = 32 << 10
@@ -67,7 +65,7 @@ func WithLiveReload() Option {
 }
 
 func New(reference Reference, options ...Option) *Service {
-	service := &Service{reference: reference, keyring: keyring.New()}
+	service := &Service{reference: reference, keyring: NewKeyringStore()}
 	for _, option := range options {
 		if option != nil {
 			option(service)
@@ -200,7 +198,7 @@ func (s *Service) statusFor(
 	case "keyring":
 		value, err := s.keyring.Lookup(ctx, reference.Name)
 		if err != nil {
-			if errors.Is(err, keyring.ErrNotFound) {
+			if errors.Is(err, ErrKeyringNotFound) {
 				return result, nil
 			}
 			return Status{}, err

@@ -6,7 +6,6 @@ import (
 	"reflect"
 	"testing"
 
-	adaptercontent "github.com/fwtllh-png/QCode/internal/adapter/content"
 	"github.com/fwtllh-png/QCode/internal/adapter/provider"
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
 )
@@ -169,7 +168,7 @@ func TestSnapshotClonesAttachmentsAndReplayState(t *testing.T) {
 			Type: provider.ContentToolResult,
 			ToolResult: &provider.ToolResult{
 				CallID: "call-1", Content: "bounded",
-				Admission: &adaptercontent.AdmissionReceipt{
+				Admission: &provider.AdmissionReceipt{
 					Digest: "sha256:original", Handle: "result_original",
 				},
 			},

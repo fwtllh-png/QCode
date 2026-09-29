@@ -11,7 +11,7 @@ import (
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
 	"github.com/fwtllh-png/QCode/internal/adapter/tool/typed"
 	"github.com/fwtllh-png/QCode/internal/orchestration/subagent"
-	"github.com/fwtllh-png/QCode/internal/security/controlmatrix"
+	securitymodel "github.com/fwtllh-png/QCode/internal/security/model"
 )
 
 // operation dispatches one model-visible lifecycle tool onto AgentControl.
@@ -72,11 +72,16 @@ func (o *operation) TrustedBinding() tool.TrustedBinding {
 	switch o.kind {
 	case "send_message":
 		fixed(tool.EffectAgentMessage, tool.RiskLow, tool.Reversible)
-	case "spawn_agent", "followup_task":
+	case "spawn_agent":
+		fixed(tool.EffectAgentLifecycle, tool.RiskMedium, tool.Bounded)
+		binding.Effect.ReadOnlyWhen = &tool.ArgumentMatch{
+			Field: "role", Values: []string{"review", "explore", "awaiter"},
+		}
+	case "followup_task":
 		fixed(tool.EffectAgentLifecycle, tool.RiskMedium, tool.Bounded)
 	case "integrate_agent":
 		binding.Capability = tool.CapabilityProcess
-		binding.Required.ProcessTree = controlmatrix.ProcessTreeGroupKill
+		binding.Required.ProcessTree = securitymodel.ProcessTreeGroupKill
 		fixed(tool.EffectWorkspaceEdit, tool.RiskLow, tool.Reversible)
 		binding.Effect.WorkspaceTransaction = tool.TransactionBeforeImage
 		binding.Effect.RequireReadBeforeWrite = true

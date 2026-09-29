@@ -85,7 +85,7 @@ func TestPolicyTruthTableAndDenyPrecedence(t *testing.T) {
 		{name: "act session state allowed", mode: ModeAct, permission: PermissionSuggest, tool: "submit_plan"},
 		{name: "act auto write", mode: ModeAct, permission: PermissionAuto, tool: "file_write"},
 		{name: "act auto read-only shell", mode: ModeAct, permission: PermissionAuto, tool: "shell_read"},
-		{name: "act auto sandboxed process", mode: ModeAct, permission: PermissionAuto, tool: "exec_command"},
+		{name: "act auto sandboxed process", mode: ModeAct, permission: PermissionAuto, tool: "run_command"},
 		{name: "removed plan rejected", mode: "plan", permission: PermissionBypass, tool: "file_write", wantCode: "mode_unknown"},
 		{name: "removed operate rejected", mode: "operate", permission: PermissionBypass, tool: "file_read", wantCode: "mode_unknown"},
 		{name: "never write denied", mode: ModeAct, permission: PermissionNever, tool: "file_write", wantCode: "permission_denied"},
@@ -227,22 +227,22 @@ func TestRepositoryCommandRulesInspectEveryShellSegment(t *testing.T) {
 	} {
 		runtime := DefaultRuntime(ModeAct, PermissionBypass)
 		runtime.Repository = []Rule{
-			{Tool: "exec_command", CommandPrefix: "rm", Action: ActionDeny},
+			{Tool: "run_command", CommandPrefix: "rm", Action: ActionDeny},
 		}
 		raw, err := json.Marshal(map[string]string{"command": command})
 		if err != nil {
 			t.Fatal(err)
 		}
-		err = authorize(runtime, invocation("exec_command", command, string(raw)))
+		err = authorize(runtime, invocation("run_command", command, string(raw)))
 		assertDecisionCode(t, err, "repository_rule_denied")
 	}
 
 	runtime := DefaultRuntime(ModeAct, PermissionBypass)
 	runtime.Repository = []Rule{
-		{Tool: "exec_command", CommandPrefix: "rm", Action: ActionDeny},
+		{Tool: "run_command", CommandPrefix: "rm", Action: ActionDeny},
 	}
 	err := authorize(runtime, invocation(
-		"exec_command", "quoted", `{"command":"printf '%s' 'echo safe; rm target'"}`,
+		"run_command", "quoted", `{"command":"printf '%s' 'echo safe; rm target'"}`,
 	))
 	assertDecisionCode(t, err, "")
 }
@@ -263,22 +263,22 @@ func TestToolGrantMissingAndDenyCannotBeOverridden(t *testing.T) {
 
 func TestApprovalIsBoundToCallArgumentsResourcesScopeAndExpiry(t *testing.T) {
 	now := time.Unix(2000, 0)
-	base := invocation("exec_command", "call-1", `{"cwd":".","command":"go test ./..."}`)
-	request, err := NewApprovalRequest(base, now.Add(time.Minute))
+	base := invocation("run_command", "call-1", `{"cwd":".","command":"go test ./..."}`)
+	request, err := NewApprovalRequest(resolveFixture(base), now.Add(time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}
 	reorderedCall := invocation(
-		"exec_command", "call-1", `{"command":"go test ./...","cwd":"."}`,
+		"run_command", "call-1", `{"command":"go test ./...","cwd":"."}`,
 	)
-	reordered, err := NewApprovalRequest(reorderedCall, now.Add(time.Minute))
+	reordered, err := NewApprovalRequest(resolveFixture(reorderedCall), now.Add(time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if request.Fingerprint != reordered.Fingerprint {
 		t.Fatalf("canonical fingerprints differ: %s != %s", request.Fingerprint, reordered.Fingerprint)
 	}
-	differentExpiry, err := NewApprovalRequest(base, now.Add(2*time.Minute))
+	differentExpiry, err := NewApprovalRequest(resolveFixture(base), now.Add(2*time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -290,30 +290,30 @@ func TestApprovalIsBoundToCallArgumentsResourcesScopeAndExpiry(t *testing.T) {
 	if err := cache.Add(request, ApprovalOnce); err != nil {
 		t.Fatal(err)
 	}
-	if !cache.MatchInvocation(reorderedCall, now) ||
-		cache.MatchInvocation(reorderedCall, now) {
+	if !cache.MatchInvocation(resolveFixture(reorderedCall), now) ||
+		cache.MatchInvocation(resolveFixture(reorderedCall), now) {
 		t.Fatal("once approval was not consumed exactly once")
 	}
-	sessionRequest, err := NewApprovalRequestForScope(base, ApprovalSession, now.Add(time.Minute))
+	sessionRequest, err := NewApprovalRequestForScope(resolveFixture(base), ApprovalSession, now.Add(time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := cache.Add(sessionRequest, ApprovalSession); err != nil {
 		t.Fatal(err)
 	}
-	if !cache.MatchInvocation(base, now) ||
-		!cache.MatchInvocation(base, now.Add(30*time.Second)) {
+	if !cache.MatchInvocation(resolveFixture(base), now) ||
+		!cache.MatchInvocation(resolveFixture(base), now.Add(30*time.Second)) {
 		t.Fatal("session approval was not reusable before expiry")
 	}
-	if cache.MatchInvocation(base, now.Add(2*time.Minute)) {
+	if cache.MatchInvocation(resolveFixture(base), now.Add(2*time.Minute)) {
 		t.Fatal("expired approval matched")
 	}
 
-	for _, changed := range []Invocation{
-		invocation("exec_command", "call-1", `{"cwd":".","command":"rm -rf ."}`),
+	for _, changed := range []invocationFixture{
+		invocation("run_command", "call-1", `{"cwd":".","command":"rm -rf ."}`),
 		invocation("file_write", "call-1", `{"path":"."}`),
 	} {
-		other, err := NewApprovalRequest(changed, now.Add(time.Minute))
+		other, err := NewApprovalRequest(resolveFixture(changed), now.Add(time.Minute))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -326,12 +326,12 @@ func TestApprovalIsBoundToCallArgumentsResourcesScopeAndExpiry(t *testing.T) {
 func TestSessionApprovalWithoutExpiryLivesWithPolicyRuntime(t *testing.T) {
 	now := time.Unix(2000, 0)
 	call := invocation(
-		"exec_command",
+		"run_command",
 		"call-session",
 		`{"cwd":".","command":"go test ./..."}`,
 	)
 	request, err := NewApprovalRequestForScope(
-		call,
+		resolveFixture(call),
 		ApprovalSession,
 		time.Time{},
 	)
@@ -342,8 +342,8 @@ func TestSessionApprovalWithoutExpiryLivesWithPolicyRuntime(t *testing.T) {
 	if err := cache.Add(request, ApprovalSession); err != nil {
 		t.Fatal(err)
 	}
-	if !cache.MatchInvocation(call, now) ||
-		!cache.MatchInvocation(call, now.Add(365*24*time.Hour)) {
+	if !cache.MatchInvocation(resolveFixture(call), now) ||
+		!cache.MatchInvocation(resolveFixture(call), now.Add(365*24*time.Hour)) {
 		t.Fatal("session approval unexpectedly expired inside its policy runtime")
 	}
 }
@@ -388,14 +388,14 @@ func TestTightenPermissionNeverExpandsAuthority(t *testing.T) {
 func TestApprovalCacheIsBoundedAndEvictsOldest(t *testing.T) {
 	now := time.Unix(4000, 0)
 	cache := NewApprovalCacheWithLimit(2)
-	calls := make([]Invocation, 3)
+	calls := make([]invocationFixture, 3)
 	for index := range calls {
 		calls[index] = invocation(
 			"file_write", string(rune('a'+index)),
 			`{"path":"`+string(rune('a'+index))+`"}`,
 		)
 		request, err := NewApprovalRequestForScope(
-			calls[index],
+			resolveFixture(calls[index]),
 			ApprovalSession,
 			now.Add(time.Hour),
 		)
@@ -409,20 +409,20 @@ func TestApprovalCacheIsBoundedAndEvictsOldest(t *testing.T) {
 	if len(cache.entries) != 2 {
 		t.Fatalf("cache size = %d, want 2", len(cache.entries))
 	}
-	if cache.MatchInvocation(calls[0], now) {
+	if cache.MatchInvocation(resolveFixture(calls[0]), now) {
 		t.Fatal("oldest approval remained after bounded eviction")
 	}
-	if !cache.MatchInvocation(calls[1], now) ||
-		!cache.MatchInvocation(calls[2], now) {
+	if !cache.MatchInvocation(resolveFixture(calls[1]), now) ||
+		!cache.MatchInvocation(resolveFixture(calls[2]), now) {
 		t.Fatal("new approvals were unexpectedly evicted")
 	}
 }
 
-func invocation(toolName, callID, arguments string) Invocation {
+func invocation(toolName, callID, arguments string) invocationFixture {
 	raw := json.RawMessage(arguments)
 	capability := map[string]Capability{
 		"file_read": CapabilityRead, "file_write": CapabilityWrite,
-		"shell_read": CapabilityRead, "exec_command": CapabilityProcess,
+		"shell_read": CapabilityRead, "run_command": CapabilityProcess,
 		"request_user_input": CapabilityRead,
 		"update_plan":        CapabilityWrite,
 		"submit_plan":        CapabilityWrite,
@@ -448,28 +448,28 @@ func invocation(toolName, callID, arguments string) Invocation {
 			Kind: "repo", Path: value.CWD, Access: tool.AccessWrite, Tree: true,
 		})
 	}
-	return Invocation{
+	return invocationFixture{
 		CallID: callID, Tool: toolName, Arguments: raw,
 		Resources: resources, Capability: capability,
 		Access: map[string]tool.AccessMode{
 			"file_read": tool.AccessRead, "file_write": tool.AccessWrite,
 			"file_edit": tool.AccessWrite, "shell_read": tool.AccessRead,
-			"exec_command": tool.AccessRead, "update_plan": tool.AccessWrite,
+			"run_command": tool.AccessRead, "update_plan": tool.AccessWrite,
 			"submit_plan": tool.AccessWrite,
 		}[toolName],
 		Sandbox: map[string]tool.SandboxRequirement{
 			"file_read": tool.SandboxNone, "file_write": tool.SandboxNone,
 			"file_edit": tool.SandboxNone, "shell_read": tool.SandboxStrong,
-			"exec_command": tool.SandboxStrong, "update_plan": tool.SandboxNone,
+			"run_command": tool.SandboxStrong, "update_plan": tool.SandboxNone,
 			"submit_plan": tool.SandboxNone,
 		}[toolName],
 		Journaled: toolName == "file_write" || toolName == "file_edit",
-		Validated: true,
+		Validated: true, Workspace: "/workspace",
 	}
 }
 
-func authorize(runtime *Runtime, invocation Invocation) error {
-	decision := runtime.Evaluate(invocation)
+func authorize(runtime *Runtime, invocation invocationFixture) error {
+	decision := runtime.Decide(resolveFixture(invocation))
 	if decision.Action == ActionAllow {
 		return nil
 	}

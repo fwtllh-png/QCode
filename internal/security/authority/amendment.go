@@ -8,7 +8,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/fwtllh-png/QCode/internal/adapter/tool"
+	securitymodel "github.com/fwtllh-png/QCode/internal/security/model"
+	"github.com/fwtllh-png/QCode/internal/security/netpolicy"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
 )
 
@@ -26,7 +27,7 @@ type AdditionalPermission struct {
 	Resource   string                   `json:"resource"`
 	Protocol   string                   `json:"protocol,omitempty"`
 	Port       uint16                   `json:"port,omitempty"`
-	Capability tool.Capability          `json:"capability,omitempty"`
+	Capability securitymodel.Capability `json:"capability,omitempty"`
 }
 
 type AdditionalPermissionRequest struct {
@@ -58,7 +59,7 @@ func RequestFromDenial(
 		permission.Kind = AdditionalNetwork
 	case sandbox.DenialProcess:
 		permission.Kind = AdditionalProcess
-		permission.Capability = tool.Capability(denial.Resource)
+		permission.Capability = securitymodel.Capability(denial.Resource)
 	default:
 		return AdditionalPermissionRequest{}, errors.New("unsupported sandbox denial operation")
 	}
@@ -163,8 +164,8 @@ func validateAdditionalPermission(
 		}
 		return nil
 	case AdditionalProcess:
-		if permission.Capability != tool.CapabilityProcess &&
-			permission.Capability != tool.CapabilityExternal {
+		if permission.Capability != securitymodel.CapabilityProcess &&
+			permission.Capability != securitymodel.CapabilityExternal {
 			return errors.New("additional process capability is invalid")
 		}
 		return nil
@@ -209,21 +210,21 @@ func cloneProfile(source EffectivePermissionProfile) EffectivePermissionProfile 
 	return cloned
 }
 
-func PermissionResource(permission AdditionalPermission) tool.Resource {
+func PermissionResource(permission AdditionalPermission) securitymodel.Resource {
 	switch permission.Kind {
 	case AdditionalPathRead:
-		return tool.Resource{Kind: "file", Path: permission.Resource, Access: tool.AccessRead}
+		return securitymodel.Resource{Class: securitymodel.ClassPath, Path: permission.Resource, Access: securitymodel.Read}
 	case AdditionalPathWrite:
-		return tool.Resource{Kind: "file", Path: permission.Resource, Access: tool.AccessWrite}
+		return securitymodel.Resource{Class: securitymodel.ClassPath, Path: permission.Resource, Access: securitymodel.Write}
 	case AdditionalNetwork:
-		return tool.Resource{
-			Kind: "host", ID: permission.Resource, Access: tool.AccessWrite,
-			Protocol: strings.ToLower(permission.Protocol), Port: permission.Port,
+		return securitymodel.Resource{
+			Class: securitymodel.ClassNetwork, Access: securitymodel.Write,
+			Network: &netpolicy.Target{Scheme: strings.ToLower(permission.Protocol), Host: permission.Resource, Port: permission.Port},
 		}
 	case AdditionalProcess:
-		return tool.Resource{
-			Kind: "process", ID: string(permission.Capability),
-			Access: tool.AccessWrite,
+		return securitymodel.Resource{
+			Class: securitymodel.ClassProcess, ID: string(permission.Capability),
+			Access: securitymodel.Write,
 		}
 	default:
 		panic(fmt.Sprintf("invalid additional permission kind %q", permission.Kind))

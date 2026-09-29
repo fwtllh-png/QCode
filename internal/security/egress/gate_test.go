@@ -17,7 +17,7 @@ import (
 )
 
 func TestGateDeniesUntilGranted(t *testing.T) {
-	gate := &egress.Gate{}
+	gate := egress.NewStaticGate()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = io.WriteString(w, "ok")
 	}))
@@ -79,7 +79,7 @@ func TestNilGateDeniesEveryRequest(t *testing.T) {
 }
 
 func TestGateRefusesTransportItCannotPin(t *testing.T) {
-	gate := &egress.Gate{}
+	gate := egress.NewStaticGate()
 	gate.Allow("origin.test", "https")
 	called := false
 	base := roundTripFunc(func(*http.Request) (*http.Response, error) {
@@ -134,7 +134,7 @@ func TestGateCancellationClosesRequestWithBody(t *testing.T) {
 		close(canceled)
 	}))
 	t.Cleanup(server.Close)
-	gate := &egress.Gate{}
+	gate := egress.NewStaticGate()
 	gate.AllowURL(server.URL)
 	ctx, cancel := context.WithCancel(t.Context())
 	request, _ := http.NewRequestWithContext(ctx, http.MethodPost, server.URL, strings.NewReader(`{}`))
@@ -164,7 +164,7 @@ func TestGateReleasesPinnedConnectionAfterBodyClose(t *testing.T) {
 	}
 	server.Start()
 	t.Cleanup(server.Close)
-	gate := &egress.Gate{}
+	gate := egress.NewStaticGate()
 	gate.AllowURL(server.URL)
 	resp, err := egress.WrapClient(&http.Client{}, gate).Get(server.URL)
 	if err != nil {
@@ -218,7 +218,7 @@ func TestRedirectToUngrantedHostIsDenied(t *testing.T) {
 		http.Redirect(w, r, other.URL+"/path", http.StatusFound)
 	}))
 	t.Cleanup(origin.Close)
-	gate := &egress.Gate{}
+	gate := egress.NewStaticGate()
 	gate.AllowURL(origin.URL)
 	resp, err := egress.WrapClient(&http.Client{}, gate).Get(origin.URL + "/")
 	if err == nil {
@@ -323,7 +323,7 @@ func TestGateAccumulatesMethodAndPrivateGrants(t *testing.T) {
 }
 
 func TestGateGrantDoesNotEscapeOriginOrOmitMethod(t *testing.T) {
-	gate := &egress.Gate{}
+	gate := egress.NewStaticGate()
 	methods := []string{"GET"}
 	gate.AllowTarget(egress.Target{
 		Host: "127.0.0.1", Protocol: "http", Port: 8080,
@@ -354,7 +354,7 @@ func TestGateGrantDoesNotEscapeOriginOrOmitMethod(t *testing.T) {
 }
 
 func TestGateConcurrentGrantsPreserveExistingAccess(t *testing.T) {
-	gate := &egress.Gate{}
+	gate := egress.NewStaticGate()
 	target := egress.Target{Host: "127.0.0.1", Protocol: "http", AllowPrivate: true}
 	target.Methods = []string{"GET"}
 	gate.AllowTarget(target)
@@ -379,7 +379,7 @@ func TestGateConcurrentGrantsPreserveExistingAccess(t *testing.T) {
 }
 
 func TestAuthorizeDeniedReceiptCarriesEnvironmentCategory(t *testing.T) {
-	gate := &egress.Gate{}
+	gate := egress.NewStaticGate()
 	_, err := gate.Authorize(t.Context(), egress.Target{
 		Host: "code.byted.org", Protocol: "https", Port: 443,
 		Methods: []string{http.MethodConnect},
@@ -429,3 +429,32 @@ func TestAuthorizeDeniedReceiptCarriesEnvironmentCategory(t *testing.T) {
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
+
+func TestGateConstructorsFixWhatTheGateConsults(t *testing.T) {
+	public := func(context.Context, string) ([]net.IP, error) {
+		return []net.IP{net.ParseIP("93.184.216.34")}, nil
+	}
+	target := egress.Target{Host: "example.com", Protocol: "https", Methods: []string{"GET"}}
+
+	static := egress.NewStaticGate(target)
+	static.LookupIP = public
+	if _, err := static.Authorize(context.Background(), target, "test"); err != nil {
+		t.Fatalf("static gate denied its grant: %v", err)
+	}
+	other := egress.Target{Host: "other.example", Protocol: "https", Methods: []string{"GET"}}
+	if _, err := static.Authorize(context.Background(), other, "test"); err == nil {
+		t.Fatal("static gate allowed an ungranted public target")
+	}
+
+	browser := egress.NewBrowserGate()
+	browser.LookupIP = public
+	if _, err := browser.Authorize(context.Background(), other, "test"); err != nil {
+		t.Fatalf("browser gate denied a public target: %v", err)
+	}
+
+	scoped := egress.NewCallScopedGate()
+	scoped.LookupIP = public
+	if _, err := scoped.Authorize(context.Background(), other, "test"); err == nil {
+		t.Fatal("call-scoped gate allowed an ungranted target outside a call")
+	}
+}

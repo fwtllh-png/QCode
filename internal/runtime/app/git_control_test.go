@@ -18,7 +18,7 @@ import (
 	"github.com/fwtllh-png/QCode/internal/security/authority"
 	"github.com/fwtllh-png/QCode/internal/security/policy"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
-	"github.com/fwtllh-png/QCode/internal/security/workspacebroker"
+	"github.com/fwtllh-png/QCode/internal/orchestration/workspacebroker"
 )
 
 func gitFixture(t *testing.T, root string, args ...string) string {

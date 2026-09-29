@@ -19,18 +19,16 @@ import (
 	"time"
 
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
+	"github.com/fwtllh-png/QCode/internal/environment"
 	"github.com/fwtllh-png/QCode/internal/observability/diagnostics"
 	"github.com/fwtllh-png/QCode/internal/persist/workspacejournal"
 	"github.com/fwtllh-png/QCode/internal/platform/textdiff"
 	"github.com/fwtllh-png/QCode/internal/security/authority"
-	"github.com/fwtllh-png/QCode/internal/security/controlplane"
-	"github.com/fwtllh-png/QCode/internal/security/effect"
 	"github.com/fwtllh-png/QCode/internal/security/egress"
-	"github.com/fwtllh-png/QCode/internal/security/goproxy"
+	securitymodel "github.com/fwtllh-png/QCode/internal/security/model"
 	"github.com/fwtllh-png/QCode/internal/security/netpolicy"
-	"github.com/fwtllh-png/QCode/internal/security/pathpolicy"
+	securitypaths "github.com/fwtllh-png/QCode/internal/security/pathpolicy"
 	"github.com/fwtllh-png/QCode/internal/security/policy"
-	securityresource "github.com/fwtllh-png/QCode/internal/security/resource"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
 )
 
@@ -45,8 +43,8 @@ type ApprovalRequest struct {
 	ExpiresAt            time.Time                              `json:"expires_at"`
 	ReplacementAllowed   bool                                   `json:"replacement_allowed"`
 	ModifiableArguments  []string                               `json:"modifiable_arguments"`
-	Effect               effect.Kind                            `json:"effect"`
-	Risk                 effect.Risk                            `json:"risk"`
+	Effect               securitymodel.EffectKind               `json:"effect"`
+	Risk                 securitymodel.Risk                     `json:"risk"`
 	ReasonCode           string                                 `json:"reason_code"`
 	Network              *NetworkApprovalContext                `json:"network,omitempty"`
 	EditPlan             *tool.EditPlan                         `json:"edit_plan,omitempty"`
@@ -88,29 +86,25 @@ type ApprovalDecision struct {
 type Invocation = tool.PreparedInvocation
 
 type Options struct {
-	Registry              *tool.Registry
-	Policy                *policy.Runtime
-	Workspace             string
-	Approvals             func(context.Context, ApprovalRequest) error
-	PersistAllow          func(policy.Invocation) error
-	OnNetworkAllow        NetworkAllow
-	Now                   func() time.Time
-	ApprovalTTL           time.Duration
-	LeaseTTL              time.Duration
-	ReadTracker           *workspacejournal.ReadTracker
-	Journal               *workspacejournal.Manager
-	Diagnostics           diagnostics.Runner
-	Escalation            *EscalationPolicy
-	ForceEditPlanApproval bool
-	WorkspaceID           string
-	WorkspaceGeneration   uint64
-	LeaseAuthority        *authority.LeaseAuthority
-	Isolator              tool.Isolator
-	ModuleProxy           *goproxy.Service
-	// AuthBindReport carries facts about why a host auth service did not
-	// bind. They surface on failed process results so the model can
-	// attribute credential 401s on the first attempt.
-	AuthBindReport *goproxy.BindReport
+	Registry            *tool.Registry
+	Policy              *policy.Runtime
+	Workspace           string
+	Approvals           func(context.Context, ApprovalRequest) error
+	PersistAllow        func(policy.Invocation) error
+	OnNetworkAllow      NetworkAllow
+	Now                 func() time.Time
+	ApprovalTTL         time.Duration
+	LeaseTTL            time.Duration
+	ReadTracker         *workspacejournal.ReadTracker
+	Journal             *workspacejournal.Manager
+	Diagnostics         diagnostics.Runner
+	Escalation          *EscalationPolicy
+	WorkspaceID         string
+	WorkspaceGeneration uint64
+	LeaseAuthority      *authority.LeaseAuthority
+	Isolator            tool.Isolator
+	// PreparationFacts is an immutable snapshot of environment binding failures.
+	PreparationFacts []environment.Fact
 	// LookupIP resolves approved URL hosts when deciding private reach; nil
 	// uses the system resolver.
 	LookupIP func(context.Context, string) ([]net.IP, error)
@@ -146,28 +140,26 @@ type ApprovalObserver func(string, string, string, string, time.Duration)
 const DefaultLeaseTTL = 2 * time.Minute
 
 type Guard struct {
-	registry              *tool.Registry
-	policy                *policy.Runtime
-	workspace             string
-	controlPlane          *controlplane.Classifier
-	approvals             func(context.Context, ApprovalRequest) error
-	persistAllow          func(policy.Invocation) error
-	onNetworkAllow        NetworkAllow
-	lookupIP              func(context.Context, string) ([]net.IP, error)
-	now                   func() time.Time
-	approvalTTL           time.Duration
-	leaseTTL              time.Duration
-	readTracker           *workspacejournal.ReadTracker
-	journal               *workspacejournal.Manager
-	diagnostics           diagnostics.Runner
-	escalation            EscalationPolicy
-	forceEditPlanApproval bool
-	workspaceID           string
-	workspaceGeneration   uint64
-	leaseAuthority        *authority.LeaseAuthority
-	isolator              tool.Isolator
-	moduleProxy           *goproxy.Service
-	authBindReport        *goproxy.BindReport
+	registry            *tool.Registry
+	policy              *policy.Runtime
+	workspace           string
+	controlPlane        *securitypaths.ControlPlane
+	approvals           func(context.Context, ApprovalRequest) error
+	persistAllow        func(policy.Invocation) error
+	onNetworkAllow      NetworkAllow
+	lookupIP            func(context.Context, string) ([]net.IP, error)
+	now                 func() time.Time
+	approvalTTL         time.Duration
+	leaseTTL            time.Duration
+	readTracker         *workspacejournal.ReadTracker
+	journal             *workspacejournal.Manager
+	diagnostics         diagnostics.Runner
+	escalation          EscalationPolicy
+	workspaceID         string
+	workspaceGeneration uint64
+	leaseAuthority      *authority.LeaseAuthority
+	isolator            tool.Isolator
+	preparationFacts    []environment.Fact
 
 	mu           sync.Mutex
 	pending      map[string]*pending
@@ -194,9 +186,6 @@ func New(options Options) (*Guard, error) {
 	}
 	if options.Policy == nil {
 		return nil, errors.New("tool guard policy is required")
-	}
-	if err := policy.Validate(options.Policy); err != nil {
-		return nil, err
 	}
 	workspace := options.Workspace
 	if workspace == "" {
@@ -237,17 +226,10 @@ func New(options Options) (*Guard, error) {
 	if options.Escalation != nil {
 		escalation = *options.Escalation
 	}
-	for index := range options.Policy.Repository {
-		if err := canonicalizeRuleResource(&options.Policy.Repository[index], absolute); err != nil {
-			return nil, fmt.Errorf("repository rule: %w", err)
-		}
+	if _, err := samplePolicy(options.Policy, absolute); err != nil {
+		return nil, err
 	}
-	for index := range options.Policy.Grants {
-		if err := canonicalizeRuleResource(&options.Policy.Grants[index], absolute); err != nil {
-			return nil, fmt.Errorf("grant rule: %w", err)
-		}
-	}
-	controlPlane, err := controlplane.New(absolute)
+	controlPlane, err := securitypaths.NewControlPlane(absolute)
 	if err != nil {
 		return nil, err
 	}
@@ -261,15 +243,13 @@ func New(options Options) (*Guard, error) {
 		approvalTTL:    options.ApprovalTTL,
 		leaseTTL:       options.LeaseTTL,
 		readTracker:    options.ReadTracker, journal: options.Journal, diagnostics: options.Diagnostics,
-		escalation:            escalation,
-		forceEditPlanApproval: options.ForceEditPlanApproval,
-		workspaceID:           options.WorkspaceID,
-		workspaceGeneration:   options.WorkspaceGeneration,
-		leaseAuthority:        options.LeaseAuthority,
-		isolator:              options.Isolator,
-		moduleProxy:           options.ModuleProxy,
-		authBindReport:        options.AuthBindReport,
-		pending:               make(map[string]*pending), completed: make(map[string]time.Time),
+		escalation:          escalation,
+		workspaceID:         options.WorkspaceID,
+		workspaceGeneration: options.WorkspaceGeneration,
+		leaseAuthority:      options.LeaseAuthority,
+		isolator:            options.Isolator,
+		preparationFacts:    append([]environment.Fact(nil), options.PreparationFacts...),
+		pending:             make(map[string]*pending), completed: make(map[string]time.Time),
 		recovered: make(map[string]ApprovalRequest),
 	}, nil
 }
@@ -283,20 +263,6 @@ func (g *Guard) SetIsolator(isolator tool.Isolator) {
 		return
 	}
 	g.isolator = isolator
-}
-
-func (g *Guard) SetModuleProxy(service *goproxy.Service) {
-	if g == nil {
-		return
-	}
-	g.moduleProxy = service
-}
-
-func (g *Guard) SetAuthBindReport(report *goproxy.BindReport) {
-	if g == nil {
-		return
-	}
-	g.authBindReport = report
 }
 
 func (g *Guard) Execute(
@@ -325,16 +291,41 @@ func (g *Guard) canEscalate(invocation Invocation) bool {
 		invocation.Binding.SandboxRequirement == tool.SandboxStrong
 }
 
-func policyInput(callID string, invocation Invocation) policy.Invocation {
+func (g *Guard) policyInput(callID string, invocation Invocation) policy.Invocation {
 	return policy.Invocation{
 		CallID: callID, Tool: invocation.Tool, Arguments: invocation.Arguments,
-		Source:    invocation.Ref.Source,
-		Resources: invocation.Resources, Capability: invocation.Binding.Capability,
-		Access:    invocation.Binding.AccessMode,
-		Sandbox:   invocation.Binding.SandboxRequirement,
-		Effect:    invocation.Binding.Effect,
-		Journaled: invocation.Binding.Journaled(), Validated: true,
+		Source: tool.CatalogSourceKind(invocation.Tool, invocation.Ref.Source), Assessment: invocation.Assessment,
+		Approval: invocation.Binding.Effect.Approval, Validated: true, Workspace: g.workspace,
 	}
+
+}
+
+// declaredFacts resolves the binding's argument-level declarations. Arguments
+// are schema-validated before policy runs, so a declared field is trusted
+// only in its declared shape.
+func declaredFacts(invocation Invocation) securitymodel.Declared {
+	var declared securitymodel.Declared
+	var arguments map[string]json.RawMessage
+	if json.Unmarshal(invocation.Arguments, &arguments) != nil {
+		return declared
+	}
+	binding := invocation.Binding
+	if match := binding.Effect.ReadOnlyWhen; match != nil {
+		var value string
+		declared.ReadOnly = json.Unmarshal(arguments[match.Field], &value) == nil &&
+			match.Matches(value)
+	}
+	if field := binding.VerificationField; field != "" &&
+		binding.ResourceResolver.ReadPathsField != "" {
+		var kind string
+		var covered []string
+		declared.Verification =
+			json.Unmarshal(arguments[field], &kind) == nil &&
+				strings.TrimSpace(kind) != "" &&
+				json.Unmarshal(arguments[binding.ResourceResolver.ReadPathsField], &covered) == nil &&
+				len(covered) != 0
+	}
+	return declared
 }
 
 func (g *Guard) bindRuntimeApprover(invocation Invocation) egress.RuntimeApprover {
@@ -428,22 +419,27 @@ func (g *Guard) approveEgressTarget(
 	if method != "" {
 		methods = []string{method}
 	}
-	hostResource := policy.HostResource(parsed, tool.AccessRead)
+	hostResource := tool.HostResource(parsed, tool.AccessRead)
 	hostResource.Methods = methods
 	hostResource.AllowPrivate = true
 	resources := []tool.Resource{
 		hostResource,
 		{Kind: "url", ID: endpoint.String(), Access: tool.AccessRead, Methods: methods},
 	}
-	policyInvocation := policyInput(callID, invocation)
-	policyInvocation.Resources = resources
+	policyInvocation := g.policyInput(callID, invocation)
+	policyInvocation.Assessment = tool.AssessResources(invocation.Binding, invocation.Assessment.Declared(), resources)
+	policyInvocation.Stage = policy.StageEgress
 	started := g.now()
-	decision := g.policy.Evaluate(policyInvocation)
+	runtime, err := g.samplePolicy()
+	if err != nil {
+		return err
+	}
+	decision := runtime.Decide(policyInvocation)
 	reviewLatency := g.now().Sub(started)
 	g.observeApproval("evaluated", policyInvocation, decision, 0)
 	if decision.Action == policy.ActionDeny || decision.Action == policy.ActionHold {
 		g.observeApproval("denied", policyInvocation, decision, 0)
-		return &policy.DecisionError{Code: decision.Code, Reason: decision.Reason}
+		return g.decisionError(decision)
 	}
 	if decision.Action == policy.ActionAllow {
 		if decision.Code == "auto_review_allowed" {
@@ -992,12 +988,14 @@ func (g *Guard) prepare(
 	}
 	identity := tool.InvocationIdentityFrom(ctx)
 	identity.CallID = callID
-	return Invocation{
+	prepared := Invocation{
 		Identity: identity, CallID: callID, Tool: canonical, Ref: ref,
 		Arguments: arguments, Resources: resources, Descriptor: descriptor,
 		Binding: trusted,
 		Source:  tool.InvocationSourceFrom(ctx), Disposition: disposition,
-	}, executor, nil
+	}
+	prepared.Assessment = tool.AssessResources(trusted, declaredFacts(prepared), resources)
+	return prepared, executor, nil
 }
 
 func hasConsequentialWrite(resources []tool.Resource) bool {
@@ -1018,7 +1016,7 @@ func (g *Guard) rewriteAbsolutePathArgs(
 	}
 	changed := false
 	for _, template := range descriptor.ResourceResolver.Templates {
-		if template.Field == "" || !securityresource.IsPathKind(template.Kind) {
+		if template.Field == "" || !securitymodel.IsPathKind(template.Kind) {
 			continue
 		}
 		raw, ok := values[template.Field].(string)
@@ -1184,20 +1182,20 @@ func (g *Guard) waitForApproval(
 	event := ApprovalRequest{
 		RequestID: requestID, CallID: invocation.CallID, Tool: invocation.Tool,
 		Arguments: request.Arguments, ArgumentsDigest: request.ArgumentsDigest,
-		Resources: request.Resources, AllowedScopes: scopes,
+		Resources: approvalResources(request.Resources), AllowedScopes: scopes,
 		ExpiresAt: expiresAt, ReplacementAllowed: replacementAllowed,
 		ModifiableArguments: modifiable, ReasonCode: opts.Code,
 		Network: opts.Network, EditPlan: opts.EditPlan, Grant: request.Grant,
 		AdditionalPermission: opts.AdditionalPermission,
 	}
-	classified := policy.NormalizeEffect(policyInvocation)
+	classified := policyInvocation.Assessment.Effect()
 	event.Effect, event.Risk = classified.Kind, classified.Risk
 	if recovering {
 		event = recovered
 	}
 	if opts.AdditionalPermission != nil {
-		event.Effect = effect.ExternalMutation
-		event.Risk = effect.RiskCritical
+		event.Effect = securitymodel.ExternalMutation
+		event.Risk = securitymodel.RiskCritical
 	}
 	entry := &pending{
 		callID: invocation.CallID, decision: make(chan ApprovalDecision, 1),
@@ -1312,7 +1310,7 @@ func (g *Guard) observeApproval(
 	latency time.Duration,
 ) {
 	if g.observe != nil {
-		classified := policy.NormalizeEffect(invocation)
+		classified := invocation.Assessment.Effect()
 		g.observe(
 			outcome, string(classified.Kind), string(classified.Risk), decision.Code, latency,
 		)
@@ -1366,28 +1364,20 @@ func networkApprovalAsk(
 		return approvalAsk{}
 	}
 	var network *NetworkApprovalContext
-	for _, resource := range invocation.Resources {
-		if resource.Kind == "url" && strings.TrimSpace(resource.ID) != "" {
-			if target, err := netpolicy.ParseTarget(resource.ID); err == nil {
-				network = &NetworkApprovalContext{
-					Host: target.Host, Protocol: target.Scheme, Port: target.Port,
-				}
-				break
+	for _, item := range invocation.Assessment.Resources() {
+		if item.Class == securitymodel.ClassLoopback {
+			network = &NetworkApprovalContext{Host: securitymodel.LoopbackHost, Protocol: securitymodel.LoopbackProtocol, Methods: append([]string(nil), item.Methods...), AllowPrivate: item.AllowPrivate}
+			break
+		}
+		if item.Class == securitymodel.ClassNetwork && item.Network != nil {
+			network = &NetworkApprovalContext{
+				Host: item.Network.Host, Protocol: item.Network.Scheme, Port: item.Network.Port,
+				Methods: append([]string(nil), item.Methods...), AllowPrivate: item.AllowPrivate,
 			}
+			break
 		}
 	}
-	if network == nil {
-		for _, resource := range invocation.Resources {
-			if resource.Kind == "host" && strings.TrimSpace(resource.ID) != "" {
-				network = &NetworkApprovalContext{
-					Host: resource.ID, Protocol: resource.Protocol, Port: resource.Port,
-					Methods:      append([]string(nil), resource.Methods...),
-					AllowPrivate: resource.AllowPrivate,
-				}
-				break
-			}
-		}
-	}
+
 	if network == nil {
 		return approvalAsk{}
 	}
@@ -1402,32 +1392,26 @@ func (g *Guard) grantNetworkHosts(ctx context.Context, invocation policy.Invocat
 		return
 	}
 	allow := func(target egress.Target) {
-		if invocation.Capability == tool.CapabilityNetwork {
+		if invocation.Capability() == tool.CapabilityNetwork {
 			egress.AllowInScope(ctx, target)
 		} else if g.onNetworkAllow != nil {
-			g.onNetworkAllow(invocation.Capability, target)
+			g.onNetworkAllow(invocation.Capability(), target)
 		}
 	}
-	for _, resource := range invocation.Resources {
-		switch resource.Kind {
-		case "host":
-			if securityresource.IsLoopback(resource.Kind, resource.Protocol) {
-				continue
-			}
-			allow(egress.Target{
-				Host: resource.ID, Protocol: resource.Protocol, Port: resource.Port,
-				Methods: resource.Methods, AllowPrivate: resource.AllowPrivate,
-			})
-		case "url":
-			if target, err := netpolicy.ParseTarget(resource.ID); err == nil {
-				allow(egress.Target{
-					Host: target.Host, Protocol: target.Scheme, Port: target.Port,
-					Methods:      resource.Methods,
-					AllowPrivate: egress.GrantPrivate(ctx, g.lookupIP, target.Host),
-				})
-			}
+	for _, item := range invocation.Assessment.Resources() {
+		if item.Class != securitymodel.ClassNetwork || item.Network == nil {
+			continue
 		}
+		private := item.AllowPrivate
+		if item.URL != "" {
+			private = egress.GrantPrivate(ctx, g.lookupIP, item.Network.Host)
+		}
+		allow(egress.Target{
+			Host: item.Network.Host, Protocol: item.Network.Scheme, Port: item.Network.Port,
+			Methods: item.Methods, AllowPrivate: private,
+		})
 	}
+
 }
 
 func (g *Guard) Decide(decision ApprovalDecision) error {
@@ -1618,13 +1602,13 @@ func (g *Guard) resolveResources(
 			}
 			value = text
 		}
-		if value == "" && !securityresource.IsPathKind(template.Kind) {
+		if value == "" && !securitymodel.IsPathKind(template.Kind) {
 			continue
 		}
 		resource := tool.Resource{
 			Kind: template.Kind, Access: template.Access, Tree: template.Tree,
 		}
-		if securityresource.IsPathKind(template.Kind) {
+		if securitymodel.IsPathKind(template.Kind) {
 			path, err := g.canonicalPath(value, template.Glob)
 			if err != nil {
 				return nil, err
@@ -1643,7 +1627,7 @@ func (g *Guard) resolveResources(
 		if err != nil {
 			continue
 		}
-		resources = append(resources, policy.HostResource(target, resource.Access))
+		resources = append(resources, tool.HostResource(target, resource.Access))
 	}
 	if field := descriptor.ResourceResolver.PatchField; field != "" {
 		patch, _ := values[field].(string)
@@ -1732,8 +1716,8 @@ func (g *Guard) resolveResources(
 		}
 		if enabled {
 			resources = append(resources, tool.Resource{
-				Kind: securityresource.KindHost, ID: securityresource.LoopbackHost,
-				Access: tool.AccessWrite, Protocol: securityresource.LoopbackProtocol,
+				Kind: securitymodel.KindHost, ID: securitymodel.LoopbackHost,
+				Access: tool.AccessWrite, Protocol: securitymodel.LoopbackProtocol,
 				Methods:      []string{"BIND", "CONNECT"},
 				AllowPrivate: true,
 			})
@@ -1873,7 +1857,7 @@ func (g *Guard) canonicalPath(value string, glob bool) (string, error) {
 		}
 	}
 	candidate := filepath.Join(g.workspace, base)
-	canonical, err := pathpolicy.CanonicalAllowMissing(candidate)
+	canonical, err := securitypaths.CanonicalAllowMissing(candidate)
 	if err != nil {
 		return "", err
 	}
@@ -1959,37 +1943,77 @@ func randomID(prefix string) string {
 	return prefix + hex.EncodeToString(value[:])
 }
 
+// samplePolicy resolves rules on an owned snapshot. The live runtime may be
+// shared by sibling Guards with different workspaces and must not be mutated.
+func samplePolicy(runtime *policy.Runtime, workspace string) (*policy.Runtime, error) {
+	snapshot := runtime.CloneSampling()
+	if err := policy.Validate(snapshot); err != nil {
+		return nil, err
+	}
+	for _, source := range []struct {
+		name  string
+		rules []policy.Rule
+	}{
+		{"repository", snapshot.Repository},
+		{"grant", snapshot.Grants},
+		{"constitution", snapshot.Constitution},
+		{"user", snapshot.User},
+	} {
+		for index := range source.rules {
+			if err := canonicalizeRuleResource(&source.rules[index], workspace); err != nil {
+				return nil, fmt.Errorf("%s rule: %w", source.name, err)
+			}
+		}
+	}
+	return snapshot, nil
+}
+
+func (g *Guard) samplePolicy() (*policy.Runtime, error) {
+	return samplePolicy(g.Policy(), g.workspace)
+}
+
+// canonicalizeRuleResource resolves the literal leading segments of a path
+// rule against the workspace and keeps the wildcard remainder. A rule may
+// apply to both path and ID resources, so its literal spelling is preserved
+// and only the filesystem interpretation is stored separately.
 func canonicalizeRuleResource(rule *policy.Rule, workspace string) error {
 	rule.ResourcePath = ""
-	// A rule may apply to both path and ID resources. Preserve its literal
-	// spelling and resolve only the filesystem interpretation separately.
-	if rule.Resource == "" || rule.Resource == "*" || !isPathRule(rule.Resource) {
+	if rule.Resource == "" || rule.Resource == "*" || !policy.IsPathPattern(rule.Resource) {
 		return nil
 	}
-	if filepath.IsAbs(rule.Resource) {
-		canonical, err := pathpolicy.CanonicalAllowMissing(rule.Resource)
-		if err != nil {
-			return err
+	literal, wildcard := splitRulePattern(filepath.ToSlash(rule.Resource))
+	base := filepath.FromSlash(literal)
+	if !filepath.IsAbs(base) {
+		clean := filepath.Clean(base)
+		if clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+			return errors.New("rule resource escapes workspace")
 		}
-		rule.ResourcePath = canonical
-		return nil
+		base = filepath.Join(workspace, clean)
 	}
-	clean := filepath.Clean(rule.Resource)
-	if clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
-		return errors.New("rule resource escapes workspace")
-	}
-	canonical, err := pathpolicy.CanonicalAllowMissing(filepath.Join(workspace, clean))
+	canonical, err := securitypaths.CanonicalAllowMissing(base)
 	if err != nil {
 		return err
 	}
-	rule.ResourcePath = canonical
-	return nil
+	rule.ResourcePath = policy.EscapePathPattern(filepath.ToSlash(canonical))
+	if wildcard != "" {
+		rule.ResourcePath = strings.TrimSuffix(rule.ResourcePath, "/") + "/" + wildcard
+	}
+	_, err = policy.CompilePathPattern(rule.ResourcePath)
+	return err
 }
 
-func isPathRule(value string) bool {
-	if parsed, err := url.Parse(value); err == nil && parsed.IsAbs() && parsed.Host != "" {
-		return false
+// splitRulePattern separates the leading segments without wildcard or escape
+// characters from the rest of a slash-separated pattern.
+func splitRulePattern(pattern string) (literal, wildcard string) {
+	segments := strings.Split(pattern, "/")
+	for index, segment := range segments {
+		if strings.ContainsAny(segment, `*?[\`) {
+			literal = strings.Join(segments[:index], "/")
+			if literal == "" && strings.HasPrefix(pattern, "/") {
+				literal = "/"
+			}
+			return literal, strings.Join(segments[index:], "/")
+		}
 	}
-	return strings.Contains(value, "/") || strings.Contains(value, `\`) ||
-		value == "." || !strings.Contains(value, ":")
+	return pattern, ""
 }

@@ -6,35 +6,35 @@ import (
 	"testing"
 
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
-	"github.com/fwtllh-png/QCode/internal/security/controlmatrix"
-	"github.com/fwtllh-png/QCode/internal/security/effect"
+	securitymodel "github.com/fwtllh-png/QCode/internal/security/model"
 )
 
 func TestExecutionOperationNormalizesResourcesAndArguments(t *testing.T) {
 	root := t.TempDir()
 	invocation := fixturePreparedInvocation(root)
-	input := OperationInput{
+	input := operationInput{
 		WorkspaceRoot: root, WorkspaceGeneration: 3,
-		Invocation: invocation,
-		Effect: effect.Effect{
-			Kind: effect.ProcessReadOnly, Risk: effect.RiskLow,
-			Reversibility: effect.Reversible,
+		Invocation: resolvePreparedFixture(invocation),
+		Effect: securitymodel.Effect{
+			Kind: securitymodel.ProcessReadOnly, Risk: securitymodel.RiskLow,
+			Reversibility: securitymodel.Reversible,
 		},
 		Required: RequiredControls{
-			FilesystemRead: controlmatrix.FilesystemReadDeclaredRoots,
-			Network:        controlmatrix.NetworkDenied,
-			ProcessTree:    controlmatrix.ProcessTreeGroupKill,
-			PathIdentity:   controlmatrix.PathIdentityDescriptorRelative,
+			FilesystemRead: securitymodel.FilesystemReadDeclaredRoots,
+			Network:        securitymodel.NetworkDenied,
+			ProcessTree:    securitymodel.ProcessTreeGroupKill,
+			PathIdentity:   securitymodel.PathIdentityDescriptorRelative,
 		},
 	}
-	first, err := BuildExecutionOperation(input)
+	first, err := buildFixtureOperation(input)
 	if err != nil {
 		t.Fatal(err)
 	}
 	input.Invocation.Arguments = json.RawMessage("{\n  \"command\": \"go test ./...\"\n}")
-	input.Invocation.Resources[0], input.Invocation.Resources[1] =
-		input.Invocation.Resources[1], input.Invocation.Resources[0]
-	second, err := BuildExecutionOperation(input)
+	resolved := input.Invocation.Assessment.Input()
+	resolved.Resources[0], resolved.Resources[1] = resolved.Resources[1], resolved.Resources[0]
+	input.Invocation.Assessment = securitymodel.Assess(resolved)
+	second, err := buildFixtureOperation(input)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,12 +55,12 @@ func TestExecutionOperationNormalizesResourcesAndArguments(t *testing.T) {
 
 func TestExecutionOperationDigestRejectsMutation(t *testing.T) {
 	root := t.TempDir()
-	operation, err := BuildExecutionOperation(OperationInput{
+	operation, err := buildFixtureOperation(operationInput{
 		WorkspaceRoot: root, WorkspaceGeneration: 1,
-		Invocation: fixturePreparedInvocation(root),
-		Effect: effect.Effect{
-			Kind: effect.ProcessReadOnly, Risk: effect.RiskLow,
-			Reversibility: effect.Reversible,
+		Invocation: resolvePreparedFixture(fixturePreparedInvocation(root)),
+		Effect: securitymodel.Effect{
+			Kind: securitymodel.ProcessReadOnly, Risk: securitymodel.RiskLow,
+			Reversibility: securitymodel.Reversible,
 		},
 	})
 	if err != nil {
@@ -79,12 +79,12 @@ func TestExecutionOperationRejectsTraversalResource(t *testing.T) {
 		Kind: "file", Path: filepath.Join(root, "..", "outside"),
 		Access: tool.AccessRead,
 	}}
-	_, err := BuildExecutionOperation(OperationInput{
+	_, err := buildFixtureOperation(operationInput{
 		WorkspaceRoot: root, WorkspaceGeneration: 1,
-		Invocation: invocation,
-		Effect: effect.Effect{
-			Kind: effect.WorkspaceRead, Risk: effect.RiskLow,
-			Reversibility: effect.Reversible,
+		Invocation: resolvePreparedFixture(invocation),
+		Effect: securitymodel.Effect{
+			Kind: securitymodel.WorkspaceRead, Risk: securitymodel.RiskLow,
+			Reversibility: securitymodel.Reversible,
 		},
 	})
 	if err == nil {
@@ -100,12 +100,12 @@ func TestExecutionOperationBindsAuthorizedHostRoot(t *testing.T) {
 		Kind: "file", Path: filepath.Join(toolchain, "bin", "go"),
 		Access: tool.AccessRead,
 	}}
-	operation, err := BuildExecutionOperation(OperationInput{
+	operation, err := buildFixtureOperation(operationInput{
 		WorkspaceRoot: workspace, WorkspaceGeneration: 1,
-		Invocation: invocation, HostReadRoots: []string{toolchain},
-		Effect: effect.Effect{
-			Kind: effect.ProcessReadOnly, Risk: effect.RiskLow,
-			Reversibility: effect.Reversible,
+		Invocation: resolvePreparedFixture(invocation), HostReadRoots: []string{toolchain},
+		Effect: securitymodel.Effect{
+			Kind: securitymodel.ProcessReadOnly, Risk: securitymodel.RiskLow,
+			Reversibility: securitymodel.Reversible,
 		},
 	})
 	if err != nil {
@@ -126,12 +126,12 @@ func TestExecutionOperationCanonicalizesNetworkTarget(t *testing.T) {
 		Kind: "url", ID: "HTTPS://API.Example.COM/v1/items",
 		Access: tool.AccessRead, Methods: []string{"get", "GET"},
 	}}
-	operation, err := BuildExecutionOperation(OperationInput{
+	operation, err := buildFixtureOperation(operationInput{
 		WorkspaceRoot: root, WorkspaceGeneration: 1,
-		Invocation: invocation,
-		Effect: effect.Effect{
-			Kind: effect.NetworkRead, Risk: effect.RiskMedium,
-			Reversibility: effect.Bounded,
+		Invocation: resolvePreparedFixture(invocation),
+		Effect: securitymodel.Effect{
+			Kind: securitymodel.NetworkRead, Risk: securitymodel.RiskMedium,
+			Reversibility: securitymodel.Bounded,
 		},
 	})
 	if err != nil {
@@ -149,9 +149,9 @@ func TestExecutionOperationCanonicalizesNetworkTarget(t *testing.T) {
 
 func fixturePreparedInvocation(root string) tool.PreparedInvocation {
 	invocation := tool.PreparedInvocation{
-		CallID: "call-1", Tool: "exec_command",
+		CallID: "call-1", Tool: "run_command",
 		Ref: tool.ToolRef{
-			Name: "exec_command", Source: "builtin:exec_command",
+			Name: "run_command", Source: "builtin:run_command",
 			CatalogID: "catalog-1", Generation: 2, Revision: 3, Authority: 4,
 		},
 		Arguments: json.RawMessage(`{"command":"go test ./..."}`),
@@ -163,7 +163,7 @@ func fixturePreparedInvocation(root string) tool.PreparedInvocation {
 			{Kind: "process", ID: "workspace", Access: tool.AccessWrite},
 		},
 		Descriptor: tool.Descriptor{
-			Name: "exec_command", Capability: tool.CapabilityProcess,
+			Name: "run_command", Capability: tool.CapabilityProcess,
 			AccessMode: tool.AccessRead, SandboxRequirement: tool.SandboxStrong,
 		},
 		Source: tool.InvocationSourceModel,
@@ -172,4 +172,8 @@ func fixturePreparedInvocation(root string) tool.PreparedInvocation {
 		invocation.Descriptor,
 	)
 	return invocation
+}
+
+func buildFixtureOperation(input operationInput) (ExecutionOperation, error) {
+	return buildExecutionOperation(input, input.Invocation.Assessment.Resources())
 }

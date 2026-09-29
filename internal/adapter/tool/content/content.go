@@ -19,7 +19,7 @@ import (
 	"github.com/fwtllh-png/QCode/internal/platform/process"
 	"github.com/fwtllh-png/QCode/internal/security/filebroker"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
-	"github.com/fwtllh-png/QCode/internal/security/workspacebroker"
+	"github.com/fwtllh-png/QCode/internal/orchestration/workspacebroker"
 )
 
 const contentOutputLimit = 4 << 20

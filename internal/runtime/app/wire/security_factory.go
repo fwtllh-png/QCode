@@ -12,9 +12,9 @@ func (f guardFactory) Build(context.Context) (*toolguard.Guard, error) {
 	options := toolguard.Options{
 		Registry: f.registry, Policy: f.runtime,
 
-		ForceEditPlanApproval: f.forceEditReview, Now: f.now, Diagnostics: f.diagnostics, OnNetworkAllow: f.onNetworkAllow, Workspace: f.workspace, WorkspaceID: f.workspaceID, WorkspaceGeneration: 1, LeaseAuthority: f.leaseAuthority, LeaseTTL: f.leaseTTL, ApprovalTTL: f.approvalTTL,
+		Now: f.now, Diagnostics: f.diagnostics, OnNetworkAllow: f.onNetworkAllow, Workspace: f.workspace, WorkspaceID: f.workspaceID, WorkspaceGeneration: 1, LeaseAuthority: f.leaseAuthority, LeaseTTL: f.leaseTTL, ApprovalTTL: f.approvalTTL,
 		ReadTracker: f.readTracker, Journal: f.journal, Isolator: f.isolator,
-		ModuleProxy: f.moduleProxy, AuthBindReport: f.authBindReport,
+		PreparationFacts: f.preparationFacts,
 	}
 	if f.permissions != nil {
 		f.runtime.BindUserRuleSource(f.permissions)

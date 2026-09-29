@@ -18,8 +18,8 @@ import (
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
 	"github.com/fwtllh-png/QCode/internal/platform/process"
 	"github.com/fwtllh-png/QCode/internal/security/authority"
-	"github.com/fwtllh-png/QCode/internal/security/controlmatrix"
 	"github.com/fwtllh-png/QCode/internal/security/egress"
+	securitymodel "github.com/fwtllh-png/QCode/internal/security/model"
 	"github.com/fwtllh-png/QCode/internal/security/policy"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
 )
@@ -48,7 +48,7 @@ func TestRealLoopbackAuthorityWithAndWithoutManagedProxy(t *testing.T) {
 		Host: targetURL.Hostname(), Protocol: "http", Port: uint16(port),
 		Methods: []string{http.MethodGet}, AllowPrivate: true,
 	}
-	gate := &egress.Gate{}
+	gate := egress.NewStaticGate()
 	gate.AllowTarget(target)
 	proxy, err := egress.StartManagedNetworkProxy(gate)
 	if err != nil {
@@ -76,7 +76,7 @@ func TestRealLoopbackAuthorityWithAndWithoutManagedProxy(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer pinned.Close()
-			for _, grant := range []string{"loopback", "denied", "managed-and-loopback"} {
+			for _, grant := range []string{"loopback-only", "denied", "managed-and-loopback"} {
 				if proxyPort == 0 && grant == "managed-and-loopback" {
 					continue
 				}
@@ -84,12 +84,12 @@ func TestRealLoopbackAuthorityWithAndWithoutManagedProxy(t *testing.T) {
 					resources := []tool.Resource{{
 						Kind: "repo", Path: base.WorkspaceRoot, Access: tool.AccessRead, Tree: true,
 					}}
-					want := controlmatrix.NetworkDenied
+					want := securitymodel.NetworkDenied
 					if grant != "denied" {
 						resources = append(resources, tool.Resource{
-							Kind: "host", ID: "localhost", Protocol: "loopback", Access: tool.AccessRead,
+							Kind: "host", ID: "localhost", Protocol: securitymodel.LoopbackProtocol, Access: tool.AccessRead,
 						})
-						want = controlmatrix.NetworkLoopbackExact
+						want = securitymodel.NetworkLoopbackAny
 					}
 					if grant == "managed-and-loopback" {
 						resources = append(resources, tool.Resource{
@@ -97,16 +97,16 @@ func TestRealLoopbackAuthorityWithAndWithoutManagedProxy(t *testing.T) {
 							Port: target.Port, Methods: target.Methods, AllowPrivate: true,
 							Access: tool.AccessWrite,
 						})
-						want = controlmatrix.NetworkProxyTargets
+						want = securitymodel.NetworkProxyTargets
 					}
-					profile, err := authority.Compile(authority.CompileInput{
+					profile, err := compileTestProfile(authority.CompileInput{
 						Runtime: policy.DefaultRuntime(policy.ModeAct, policy.PermissionSuggest),
-						Invocation: policy.Invocation{
+						Invocation: resolvePolicyFixture(policyInvocationFixture{
 							CallID: "approved-loopback", Tool: "exec_command",
 							Arguments: json.RawMessage(`{"command":"curl"}`), Validated: true,
 							Capability: tool.CapabilityProcess, Access: tool.AccessRead,
 							Sandbox: tool.SandboxStrong, Resources: resources,
-						},
+						}),
 						Authorized: true, Decision: policy.Decision{Action: policy.ActionAsk},
 						Revision: 1, Enforcement: "strong",
 						Capability: capability, SandboxPolicy: base,

@@ -11,6 +11,8 @@ const (
 	SourceManaged    AuthoritySource = "managed"
 	SourceUser       AuthoritySource = "user"
 	SourceRepository AuthoritySource = "repository"
+	// SourceConstitution rules are mechanical: they can only deny or hold.
+	SourceConstitution AuthoritySource = "constitution"
 )
 
 // UserRuleSource publishes validated, immutable workspace rules. Versions are
@@ -60,6 +62,19 @@ func (r *Runtime) ReloadSources(user, repository []Rule) (uint64, error) {
 	return r.bumpRevisionLocked(), nil
 }
 
+func (r *Runtime) SetConstitution(rules []Rule) (uint64, error) {
+	if r == nil {
+		return 0, errors.New("policy runtime is required")
+	}
+	if err := ValidateRules(SourceConstitution, rules); err != nil {
+		return 0, err
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.Constitution = append([]Rule(nil), rules...)
+	return r.bumpRevisionLocked(), nil
+}
+
 func (r *Runtime) AppendUserRule(rule Rule) (uint64, error) {
 	if r == nil {
 		return 0, errors.New("policy runtime is required")
@@ -75,7 +90,7 @@ func (r *Runtime) AppendUserRule(rule Rule) (uint64, error) {
 
 func ValidateRules(source AuthoritySource, rules []Rule) error {
 	switch source {
-	case SourceManaged, SourceUser, SourceRepository:
+	case SourceManaged, SourceUser, SourceRepository, SourceConstitution:
 	default:
 		return errors.New("unknown policy authority source")
 	}
@@ -90,6 +105,17 @@ func ValidateRules(source AuthoritySource, rules []Rule) error {
 		}
 		if source == SourceRepository && rule.Action == ActionAllow {
 			return fmt.Errorf("repository rule %d: repository authority cannot allow", index)
+		}
+		if source == SourceConstitution && rule.Action != ActionDeny && rule.Action != ActionHold {
+			return fmt.Errorf("constitution rule %d: constitution can only deny or hold", index)
+		}
+		if err := validateRuleResource(rule.Resource); err != nil {
+			return fmt.Errorf("%s rule %d: resource %q: %w", source, index, rule.Resource, err)
+		}
+		if rule.ResourcePath != "" {
+			if _, err := CompilePathPattern(rule.ResourcePath); err != nil {
+				return fmt.Errorf("%s rule %d: resolved resource: %w", source, index, err)
+			}
 		}
 		if rule.Action == ActionHold && rule.Code == "" {
 			return fmt.Errorf("%s rule %d: hold code is required", source, index)

@@ -5,19 +5,18 @@ import (
 	"errors"
 	"strings"
 
-	diagnostics "github.com/fwtllh-png/QCode/internal/adapter/lsp"
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
 	"github.com/fwtllh-png/QCode/internal/adapter/tool/typed"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
 )
 
 type Tool struct {
-	checker diagnostics.Checker
+	checker Checker
 }
 
 type input struct {
-	Files   []string             `json:"files"`
-	Changes []diagnostics.Change `json:"changes"`
+	Files   []string `json:"files"`
+	Changes []Change `json:"changes"`
 }
 
 func RegisterWithBackend(registry *tool.Registry, root string, backend sandbox.Backend) error {
@@ -30,7 +29,7 @@ func RegisterWithBackend(registry *tool.Registry, root string, backend sandbox.B
 	}
 	registry.SetSandboxBackend(backend)
 	instance := &Tool{
-		checker: diagnostics.Checker{Root: root, Sandbox: backend},
+		checker: Checker{Root: root, Sandbox: backend},
 	}
 	executor, err := instance.typedExecutor()
 	if err != nil {
@@ -43,7 +42,7 @@ func RegisterWithBackend(registry *tool.Registry, root string, backend sandbox.B
 }
 
 func (t *Tool) Descriptor() tool.Descriptor {
-	servers := diagnostics.AvailableServers()
+	servers := AvailableServers()
 	availability := tool.AvailabilityAvailable
 	unavailableReason := ""
 	if len(servers) == 0 {
@@ -113,13 +112,13 @@ func serverProbePath(server string) string {
 }
 
 func (t *Tool) typedExecutor() (tool.Executor, error) {
-	return typed.Define(typed.Spec[input, []diagnostics.Diagnostic]{
+	return typed.Define(typed.Spec[input, []Diagnostic]{
 		Descriptor:  t.Descriptor(),
 		Disposition: tool.DispositionWaitForTeardown,
-		Run: func(ctx context.Context, value input) ([]diagnostics.Diagnostic, error) {
+		Run: func(ctx context.Context, value input) ([]Diagnostic, error) {
 			return t.checker.Analyze(ctx, value.Files, value.Changes)
 		},
-		Metadata: func(values []diagnostics.Diagnostic) map[string]any {
+		Metadata: func(values []Diagnostic) map[string]any {
 			return map[string]any{"diagnostics": values, "diagnostic_count": len(values)}
 		},
 	})

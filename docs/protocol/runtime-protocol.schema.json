@@ -5745,6 +5745,25 @@
                   "permission_schema_version": {
                     "type": "integer"
                   },
+                  "policy": {
+                    "type": "object",
+                    "properties": {
+                      "action": {
+                        "type": "string"
+                      },
+                      "code": {
+                        "type": "string"
+                      },
+                      "layer": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "action",
+                      "layer"
+                    ],
+                    "additionalProperties": false
+                  },
                   "policy_revision": {
                     "type": "integer"
                   },
@@ -5868,6 +5887,25 @@
             },
             "disposition": {
               "type": "string"
+            },
+            "policy_denial": {
+              "type": "object",
+              "properties": {
+                "action": {
+                  "type": "string"
+                },
+                "code": {
+                  "type": "string"
+                },
+                "layer": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "action",
+                "layer"
+              ],
+              "additionalProperties": false
             },
             "source": {
               "type": "string"

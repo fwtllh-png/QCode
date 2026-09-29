@@ -6,8 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fwtllh-png/QCode/internal/security/controlmatrix"
-	"github.com/fwtllh-png/QCode/internal/security/effect"
+	securitymodel "github.com/fwtllh-png/QCode/internal/security/model"
 )
 
 func TestExecutionLeaseLifecycleIsSingleUse(t *testing.T) {
@@ -165,7 +164,7 @@ func TestExecutionLeaseRejectsAuthorityGenerationDrift(t *testing.T) {
 
 func TestRequiredControlsFailClosed(t *testing.T) {
 	operation, profile := fixtureLeaseInputs(t)
-	operation.Required.CrossProcess = controlmatrix.CrossProcessIsolated
+	operation.Required.CrossProcess = securitymodel.CrossProcessIsolated
 	digest, err := operationDigest(operation)
 	if err != nil {
 		t.Fatal(err)
@@ -191,22 +190,22 @@ func fixtureLeaseInputs(
 	input.SandboxPolicy.WorkspaceRoot = root
 	input.Runtime.Revision = 7
 	input.Invocation.CallID = "call-lease"
-	profile, err := Compile(input)
+	profile, err := compileProfileForTest(input)
 	if err != nil {
 		t.Fatal(err)
 	}
-	operation, err := BuildExecutionOperation(OperationInput{
+	operation, err := buildFixtureOperation(operationInput{
 		WorkspaceRoot: root, WorkspaceGeneration: 9,
-		Invocation: fixturePreparedInvocation(root),
-		Effect: effect.Effect{
-			Kind: effect.ProcessReadOnly, Risk: effect.RiskLow,
-			Reversibility: effect.Reversible,
+		Invocation: resolvePreparedFixture(fixturePreparedInvocation(root)),
+		Effect: securitymodel.Effect{
+			Kind: securitymodel.ProcessReadOnly, Risk: securitymodel.RiskLow,
+			Reversibility: securitymodel.Reversible,
 		},
 		Required: RequiredControls{
-			FilesystemRead: controlmatrix.FilesystemReadDeclaredRoots,
-			Network:        controlmatrix.NetworkDenied,
-			ProcessTree:    controlmatrix.ProcessTreeGroupKill,
-			PathIdentity:   controlmatrix.PathIdentityDescriptorRelative,
+			FilesystemRead: securitymodel.FilesystemReadDeclaredRoots,
+			Network:        securitymodel.NetworkDenied,
+			ProcessTree:    securitymodel.ProcessTreeGroupKill,
+			PathIdentity:   securitymodel.PathIdentityDescriptorRelative,
 		},
 	})
 	if err != nil {

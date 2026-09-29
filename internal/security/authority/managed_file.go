@@ -6,9 +6,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/fwtllh-png/QCode/internal/adapter/tool"
-	"github.com/fwtllh-png/QCode/internal/security/controlmatrix"
-	"github.com/fwtllh-png/QCode/internal/security/effect"
+	securitymodel "github.com/fwtllh-png/QCode/internal/security/model"
+	"github.com/fwtllh-png/QCode/internal/security/sandbox"
 )
 
 type ManagedFileInput struct {
@@ -20,7 +19,7 @@ type ManagedFileInput struct {
 	Subject             Subject
 	Paths               []string
 	MutationDigest      string
-	Risk                effect.Risk
+	Risk                securitymodel.Risk
 }
 
 func BuildManagedFileOperation(
@@ -48,7 +47,7 @@ func BuildManagedFileOperation(
 		resource := Resource{
 			Namespace: NamespaceWorkspace,
 			RootID:    input.WorkspaceID, RootGeneration: input.WorkspaceGeneration,
-			RelativePath: path, Kind: "file", Access: tool.AccessWrite,
+			RelativePath: path, Kind: securitymodel.ClassPath.String(), Access: securitymodel.Write,
 		}
 		if err := resource.Validate(); err != nil {
 			return ExecutionOperation{}, err
@@ -72,17 +71,17 @@ func BuildManagedFileOperation(
 		WorkspaceGeneration: input.WorkspaceGeneration,
 		Subject:             input.Subject,
 		Effect: EffectContract{
-			Kind:                   effect.WorkspaceEdit,
-			Reversibility:          effect.Reversible,
+			Kind:                   securitymodel.WorkspaceEdit,
+			Reversibility:          securitymodel.Reversible,
 			Risk:                   input.Risk,
 			WorkspaceTransaction:   WorkspaceTransactionBeforeImage,
 			RequireReadBeforeWrite: true,
 		},
 		Required: RequiredControls{
-			FilesystemRead:  controlmatrix.FilesystemReadExactPaths,
-			FilesystemWrite: controlmatrix.FilesystemWriteExactPaths,
-			PathIdentity:    controlmatrix.PathIdentityDescriptorRelative,
-			DurableRecovery: controlmatrix.DurableRecoveryExternalJournal,
+			FilesystemRead:  securitymodel.FilesystemReadExactPaths,
+			FilesystemWrite: securitymodel.FilesystemWriteExactPaths,
+			PathIdentity:    securitymodel.PathIdentityDescriptorRelative,
+			DurableRecovery: securitymodel.DurableRecoveryExternalJournal,
 		},
 		Resources: resources,
 		File: &FileIntent{
@@ -110,26 +109,25 @@ func BuildManagedFileProfile(
 	}
 	profile := EffectivePermissionProfile{
 		SchemaVersion: SchemaVersion, Revision: revision,
-		Tool: operation.Tool, Capability: tool.CapabilityWrite,
-		Access: tool.AccessTree,
+		Tool: operation.Tool, Capability: securitymodel.CapabilityWrite,
+		Access: securitymodel.Tree,
 		Filesystem: FilesystemAuthority{
 			WorkspaceRoot: workspaceRoot,
 		},
-		Network: NetworkAuthority{Mode: "denied"},
 		Process: ProcessAuthority{
-			Enforcement: "none", Backend: "file_broker",
+			Enforcement: sandbox.EnforcementNone, Backend: "file_broker",
 		},
-		Controls: controlmatrix.Matrix{
-			FilesystemRead:  controlmatrix.FilesystemReadExactPaths,
-			FilesystemWrite: controlmatrix.FilesystemWriteExactPaths,
-			Network:         controlmatrix.NetworkDenied,
-			ProcessTree:     controlmatrix.ProcessTreeUnmanaged,
-			CrossProcess:    controlmatrix.CrossProcessUnrestricted,
-			Syscall:         controlmatrix.SyscallUnrestricted,
-			IPC:             controlmatrix.IPCUnrestricted,
-			PathIdentity:    controlmatrix.PathIdentityDescriptorRelative,
-			ArtifactOrigin:  controlmatrix.ArtifactOriginUnverifiedPath,
-			DurableRecovery: controlmatrix.DurableRecoveryExternalJournal,
+		Controls: securitymodel.Controls{
+			FilesystemRead:  securitymodel.FilesystemReadExactPaths,
+			FilesystemWrite: securitymodel.FilesystemWriteExactPaths,
+			Network:         securitymodel.NetworkDenied,
+			ProcessTree:     securitymodel.ProcessTreeUnmanaged,
+			CrossProcess:    securitymodel.CrossProcessUnrestricted,
+			Syscall:         securitymodel.SyscallUnrestricted,
+			IPC:             securitymodel.IPCUnrestricted,
+			PathIdentity:    securitymodel.PathIdentityDescriptorRelative,
+			ArtifactOrigin:  securitymodel.ArtifactOriginUnverifiedPath,
+			DurableRecovery: securitymodel.DurableRecoveryExternalJournal,
 		},
 		Provenance: []AuthoritySource{{
 			Kind: "file_broker", Value: operation.Subject.ID,

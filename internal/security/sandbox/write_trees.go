@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/fwtllh-png/QCode/internal/security/controlplane"
+	securitypaths "github.com/fwtllh-png/QCode/internal/security/pathpolicy"
 )
 
 // CollectWriteTreeFiles lists regular files under an existing workspace write
@@ -16,7 +16,7 @@ func CollectWriteTreeFiles(root, tree string, limit int) ([]string, error) {
 	if limit < 0 {
 		return nil, fmt.Errorf("write tree %q exceeds the %d-file limit", tree, MaxExactWorkspaceWritePaths)
 	}
-	classifier, err := controlplane.New(root)
+	classifier, err := securitypaths.NewControlPlane(root)
 	if err != nil {
 		return nil, err
 	}

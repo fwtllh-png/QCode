@@ -6,37 +6,37 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
-	"github.com/fwtllh-png/QCode/internal/security/controlmatrix"
-	"github.com/fwtllh-png/QCode/internal/security/effect"
+	securitymodel "github.com/fwtllh-png/QCode/internal/security/model"
 )
 
 type (
-	EffectKind    = effect.Kind
-	RiskLevel     = effect.Risk
-	Reversibility = effect.Reversibility
+	EffectKind    = securitymodel.EffectKind
+	RiskLevel     = securitymodel.Risk
+	Reversibility = securitymodel.Reversibility
 )
 
 const (
-	EffectWorkspaceRead    = effect.WorkspaceRead
-	EffectWorkspaceEdit    = effect.WorkspaceEdit
-	EffectProcessReadOnly  = effect.ProcessReadOnly
-	EffectProcessMutating  = effect.ProcessMutating
-	EffectNetworkRead      = effect.NetworkRead
-	EffectNetworkMutating  = effect.NetworkMutating
-	EffectSessionMutation  = effect.SessionMutation
-	EffectAgentMessage     = effect.AgentMessage
-	EffectAgentLifecycle   = effect.AgentLifecycle
-	EffectExternalMutation = effect.ExternalMutation
+	EffectWorkspaceRead    = securitymodel.WorkspaceRead
+	EffectWorkspaceEdit    = securitymodel.WorkspaceEdit
+	EffectProcessReadOnly  = securitymodel.ProcessReadOnly
+	EffectProcessMutating  = securitymodel.ProcessMutating
+	EffectNetworkRead      = securitymodel.NetworkRead
+	EffectNetworkMutating  = securitymodel.NetworkMutating
+	EffectSessionMutation  = securitymodel.SessionMutation
+	EffectAgentMessage     = securitymodel.AgentMessage
+	EffectAgentLifecycle   = securitymodel.AgentLifecycle
+	EffectExternalMutation = securitymodel.ExternalMutation
 
-	RiskLow      = effect.RiskLow
-	RiskMedium   = effect.RiskMedium
-	RiskHigh     = effect.RiskHigh
-	RiskCritical = effect.RiskCritical
+	RiskLow      = securitymodel.RiskLow
+	RiskMedium   = securitymodel.RiskMedium
+	RiskHigh     = securitymodel.RiskHigh
+	RiskCritical = securitymodel.RiskCritical
 
-	Reversible   = effect.Reversible
-	Bounded      = effect.Bounded
-	Irreversible = effect.Irreversible
+	Reversible   = securitymodel.Reversible
+	Bounded      = securitymodel.Bounded
+	Irreversible = securitymodel.Irreversible
 )
 
 type EffectMode string
@@ -54,12 +54,37 @@ const (
 	TransactionBrokerOwned WorkspaceTransaction = "broker_owned"
 )
 
-type ApprovalMode string
+type ApprovalMode = securitymodel.ApprovalMode
 
 const (
-	ApprovalPolicyDefault ApprovalMode = "default"
-	ApprovalPolicyOnce    ApprovalMode = "once_required"
+	ApprovalPolicyDefault = securitymodel.ApprovalDefault
+	ApprovalPolicyOnce    = securitymodel.ApprovalOnce
 )
+
+// PlanningMode declares whether the consequential-action plan gate applies.
+type PlanningMode string
+
+const (
+	PlanningDefault PlanningMode = ""
+	PlanningExempt  PlanningMode = "exempt"
+)
+
+// ArgumentMatch selects invocations whose string argument Field equals one of
+// Values after trimming and case folding.
+type ArgumentMatch struct {
+	Field  string   `json:"field"`
+	Values []string `json:"values"`
+}
+
+func (m ArgumentMatch) Matches(value string) bool {
+	value = strings.ToLower(strings.TrimSpace(value))
+	for _, candidate := range m.Values {
+		if value != "" && value == strings.ToLower(strings.TrimSpace(candidate)) {
+			return true
+		}
+	}
+	return false
+}
 
 type EffectContract struct {
 	Mode                   EffectMode           `json:"mode"`
@@ -69,9 +94,14 @@ type EffectContract struct {
 	WorkspaceTransaction   WorkspaceTransaction `json:"workspace_transaction"`
 	RequireReadBeforeWrite bool                 `json:"require_read_before_write,omitempty"`
 	Approval               ApprovalMode         `json:"approval"`
+	// ReadOnlyWhen declares argument values under which a fixed effect only
+	// observes: the invocation is low-risk, reversible, and exempt from
+	// adaptive planning.
+	ReadOnlyWhen *ArgumentMatch `json:"read_only_when,omitempty"`
+	Planning     PlanningMode   `json:"planning,omitempty"`
 }
 
-type RequiredControls = controlmatrix.Requirements
+type RequiredControls = securitymodel.RequiredControls
 
 // ExternalDescriptor is the untrusted, model-visible portion of a tool
 // declaration. Requested never grants authority; it is retained for review and
@@ -98,8 +128,8 @@ type RequestedEffects struct {
 	SandboxRequirement SandboxRequirement `json:"sandbox_requirement"`
 }
 
-// TrustedBinding is the Registry-owned authority contract. Guard, Policy and
-// Authority consume this value instead of trusting the presentation descriptor.
+// TrustedBinding is the Registry-owned authority contract. Guard projects its
+// security fields into the assessment instead of trusting the presentation descriptor.
 type TrustedBinding struct {
 	Capability                   Capability         `json:"capability"`
 	ResourceResolver             ResourceResolver   `json:"resource_resolver"`
@@ -111,7 +141,11 @@ type TrustedBinding struct {
 	Required                     RequiredControls   `json:"required_controls"`
 	RecordsWorkspaceRead         bool               `json:"records_workspace_read,omitempty"`
 	ProducesVerificationEvidence bool               `json:"produces_verification_evidence,omitempty"`
-	ValidateMissingWriteParent   bool               `json:"validate_missing_write_parent,omitempty"`
+	// VerificationField names the argument that declares a verification run;
+	// together with a non-empty ResourceResolver.ReadPathsField argument it
+	// lets a plan gate ask once instead of holding.
+	VerificationField          string `json:"verification_field,omitempty"`
+	ValidateMissingWriteParent bool   `json:"validate_missing_write_parent,omitempty"`
 }
 
 type TrustedBindingProvider interface {
@@ -153,18 +187,18 @@ func TrustedBindingFromDescriptor(descriptor Descriptor) TrustedBinding {
 		},
 	}
 	if descriptor.SandboxRequirement == SandboxStrong {
-		binding.Required.FilesystemRead = controlmatrix.FilesystemReadDeclaredRoots
-		binding.Required.Network = controlmatrix.NetworkDirect
-		binding.Required.PathIdentity = controlmatrix.PathIdentityDescriptorRelative
+		binding.Required.FilesystemRead = securitymodel.FilesystemReadDeclaredRoots
+		binding.Required.Network = securitymodel.NetworkDirect
+		binding.Required.PathIdentity = securitymodel.PathIdentityDescriptorRelative
 		if descriptor.Capability == CapabilityProcess ||
 			descriptor.Capability == CapabilityExternal {
-			binding.Required.ProcessTree = controlmatrix.ProcessTreeGroupKill
+			binding.Required.ProcessTree = securitymodel.ProcessTreeGroupKill
 		}
 		for _, resource := range descriptor.ResourceResolver.Templates {
 			if resource.Access == AccessWrite &&
 				(resource.Kind == "file" || resource.Kind == "directory" ||
 					resource.Kind == "repo" || resource.Kind == "workspace") {
-				binding.Required.FilesystemWrite = controlmatrix.FilesystemWriteExactPaths
+				binding.Required.FilesystemWrite = securitymodel.FilesystemWriteExactPaths
 			}
 		}
 	}
@@ -249,6 +283,10 @@ func (b TrustedBinding) Validate() error {
 		b.Capability != CapabilityProcess {
 		return errors.New("verification evidence requires process capability")
 	}
+	if b.VerificationField != "" &&
+		(!b.ProducesVerificationEvidence || b.ResourceResolver.ReadPathsField == "") {
+		return errors.New("verification field requires verification evidence and covered paths")
+	}
 	if b.ValidateMissingWriteParent && b.Capability != CapabilityProcess {
 		return errors.New("missing write targets require process capability")
 	}
@@ -294,6 +332,19 @@ func (e EffectContract) Validate() error {
 	default:
 		return fmt.Errorf("approval policy %q is invalid", e.Approval)
 	}
+	switch e.Planning {
+	case PlanningDefault, PlanningExempt:
+	default:
+		return fmt.Errorf("planning mode %q is invalid", e.Planning)
+	}
+	if match := e.ReadOnlyWhen; match != nil {
+		if e.Mode != EffectFixed {
+			return errors.New("read-only declaration requires a fixed effect")
+		}
+		if strings.TrimSpace(match.Field) == "" || len(match.Values) == 0 {
+			return errors.New("read-only declaration requires a field and values")
+		}
+	}
 	return nil
 }
 
@@ -314,6 +365,11 @@ func cloneExternalDescriptor(value ExternalDescriptor) ExternalDescriptor {
 
 func cloneTrustedBinding(value TrustedBinding) TrustedBinding {
 	value.ResourceResolver = cloneResourceResolver(value.ResourceResolver)
+	if match := value.Effect.ReadOnlyWhen; match != nil {
+		value.Effect.ReadOnlyWhen = &ArgumentMatch{
+			Field: match.Field, Values: append([]string(nil), match.Values...),
+		}
+	}
 	return value
 }
 

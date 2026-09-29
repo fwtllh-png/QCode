@@ -8,49 +8,35 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 
-	"github.com/fwtllh-png/QCode/internal/adapter/tool"
-	"github.com/fwtllh-png/QCode/internal/security/controlmatrix"
-	"github.com/fwtllh-png/QCode/internal/security/effect"
-	"github.com/fwtllh-png/QCode/internal/security/netpolicy"
+	securitymodel "github.com/fwtllh-png/QCode/internal/security/model"
 	"github.com/fwtllh-png/QCode/internal/security/pathpolicy"
-	securityresource "github.com/fwtllh-png/QCode/internal/security/resource"
 )
 
-const OperationSchemaVersion = 1
+const OperationSchemaVersion = 3
 
-type SubjectKind string
+type SubjectKind = securitymodel.SubjectKind
+
+type TrustLevel = securitymodel.TrustLevel
+
+type Subject = securitymodel.Subject
 
 const (
-	SubjectBuiltin        SubjectKind = "builtin"
-	SubjectRepositoryHook SubjectKind = "repository_hook"
-	SubjectMCPTool        SubjectKind = "mcp_tool"
-	SubjectWorkflow       SubjectKind = "workflow"
-	SubjectWorker         SubjectKind = "worker"
-	SubjectHost           SubjectKind = "host"
+	SubjectBuiltin        = securitymodel.SubjectBuiltin
+	SubjectRepositoryHook = securitymodel.SubjectRepositoryHook
+	SubjectMCPTool        = securitymodel.SubjectMCPTool
+	SubjectWorkflow       = securitymodel.SubjectWorkflow
+	SubjectWorker         = securitymodel.SubjectWorker
+	SubjectHost           = securitymodel.SubjectHost
+	TrustBuiltin          = securitymodel.TrustBuiltin
+	TrustHost             = securitymodel.TrustHost
+	TrustWorkspace        = securitymodel.TrustWorkspace
+	TrustExternal         = securitymodel.TrustExternal
 )
-
-type TrustLevel string
-
-const (
-	TrustBuiltin   TrustLevel = "builtin"
-	TrustHost      TrustLevel = "host"
-	TrustWorkspace TrustLevel = "workspace"
-	TrustExternal  TrustLevel = "external"
-)
-
-type Subject struct {
-	Kind       SubjectKind `json:"kind"`
-	ID         string      `json:"id"`
-	Trust      TrustLevel  `json:"trust"`
-	Digest     string      `json:"digest"`
-	Generation uint64      `json:"generation"`
-}
 
 type ResourceNamespace string
 
@@ -70,19 +56,19 @@ const (
 )
 
 type Resource struct {
-	Namespace      ResourceNamespace `json:"namespace"`
-	RootID         string            `json:"root_id,omitempty"`
-	RelativePath   string            `json:"relative_path,omitempty"`
-	RootGeneration uint64            `json:"root_generation,omitempty"`
-	FileIdentity   string            `json:"file_identity,omitempty"`
-	Kind           string            `json:"kind"`
-	ID             string            `json:"id,omitempty"`
-	Access         tool.AccessMode   `json:"access"`
-	Tree           bool              `json:"tree,omitempty"`
-	Protocol       string            `json:"protocol,omitempty"`
-	Port           uint16            `json:"port,omitempty"`
-	Methods        []string          `json:"methods,omitempty"`
-	AllowPrivate   bool              `json:"allow_private,omitempty"`
+	Namespace      ResourceNamespace    `json:"namespace"`
+	RootID         string               `json:"root_id,omitempty"`
+	RelativePath   string               `json:"relative_path,omitempty"`
+	RootGeneration uint64               `json:"root_generation,omitempty"`
+	FileIdentity   string               `json:"file_identity,omitempty"`
+	Kind           string               `json:"kind"`
+	ID             string               `json:"id,omitempty"`
+	Access         securitymodel.Access `json:"access"`
+	Tree           bool                 `json:"tree,omitempty"`
+	Protocol       string               `json:"protocol,omitempty"`
+	Port           uint16               `json:"port,omitempty"`
+	Methods        []string             `json:"methods,omitempty"`
+	AllowPrivate   bool                 `json:"allow_private,omitempty"`
 }
 
 type WorkspaceTransaction string
@@ -93,14 +79,14 @@ const (
 )
 
 type EffectContract struct {
-	Kind                   effect.Kind          `json:"kind"`
-	Reversibility          effect.Reversibility `json:"reversibility"`
-	Risk                   effect.Risk          `json:"risk"`
-	WorkspaceTransaction   WorkspaceTransaction `json:"workspace_transaction"`
-	RequireReadBeforeWrite bool                 `json:"require_read_before_write,omitempty"`
+	Kind                   securitymodel.EffectKind    `json:"kind"`
+	Reversibility          securitymodel.Reversibility `json:"reversibility"`
+	Risk                   securitymodel.Risk          `json:"risk"`
+	WorkspaceTransaction   WorkspaceTransaction        `json:"workspace_transaction"`
+	RequireReadBeforeWrite bool                        `json:"require_read_before_write,omitempty"`
 }
 
-type RequiredControls = controlmatrix.Requirements
+type RequiredControls = securitymodel.RequiredControls
 
 type ProcessIntent struct {
 	Kind            string `json:"kind"`
@@ -109,7 +95,8 @@ type ProcessIntent struct {
 }
 
 type NetworkIntent struct {
-	Targets []string `json:"targets"`
+	Targets     []string `json:"targets,omitempty"`
+	LoopbackAny bool     `json:"loopback_any,omitempty"`
 }
 
 type FileIntent struct {
@@ -139,12 +126,12 @@ type ExecutionOperation struct {
 	Digest              string           `json:"digest"`
 }
 
-type OperationInput struct {
+type operationInput struct {
 	WorkspaceRoot          string
 	WorkspaceID            string
 	WorkspaceGeneration    uint64
-	Invocation             tool.PreparedInvocation
-	Effect                 effect.Effect
+	Invocation             securitymodel.PreparedInvocation
+	Effect                 securitymodel.Effect
 	Journaled              bool
 	RequireReadBeforeWrite bool
 	Required               RequiredControls
@@ -153,7 +140,10 @@ type OperationInput struct {
 	HostReadRoots          []string
 }
 
-func BuildExecutionOperation(input OperationInput) (ExecutionOperation, error) {
+func buildExecutionOperation(
+	input operationInput,
+	sources []securitymodel.Resource,
+) (ExecutionOperation, error) {
 	workspaceRoot, err := filepath.Abs(input.WorkspaceRoot)
 	if err != nil {
 		return ExecutionOperation{}, fmt.Errorf("resolve operation workspace: %w", err)
@@ -167,12 +157,8 @@ func BuildExecutionOperation(input OperationInput) (ExecutionOperation, error) {
 	if input.WorkspaceGeneration == 0 {
 		input.WorkspaceGeneration = 1
 	}
-	subject, err := subjectForInvocation(input.Invocation)
-	if err != nil {
-		return ExecutionOperation{}, err
-	}
-	resources := make([]Resource, 0, len(input.Invocation.Resources))
-	for _, source := range input.Invocation.Resources {
+	resources := make([]Resource, 0, len(sources))
+	for _, source := range sources {
 		resource, normalizeErr := normalizeResource(
 			workspaceRoot,
 			input.WorkspaceID,
@@ -200,21 +186,22 @@ func BuildExecutionOperation(input OperationInput) (ExecutionOperation, error) {
 		ID:            input.Invocation.CallID, Tool: input.Invocation.Tool,
 		WorkspaceID:         input.WorkspaceID,
 		WorkspaceGeneration: input.WorkspaceGeneration,
-		Subject:             subject, Effect: contract, Required: input.Required,
+		Subject:             input.Invocation.Subject, Effect: contract, Required: input.Required,
 		Resources: resources, Artifact: cloneArtifactIntent(input.Artifact),
 	}
 	argumentsDigest, err := canonicalJSONDigest(input.Invocation.Arguments)
 	if err != nil {
 		return ExecutionOperation{}, fmt.Errorf("digest operation arguments: %w", err)
 	}
-	switch input.Invocation.Binding.Capability {
-	case tool.CapabilityProcess, tool.CapabilityExternal:
+	switch input.Invocation.Assessment.Binding().Capability {
+	case securitymodel.CapabilityProcess, securitymodel.CapabilityExternal:
 		operation.Process = &ProcessIntent{
 			Kind: "tool", Tool: input.Invocation.Tool,
 			ArgumentsDigest: argumentsDigest,
 		}
 	}
 	var networkTargets, fileDigests []string
+	loopback := false
 	for _, resource := range resources {
 		digest, digestErr := resourceDigest(resource)
 		if digestErr != nil {
@@ -222,7 +209,11 @@ func BuildExecutionOperation(input OperationInput) (ExecutionOperation, error) {
 		}
 		switch resource.Namespace {
 		case NamespaceNetwork:
-			networkTargets = append(networkTargets, resource.ID)
+			if resource.Kind == securitymodel.ClassLoopback.String() {
+				loopback = true
+			} else {
+				networkTargets = append(networkTargets, resource.ID)
+			}
 		case NamespaceWorkspace, NamespaceSandboxHome, NamespaceBrokerArtifact,
 			NamespaceHostToolchain, NamespaceCache, NamespaceSharedUserTemp,
 			NamespaceControlState:
@@ -233,8 +224,8 @@ func BuildExecutionOperation(input OperationInput) (ExecutionOperation, error) {
 			}
 		}
 	}
-	if len(networkTargets) != 0 {
-		operation.Network = &NetworkIntent{Targets: uniqueSorted(networkTargets)}
+	if len(networkTargets) != 0 || loopback {
+		operation.Network = &NetworkIntent{Targets: uniqueSorted(networkTargets), LoopbackAny: loopback}
 	}
 	if len(fileDigests) != 0 {
 		operation.File = &FileIntent{
@@ -289,7 +280,7 @@ func (o ExecutionOperation) Validate() error {
 		return errors.New("execution process intent is invalid")
 	}
 	if o.Network != nil {
-		if len(o.Network.Targets) == 0 ||
+		if (len(o.Network.Targets) == 0 && !o.Network.LoopbackAny) ||
 			!sort.StringsAreSorted(o.Network.Targets) {
 			return errors.New("execution network intent is invalid")
 		}
@@ -329,32 +320,13 @@ func (o ExecutionOperation) Validate() error {
 	return nil
 }
 
-func (s Subject) Validate() error {
-	if s.Kind == "" || strings.TrimSpace(s.ID) == "" ||
-		s.Trust == "" || !validDigest(s.Digest) || s.Generation == 0 {
-		return errors.New("execution subject is incomplete")
-	}
-	switch s.Kind {
-	case SubjectBuiltin, SubjectRepositoryHook, SubjectMCPTool,
-		SubjectWorkflow, SubjectWorker, SubjectHost:
-	default:
-		return errors.New("execution subject kind is invalid")
-	}
-	switch s.Trust {
-	case TrustBuiltin, TrustHost, TrustWorkspace, TrustExternal:
-	default:
-		return errors.New("execution subject trust is invalid")
-	}
-	return nil
-}
-
 func (e EffectContract) Validate() error {
 	switch e.WorkspaceTransaction {
 	case WorkspaceTransactionNone, WorkspaceTransactionBeforeImage:
 	default:
 		return errors.New("workspace transaction is invalid")
 	}
-	if err := (effect.Effect{
+	if err := (securitymodel.Effect{
 		Kind: e.Kind, Risk: e.Risk, Reversibility: e.Reversibility,
 	}).Validate(); err != nil {
 		return err
@@ -379,14 +351,14 @@ func (r Resource) Validate() error {
 		return errors.New("operation resource namespace is invalid")
 	}
 	switch r.Access {
-	case tool.AccessRead, tool.AccessWrite, tool.AccessTree, tool.AccessUse:
+	case securitymodel.Read, securitymodel.Write, securitymodel.Tree, securitymodel.Use:
 	default:
 		return errors.New("operation resource access is invalid")
 	}
-	if r.Access == tool.AccessUse && r.Namespace != NamespaceCredential {
+	if r.Access == securitymodel.Use && r.Namespace != NamespaceCredential {
 		return errors.New("access use is only valid for credential resources")
 	}
-	if r.Namespace == NamespaceCredential && r.Access != tool.AccessUse {
+	if r.Namespace == NamespaceCredential && r.Access != securitymodel.Use {
 		return errors.New("credential resources must use access use")
 	}
 	if r.Namespace == NamespaceCredential && strings.TrimSpace(r.ID) == "" {
@@ -431,73 +403,42 @@ func (r Resource) bindsFilesystem() bool {
 	}
 }
 
-func subjectForInvocation(invocation tool.PreparedInvocation) (Subject, error) {
-	if err := invocation.Ref.Validate(); err != nil {
-		return Subject{}, err
-	}
-	kind := SubjectBuiltin
-	trust := TrustBuiltin
-	switch tool.CatalogSourceKind(invocation.Tool, invocation.Ref.Source) {
-	case "mcp":
-		kind, trust = SubjectMCPTool, TrustExternal
-	case "external":
-		kind, trust = SubjectHost, TrustExternal
-	case "dynamic":
-		kind, trust = SubjectHost, TrustHost
-	}
-	material := struct {
-		Name       string
-		Source     string
-		CatalogID  string
-		Generation uint64
-		Revision   uint64
-		Authority  uint64
-	}{
-		Name: invocation.Ref.Name, Source: invocation.Ref.Source,
-		CatalogID: invocation.Ref.CatalogID, Generation: invocation.Ref.Generation,
-		Revision: invocation.Ref.Revision, Authority: invocation.Ref.Authority,
-	}
-	digest, err := digestValue(material)
-	if err != nil {
-		return Subject{}, err
-	}
-	return Subject{
-		Kind: kind, ID: tool.CatalogToolID(invocation.Tool, invocation.Ref.Source),
-		Trust: trust, Digest: digest, Generation: invocation.Ref.Generation,
-	}, nil
-}
-
 func normalizeResource(
 	workspaceRoot, workspaceID string,
 	workspaceGeneration uint64,
 	hostReadRoots []string,
-	source tool.Resource,
+	source securitymodel.Resource,
 ) (Resource, error) {
 	resource := Resource{
-		Kind: source.Kind, ID: strings.TrimSpace(source.ID),
+		Kind: source.Class.String(), ID: strings.TrimSpace(source.ID),
 		Access: source.Access, Tree: source.Tree,
-		Protocol: strings.ToLower(strings.TrimSpace(source.Protocol)),
-		Port:     source.Port, AllowPrivate: source.AllowPrivate,
+		AllowPrivate: source.AllowPrivate,
 	}
 	resource.Methods = append([]string(nil), source.Methods...)
 	for index := range resource.Methods {
 		resource.Methods[index] = strings.ToUpper(strings.TrimSpace(resource.Methods[index]))
 	}
 	resource.Methods = uniqueSorted(resource.Methods)
-	switch source.Kind {
-	case "host", "url":
+	switch source.Class {
+	case securitymodel.ClassLoopback:
 		resource.Namespace = NamespaceNetwork
-		var err error
-		resource.ID, resource.Protocol, resource.Port, err =
-			normalizeNetworkResource(source)
-		if err != nil {
-			return Resource{}, err
+		resource.ID = securitymodel.LoopbackScope
+		resource.Protocol = securitymodel.LoopbackProtocol
+	case securitymodel.ClassNetwork:
+		resource.Namespace = NamespaceNetwork
+		if source.Network == nil || source.Network.Scheme == "" || source.Network.Host == "" {
+			return Resource{}, errors.New("operation network target is invalid")
 		}
-	case "process":
+		resource.ID = source.Network.Key()
+		resource.Protocol, resource.Port = source.Network.Scheme, source.Network.Port
+	case securitymodel.ClassProcess:
 		resource.Namespace = NamespaceProcess
-	case "agent", "plan", "parallel":
+	case securitymodel.ClassAgent, securitymodel.ClassPlan,
+		securitymodel.ClassSession:
 		resource.Namespace = NamespaceRuntime
-	default:
+	case securitymodel.ClassNamed:
+		resource.Namespace, resource.Kind = NamespaceRuntime, source.Name
+	case securitymodel.ClassPath:
 		if strings.TrimSpace(source.Path) == "" {
 			resource.Namespace = NamespaceRuntime
 			break
@@ -534,6 +475,8 @@ func normalizeResource(
 			}
 		}
 		resource.FileIdentity = fileIdentity(path)
+	default:
+		return Resource{}, errors.New("operation resource class is invalid")
 	}
 	if err := resource.Validate(); err != nil {
 		return Resource{}, err
@@ -566,32 +509,6 @@ func authorizedHostRoot(path string, roots []string) (string, error) {
 		)
 	}
 	return selected, nil
-}
-
-func normalizeNetworkResource(
-	source tool.Resource,
-) (string, string, uint16, error) {
-	if source.Protocol == securityresource.LoopbackProtocol {
-		return securityresource.LoopbackTarget, securityresource.LoopbackProtocol, 0, nil
-	}
-	target := netpolicy.Target{
-		Scheme: strings.ToLower(strings.TrimSpace(source.Protocol)),
-		Host:   netpolicy.NormalizeHost(source.ID),
-		Port:   source.Port,
-	}
-	if source.Kind == "url" {
-		parsed, err := url.Parse(strings.TrimSpace(source.ID))
-		if err != nil || parsed.User != nil || parsed.Scheme == "" {
-			return "", "", 0, errors.New("operation URL resource is invalid")
-		}
-		if target, err = netpolicy.URLTarget(parsed); err != nil {
-			return "", "", 0, fmt.Errorf("operation URL resource is invalid: %w", err)
-		}
-	}
-	if target.Scheme == "" || target.Host == "" {
-		return "", "", 0, errors.New("operation network target is incomplete")
-	}
-	return target.Key(), target.Scheme, target.Port, nil
 }
 
 func fileIdentity(path string) string {
@@ -675,7 +592,7 @@ func digestString(value string) string {
 
 func FallbackSandboxPolicyID(
 	workspaceRoot, backend string,
-	controls controlmatrix.Matrix,
+	controls securitymodel.Controls,
 ) string {
 	if strings.TrimSpace(workspaceRoot) == "" ||
 		strings.TrimSpace(backend) == "" {
@@ -684,7 +601,7 @@ func FallbackSandboxPolicyID(
 	digest, err := digestValue(struct {
 		WorkspaceRoot string
 		Backend       string
-		Controls      controlmatrix.Matrix
+		Controls      securitymodel.Controls
 	}{
 		WorkspaceRoot: filepath.Clean(workspaceRoot),
 		Backend:       backend,

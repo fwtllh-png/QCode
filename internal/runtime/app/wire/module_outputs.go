@@ -9,6 +9,7 @@ import (
 	filetool "github.com/fwtllh-png/QCode/internal/adapter/tool/file"
 	toolguard "github.com/fwtllh-png/QCode/internal/adapter/tool/guard"
 	webtool "github.com/fwtllh-png/QCode/internal/adapter/tool/web"
+	"github.com/fwtllh-png/QCode/internal/environment"
 	"github.com/fwtllh-png/QCode/internal/observability/diagnostics"
 	"github.com/fwtllh-png/QCode/internal/observability/verify"
 	"github.com/fwtllh-png/QCode/internal/orchestration/childrun"
@@ -21,11 +22,8 @@ import (
 	"github.com/fwtllh-png/QCode/internal/platform/process"
 	agentengine "github.com/fwtllh-png/QCode/internal/runtime/agent/engine"
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
-	"github.com/fwtllh-png/QCode/internal/security/constitution"
 	"github.com/fwtllh-png/QCode/internal/security/egress"
-	"github.com/fwtllh-png/QCode/internal/security/goproxy"
-	"github.com/fwtllh-png/QCode/internal/security/permissions"
-	"github.com/fwtllh-png/QCode/internal/security/policy"
+	securitypolicy "github.com/fwtllh-png/QCode/internal/security/policy"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
 )
 
@@ -49,10 +47,7 @@ type platformBuildState struct {
 	processes        *process.SessionManager
 	leaseAuthority   *toolguard.LeaseAuthority
 	repositoryIndex  *repoindex.Index
-	moduleProxy      *goproxy.Service
-	authBindReport   *goproxy.BindReport
-	hostGoproxyValue string
-	hostNetrcPath    string
+	preparationFacts []environment.Fact
 }
 
 type persistenceBuildState struct {
@@ -70,10 +65,10 @@ type capabilityBuildState struct {
 }
 
 type securityBuildState struct {
-	runtime      *policy.Runtime
+	runtime      *securitypolicy.Runtime
 	journal      *workspacejournal.Manager
-	constitution constitution.Bundle
-	permissions  *permissions.Store
+	constitution securitypolicy.ConstitutionBundle
+	permissions  *securitypolicy.PermissionsStore
 	guardFactory guardFactory
 	diagnostics  diagnostics.Runner
 	verify       verify.Runner

@@ -7,16 +7,15 @@ import (
 	"net/http"
 	"os"
 
-	"github.com/fwtllh-png/QCode/internal/adapter/lsp"
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
 	"github.com/fwtllh-png/QCode/internal/adapter/tool/builtin"
+	"github.com/fwtllh-png/QCode/internal/adapter/tool/lsp"
 	webtool "github.com/fwtllh-png/QCode/internal/adapter/tool/web"
 	"github.com/fwtllh-png/QCode/internal/config"
 	"github.com/fwtllh-png/QCode/internal/persist/contentstore"
 	"github.com/fwtllh-png/QCode/internal/platform/process"
 	"github.com/fwtllh-png/QCode/internal/platform/symbols"
 	"github.com/fwtllh-png/QCode/internal/security/egress"
-	"github.com/fwtllh-png/QCode/internal/security/goproxy"
 )
 
 type configModule struct{}
@@ -86,7 +85,7 @@ func (platformModule) Build(_ context.Context, state *buildState) error {
 	}
 	session.processes = processes
 	state.platform.processes = processes
-	state.platform.processEgress = &egress.Gate{}
+	state.platform.processEgress = egress.NewStaticGate()
 	state.platform.leaseAuthority = newLeaseAuthority()
 	backend, prepareFacts, err := newWorkspaceSandbox(state)
 	if err != nil {
@@ -94,22 +93,7 @@ func (platformModule) Build(_ context.Context, state *buildState) error {
 	}
 	session.sandbox = backend
 	state.platform.backend = backend
-	moduleProxy, authBindReport, err := bindAuthServices(state)
-	if err != nil {
-		return fmt.Errorf("bind auth services: %w", err)
-	}
-	state.platform.moduleProxy = moduleProxy
-	// Preparer facts (toolchain requirements, missing go, direct fallback)
-	// are binding-time facts: they surface on failed process results through
-	// the same report channel the auth service uses, instead of being
-	// dropped at binding time.
-	if authBindReport == nil {
-		authBindReport = &goproxy.BindReport{}
-	}
-	for _, fact := range prepareFacts {
-		authBindReport.Record(fact)
-	}
-	state.platform.authBindReport = authBindReport
+	state.platform.preparationFacts = prepareFacts
 	session.workspaceQuery, err = builtin.NewWorkspaceQuery(execution.Workspace, backend, state.platform.leaseAuthority, execution.LeaseTimeout)
 	if err != nil {
 		return fmt.Errorf("create workspace query: %w", err)
@@ -131,7 +115,7 @@ func (platformModule) Build(_ context.Context, state *buildState) error {
 	if search := state.config.snapshot.Config.Web.SearchBackend; search != "" {
 		webOptions.SearchBackend = search
 	}
-	state.platform.webEgress = &egress.Gate{UseCallScope: true}
+	state.platform.webEgress = egress.NewCallScopedGate()
 	grantWebBackendHosts(state.platform.webEgress, webOptions)
 	webOptions.HTTP = egress.WrapClient(&http.Client{}, state.platform.webEgress)
 	state.platform.web = webOptions

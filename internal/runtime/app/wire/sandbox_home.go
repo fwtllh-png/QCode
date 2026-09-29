@@ -4,40 +4,54 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"strings"
 
-	adapterenv "github.com/fwtllh-png/QCode/internal/adapter/environment"
+	"github.com/fwtllh-png/QCode/internal/adapter/envprep"
+	gittool "github.com/fwtllh-png/QCode/internal/adapter/tool/git"
 	"github.com/fwtllh-png/QCode/internal/config"
-	platformenv "github.com/fwtllh-png/QCode/internal/platform/environment"
-	"github.com/fwtllh-png/QCode/internal/security/authority"
+	"github.com/fwtllh-png/QCode/internal/environment"
 	"github.com/fwtllh-png/QCode/internal/security/egress"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
 )
 
 func newWorkspaceSandbox(
 	state *buildState,
-) (sandbox.Backend, []platformenv.Fact, error) {
+) (sandbox.Backend, []environment.Fact, error) {
 	privateHome := ""
 	if state.config.workspaceStateRoot != "" {
 		privateHome = filepath.Join(
 			state.config.workspaceStateRoot,
 			"sandbox-home",
 		)
+	} else {
+		// Ephemeral runtimes still need a home before compiling cache requests.
+		// Keep it outside the Darwin shared user temp, even when that is enabled.
+		root, err := os.MkdirTemp("/tmp", "qcode-environment-")
+		if err != nil {
+			return nil, nil, err
+		}
+		state.session.environmentStateDir = root
+		root, err = sandbox.CanonicalStateDirectory(root)
+		if err != nil {
+			return nil, nil, err
+		}
+		state.session.environmentStateDir = root
+		privateHome = filepath.Join(root, "sandbox-home")
 	}
-	environment := state.config.execution.Environment
+	environmentConfig := state.config.execution.Environment
 	options, prepareFacts, err := bindEnvironmentSandbox(
 		sandbox.Options{
 			WorkspaceRoot:       state.config.execution.Workspace,
 			PrivateTemp:         privateHome,
 			HostReadRoots:       append([]string(nil), state.config.diagnosticReadRoots...),
 			HostReadFiles:       append([]string(nil), state.config.diagnosticReadFiles...),
-			EnvironmentContract: environment.Contract,
-			EnvironmentProfile:  environment.Profile,
-			SharedUserTemp:      environment.SharedUserTemp,
+			EnvironmentContract: environmentConfig.Contract,
+			EnvironmentProfile:  environmentConfig.Profile,
+			SharedUserTemp:      environmentConfig.SharedUserTemp,
 		},
-		environment,
+		environmentConfig,
 		state.config.workspaceStateID,
 		privateHome,
+		nil,
 	)
 	if err != nil {
 		return nil, nil, err
@@ -53,156 +67,28 @@ func newWorkspaceSandbox(
 
 func bindEnvironmentSandbox(
 	options sandbox.Options,
-	environment config.ExecutionEnvironment,
+	environmentConfig config.ExecutionEnvironment,
 	workspaceID, sandboxHome string,
-) (sandbox.Options, []platformenv.Fact, error) {
-	prepared, err := platformenv.Prepare(context.Background(), platformenv.Options{
-		Contract:       environment.Contract,
-		Profile:        options.EnvironmentProfile,
-		SharedUserTemp: options.SharedUserTemp,
-		Source:         environment.Source,
-		WorkspaceRoot:  options.WorkspaceRoot,
-		WorkspaceID:    workspaceID,
-		SandboxHome:    sandboxHome,
-		Declarations:   environment.DeclaredRequests(),
-		Discoverers:    []platformenv.Discoverer{adapterenv.Go{}, adapterenv.Git{}},
+	sourceEnv []string,
+) (sandbox.Options, []environment.Fact, error) {
+	options.PrivateTemp = sandboxHome
+	options.EnvironmentContract = environmentConfig.Contract
+	if sourceEnv == nil {
+		sourceEnv = os.Environ()
+	}
+	declarations := environmentConfig.DeclaredRequests()
+	if options.EnvironmentProfile == environment.ProfileNative {
+		declarations = append(declarations, gittool.EnvironmentRequests(sourceEnv)...)
+	}
+	prepared, err := envprep.Prepare(context.Background(), envprep.Options{
+		Sandbox:      options,
+		Source:       environmentConfig.Source,
+		WorkspaceID:  workspaceID,
+		Declarations: declarations,
+		SourceEnv:    sourceEnv,
 	})
 	if err != nil {
 		return sandbox.Options{}, nil, err
 	}
-	applyPreparedSandboxOptions(&options, prepared)
-	return options, prepared.Facts, nil
-}
-
-func applyPreparedSandboxOptions(
-	options *sandbox.Options,
-	prepared platformenv.PreparedEnvironment,
-) {
-	home, _ := os.UserHomeDir()
-	env := map[string]string{}
-	for _, item := range prepared.Compiled {
-		if !item.Bindable {
-			continue
-		}
-		if item.Request.Namespace == platformenv.NamespaceNetwork &&
-			item.Request.Source == platformenv.SourceUserDeclaration &&
-			strings.TrimSpace(item.Request.Host) != "" {
-			options.EnvironmentNetwork = append(
-				options.EnvironmentNetwork,
-				sandbox.EnvironmentNetworkTarget{
-					Host:     item.Request.Host,
-					Protocol: item.Request.Protocol,
-					Port:     item.Request.Port,
-					Methods:  append([]string(nil), item.Request.Methods...),
-				},
-			)
-		}
-		if name := strings.TrimSpace(item.Request.Env); name != "" &&
-			!managedProxyEnvironmentName(name) {
-			value := item.Request.Value
-			if value == "" {
-				value = preparedPath(item, *options)
-			}
-			if value != "" {
-				env[name] = value
-			}
-		}
-		path := preparedPath(item, *options)
-		if path == "" || !filepath.IsAbs(path) {
-			continue
-		}
-		switch item.Request.Namespace {
-		case platformenv.NamespaceHostConfig:
-			if options.EnvironmentProfile != platformenv.ProfileNative &&
-				pathUnder(home, path) {
-				continue
-			}
-			if isDirectory(path) {
-				options.HostReadRoots = append(options.HostReadRoots, path)
-			} else {
-				options.HostReadFiles = append(options.HostReadFiles, path)
-			}
-		case platformenv.NamespaceHostToolchain:
-			if isDirectory(path) {
-				options.HostReadRoots = append(options.HostReadRoots, path)
-			} else {
-				options.HostReadFiles = append(options.HostReadFiles, path)
-			}
-		case platformenv.NamespaceSharedUserTemp:
-			options.HostWriteRoots = append(options.HostWriteRoots, path)
-		}
-	}
-	if options.EnvironmentProfile == platformenv.ProfileIsolated &&
-		options.PrivateTemp != "" {
-		env["HOME"] = options.PrivateTemp
-	} else if value := environmentEntryValue(prepared.Env, "HOME"); value != "" {
-		env["HOME"] = value
-	}
-	if !options.SharedUserTemp && options.PrivateTemp != "" {
-		env["TMPDIR"] = options.PrivateTemp
-		env["TMP"] = options.PrivateTemp
-		env["TEMP"] = options.PrivateTemp
-	} else {
-		for _, name := range []string{"TMPDIR", "TMP", "TEMP"} {
-			if value := environmentEntryValue(prepared.Env, name); value != "" {
-				env[name] = value
-			}
-		}
-	}
-	for name, value := range env {
-		options.EnvironmentValues = append(options.EnvironmentValues, name+"="+value)
-	}
-}
-
-func preparedPath(item platformenv.CompiledResource, options sandbox.Options) string {
-	if item.Request.Path != "" && filepath.IsAbs(item.Request.Path) {
-		return item.Request.Path
-	}
-	if item.Resource.ID != "" && filepath.IsAbs(item.Resource.ID) {
-		return item.Resource.ID
-	}
-	switch item.Resource.Namespace {
-	case authority.NamespaceCache, authority.NamespaceSandboxHome:
-		if options.PrivateTemp == "" {
-			return ""
-		}
-		if item.Resource.RelativePath == "." {
-			return options.PrivateTemp
-		}
-		return filepath.Join(options.PrivateTemp, item.Resource.RelativePath)
-	}
-	return ""
-}
-
-func pathUnder(parent, child string) bool {
-	if strings.TrimSpace(parent) == "" {
-		return false
-	}
-	relative, err := filepath.Rel(parent, child)
-	return err == nil && relative != ".." &&
-		!strings.HasPrefix(relative, ".."+string(filepath.Separator))
-}
-
-func isDirectory(path string) bool {
-	info, err := os.Stat(path)
-	return err == nil && info.IsDir()
-}
-
-func environmentEntryValue(environment []string, name string) string {
-	prefix := name + "="
-	for _, entry := range environment {
-		if strings.HasPrefix(entry, prefix) {
-			return strings.TrimPrefix(entry, prefix)
-		}
-	}
-	return ""
-}
-
-func managedProxyEnvironmentName(name string) bool {
-	switch strings.ToUpper(name) {
-	case "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY":
-		return true
-	default:
-		return false
-	}
+	return prepared.Sandbox, prepared.Facts, nil
 }

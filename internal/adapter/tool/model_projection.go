@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 
-	adaptercontent "github.com/fwtllh-png/QCode/internal/adapter/content"
 	"github.com/fwtllh-png/QCode/internal/adapter/provider"
 )
 
@@ -32,7 +31,7 @@ func ProjectModelResults(
 					CallID:  call.ID,
 					Content: string(data),
 					IsError: results[index].IsError,
-					Admission: adaptercontent.CloneAdmissionReceipt(
+					Admission: provider.CloneAdmissionReceipt(
 						results[index].Admission,
 					),
 				},

@@ -4,59 +4,16 @@ import (
 	"context"
 	"errors"
 	"net"
-	"net/http"
-	"net/url"
 	"strings"
 	"sync/atomic"
 	"testing"
 
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
-	"github.com/fwtllh-png/QCode/internal/platform/environment"
+	"github.com/fwtllh-png/QCode/internal/environment"
 	"github.com/fwtllh-png/QCode/internal/platform/process"
 	"github.com/fwtllh-png/QCode/internal/security/egress"
-	"github.com/fwtllh-png/QCode/internal/security/goproxy"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
 )
-
-func TestFailedExecCommandSurfacesAuthBindReportFacts(t *testing.T) {
-	manager := process.NewSessionManager(4096)
-	t.Cleanup(manager.CloseAll)
-	registry := tool.NewRegistry(nil, nil)
-	if err := RegisterWithManagerAndBackend(
-		registry, t.TempDir(), manager, passthroughBackend{},
-	); err != nil {
-		t.Fatal(err)
-	}
-	report := &goproxy.BindReport{}
-	report.Record(environment.Fact{
-		Source:         goproxy.Source,
-		Category:       environment.CategoryCredentialUnavailable,
-		RequiredAction: environment.ActionBindCredential,
-		Resource:       "goproxy.corp.example",
-		Detail:         "host GOPROXY credential is not present in netrc",
-	})
-	ctx := goproxy.WithBindReport(t.Context(), report)
-	result := executeProcessToolContext(
-		t, ctx, registry, processTestThread, "exec_command", map[string]any{
-			"command": "printf '401 Unauthorized\\n'; exit 1",
-		},
-	)
-	if !result.IsError {
-		t.Fatalf("result = %+v", result)
-	}
-	if result.Metadata["error_category"] != environment.CategoryCredentialUnavailable {
-		t.Fatalf("error_category = %v metadata=%v", result.Metadata["error_category"], result.Metadata)
-	}
-	if result.Metadata["required_action"] != environment.ActionBindCredential {
-		t.Fatalf("required_action = %v", result.Metadata["required_action"])
-	}
-	if !strings.Contains(
-		strings.TrimSpace(result.Metadata["environment_detail"].(string)),
-		"netrc",
-	) {
-		t.Fatalf("environment_detail = %v", result.Metadata["environment_detail"])
-	}
-}
 
 func TestFailedExecCommandWithoutFactsIsUnknown(t *testing.T) {
 	manager := process.NewSessionManager(4096)
@@ -100,7 +57,7 @@ func TestFailedExecCommandWithoutFactsIsUnknown(t *testing.T) {
 }
 
 func TestFailedExecCommandUsesSessionGateReceipts(t *testing.T) {
-	gate := &egress.Gate{}
+	gate := egress.NewStaticGate()
 	_, _ = gate.Authorize(t.Context(), egress.Target{
 		Host: "code.byted.org", Protocol: "https", Port: 443,
 		Methods: []string{"CONNECT"},
@@ -117,7 +74,7 @@ func TestFailedExecCommandUsesSessionGateReceipts(t *testing.T) {
 	}
 	attachMissingCapability(
 		&result,
-		protocol.sessionEnvironmentFacts(t.Context(), "sess", nil),
+		protocol.sessionEnvironmentFacts("sess"),
 	)
 	if result.Metadata["error_category"] != environment.CategoryNetworkTargetUnapproved {
 		t.Fatalf("error_category = %v metadata=%v", result.Metadata["error_category"], result.Metadata)
@@ -292,7 +249,7 @@ func TestOpenProcessNetworkInheritsDeclaredGrant(t *testing.T) {
 	if !sandbox.SupportsManagedNetworkProxy() {
 		t.Skip("session channels are unsupported")
 	}
-	workspace := &egress.Gate{}
+	workspace := egress.NewStaticGate()
 	proxy, err := egress.StartManagedNetworkProxy(workspace)
 	if err != nil {
 		t.Fatal(err)
@@ -313,7 +270,6 @@ func TestOpenProcessNetworkInheritsDeclaredGrant(t *testing.T) {
 		backend,
 		false,
 		inheritedEnvironmentNetwork(backend),
-		false,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -345,10 +301,10 @@ func TestBackgroundProcessCannotAskAfterItsCallReturns(t *testing.T) {
 	manager := process.NewSessionManager(4096)
 	t.Cleanup(manager.CloseAll)
 	registry := tool.NewRegistry(nil, nil)
-	backend := &envCaptureBackend{sessionOpeningPassthrough: sessionOpeningPassthrough{
-		opener: fixedSessionOpener{session: stubProcessSession{gate: gate}},
-	}}
-	if err := RegisterWithManagerAndBackend(registry, t.TempDir(), manager, backend); err != nil {
+	root := t.TempDir()
+	backend := composedSessionBackend(t, root, &envCaptureBackend{},
+		fixedSessionOpener{session: stubProcessSession{gate: gate}})
+	if err := RegisterWithManagerAndBackend(registry, root, manager, backend); err != nil {
 		t.Fatal(err)
 	}
 	var asked atomic.Int32
@@ -389,7 +345,6 @@ func TestOpenProcessNetworkFailsClosedWithoutOpener(t *testing.T) {
 			Host: "example.test", Protocol: "https", Port: 443,
 			Methods: []string{"CONNECT"},
 		}},
-		false,
 	)
 	if !errors.Is(err, egress.ErrProcessSessionUnsupported) {
 		t.Fatalf("openProcessNetwork() error = %v", err)
@@ -403,7 +358,7 @@ func TestOpenProcessNetworkBindsSessionGate(t *testing.T) {
 	if !sandbox.SupportsManagedNetworkProxy() {
 		t.Skip("session channels are unsupported")
 	}
-	workspace := &egress.Gate{}
+	workspace := egress.NewStaticGate()
 	proxy, err := egress.StartManagedNetworkProxy(workspace)
 	if err != nil {
 		t.Fatal(err)
@@ -417,7 +372,6 @@ func TestOpenProcessNetworkBindsSessionGate(t *testing.T) {
 		sessionOpeningPassthrough{opener: proxy},
 		false,
 		[]egress.Target{target},
-		false,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -428,130 +382,6 @@ func TestOpenProcessNetworkBindsSessionGate(t *testing.T) {
 	}
 	if _, err := workspace.Authorize(t.Context(), target, "test"); err == nil {
 		t.Fatal("session grant leaked onto the workspace gate")
-	}
-}
-
-func TestOpenProcessNetworkOpensLoopbackSessionForAuthService(t *testing.T) {
-	if !sandbox.SupportsManagedNetworkProxy() {
-		t.Skip("session channels are unsupported")
-	}
-	workspace := &egress.Gate{}
-	proxy, err := egress.StartManagedNetworkProxy(workspace)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = proxy.Close(t.Context()) })
-	session, err := openProcessNetwork(
-		sessionOpeningPassthrough{opener: proxy},
-		true,
-		nil,
-		true,
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = session.Close() })
-	if session.Port() == 0 {
-		t.Fatal("auth service session port was not allocated")
-	}
-	if _, err := workspace.Authorize(t.Context(), egress.Target{
-		Host: "goproxy.example", Protocol: "https", Port: 443,
-		Methods: []string{"CONNECT"},
-	}, "test"); err == nil {
-		t.Fatal("auth session granted the real GOPROXY host")
-	}
-}
-
-func TestExecCommandRewritesGoproxyToSessionAndKeepsSecretOut(t *testing.T) {
-	if !sandbox.SupportsManagedNetworkProxy() {
-		t.Skip("session channels are unsupported")
-	}
-	workspace := &egress.Gate{}
-	proxy, err := egress.StartManagedNetworkProxy(workspace)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = proxy.Close(t.Context()) })
-	backend := &envCaptureBackend{sessionOpeningPassthrough: sessionOpeningPassthrough{opener: proxy}}
-	manager := process.NewSessionManager(4096)
-	t.Cleanup(manager.CloseAll)
-	registry := tool.NewRegistry(nil, nil)
-	if err := RegisterWithManagerAndBackend(registry, t.TempDir(), manager, backend); err != nil {
-		t.Fatal(err)
-	}
-	service, err := goproxy.New(goproxy.Binding{
-		Upstream:   "http://127.0.0.1:9",
-		Prefixes:   []string{"example.com/qcode/"},
-		Credential: goproxy.CredentialRef{Kind: "env", Name: "QCODE_TEST_GOPROXY_TOKEN"},
-	}, func(context.Context, string, string) (string, error) {
-		return "user:secret-token", nil
-	}, http.DefaultTransport)
-	if err != nil {
-		t.Fatal(err)
-	}
-	result := executeProcessToolContext(t, goproxy.WithService(t.Context(), service), registry, processTestThread, "exec_command", map[string]any{
-		"command": "true",
-		"env": map[string]string{
-			"GOPROXY": "https://user:secret-token@proxy.example|direct",
-		},
-	})
-	if result.IsError {
-		t.Fatalf("result = %+v", result)
-	}
-	var rewritten string
-	for _, entry := range backend.env {
-		if strings.HasPrefix(entry, "GOPROXY=") {
-			rewritten = entry
-		}
-	}
-	endpoint, err := url.Parse(strings.TrimPrefix(rewritten, "GOPROXY="))
-	if err != nil || endpoint.Scheme != "http" || endpoint.Hostname() != "127.0.0.1" ||
-		endpoint.User.Username() != sandbox.ManagedProxyUser {
-		t.Fatalf("GOPROXY = %q env=%v", rewritten, backend.env)
-	}
-	if password, _ := endpoint.User.Password(); password == "" {
-		t.Fatalf("GOPROXY carries no session channel credential: %q", rewritten)
-	}
-	if strings.Contains(rewritten, "secret-token") ||
-		strings.Contains(rewritten, "|direct") ||
-		strings.Contains(rewritten, "proxy.example") {
-		t.Fatalf("secret or upstream leaked into GOPROXY: %q", rewritten)
-	}
-}
-
-func TestExecCommandAuthServiceFailsClosedWithoutSession(t *testing.T) {
-	if sandbox.SupportsManagedNetworkProxy() {
-		t.Skip("this platform allocates process session channels")
-	}
-	manager := process.NewSessionManager(4096)
-	t.Cleanup(manager.CloseAll)
-	registry := tool.NewRegistry(nil, nil)
-	if err := RegisterWithManagerAndBackend(
-		registry, t.TempDir(), manager, passthroughBackend{},
-	); err != nil {
-		t.Fatal(err)
-	}
-	service, err := goproxy.New(goproxy.Binding{
-		Upstream:   "http://127.0.0.1:9",
-		Prefixes:   []string{"example.com/qcode/"},
-		Credential: goproxy.CredentialRef{Kind: "env", Name: "QCODE_TEST_GOPROXY_TOKEN"},
-	}, func(context.Context, string, string) (string, error) {
-		return "user:secret-token", nil
-	}, http.DefaultTransport)
-	if err != nil {
-		t.Fatal(err)
-	}
-	result := executeProcessToolContext(t, goproxy.WithService(t.Context(), service), registry, processTestThread, "exec_command", map[string]any{
-		"command": "true",
-	})
-	if !result.IsError {
-		t.Fatalf("result = %+v", result)
-	}
-	if result.Metadata["error_category"] != environment.CategoryBackendCapabilityUnsupported {
-		t.Fatalf("error_category = %v metadata=%v", result.Metadata["error_category"], result.Metadata)
-	}
-	if manager.Count() != 0 {
-		t.Fatalf("unsupported auth exec leaked a session: count=%d", manager.Count())
 	}
 }
 
@@ -614,61 +444,23 @@ func (s stubProcessSession) Credential() string { return "" }
 func (s stubProcessSession) Gate() *egress.Gate { return s.gate }
 func (s stubProcessSession) Close() error       { return nil }
 
-func TestExecCommandRoutesGoproxyToStableWorkspaceChannel(t *testing.T) {
-	if !sandbox.SupportsManagedNetworkProxy() {
-		t.Skip("managed network proxy is unsupported")
-	}
-	root := t.TempDir()
-	manager := process.NewSessionManager(4096)
-	t.Cleanup(manager.CloseAll)
-	backend, err := egress.NewManagedBackend(
-		&egress.Gate{},
-		sandbox.Options{
-			WorkspaceRoot: root, PrivateTemp: t.TempDir(),
-			SkipPATHReadRoots: true,
-		},
-		sandbox.NewPlatformBackend,
-	)
+// composedSessionBackend composes a fake backend the way production does: a
+// policy-bound backend plus the Workspace proxy's Session allocator.
+func composedSessionBackend(
+	t *testing.T,
+	root string,
+	backend sandbox.Backend,
+	opener egress.ProcessSessionOpener,
+) sandbox.Backend {
+	t.Helper()
+	bound, err := sandbox.BindPolicy(backend, sandbox.Options{WorkspaceRoot: root})
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = sandbox.CloseBackend(backend) })
-	workspacePort := sandbox.BackendManagedProxyPort(backend)
-	if workspacePort == 0 {
-		t.Fatal("managed backend exposes no workspace proxy port")
-	}
-	service, err := goproxy.New(goproxy.Binding{
-		Upstream: "http://127.0.0.1:9",
-		Prefixes: []string{"*"},
-		Credential: goproxy.CredentialRef{
-			Kind: goproxy.CredentialKindHost, Name: "fixture",
-		},
-	}, func(context.Context, string, string) (string, error) {
-		return "token", nil
-	}, http.DefaultTransport)
+	composed, err := egress.NewSessionBackend(bound, opener)
 	if err != nil {
 		t.Fatal(err)
 	}
-	egress.BindProtocolHandler(backend, service)
-
-	registry := tool.NewRegistry(nil, nil)
-	if err := RegisterWithManagerAndBackend(registry, root, manager, backend); err != nil {
-		t.Fatal(err)
-	}
-	// No network_targets and no allow_loopback: the bound auth service keeps
-	// module fetches online and GOPROXY must point at the pre-authorized
-	// workspace channel, not a per-command session port.
-	result := executeProcessToolContext(
-		t, goproxy.WithService(t.Context(), service), registry,
-		processTestThread, "exec_command", map[string]any{
-			"command": `printf '%s' "$GOPROXY"`,
-		},
-	)
-	if result.IsError {
-		t.Fatalf("result = %+v", result)
-	}
-	want := sandbox.ManagedProxyURL(workspacePort, sandbox.BackendManagedProxyCredential(backend))
-	if result.Content != want || !strings.Contains(want, "@") {
-		t.Fatalf("GOPROXY = %q, want %q", result.Content, want)
-	}
+	t.Cleanup(func() { _ = composed.Close() })
+	return composed
 }

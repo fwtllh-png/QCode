@@ -3,15 +3,7 @@
   "id": "SEC-EXEC-BOUNDARY-001",
   "rules": [
     {
-      "path": "internal/adapter/environment/go.go",
-      "categories": [
-        "process"
-      ],
-      "owner": "environment adapter",
-      "reason": "Read-only Go toolchain probes (`go env`) bounded by the sandbox probe timeout."
-    },
-    {
-      "path": "internal/adapter/lsp/check.go",
+      "path": "internal/adapter/tool/lsp/check.go",
       "categories": [
         "process"
       ],
@@ -201,22 +193,20 @@
       "reason": "Trusted durable state owners."
     },
     {
-      "path": "internal/platform/environment",
-      "prefix": true,
+      "path": "internal/adapter/envprep/prepare.go",
       "categories": [
-        "file",
+        "file"
+      ],
+      "owner": "environment preparer",
+      "reason": "Prepares the policy-owned private home and cache directories."
+    },
+    {
+      "path": "internal/adapter/envprep/usertemp_darwin.go",
+      "categories": [
         "process"
       ],
       "owner": "environment preparer",
-      "reason": "Prepares the policy-owned private home and temp directories; getconf reads the Darwin user temp root."
-    },
-    {
-      "path": "internal/platform/envprobe/envprobe.go",
-      "categories": [
-        "process"
-      ],
-      "owner": "environment probe",
-      "reason": "Fixed read-only host capability probes with substituted fakes in tests."
+      "reason": "getconf reads the Darwin user temp root."
     },
     {
       "path": "internal/platform/ownerlease",

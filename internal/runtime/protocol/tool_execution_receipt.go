@@ -11,6 +11,7 @@ type ToolExecutionReceipt struct {
 	Tool             ToolExecutionRef     `json:"tool"`
 	Source           string               `json:"source"`
 	Disposition      string               `json:"disposition"`
+	PolicyDenial     *ToolPolicyDecision  `json:"policy_denial,omitempty"`
 	Attempts         []ToolAttemptReceipt `json:"attempts"`
 	ApprovalWait     time.Duration        `json:"approval_wait,omitempty"`
 	DispatchWait     time.Duration        `json:"dispatch_wait,omitempty"`
@@ -28,6 +29,13 @@ type ToolExecutionRef struct {
 	CatalogID  string `json:"catalog_id"`
 	Generation uint64 `json:"generation"`
 	Revision   uint64 `json:"revision"`
+}
+
+// ToolPolicyDecision names the policy decision layer that decided a call.
+type ToolPolicyDecision struct {
+	Action string `json:"action"`
+	Layer  string `json:"layer"`
+	Code   string `json:"code,omitempty"`
 }
 
 type ToolPermissionProvenance struct {
@@ -75,6 +83,7 @@ type ToolAttemptReceipt struct {
 	SubjectDigest           string                          `json:"subject_digest,omitempty"`
 	SubjectGeneration       uint64                          `json:"subject_generation,omitempty"`
 	PolicyRevision          uint64                          `json:"policy_revision,omitempty"`
+	Policy                  *ToolPolicyDecision             `json:"policy,omitempty"`
 	SandboxPolicyID         string                          `json:"sandbox_policy_id,omitempty"`
 	EffectKind              string                          `json:"effect_kind,omitempty"`
 	EffectRisk              string                          `json:"effect_risk,omitempty"`
@@ -123,7 +132,13 @@ func (r *ToolExecutionReceipt) validate() error {
 	if r.Source == "" || r.Disposition == "" || r.TerminalStatus == "" || r.TerminalOwner == "" {
 		return errors.New("tool execution receipt terminal evidence is incomplete")
 	}
+	if err := r.PolicyDenial.validate(); err != nil {
+		return err
+	}
 	for _, attempt := range r.Attempts {
+		if err := attempt.Policy.validate(); err != nil {
+			return err
+		}
 		if attempt.Sequence == 0 || attempt.Sandbox == "" ||
 			attempt.Status == "" || attempt.TerminalOwner == "" ||
 			attempt.StartedAt.IsZero() || attempt.CompletedAt.IsZero() {
@@ -141,6 +156,16 @@ func (r *ToolExecutionReceipt) validate() error {
 				attempt.LeaseAttempt == 0) {
 			return errors.New("tool execution lease evidence is invalid")
 		}
+	}
+	return nil
+}
+
+func (d *ToolPolicyDecision) validate() error {
+	if d == nil {
+		return nil
+	}
+	if d.Action == "" || d.Layer == "" {
+		return errors.New("tool execution policy decision is incomplete")
 	}
 	return nil
 }

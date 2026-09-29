@@ -79,7 +79,7 @@ Child 的实际执行仍是普通 Runtime Turn，不建立后台 WorkGraph 镜�
 | Agent | `internal/runtime/agent` | Turn Kernel、Engine、Context、Prompt |
 | Adapter | `internal/adapter` | Provider、Tool、MCP、Skill |
 | Security | `internal/security` | Policy、Permission、Constitution、Credential、Sandbox |
-| Environment | `internal/platform/environment`、`internal/adapter/environment` | 通用环境契约与准备；Go/Git 资源发现适配器 |
+| Environment | `internal/environment`、`internal/adapter/envprep` | 前者为仅依赖标准库的声明、校验与结构化事实；后者捕获来源、编译声明、物化目录并生成沙箱配置 |
 | Orchestration | `internal/orchestration` | Subagent、Admission/Budget、Worktree、Chat Merge、Exec Settle |
 | Persistence | `internal/persist` | SQLite、CAS、Event、Session、Snapshot、Journal |
 | Observability | `internal/observability` | Receipt、Usage、Trace、Diagnostics、Verification |
@@ -519,38 +519,45 @@ Model Tool Call
 
 安全实现：
 
-- `internal/security/policy`：`allow / ask / deny / hold`；
-- `internal/security/constitution`：不可被普通配置覆盖的仓库规则；
-- `internal/security/permissions`：有 Scope 的持久 Grant；
-- `internal/security/sandbox`：平台 Backend 与 Fail-closed；
-- `internal/security/resource`、`effect`、`netpolicy`、`pathpolicy`：Resource Access
-  与 loopback 伪资源、Effect 词汇、网络目标解析与地址分类、控制面目录与凭据位置的
-  唯一定义，只依赖标准库；
+- `internal/security/policy`：`allow / ask / deny / hold`，唯一入口 `Decide`，
+  分层实现在 `decide.go`，路径规则通配在 `pathpattern.go`，Constitution 来源在
+  `constitution.go`，持久 Grant 在 `permissions.go` 与 `permission_store.go`；
+- `internal/security/model`：资源与 Access、Capability 与 Effect、评估判定表、
+  Subject 与 PreparedInvocation、Required/Effective Controls。先读 `resource.go`、
+  `effect.go`，再读 `assessment.go`、`invocation.go` 和 `controls.go`；
+  Guard 解析后评估一次，Policy 与 Authority 共用不可变快照；适配层
+  `tool/security_invocation.go` 完成 Catalog 身份投影，安全层不导入工具类型；
+- `internal/security/netpolicy`、`pathpolicy`、`envpolicy`：网络归一化、路径与控制面保护、环境变量校验；
+- `internal/security/sandbox`：平台 Backend、受控 Workspace、Plan 基线校验与 Fail-closed；
+- `internal/security/authority`：编译、绑定、Lease 与结算合同；
+- `internal/security/{artifactbroker,filebroker,processbroker,vcsbroker}`：各类副作用的受控执行；
+- `internal/security/egress`：网络授权、代理与 Session 通道；
+- `internal/security/credential`：凭据引用、轮换恢复及系统 Keyring；
+- `internal/orchestration/workspacebroker`：组合 File/VCS Broker 与 Journal；
+- `internal/security/architecture_test.go`：无允许清单的导入方向检查；
 - [Sandbox 执行环境重构方案](./sandbox-execution-environment-plan.md)：把现行过滤模型
-  换成环境契约的实现合同，含与 Authority / Control Matrix 的编译表和 EDS/Go 开工实例；
+  换成环境契约的实现合同，含与 Authority / Control Matrix 的编译表；
   P1a 已把缺失能力回执接到 `error_category` / `required_action`；P1b 已把 Darwin
   进程出网改成每 Session 端口和 Session Gate；
   P2a 已落地通用资源、声明接入、`v1` 准备链和显式
-  `native` / `shared_user_temp`；可信配置可声明精确资源，Go 适配器只是可选翻译器，
+  `native` / `shared_user_temp`；可信配置可声明精确资源，默认 Go 发现已移除，
   证书发现迁入准备器，`write_paths` 可对已存在子目录做有界树写，
   带写树的 `exec_command` 在隔离工作区运行并经 Journal 三方结算，
-  P3 已把 GOPROXY 认证协议接到 Session loopback，长期凭证不进进程；第二种
-  协议未开放；P5 已让主/子 Agent、PTY 与后台共用 `v1` 契约，空
+  原 P3 的内置 GOPROXY 服务已由通用化方案 P3 删除；P5 已让主/子 Agent、PTY 与后台共用 `v1` 契约，空
   `network_targets` 只继承用户声明的环境网络，不再从宿主继承语言变量，
   也不把 Workspace 进程 Gate 当累积面；P6 已把产品默认改为 `v1` + `native`，
-  `shared_user_temp` 与认证服务仍默认关，子 Agent 仍 isolated；
-- [Sandbox 审计修订与重构方案](./sandbox-refactor-plan.md)：基于 2026-09-21
-  实机 session 审计的实施修订合同；定位当前实现与环境契约的四处结构性
-  偏离（事前申报闸门、语言特化入通用层、快照式授权、拒绝不可见），
-  给出 WS1-WS8 工作流与三阶段验收标准；Phase 1 含隔离后端继承、
-  CONNECT 校验下沉、认证绑定失败回执、input 超时状态机修复；
+  `shared_user_temp` 仍默认关，子 Agent 仍 isolated；
+- [执行环境通用化优化方案](./environment-language-neutral-plan.md)：P1 移除默认 Go
+  发现、启动时工具版本探测和宿主 GOPROXY 自动认证；P2 统一环境来源与声明合并，
+  Git 声明迁入 Git 集成，受控进程不再回读宿主环境；P3 删除内置 GOPROXY 配置、
+  服务和消费链，独立传递准备事实；P4 补齐未知工具经过真实 Guard/Shell 的前台、PTY、
+  后台与子 Agent 验收，修复通用动态库绑定和临时 Runtime 的缓存准备；
 - [安全策略模型收敛方案](./security-policy-refactor-plan.md)：把 Resource、Effect、
-  Decision、Authority 收敛为单向管线，安全核心不再识别具体工具名；含已确认缺陷
-  （`allow_loopback` 授予范围、Constitution glob）的止血项与五阶段验收标准；
-- `internal/security/goproxy`：GOPROXY 协议服务，凭证留在宿主；
+  Decision、Authority 收敛为单向管线，安全核心不再识别具体工具名；包含 Phase 0–4 的路径保护、代理隔离、
+  不可变评估、一次编译，以及 Phase 5 的跨层依赖清理与回归验收记录；
 - `internal/security/egress`：网络目标与 Managed Backend；
   未批准目标带 `network_target_unapproved` 结构化回执；
-  origin-form 可分发给绑定的协议处理，CONNECT 仍走 Session Gate；
+  origin-form 认证后拒绝，CONNECT 与 absolute-form 走 Session Gate；
   连接前审批用 `AuthorizeBeforeConnect`，探测 `Authorize` 不补授权；
 - `internal/persist/workspacejournal`：Before/After、Commit、Suspend、Rollback。
 

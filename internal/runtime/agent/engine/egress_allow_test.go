@@ -88,11 +88,9 @@ func (e *egressRetryTool) Execute(ctx context.Context, _ json.RawMessage) (tool.
 			},
 		}, nil
 	}
-	gate := &egress.Gate{
-		UseCallScope: true,
-		LookupIP: func(context.Context, string) ([]net.IP, error) {
-			return []net.IP{net.ParseIP("93.184.216.34")}, nil
-		},
+	gate := egress.NewCallScopedGate()
+	gate.LookupIP = func(context.Context, string) ([]net.IP, error) {
+		return []net.IP{net.ParseIP("93.184.216.34")}, nil
 	}
 	if _, err := gate.Authorize(ctx, egress.Target{Host: "cdn.example", Protocol: "https"}, "test"); err != nil {
 		return tool.Result{}, err

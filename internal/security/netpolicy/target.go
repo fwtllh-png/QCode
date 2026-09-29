@@ -24,6 +24,25 @@ func (t Target) Key() string {
 	return t.Scheme + "://" + net.JoinHostPort(t.Host, strconv.Itoa(int(t.Port)))
 }
 
+// CanCarryData reports whether traffic to the target under the declared
+// methods can send data outward. The managed proxy sees only the CONNECT
+// endpoint of an HTTPS tunnel and enforces methods only for plaintext HTTP,
+// so a target is read-only only when it is plaintext HTTP restricted to safe
+// methods.
+func (t Target) CanCarryData(methods []string) bool {
+	if t.Scheme != "http" || len(methods) == 0 {
+		return true
+	}
+	for _, method := range methods {
+		switch strings.ToUpper(method) {
+		case "GET", "HEAD", "OPTIONS":
+		default:
+			return true
+		}
+	}
+	return false
+}
+
 // ParseTarget parses a URL or a bare host[:port] endpoint. A bare endpoint is
 // https and must name an IP literal, localhost, or a dotted hostname, so free
 // text is not mistaken for a host. A URL without a port takes its scheme's

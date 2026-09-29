@@ -137,7 +137,6 @@ const (
 	fieldEnvironmentSharedUserTemp = "execution.environment.shared_user_temp"
 	fieldEnvironmentSource         = "execution.environment.source"
 	fieldEnvironmentResources      = "execution.environment.resources"
-	fieldEnvironmentAuthServices   = "execution.environment.auth_services"
 
 	fieldVisionEnabled    = "vision.enabled"
 	fieldVisionProvider   = "vision.provider"
@@ -297,7 +296,6 @@ func defaultProvenance() map[string]Source {
 		fieldEnvironmentSharedUserTemp: SourceDefault,
 		fieldEnvironmentSource:         SourceDefault,
 		fieldEnvironmentResources:      SourceDefault,
-		fieldEnvironmentAuthServices:   SourceDefault,
 
 		fieldVisionEnabled:    SourceDefault,
 		fieldVisionProvider:   SourceDefault,

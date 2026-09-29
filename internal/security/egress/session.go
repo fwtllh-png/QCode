@@ -14,10 +14,9 @@ import (
 	"net/http"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
-	"github.com/fwtllh-png/QCode/internal/platform/environment"
+	"github.com/fwtllh-png/QCode/internal/environment"
 	"github.com/fwtllh-png/QCode/internal/security/netpolicy"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
 )
@@ -30,15 +29,12 @@ var ErrProcessSessionUnsupported = errors.New("process session network channel i
 // Channel lifecycle ceilings. ReadHeaderTimeout bounds a half-open request;
 // IdleTimeout reaps keep-alive connections whose session is long gone;
 // channelCloseTimeout bounds the graceful drain before hijacked CONNECT
-// tunnels are force-closed. maxChannelWrapperDepth bounds backend-wrapper
-// unwrapping (the managed/session-bound/close-binding chain is three deep).
-// Public contract constants; boundary tests pin the close timeout.
+// tunnels are force-closed. Public contract constants; boundary tests pin the
+// close timeout.
 const (
 	channelReadHeaderTimeout = 10 * time.Second
 	channelIdleTimeout       = 30 * time.Second
 	channelCloseTimeout      = 5 * time.Second
-
-	maxChannelWrapperDepth = 8
 )
 
 // ProcessSession is one Process Session's loopback port, credential, and Gate.
@@ -95,36 +91,27 @@ func (s *processSession) Close() error {
 type proxyChannel struct {
 	gate *Gate
 	// credential is the channel's Basic password. Any local process can reach
-	// the loopback port, so reachability grants nothing without it. Empty
-	// only on the browser channel, whose client cannot present one.
+	// the loopback port, so reachability grants nothing without it.
 	credential string
 	listener   net.Listener
 	server     *http.Server
 	done       chan struct{}
-	// protocol serves origin-form requests (the GOPROXY auth service). It
-	// is an atomic pointer because the workspace channel is already
-	// serving when the service is bound after startup.
-	protocol atomic.Pointer[http.Handler]
-	mu       sync.Mutex
-	conns    map[net.Conn]struct{}
+	mu         sync.Mutex
+	conns      map[net.Conn]struct{}
+	closed     bool
+	closeOnce  sync.Once
+	closeErr   error
 }
 
-func listenProxyChannel(
-	gate *Gate,
-	protocol http.Handler,
-	authenticated bool,
-) (*proxyChannel, error) {
+func listenProxyChannel(gate *Gate) (*proxyChannel, error) {
 	if gate == nil {
 		return nil, errors.New("process session proxy requires an egress gate")
 	}
-	credential := ""
-	if authenticated {
-		var secret [32]byte
-		if _, err := rand.Read(secret[:]); err != nil {
-			return nil, fmt.Errorf("generate proxy channel credential: %w", err)
-		}
-		credential = hex.EncodeToString(secret[:])
+	var secret [32]byte
+	if _, err := rand.Read(secret[:]); err != nil {
+		return nil, fmt.Errorf("generate proxy channel credential: %w", err)
 	}
+	credential := hex.EncodeToString(secret[:])
 	listener, err := net.Listen("tcp4", "127.0.0.1:0")
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrProcessSessionUnsupported, err)
@@ -133,7 +120,6 @@ func listenProxyChannel(
 		gate: gate, credential: credential, listener: listener,
 		done: make(chan struct{}), conns: make(map[net.Conn]struct{}),
 	}
-	channel.setProtocol(protocol)
 	channel.server = &http.Server{
 		Handler:           http.HandlerFunc(channel.serveHTTP),
 		ReadHeaderTimeout: channelReadHeaderTimeout,
@@ -144,23 +130,6 @@ func listenProxyChannel(
 		close(channel.done)
 	}()
 	return channel, nil
-}
-
-func (c *proxyChannel) setProtocol(handler http.Handler) {
-	if c == nil || handler == nil {
-		return
-	}
-	c.protocol.Store(&handler)
-}
-
-func (c *proxyChannel) protocolHandler() http.Handler {
-	if c == nil {
-		return nil
-	}
-	if handler := c.protocol.Load(); handler != nil {
-		return *handler
-	}
-	return nil
 }
 
 func (c *proxyChannel) port() uint16 {
@@ -174,13 +143,20 @@ func (c *proxyChannel) port() uint16 {
 	return uint16(address.Port)
 }
 
-func (c *proxyChannel) track(conn net.Conn) {
-	if c == nil || conn == nil {
-		return
-	}
+func (c *proxyChannel) track(conns ...net.Conn) bool {
 	c.mu.Lock()
-	c.conns[conn] = struct{}{}
+	if c.closed {
+		c.mu.Unlock()
+		for _, conn := range conns {
+			_ = conn.Close()
+		}
+		return false
+	}
+	for _, conn := range conns {
+		c.conns[conn] = struct{}{}
+	}
 	c.mu.Unlock()
+	return true
 }
 
 func (c *proxyChannel) untrack(conn net.Conn) {
@@ -196,15 +172,22 @@ func (c *proxyChannel) close() error {
 	if c == nil || c.server == nil {
 		return nil
 	}
+	c.closeOnce.Do(func() { c.closeErr = c.closeChannel() })
+	return c.closeErr
+}
+
+func (c *proxyChannel) closeChannel() error {
 	ctx, cancel := context.WithTimeout(context.Background(), channelCloseTimeout)
 	defer cancel()
-	err := c.server.Close()
 	c.mu.Lock()
-	for conn := range c.conns {
+	c.closed = true
+	conns := c.conns
+	c.conns = nil
+	c.mu.Unlock()
+	err := c.server.Close()
+	for conn := range conns {
 		_ = conn.Close()
 	}
-	c.conns = map[net.Conn]struct{}{}
-	c.mu.Unlock()
 	select {
 	case <-c.done:
 		return err
@@ -218,117 +201,41 @@ func (c *proxyChannel) serveHTTP(
 	request *http.Request,
 ) {
 	if request.Method == http.MethodConnect {
-		if !c.authenticate(writer, request, "Proxy-Authorization") {
+		if !c.authenticate(writer, request) {
 			return
 		}
 		c.serveConnect(writer, request)
 		return
 	}
-	if handler := c.protocolHandler(); handler != nil && isOriginForm(request) {
-		// Origin-form clients (GOPROXY) send the URL userinfo as
-		// Authorization; the header is ours and never reaches the service.
-		if !c.authenticate(writer, request, "Authorization", "Proxy-Authorization") {
-			return
-		}
-		request.Header.Del("Authorization")
-		request.Header.Del("Proxy-Authorization")
-		handler.ServeHTTP(writer, request)
-		return
-	}
-	if !c.authenticate(writer, request, "Proxy-Authorization") {
+	if !c.authenticate(writer, request) {
 		return
 	}
 	c.serveForward(writer, request)
 }
 
-// authenticate accepts the channel credential as Basic auth in any of the
-// named headers and otherwise answers the matching challenge.
-func (c *proxyChannel) authenticate(
-	writer http.ResponseWriter,
-	request *http.Request,
-	headers ...string,
-) bool {
+// authenticate accepts only the proxy channel credential. Origin Authorization
+// belongs to the requested upstream and cannot authenticate a local channel.
+func (c *proxyChannel) authenticate(writer http.ResponseWriter, request *http.Request) bool {
 	if c.credential == "" {
-		return true
+		http.Error(writer, "proxy credential unavailable", http.StatusProxyAuthRequired)
+		return false
 	}
 	want := []byte(sandbox.ManagedProxyUser + ":" + c.credential)
-	for _, header := range headers {
-		scheme, encoded, ok := strings.Cut(strings.TrimSpace(request.Header.Get(header)), " ")
-		if !ok || !strings.EqualFold(scheme, "Basic") {
-			continue
-		}
+	scheme, encoded, ok := strings.Cut(strings.TrimSpace(request.Header.Get("Proxy-Authorization")), " ")
+	if ok && strings.EqualFold(scheme, "Basic") {
 		decoded, err := base64.StdEncoding.DecodeString(strings.TrimSpace(encoded))
 		if err == nil && subtle.ConstantTimeCompare(decoded, want) == 1 {
 			return true
 		}
 	}
-	status, challenge := http.StatusProxyAuthRequired, "Proxy-Authenticate"
-	if headers[0] == "Authorization" {
-		status, challenge = http.StatusUnauthorized, "WWW-Authenticate"
-	}
-	writer.Header().Set(challenge, `Basic realm="qcode-process-proxy"`)
+	writer.Header().Set("Proxy-Authenticate", `Basic realm="qcode-process-proxy"`)
 	writer.Header().Set("Content-Type", "application/json")
-	writer.WriteHeader(status)
+	writer.WriteHeader(http.StatusProxyAuthRequired)
 	_ = json.NewEncoder(writer).Encode(deniedPayload{
 		Error: ErrDenied.Error(), Source: environment.SourceProcessProxy,
 		Reason: "process proxy credential is missing or invalid",
 	})
 	return false
-}
-
-type boundOrigin interface {
-	BoundHost() string
-}
-
-func boundProtocolHost(handler http.Handler) string {
-	if bound, ok := handler.(boundOrigin); ok {
-		return strings.TrimSpace(bound.BoundHost())
-	}
-	return ""
-}
-
-// denyBoundOrigin compares hosts under the Gate's normalization so an
-// authority spelling like "proxy.example.:443" cannot sidestep the denial.
-func (c *proxyChannel) denyBoundOrigin(
-	writer http.ResponseWriter,
-	host, protocol string,
-	port uint16,
-	method string,
-) bool {
-	handler := c.protocolHandler()
-	bound := netpolicy.NormalizeHost(boundProtocolHost(handler))
-	host = netpolicy.NormalizeHost(host)
-	if bound == "" || host == "" || host != bound {
-		return false
-	}
-	if protocol == "" {
-		protocol = "https"
-	}
-	target := Target{
-		Host: host, Protocol: protocol, Port: port, Methods: []string{method},
-	}
-	denied := &DeniedError{
-		Host:     host,
-		Protocol: protocol,
-		Port:     port,
-		Method:   method,
-		Reason: "this host is served by the bound GOPROXY auth service; " +
-			"use GOPROXY, do not CONNECT or fetch the upstream origin",
-		Category: environment.CategoryTrustValidationFailed,
-	}
-	if c.gate != nil {
-		c.gate.recordDenied(environment.SourceProcessProxy, target, denied)
-	}
-	writeDenied(writer, denied)
-	return true
-}
-
-func isOriginForm(request *http.Request) bool {
-	if request == nil || request.URL == nil {
-		return false
-	}
-	host := request.URL.Hostname()
-	return host == "" || host == "127.0.0.1" || host == "localhost" || host == "::1"
 }
 
 func (c *proxyChannel) serveConnect(
@@ -338,9 +245,6 @@ func (c *proxyChannel) serveConnect(
 	host, port, err := netpolicy.SplitAuthority(request.Host, 443)
 	if err != nil {
 		http.Error(writer, "invalid CONNECT target", http.StatusBadRequest)
-		return
-	}
-	if c.denyBoundOrigin(writer, host, "https", port, http.MethodConnect) {
 		return
 	}
 	target, err := dialAuthorized(c.gate, request.Context(), Target{
@@ -362,16 +266,21 @@ func (c *proxyChannel) serveConnect(
 		target.Close()
 		return
 	}
+	// Registration and revocation share one lock. Once HTTP relinquishes
+	// ownership, the channel owns both sockets even while the 200 is blocked.
+	if !c.track(client, target) {
+		return
+	}
 	if _, err = buffered.WriteString("HTTP/1.1 200 Connection Established\r\n\r\n"); err == nil {
 		err = buffered.Flush()
 	}
 	if err != nil {
 		client.Close()
 		target.Close()
+		c.untrack(client)
+		c.untrack(target)
 		return
 	}
-	c.track(client)
-	c.track(target)
 	go func() {
 		relay(client, target)
 		c.untrack(client)
@@ -395,15 +304,6 @@ func (c *proxyChannel) serveForward(
 	port, err := netpolicy.URLPort(request.URL)
 	if err != nil {
 		http.Error(writer, "invalid target port", http.StatusBadRequest)
-		return
-	}
-	if c.denyBoundOrigin(
-		writer,
-		request.URL.Hostname(),
-		request.URL.Scheme,
-		port,
-		request.Method,
-	) {
 		return
 	}
 	ips, err := c.gate.AuthorizeBeforeConnect(request.Context(), Target{
@@ -451,74 +351,10 @@ func dialAuthorized(
 	return dialResolved(ctx, ips, target.Port)
 }
 
-// BindSessionOpener exposes a Workspace proxy's Session allocator on a
-// child or other backend that was not constructed by NewManagedBackend.
-func BindSessionOpener(backend sandbox.Backend, opener ProcessSessionOpener) sandbox.Backend {
-	if backend == nil || opener == nil {
-		return backend
-	}
-	return &sessionBoundBackend{Backend: backend, opener: opener}
-}
-
-type sessionBoundBackend struct {
-	sandbox.Backend
-	opener ProcessSessionOpener
-}
-
-func (b *sessionBoundBackend) OpenProcessSession(targets []Target) (ProcessSession, error) {
-	if b == nil || b.opener == nil {
-		return nil, ErrProcessSessionUnsupported
-	}
-	return b.opener.OpenProcessSession(targets)
-}
-
-func (b *sessionBoundBackend) InnerBackend() sandbox.Backend {
-	if b == nil {
-		return nil
-	}
-	return b.Backend
-}
-
-func BindProtocolHandler(backend sandbox.Backend, handler http.Handler) {
-	current := backend
-	for range maxChannelWrapperDepth {
-		if current == nil {
-			return
-		}
-		if binder, ok := current.(interface{ BindProtocolHandler(http.Handler) }); ok {
-			binder.BindProtocolHandler(handler)
-			return
-		}
-		wrapper, ok := current.(interface{ InnerBackend() sandbox.Backend })
-		if !ok {
-			return
-		}
-		next := wrapper.InnerBackend()
-		if next == nil || next == current {
-			return
-		}
-		current = next
-	}
-}
-
+// LookupProcessSessionOpener reports the Session allocator a composed
+// backend carries. Backends are composed explicitly, so this is a direct
+// capability check rather than a walk through wrappers.
 func LookupProcessSessionOpener(backend sandbox.Backend) (ProcessSessionOpener, bool) {
-	current := backend
-	for range maxChannelWrapperDepth {
-		if current == nil {
-			return nil, false
-		}
-		if opener, ok := current.(ProcessSessionOpener); ok {
-			return opener, true
-		}
-		wrapper, ok := current.(interface{ InnerBackend() sandbox.Backend })
-		if !ok {
-			return nil, false
-		}
-		next := wrapper.InnerBackend()
-		if next == nil || next == current {
-			return nil, false
-		}
-		current = next
-	}
-	return nil, false
+	opener, ok := backend.(ProcessSessionOpener)
+	return opener, ok && opener != nil
 }

@@ -2,9 +2,10 @@ package artifact
 
 import (
 	"context"
+	"errors"
 
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
-	"github.com/fwtllh-png/QCode/internal/security/plandrift"
+	securitysandbox "github.com/fwtllh-png/QCode/internal/security/sandbox"
 )
 
 func (r *Service) PrepareStartPayload(
@@ -42,7 +43,11 @@ func (r *Service) PrepareStartPayload(
 	if err != nil {
 		return err
 	}
-	if err := plandrift.Verify(workspace, []byte(prepared.Artifact.Body)); err != nil {
+	if err := securitysandbox.VerifyPlanBaseline(workspace, []byte(prepared.Artifact.Body)); err != nil {
+		var drift *securitysandbox.PlanDriftError
+		if errors.As(err, &drift) {
+			return protocol.NewProblem(protocol.CodeConflict, drift.Error(), true, err)
+		}
 		return err
 	}
 	payload.Prompt = prepared.Prompt

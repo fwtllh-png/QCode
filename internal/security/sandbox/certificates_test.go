@@ -68,14 +68,14 @@ func TestConfiguredCertificateFilesPreserveValidatedEnvironment(t *testing.T) {
 	}
 	t.Setenv("NODE_EXTRA_CA_CERTS", file)
 	var exposure ToolchainExposure
-	if err := configuredCertificateFiles(&exposure, t.TempDir()); err != nil {
+	if err := configuredCertificateFiles(&exposure, t.TempDir(), os.Environ()); err != nil {
 		t.Fatal(err)
 	}
 	if !slices.Contains(exposure.Environment, "NODE_EXTRA_CA_CERTS="+file) {
 		t.Fatalf("certificate setting lost: %+v", exposure)
 	}
 	t.Setenv("SSL_CERT_FILE", filepath.Join(root, "missing"))
-	if err := configuredCertificateFiles(&exposure, t.TempDir()); err == nil {
+	if err := configuredCertificateFiles(&exposure, t.TempDir(), os.Environ()); err == nil {
 		t.Fatal("missing explicit certificate silently ignored")
 	}
 }

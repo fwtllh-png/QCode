@@ -17,8 +17,7 @@ import (
 	agentengine "github.com/fwtllh-png/QCode/internal/runtime/agent/engine"
 	"github.com/fwtllh-png/QCode/internal/runtime/app"
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
-	"github.com/fwtllh-png/QCode/internal/security/permissions"
-	"github.com/fwtllh-png/QCode/internal/security/policy"
+	securitypolicy "github.com/fwtllh-png/QCode/internal/security/policy"
 )
 
 type authorityTestTool struct{ descriptor tool.Descriptor }
@@ -71,18 +70,18 @@ func TestChildAuthorityIsParentAndRoleIntersection(t *testing.T) {
 	}
 	register(child, "child_only", tool.CapabilityRead)
 
-	security := policy.DefaultRuntime(policy.ModeAct, policy.PermissionBypass)
+	security := securitypolicy.DefaultRuntime(securitypolicy.ModeAct, securitypolicy.PermissionBypass)
 	restrictChildTools(security, app.ChildSpec{
 		AllowedTools: []string{"read"}, CanDelegate: false,
 	}, parent, child)
-	decision := func(name string, capability tool.Capability) policy.Decision {
-		return security.Evaluate(policy.Invocation{
+	decision := func(name string, capability tool.Capability) securitypolicy.Decision {
+		return security.Decide(resolvePolicyFixture(policyInvocationFixture{
 			CallID: name + "-call", Tool: name,
 			Arguments: json.RawMessage(`{}`), Capability: capability,
 			Validated: true,
-		})
+		}))
 	}
-	if got := decision("file_read", tool.CapabilityRead); got.Action != policy.ActionAllow {
+	if got := decision("file_read", tool.CapabilityRead); got.Action != securitypolicy.ActionAllow {
 		t.Fatalf("inherited role read = %+v", got)
 	}
 	for name, capability := range map[string]tool.Capability{
@@ -90,7 +89,7 @@ func TestChildAuthorityIsParentAndRoleIntersection(t *testing.T) {
 		"spawn_agent": tool.CapabilityWrite,
 		"child_only":  tool.CapabilityRead,
 	} {
-		if got := decision(name, capability); got.Action != policy.ActionDeny {
+		if got := decision(name, capability); got.Action != securitypolicy.ActionDeny {
 			t.Fatalf("%s authority = %+v, want deny", name, got)
 		}
 	}
@@ -127,16 +126,16 @@ func TestReviewChildAllowsOnlyReadOnlyProcessEffects(t *testing.T) {
 	}
 	options := childEngineOptions(
 		agentengine.Options{SecurityConfig: agentengine.SecurityConfig{
-			Security: policy.DefaultRuntime(
-				policy.ModeAct,
-				policy.PermissionSuggest,
+			Security: securitypolicy.DefaultRuntime(
+				securitypolicy.ModeAct,
+				securitypolicy.PermissionSuggest,
 			),
 		}},
 		spec,
 	)
 	restrictChildTools(options.Security, spec, parent, child)
 
-	inspect := policy.Invocation{
+	inspect := resolvePolicyFixture(policyInvocationFixture{
 		CallID: "inspect", Tool: "process_read",
 		Arguments:  json.RawMessage(`{}`),
 		Capability: tool.CapabilityProcess, Access: tool.AccessRead,
@@ -144,8 +143,8 @@ func TestReviewChildAllowsOnlyReadOnlyProcessEffects(t *testing.T) {
 		Resources: []tool.Resource{
 			{Kind: "process", ID: "workspace", Access: tool.AccessRead},
 		},
-	}
-	if decision := options.Security.Evaluate(inspect); decision.Action != policy.ActionAllow {
+	})
+	if decision := options.Security.Decide(inspect); decision.Action != securitypolicy.ActionAllow {
 		t.Fatalf("read-only process decision = %+v, want allow", decision)
 	}
 
@@ -153,8 +152,8 @@ func TestReviewChildAllowsOnlyReadOnlyProcessEffects(t *testing.T) {
 	exec.CallID = "exec"
 	exec.Tool = "exec_command"
 	exec.Arguments = json.RawMessage(`{"command":"rg needle ."}`)
-	decision := options.Security.Evaluate(exec)
-	if decision.Action != policy.ActionDeny {
+	decision := options.Security.Decide(exec)
+	if decision.Action != securitypolicy.ActionDeny {
 		t.Fatalf("exec_command decision = %+v, want deny", decision)
 	}
 	if options.Security.AdvertisesTool("exec_command") {
@@ -195,35 +194,35 @@ func TestDelegatingReadOnlyRoleRetainsOnlyAgentLifecycleWrites(t *testing.T) {
 	}
 	options := childEngineOptions(
 		agentengine.Options{SecurityConfig: agentengine.SecurityConfig{
-			Security: policy.DefaultRuntime(
-				policy.ModeAct,
-				policy.PermissionSuggest,
+			Security: securitypolicy.DefaultRuntime(
+				securitypolicy.ModeAct,
+				securitypolicy.PermissionSuggest,
 			),
 		}},
 		spec,
 	)
 	security := options.Security
 	restrictChildTools(security, spec, parent, child)
-	decision := func(name string, capability tool.Capability) policy.Action {
-		return security.Evaluate(policy.Invocation{
+	decision := func(name string, capability tool.Capability) securitypolicy.Action {
+		return security.Decide(resolvePolicyFixture(policyInvocationFixture{
 			CallID: name, Tool: name, Arguments: json.RawMessage(`{}`),
 			Capability: capability, Validated: true,
-		}).Action
+		})).Action
 	}
 	spawnDecision := decision("spawn_agent", tool.CapabilityWrite)
 	listDecision := decision("list_agents", tool.CapabilityRead)
-	if options.Security.Mode != policy.ModeAct ||
-		options.Security.Permission != policy.PermissionSuggest ||
-		spawnDecision != policy.ActionAsk ||
-		listDecision != policy.ActionAllow {
+	if options.Security.Mode != securitypolicy.ModeAct ||
+		options.Security.Permission != securitypolicy.PermissionSuggest ||
+		spawnDecision != securitypolicy.ActionAsk ||
+		listDecision != securitypolicy.ActionAllow {
 		t.Fatalf(
 			"delegating read-only authority: mode=%s permission=%s spawn=%s list=%s",
 			options.Security.Mode, options.Security.Permission,
 			spawnDecision, listDecision,
 		)
 	}
-	if decision("file_read", tool.CapabilityRead) != policy.ActionAllow ||
-		decision("file_write", tool.CapabilityWrite) != policy.ActionDeny {
+	if decision("file_read", tool.CapabilityRead) != securitypolicy.ActionAllow ||
+		decision("file_write", tool.CapabilityWrite) != securitypolicy.ActionDeny {
 		t.Fatal("delegating read-only role escaped its ordinary tool allowlist")
 	}
 }
@@ -294,7 +293,7 @@ func TestPersistentSessionPublishesAgentSpawnLive(t *testing.T) {
 func TestNeverPostureRejectsPersistedWorkspaceAllow(t *testing.T) {
 	workspace := t.TempDir()
 	stateDataDir := t.TempDir()
-	permissionPath, err := permissions.Path(stateDataDir, workspace)
+	permissionPath, err := securitypolicy.PermissionsPath(stateDataDir, workspace)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -320,16 +319,16 @@ grant_key = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = session.Close(context.Background()) })
-	call := policy.Invocation{
+	call := resolvePolicyFixture(policyInvocationFixture{
 		CallID: "untrusted-write", Tool: "file_write",
 		Arguments: json.RawMessage(`{"path":"notes.txt","content":"blocked"}`),
 		Resources: []tool.Resource{{
 			Kind: "file", Path: "notes.txt", Access: tool.AccessWrite,
 		}},
-		Capability: tool.CapabilityWrite, Validated: true,
-	}
-	decision := session.Security().Evaluate(call)
-	if decision.Action != policy.ActionDeny || decision.Code != "permission_denied" {
+		Capability: tool.CapabilityWrite, Validated: true, Workspace: workspace,
+	})
+	decision := session.Security().Decide(call)
+	if decision.Action != securitypolicy.ActionDeny || decision.Code != "permission_denied" {
 		t.Fatalf("decision = %+v, want permission_denied", decision)
 	}
 }
@@ -783,8 +782,8 @@ func startSuggestChildApprovalWithTune(
 	)
 	// Approval proxy tests deliberately tighten this fixture call. Ordinary
 	// journaled file edits are low risk under suggest posture in A1.
-	session.Security().Repository = append([]policy.Rule{{
-		Tool: "file_write", Resource: "*", Action: policy.ActionAsk,
+	session.Security().Repository = append([]securitypolicy.Rule{{
+		Tool: "file_write", Resource: "*", Action: securitypolicy.ActionAsk,
 	}}, session.Security().Repository...)
 	manager := session.subagents
 	cursor := session.Runtime.Snapshot(t.Context()).LastSequence
