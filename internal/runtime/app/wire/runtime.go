@@ -10,8 +10,8 @@ import (
 
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
 	"github.com/fwtllh-png/QCode/internal/config"
-	"github.com/fwtllh-png/QCode/internal/observability/diagnostics"
 	"github.com/fwtllh-png/QCode/internal/observability/telemetry"
+	"github.com/fwtllh-png/QCode/internal/observability/verify"
 	"github.com/fwtllh-png/QCode/internal/persist/state"
 	"github.com/fwtllh-png/QCode/internal/persist/workspacejournal"
 	agentengine "github.com/fwtllh-png/QCode/internal/runtime/agent/engine"
@@ -148,10 +148,10 @@ func newExec(
 
 func configuredDiagnosticCommands(
 	configured map[string]config.DiagnosticCommand,
-) map[string]diagnostics.Command {
-	commands := make(map[string]diagnostics.Command, len(configured))
+) map[string]verify.DiagnosticCommand {
+	commands := make(map[string]verify.DiagnosticCommand, len(configured))
 	for extension, command := range configured {
-		commands[extension] = diagnostics.Command{
+		commands[extension] = verify.DiagnosticCommand{
 			Name: command.Name,
 			Args: append([]string(nil), command.Args...),
 		}
@@ -160,7 +160,7 @@ func configuredDiagnosticCommands(
 }
 
 func diagnosticCommandReadRoots(
-	commands map[string]diagnostics.Command,
+	commands map[string]verify.DiagnosticCommand,
 ) []string {
 	seen := make(map[string]struct{})
 	addExecutableTree := func(name string, includePackageRoot bool) {
@@ -211,7 +211,7 @@ func diagnosticCommandReadRoots(
 }
 
 func diagnosticCommandReadFiles(
-	commands map[string]diagnostics.Command,
+	commands map[string]verify.DiagnosticCommand,
 ) []string {
 	seen := make(map[string]struct{})
 	add := func(name string) {

@@ -132,12 +132,12 @@ func TestSelectionMatchesASCIINameAdjacentToCJKText(t *testing.T) {
 func TestSelectionMatchesContainedChineseTriggerPhrase(t *testing.T) {
 	selection, err := selectSummaries([]Summary{
 		{
-			Name:           "system-code-review",
+			Name:           "code-review",
 			Description:    "Reviews changes. 代码审查 代码评审",
 			ModelInvocable: true,
 		},
 		{
-			Name:           "system-debugging",
+			Name:           "debugging",
 			Description:    "Diagnoses failures. 复杂调试 故障排查",
 			ModelInvocable: true,
 		},
@@ -149,7 +149,7 @@ func TestSelectionMatchesContainedChineseTriggerPhrase(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(selection.Candidates) == 0 ||
-		selection.Candidates[0].Name != "system-code-review" {
+		selection.Candidates[0].Name != "code-review" {
 		t.Fatalf("Chinese trigger selection = %+v", selection.Candidates)
 	}
 }

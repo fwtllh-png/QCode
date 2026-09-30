@@ -8,7 +8,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/fwtllh-png/QCode/internal/observability/tracecontext"
+	"github.com/fwtllh-png/QCode/internal/common/tracecontext"
 )
 
 // Status is the stable agent lifecycle state.

@@ -72,6 +72,7 @@ Child 的实际执行仍是普通 Runtime Turn，不建立后台 WorkGraph 镜�
 | 层 | 路径 | 阅读重点 |
 | --- | --- | --- |
 | 进程入口 | `cmd/qcode` | Signal、退出码、Web Host 委托 |
+| Common | `internal/common` | Environment/Fault 公共契约、持久化编解码、SQL/文件/文本/Token/Trace 基础工具 |
 | Host | `internal/host` | 输入校验、Operation 提交、Event 呈现 |
 | Protocol | `internal/runtime/protocol` | 跨 Host 的 Operation/Event/Receipt Contract |
 | Application | `internal/runtime/app` | Operation、Session、Turn Lease、Terminal、Recovery |
@@ -79,10 +80,10 @@ Child 的实际执行仍是普通 Runtime Turn，不建立后台 WorkGraph 镜�
 | Agent | `internal/runtime/agent` | Turn Kernel、Engine、Context、Prompt |
 | Adapter | `internal/adapter` | Provider、Tool、MCP、Skill |
 | Security | `internal/security` | Policy、Permission、Constitution、Credential、Sandbox |
-| Environment | `internal/environment`、`internal/adapter/envprep` | 前者为仅依赖标准库的声明、校验与结构化事实；后者捕获来源、编译声明、物化目录并生成沙箱配置 |
+| Environment | `internal/common/environment`、`internal/adapter/envprep` | 前者为仅依赖标准库的声明、校验与结构化事实；后者捕获来源、编译声明、物化目录并生成沙箱配置 |
 | Orchestration | `internal/orchestration` | Subagent、Admission/Budget、Worktree、Chat Merge、Exec Settle |
 | Persistence | `internal/persist` | SQLite、CAS、Event、Session、Snapshot、Journal |
-| Observability | `internal/observability` | Receipt、Usage、Trace、Diagnostics、Verification |
+| Observability | `internal/observability` | Usage、Trace、Diagnostics、Verification |
 | Platform | `internal/platform` | Process、PTY、Repository Walk、OS 差异 |
 | Config | `internal/config` | Schema、默认值、环境覆盖、Provenance |
 | Web | `web/src` | Browser Runtime Client、Projection、React UI |
@@ -103,7 +104,7 @@ Child 的实际执行仍是普通 Runtime Turn，不建立后台 WorkGraph 镜�
 3. `internal/runtime/protocol/event.go`：Event Kind、Typed Event Data、Usage 与
    Terminal Data。
 4. `internal/runtime/protocol/receipt.go`：Execution Receipt 的证据结构。
-5. `internal/runtime/fault/fault.go` 与 `internal/runtime/protocol/problem.go`：
+5. `internal/common/fault/fault.go` 与 `internal/runtime/protocol/problem.go`：
    Code、Origin、Disposition、Side-effect State 和 Recovery Action。
 6. `internal/runtime/protocol/event_traits.json`：Event Class、Item Owner、Durability、
    Correlation 与 Terminal Trait 的生成源。
@@ -184,7 +185,8 @@ config
   与 Exec Settle；
 - `modules_observability.go`：Trace/Telemetry；
 - `modules_runtime.go`：Engine Seed、ThreadManager 和 Application Runtime；
-- `module_background.go`：MCP Refresh、Runtime Recovery 与 Prewarm；
+- `module_background.go`：MCP 首次 Refresh、Runtime Recovery 与 Prewarm 的启动顺序；
+  刷新 worker、健康重试和目录同步实现见 `internal/adapter/mcp/prewarm.go`；
 - `resource_stack.go`：部分构造失败与正常关闭共用的逆序清理。
 
 重要边界：
@@ -245,11 +247,15 @@ Runtime.SubmitWithKey
 6. `internal/runtime/app/extension/engine_adapter.go`
    - Application Port 到 Agent Engine 的适配；
    - Editor Context 解析；
-   - Receipt 创建；
+   - 同包 `turn_receipt.go`、`turn_receipt_terminal.go` 中的私有回执构建与终态校验；
    - Engine Event 到 Protocol Event 的映射。
 7. `internal/runtime/app/thread_manager.go`
    - 每个 Thread 的 Engine 所有权；
    - Session Profile、Pending Interaction 和 Child Engine。
+8. `internal/runtime/app/workspacequery`
+   - 工作区浏览、搜索、文本和图片资源、Git 状态与差异查询；
+   - `wire` 直接构造，只读服务不持有 VCS 写入能力；
+   - 分支切换、提交与推送由 `runtime/app/git_control.go` 经 Guard 执行。
 
 `OperationOutcome` 有四种结果：
 
@@ -418,11 +424,16 @@ Context Restore 会重新捕获 Workspace Binding，并失效不匹配的文件�
 - `context.go`：静态 Prompt Partition；
 - `turn.go`：当前 Turn 输入；
 - `world_projection.go` / `worldstate.go`：World Full/Patch；
-- `repository.go`：Repository Map；
+- `repository_map.go`：从 Repo Index 快照聚合、筛选目录和文件符号提纲；
+- `repository.go`：按 Turn 缓存 Repository Map，接入 Working Set、Evidence 与目录规则；
 - `codingpolicy.go`：Coding Policy；
 - `sample_reason.go`：采样原因。
 
-Prompt 不拥有权威状态，Host 也不能直接拼接未经 Runtime 校验的 Workspace 内容。
+Repository Map 的构建与呈现同属 Prompt；底层索引、查询和快照由
+`internal/persist/repoindex` 提供。源码声明、注释和引用候选由
+`internal/common/symbols` 从源码字节提取；它不负责仓库读取和索引持久化。
+Prompt 不拥有权威状态，Host 也不能直接拼接未经
+Runtime 校验的 Workspace 内容。
 
 关键测试：
 
@@ -450,8 +461,15 @@ go test -run 'Test(ContextManifest|WorkspaceReconciliation|RetentionRemainsBound
 7. `provider/assembly/response_assembly.go`：增量顺序、Tool Fragment、Usage；
 8. `provider/assembly/stream_consumer.go`：校验、Projection、Incomplete Output 和
    自适应 Durable Checkpoint；
-9. `engine/toolsample.go` 与 `model_handler.go`：Assembly 如何接入 Kernel Effect；
+9. `engine/toolsample.go`：工具内模型采样的 Sample 编号、Usage、费用和 Trace；
+   `engine/model_handler.go`：Assembly 如何接入 Kernel Effect；
 10. `engine/provider_retry.go`：Retry/Resume/完整逻辑请求回退。
+
+能力观测的存储从 `internal/persist/modelcapability/repository.go` 阅读；
+`internal/runtime/app/wire/probe_overlay.go` 将观测按连接身份和模型 Wire ID 叠加到路由，
+具体的能力收紧与信任规则仍由 `internal/adapter/model/observation.go` 维护。
+Wire 的采样装配入口见 `internal/runtime/app/wire/provider_router.go`，直接导入
+`provider/router`；`provider/modelcatalog` 负责模型发现与能力探测。
 
 需要区分：
 
@@ -496,6 +514,11 @@ Model Tool Call
 ```
 
 ### 9.1 Tool Contract
+
+计划工具的输入定义在 `internal/adapter/tool/interact/plan.go`，Runtime 接纳与状态转换
+见 `internal/runtime/agent/engine/plan.go`，文本及 Receipt 投影见
+`internal/runtime/agent/prompt/plan.go`。历史工具 `internal/adapter/tool/turnhistory`
+只处理已渲染文本的分页，查询与渲染接入见 `engine/turn_checkpoint.go`。
 
 - `internal/adapter/tool/tool.go`：Descriptor、IdentityKeys、Capability、Access Mode、Resource、
   Outcome 和 Result Store；
@@ -560,6 +583,13 @@ Model Tool Call
   origin-form 认证后拒绝，CONNECT 与 absolute-form 走 Session Gate；
   连接前审批用 `AuthorizeBeforeConnect`，探测 `Authorize` 不补授权；
 - `internal/persist/workspacejournal`：Before/After、Commit、Suspend、Rollback。
+
+`internal/platform/process` 的普通测试按实现文件归并：`process_test.go` 覆盖命令构造、
+执行和流式输出，`session_test.go` 覆盖会话、网络清理和归档回读，环境、输出缓冲、
+Job Journal、工作目录固定和 Git 工具链分别放在对应的 `_test.go` 中。
+进程组完成清理由 `session_process_test.go` 覆盖。真实 macOS 沙箱测试保留
+`capability && darwin` 构建标签，集中在 `process_capability_test.go` 与
+`session_process_capability_test.go`，通过 `make test-platform-capability` 执行。
 
 `exec_command` 写权限只覆盖显式 `write_paths`。待创建文件必须位于已存在父目录，
 已存在子目录可做有界树写。Guard 在执行前 Preflight；Strong Sandbox 对精确文件
@@ -669,7 +699,10 @@ go test ./internal/persist/...
 - `subagent/budget.go`：子 Agent 唯一的预算权威。Session Agent Tree 的账本由 Agent
   状态折叠而成，Depth、`max_total`、`max_parallel`、Tree 与 Agent 的 Token/Cost
   准入和预留都在这里；
-- `subagent/context_fork.go`：Task Capsule 与 Context Mode；
+- `common/contextsnapshot/types.go`：跨层共享的父上下文快照契约；
+- `runtime/agent/engine/context_fork.go`：父轮次校验与上下文快照投影；
+- `runtime/app/thread_manager.go`：查找父线程并提供 `ContextSource`，由 `wire` 绑定；
+- `subagent/context_fork.go`：Context Mode、权限、脱敏、裁剪与 Task Capsule；
 - `subagent/graph.go`：Agent 生命周期与结果事实；
 - `subagent/worktree.go`：隔离工作区；
 - `orchestration/childrun/runner.go`：真实 Child Turn 的提交、驻留、租约与终态结算，
@@ -762,13 +795,14 @@ Runtime Authority。
 
 ### 12.3 Benchmark Projection
 
-`internal/runtime/eventview/view.go` 为 Go Benchmark 提供 Typed Event Interpretation；
+`internal/host/intergration_test/event_projection_test.go` 为 Go Benchmark 提供包内私有的
+事件解释辅助代码，由同目录的 `event_projection_contract_test.go` 校验投影契约。
 产品交互状态只由 Browser Runtime Projection 呈现。
 
 关键验证：
 
 ```bash
-go test ./internal/host ./internal/runtime/eventview
+go test ./internal/host ./internal/host/intergration_test
 npm --prefix web run check
 npm --prefix web test
 ```
@@ -782,11 +816,10 @@ npm --prefix web test
 
 按顺序阅读：
 
-- `internal/observability/receipt`：Execution Receipt Builder；
+- `internal/runtime/app/extension/turn_receipt.go`、`turn_receipt_terminal.go`：私有的执行回执构建、计量冻结与终态校验；
 - `internal/observability/usage`：Sample/Turn/Session 聚合；
 - `internal/observability/trace`：Span 与 Frozen Latency；
-- `internal/observability/verify`：Verification Evidence；
-- `internal/observability/diagnostics`：诊断命令；
+- `internal/observability/verify`：编辑后诊断、验证证据与结论；`diagnostics.go` 负责诊断命令执行和输出解析，`receipt_runner.go` 负责证据归约；
 - `internal/observability/telemetry`：低基数指标。
 
 三个容易混淆的数据源：
@@ -804,7 +837,7 @@ Interaction、Provider Call 和 Tool Execution。
 验证：
 
 ```bash
-go test ./internal/observability/...
+go test ./internal/observability/... ./internal/runtime/app/extension
 go test -run TestSystemDiagnosticsReportsAuthoritativeRuntimeHealth \
   ./internal/host
 ```

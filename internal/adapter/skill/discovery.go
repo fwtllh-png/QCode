@@ -26,16 +26,15 @@ var userSkillDirectories = []string{
 }
 
 type DiscoveryOptions struct {
-	Workspace       string
-	ConfiguredDir   string
-	UserHome        string
-	SandboxHome     string
-	Locale          string
-	IncludeBuiltins bool
-	Limits          Limits
-	State           *StateStore
-	RuntimeVersion  string
-	Lock            *LockStore
+	Workspace      string
+	ConfiguredDir  string
+	UserHome       string
+	SandboxHome    string
+	Locale         string
+	Limits         Limits
+	State          *StateStore
+	RuntimeVersion string
+	Lock           *LockStore
 }
 
 type rootSpec struct {
@@ -45,15 +44,13 @@ type rootSpec struct {
 }
 
 type candidate struct {
-	metadata    Metadata
-	source      Source
-	root        string
-	relative    string
-	path        string
-	manifest    *Manifest
-	digest      string
-	rawSkill    []byte
-	rawManifest []byte
+	metadata Metadata
+	source   Source
+	root     string
+	relative string
+	path     string
+	manifest *Manifest
+	digest   string
 }
 
 func discoverNative(options DiscoveryOptions) ([]candidate, []Issue, error) {

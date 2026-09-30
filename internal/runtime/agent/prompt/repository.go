@@ -9,7 +9,6 @@ import (
 	"sync"
 
 	agentcontext "github.com/fwtllh-png/QCode/internal/runtime/agent/context"
-	"github.com/fwtllh-png/QCode/internal/runtime/agent/repository"
 )
 
 // RepositoryOptions configures the volatile repository context appended to a
@@ -18,7 +17,7 @@ type RepositoryOptions struct {
 	RepoMap    bool
 	WorkingSet bool
 	Evidence   bool
-	Map        repository.Options
+	Map        RepositoryMapOptions
 	Budgets    map[string]Budget
 	Tokens     TokenCounter
 	// Root is the absolute workspace root used to read directory-level
@@ -43,17 +42,17 @@ var directoryInstructionNames = []string{"AGENTS.md", "CLAUDE.md"}
 // RepositoryProvider renders the repository map, working set, and evidence
 // while caching the expensive map build once per turn.
 type RepositoryProvider struct {
-	index   repository.Index
+	index   RepositoryIndex
 	options RepositoryOptions
 
 	mu       sync.Mutex
 	mapTurn  uint64
-	repoMap  repository.Map
+	repoMap  RepositoryMap
 	mapKnown bool
 }
 
 func NewRepositoryProvider(
-	index repository.Index,
+	index RepositoryIndex,
 	options RepositoryOptions,
 ) *RepositoryProvider {
 	return &RepositoryProvider{index: index, options: options}
@@ -133,7 +132,7 @@ func (p *RepositoryProvider) mapFor(
 	ctx context.Context,
 	turn uint64,
 	entries []agentcontext.WorkingSetEntry,
-) repository.Map {
+) RepositoryMap {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.mapKnown && p.mapTurn == turn {
@@ -143,7 +142,7 @@ func (p *RepositoryProvider) mapFor(
 	for _, entry := range entries {
 		focus = append(focus, entry.Path)
 	}
-	p.repoMap = repository.Build(ctx, p.index, focus, p.options.Map)
+	p.repoMap = buildRepositoryMap(ctx, p.index, focus, p.options.Map)
 	p.mapTurn, p.mapKnown = turn, true
 	return p.repoMap
 }

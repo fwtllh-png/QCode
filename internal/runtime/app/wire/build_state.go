@@ -7,7 +7,7 @@ import (
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
 	handletool "github.com/fwtllh-png/QCode/internal/adapter/tool/handle"
 	"github.com/fwtllh-png/QCode/internal/config"
-	"github.com/fwtllh-png/QCode/internal/observability/diagnostics"
+	"github.com/fwtllh-png/QCode/internal/observability/verify"
 	"github.com/fwtllh-png/QCode/internal/runtime/app"
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
 )
@@ -35,7 +35,7 @@ type configBuildState struct {
 	execution                                              config.Execution
 	skillPaths                                             SkillPaths
 	runtimeSessionID, workspaceStateID, workspaceStateRoot string
-	diagnosticCommands                                     map[string]diagnostics.Command
+	diagnosticCommands                                     map[string]verify.DiagnosticCommand
 	diagnosticReadRoots                                    []string
 	diagnosticReadFiles                                    []string
 }

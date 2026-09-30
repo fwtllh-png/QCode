@@ -6,7 +6,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/fwtllh-png/QCode/internal/platform/symbols"
+	"github.com/fwtllh-png/QCode/internal/common/symbols"
 )
 
 // TestMapper adapts the index for a caller that wants the mapping alone, with

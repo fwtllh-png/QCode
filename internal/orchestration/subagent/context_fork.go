@@ -12,8 +12,8 @@ import (
 	"sync"
 	"unicode/utf8"
 
+	"github.com/fwtllh-png/QCode/internal/common/contextsnapshot"
 	"github.com/fwtllh-png/QCode/internal/observability/telemetry"
-	runtimecontext "github.com/fwtllh-png/QCode/internal/runtime/contextfork"
 )
 
 const (
@@ -63,21 +63,14 @@ func (p ContextPolicy) withDefaults() ContextPolicy {
 	return p
 }
 
-type ContextSourceRef = runtimecontext.ContextSourceRef
-type ContextBlock = runtimecontext.ContextBlock
-type ContextMessage = runtimecontext.ContextMessage
-type RelevantFile = runtimecontext.ContextRelevantFile
-type EvidenceSummary = runtimecontext.ContextEvidence
-type ParentContextSnapshot = runtimecontext.ParentContextSnapshot
-
 type ContextSource interface {
-	Snapshot(context.Context, ContextSourceRef) (ParentContextSnapshot, error)
+	Snapshot(context.Context, contextsnapshot.SourceRef) (contextsnapshot.Snapshot, error)
 }
 
 type ContextRequest struct {
 	Mode      ContextMode
 	LastTurns int
-	Source    ContextSourceRef
+	Source    contextsnapshot.SourceRef
 	Agent     Agent
 	Role      RoleSpec
 	Objective string
@@ -113,28 +106,28 @@ type ContextTurn struct {
 }
 
 type TaskCapsule struct {
-	Version            int               `json:"version"`
-	Mode               ContextMode       `json:"mode"`
-	TaskName           string            `json:"task_name"`
-	Objective          string            `json:"objective"`
-	ExpectedOutput     string            `json:"expected_output"`
-	CompletionCriteria []string          `json:"completion_criteria"`
-	SourceThread       string            `json:"source_thread,omitempty"`
-	SourceTurn         string            `json:"source_turn,omitempty"`
-	ParentGoal         string            `json:"parent_goal,omitempty"`
-	UserRequest        string            `json:"user_request,omitempty"`
-	Role               Role              `json:"role"`
-	Profile            string            `json:"profile"`
-	RoleInstructions   string            `json:"role_instructions,omitempty"`
-	Authority          AuthoritySnapshot `json:"authority"`
-	Limits             CapsuleLimits     `json:"limits"`
-	OwnedPaths         []string          `json:"owned_paths,omitempty"`
-	RelevantFiles      []RelevantFile    `json:"relevant_files,omitempty"`
-	Evidence           []EvidenceSummary `json:"evidence,omitempty"`
-	WorkspaceRules     []string          `json:"workspace_rules,omitempty"`
-	RecentTurns        []ContextTurn     `json:"recent_turns,omitempty"`
-	Exclusions         []string          `json:"exclusions"`
-	ProhibitedActions  []string          `json:"prohibited_actions"`
+	Version            int                            `json:"version"`
+	Mode               ContextMode                    `json:"mode"`
+	TaskName           string                         `json:"task_name"`
+	Objective          string                         `json:"objective"`
+	ExpectedOutput     string                         `json:"expected_output"`
+	CompletionCriteria []string                       `json:"completion_criteria"`
+	SourceThread       string                         `json:"source_thread,omitempty"`
+	SourceTurn         string                         `json:"source_turn,omitempty"`
+	ParentGoal         string                         `json:"parent_goal,omitempty"`
+	UserRequest        string                         `json:"user_request,omitempty"`
+	Role               Role                           `json:"role"`
+	Profile            string                         `json:"profile"`
+	RoleInstructions   string                         `json:"role_instructions,omitempty"`
+	Authority          AuthoritySnapshot              `json:"authority"`
+	Limits             CapsuleLimits                  `json:"limits"`
+	OwnedPaths         []string                       `json:"owned_paths,omitempty"`
+	RelevantFiles      []contextsnapshot.RelevantFile `json:"relevant_files,omitempty"`
+	Evidence           []contextsnapshot.Evidence     `json:"evidence,omitempty"`
+	WorkspaceRules     []string                       `json:"workspace_rules,omitempty"`
+	RecentTurns        []ContextTurn                  `json:"recent_turns,omitempty"`
+	Exclusions         []string                       `json:"exclusions"`
+	ProhibitedActions  []string                       `json:"prohibited_actions"`
 }
 
 type ContextItem struct {
@@ -169,15 +162,6 @@ type ContextForker struct {
 	mu     sync.RWMutex
 	source ContextSource
 	policy ContextPolicy
-}
-
-func BindRuntimeContext(
-	control *AgentControl,
-	resolver runtimecontext.EngineResolver,
-) {
-	if control != nil {
-		control.BindContextSource(runtimecontext.NewSource(resolver))
-	}
 }
 
 func NewContextForker(policy ContextPolicy) *ContextForker {
@@ -361,22 +345,22 @@ func (f *ContextForker) Fork(
 func (f *ContextForker) snapshot(
 	ctx context.Context,
 	mode ContextMode,
-	ref ContextSourceRef,
-) (ParentContextSnapshot, error) {
+	ref contextsnapshot.SourceRef,
+) (contextsnapshot.Snapshot, error) {
 	if mode == ContextFresh || (ref.ThreadID == "" && ref.TurnID == "") {
-		return ParentContextSnapshot{}, nil
+		return contextsnapshot.Snapshot{}, nil
 	}
 	f.mu.RLock()
 	source := f.source
 	f.mu.RUnlock()
 	if source == nil {
-		return ParentContextSnapshot{}, errors.New(
+		return contextsnapshot.Snapshot{}, errors.New(
 			"parent context source is unavailable",
 		)
 	}
 	snapshot, err := source.Snapshot(ctx, ref)
 	if err != nil {
-		return ParentContextSnapshot{}, fmt.Errorf("snapshot parent context: %w", err)
+		return contextsnapshot.Snapshot{}, fmt.Errorf("snapshot parent context: %w", err)
 	}
 	return snapshot, nil
 }
@@ -408,14 +392,14 @@ func prohibitedActions(agent Agent) []string {
 }
 
 func sanitizeFiles(
-	files []RelevantFile,
+	files []contextsnapshot.RelevantFile,
 	limit int,
 	sanitize func(string) string,
-) []RelevantFile {
+) []contextsnapshot.RelevantFile {
 	if len(files) > limit {
 		files = files[:limit]
 	}
-	cloned := make([]RelevantFile, 0, len(files))
+	cloned := make([]contextsnapshot.RelevantFile, 0, len(files))
 	for _, file := range files {
 		path := strings.TrimSpace(file.Path)
 		if path == "" {
@@ -430,7 +414,7 @@ func sanitizeFiles(
 			// capsule.
 			excerpt, _ := boundedText(
 				sanitize(file.Excerpt),
-				runtimecontext.MaxRelevantFileExcerptBytes,
+				contextsnapshot.MaxRelevantFileExcerptBytes,
 			)
 			copy.Excerpt = excerpt
 		}
@@ -440,20 +424,20 @@ func sanitizeFiles(
 }
 
 func sanitizeEvidence(
-	items []EvidenceSummary,
+	items []contextsnapshot.Evidence,
 	limit int,
 	sanitize func(string) string,
-) []EvidenceSummary {
+) []contextsnapshot.Evidence {
 	if len(items) > limit {
 		items = items[:limit]
 	}
-	result := make([]EvidenceSummary, 0, len(items))
+	result := make([]contextsnapshot.Evidence, 0, len(items))
 	for _, item := range items {
 		summary := strings.TrimSpace(sanitize(item.Summary))
 		if summary == "" {
 			continue
 		}
-		result = append(result, EvidenceSummary{
+		result = append(result, contextsnapshot.Evidence{
 			Summary: summary, Handle: strings.TrimSpace(item.Handle),
 		})
 	}
@@ -472,7 +456,7 @@ func sanitizeStrings(values []string, sanitize func(string) string) []string {
 }
 
 func historyTurns(
-	messages []ContextMessage,
+	messages []contextsnapshot.Message,
 	maxResultBytes int,
 	sanitize func(string) string,
 ) []ContextTurn {
@@ -483,7 +467,7 @@ func historyTurns(
 	}
 	calls := make(map[string]pendingCall)
 	callOrder := make([]string, 0)
-	results := make(map[string]ContextBlock)
+	results := make(map[string]contextsnapshot.Block)
 	order := make([]uint64, 0)
 	turns := make(map[uint64]*ContextTurn)
 	ensure := func(turn uint64) *ContextTurn {
@@ -630,7 +614,7 @@ func fitCapsule(
 
 // stripLargestExcerpt clears the largest remaining relevant-file excerpt so
 // budget pressure degrades delegation hints before it drops file paths.
-func stripLargestExcerpt(files []RelevantFile) bool {
+func stripLargestExcerpt(files []contextsnapshot.RelevantFile) bool {
 	largest, largestBytes := -1, 0
 	for index := range files {
 		if size := len(files[index].Excerpt); size > largestBytes {

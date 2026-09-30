@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/fwtllh-png/QCode/internal/common/symbols"
 	"github.com/fwtllh-png/QCode/internal/platform/repowalk"
-	"github.com/fwtllh-png/QCode/internal/platform/symbols"
 )
 
 func TestEnsureBuildsThenRefreshesOnlyWhatChanged(t *testing.T) {
@@ -519,6 +519,9 @@ func TestWeakestResolutionIncludesSyntax(t *testing.T) {
 		want   string
 	}{
 		{[]Symbol{{Resolution: ResolutionSyntax}}, ResolutionSyntax},
+		{[]Symbol{{Resolution: ResolutionSyntax}, {Resolution: ResolutionSyntaxPartial}}, ResolutionSyntaxPartial},
+		{[]Symbol{{Resolution: ResolutionSyntaxPartial}, {Resolution: ResolutionSyntax}}, ResolutionSyntaxPartial},
+		{[]Symbol{{Resolution: ResolutionSyntaxPartial}, {Resolution: ResolutionLexical}}, ResolutionLexical},
 		{[]Symbol{{Resolution: ResolutionSyntax}, {Resolution: ResolutionLexical}}, ResolutionLexical},
 		{[]Symbol{{Resolution: ResolutionLexical}, {Resolution: ResolutionSyntax}}, ResolutionLexical},
 		{[]Symbol{{Resolution: ResolutionSyntax}, {Resolution: ResolutionHeuristic}}, ResolutionHeuristic},
@@ -526,5 +529,26 @@ func TestWeakestResolutionIncludesSyntax(t *testing.T) {
 		if got := WeakestResolution(tt.values); got != tt.want {
 			t.Errorf("resolution=%s want=%s", got, tt.want)
 		}
+	}
+}
+
+func TestPartialSyntaxSurvivesIndexStorage(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, "api.go", "package p\nimport \"example.com/real\"\nvar text = `import \"example.com/fake\"`\nfunc Real() {}\nfunc Broken(\n")
+	index, store := newIndex(t, root, Options{})
+	if _, err := ensureSettled(t, index); err != nil {
+		t.Fatal(err)
+	}
+	found, _, err := index.Symbols(t.Context(), Query{Name: "Real", Exact: true})
+	if err != nil || len(found) != 1 || found[0].Resolution != ResolutionSyntaxPartial {
+		t.Fatalf("symbols=%+v error=%v", found, err)
+	}
+	imports, err := store.Imports(t.Context())
+	if err != nil || len(imports["api.go"]) != 1 || imports["api.go"][0] != "example.com/real" {
+		t.Fatalf("imports=%+v error=%v", imports, err)
+	}
+	files, err := store.Files(t.Context())
+	if err != nil || files["api.go"].ScopeAware {
+		t.Fatalf("files=%+v error=%v", files, err)
 	}
 }

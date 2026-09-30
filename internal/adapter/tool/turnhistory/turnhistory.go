@@ -5,18 +5,23 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
-	"github.com/fwtllh-png/QCode/internal/adapter/provider"
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
 	"github.com/fwtllh-png/QCode/internal/adapter/tool/typed"
-	agentcontext "github.com/fwtllh-png/QCode/internal/runtime/agent/context"
 )
 
-const Name = agentcontext.TurnHistoryToolName
+const Name = "turn_history"
 
-type Lookup func(ctx context.Context, turn uint64) ([]provider.Message, error)
+// Entry is the rendered history supplied by the runtime that owns the turn.
+type Entry struct {
+	Transcript    string
+	FindingsIndex string
+}
 
-type FindingsLookup func(ctx context.Context, turn uint64) (agentcontext.TurnFindings, bool)
+// Lookup returns nil when the turn is unavailable. Visibility and rendering
+// are owned by the caller; the tool only validates and pages the result.
+type Lookup func(ctx context.Context, turn uint64) (*Entry, error)
 
 type input struct {
 	Turn     uint64 `json:"turn"`
@@ -24,7 +29,7 @@ type input struct {
 	MaxBytes int    `json:"max_bytes,omitempty"`
 }
 
-func Register(registry *tool.Registry, lookup Lookup, findings ...FindingsLookup) error {
+func Register(registry *tool.Registry, lookup Lookup) error {
 	if registry == nil {
 		return errors.New("turn_history requires a registry")
 	}
@@ -33,10 +38,6 @@ func Register(registry *tool.Registry, lookup Lookup, findings ...FindingsLookup
 	}
 	if _, _, _, err := registry.Resolve(Name); err == nil {
 		return nil
-	}
-	var findingsLookup FindingsLookup
-	if len(findings) > 0 {
-		findingsLookup = findings[0]
 	}
 	executor, err := typed.Define(typed.Spec[input, tool.Result]{
 		Descriptor: tool.Descriptor{
@@ -83,20 +84,16 @@ func Register(registry *tool.Registry, lookup Lookup, findings ...FindingsLookup
 			return nil
 		},
 		Run: func(ctx context.Context, value input) (tool.Result, error) {
-			messages, err := lookup(ctx, value.Turn)
+			entry, err := lookup(ctx, value.Turn)
 			if err != nil {
 				return tool.Result{}, err
 			}
-			if len(messages) == 0 {
+			if entry == nil {
 				return tool.Result{}, fmt.Errorf("turn %d is not in durable history", value.Turn)
 			}
-			var findings agentcontext.TurnFindings
-			if findingsLookup != nil {
-				findings, _ = findingsLookup(ctx, value.Turn)
-			}
 			content, truncated, original := assemblePage(
-				agentcontext.RenderTurnTranscript(messages),
-				agentcontext.RenderTurnFindings(value.Turn, findings),
+				entry.Transcript,
+				entry.FindingsIndex,
 				value.From,
 				value.MaxBytes,
 			)
@@ -122,9 +119,9 @@ func assemblePage(transcript, index, from string, maxBytes int) (string, bool, i
 	if index == "" {
 		if maxBytes > 0 && len(transcript) > maxBytes {
 			if from == "head" {
-				return agentcontext.TruncateUTF8(transcript, maxBytes), true, len(transcript)
+				return truncateUTF8(transcript, maxBytes), true, len(transcript)
 			}
-			return agentcontext.TruncateUTF8Tail(transcript, maxBytes), true, len(transcript)
+			return truncateUTF8Tail(transcript, maxBytes), true, len(transcript)
 		}
 		return transcript, false, len(transcript)
 	}
@@ -136,9 +133,31 @@ func assemblePage(transcript, index, from string, maxBytes int) (string, bool, i
 	bodyBudget := max(0, maxBytes-reserved)
 	var body string
 	if from == "head" {
-		body = agentcontext.TruncateUTF8(transcript, bodyBudget)
+		body = truncateUTF8(transcript, bodyBudget)
 	} else {
-		body = agentcontext.TruncateUTF8Tail(transcript, bodyBudget)
+		body = truncateUTF8Tail(transcript, bodyBudget)
 	}
 	return strings.TrimRight(body, "\n") + "\n\n" + index + "\n", true, len(combined)
+}
+
+func truncateUTF8(value string, limit int) string {
+	if len(value) <= limit {
+		return value
+	}
+	value = value[:limit]
+	for !utf8.ValidString(value) {
+		value = value[:len(value)-1]
+	}
+	return value
+}
+
+func truncateUTF8Tail(value string, limit int) string {
+	if limit <= 0 || len(value) <= limit {
+		return value
+	}
+	start := len(value) - limit
+	for start < len(value) && !utf8.ValidString(value[start:]) {
+		start++
+	}
+	return value[start:]
 }

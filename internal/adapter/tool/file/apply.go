@@ -14,8 +14,8 @@ import (
 	"unicode"
 
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
+	"github.com/fwtllh-png/QCode/internal/common/textdiff"
 	"github.com/fwtllh-png/QCode/internal/persist/workspacejournal"
-	"github.com/fwtllh-png/QCode/internal/platform/textdiff"
 	"github.com/fwtllh-png/QCode/internal/security/authority"
 	"github.com/fwtllh-png/QCode/internal/security/filebroker"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"

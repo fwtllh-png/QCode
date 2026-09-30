@@ -7,7 +7,7 @@ import (
 	"strings"
 
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
-	"github.com/fwtllh-png/QCode/internal/environment"
+	"github.com/fwtllh-png/QCode/internal/common/environment"
 	"github.com/fwtllh-png/QCode/internal/platform/process"
 	securitypolicy "github.com/fwtllh-png/QCode/internal/security/policy"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"

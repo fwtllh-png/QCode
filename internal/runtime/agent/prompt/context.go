@@ -6,13 +6,14 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"unicode/utf8"
 
 	"github.com/fwtllh-png/QCode/internal/adapter/memory"
 	"github.com/fwtllh-png/QCode/internal/adapter/provider"
-	"github.com/fwtllh-png/QCode/internal/platform/tokenestimate"
+	"github.com/fwtllh-png/QCode/internal/common/tokenestimate"
 )
 
 // repositoryInstructionNames are the workspace-root instruction files, in the
@@ -65,10 +66,10 @@ const (
 
 // DefaultBaseSystem is the persona used when the operator has not configured
 // one: identity, a grounding rule that the coding-policy partition does not
-// already state, and the environment fingerprint the workspace actually has.
+// already state, and facts about the running platform.
 // Tool guidance, the coding method, and mode rules live in their own
 // partitions and are deliberately not repeated here.
-func DefaultBaseSystem(workspace string, environment []string) string {
+func DefaultBaseSystem(workspace string) string {
 	var b strings.Builder
 	b.WriteString(
 		"You are QCode, a software engineering agent working directly in the " +
@@ -78,13 +79,9 @@ func DefaultBaseSystem(workspace string, environment []string) string {
 	if workspace != "" {
 		fmt.Fprintf(&b, "workspace: %s\n", workspace)
 	}
-	for _, line := range environment {
-		if strings.TrimSpace(line) != "" {
-			b.WriteString(strings.TrimSpace(line))
-			b.WriteByte('\n')
-		}
-	}
-	return strings.TrimRight(b.String(), "\n")
+	// Platform facts do not require probing host tools or the login shell.
+	fmt.Fprintf(&b, "os: %s (%s)", runtime.GOOS, runtime.GOARCH)
+	return b.String()
 }
 
 type Budget struct {
@@ -114,7 +111,7 @@ type TokenCounter interface {
 
 // HeuristicTokenCounter is the baseline token counter for prompt partitions:
 // dense-script text counts per character, everything else at four characters
-// per token. See internal/platform/tokenestimate for the rationale.
+// per token. See internal/common/tokenestimate for the rationale.
 type HeuristicTokenCounter struct{}
 
 func (HeuristicTokenCounter) Count(value string) uint64 {

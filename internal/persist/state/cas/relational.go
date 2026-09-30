@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/fwtllh-png/QCode/internal/persist/sqlkit"
+	"github.com/fwtllh-png/QCode/internal/common/sqlkit"
 )
 
 // NewRelational shares the owner's connection and transaction boundary.

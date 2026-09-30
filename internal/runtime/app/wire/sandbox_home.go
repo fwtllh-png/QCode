@@ -7,8 +7,8 @@ import (
 
 	"github.com/fwtllh-png/QCode/internal/adapter/envprep"
 	gittool "github.com/fwtllh-png/QCode/internal/adapter/tool/git"
+	"github.com/fwtllh-png/QCode/internal/common/environment"
 	"github.com/fwtllh-png/QCode/internal/config"
-	"github.com/fwtllh-png/QCode/internal/environment"
 	"github.com/fwtllh-png/QCode/internal/security/egress"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
 )

@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
-	"github.com/fwtllh-png/QCode/internal/environment"
+	"github.com/fwtllh-png/QCode/internal/common/environment"
 	"github.com/fwtllh-png/QCode/internal/platform/process"
 )
 

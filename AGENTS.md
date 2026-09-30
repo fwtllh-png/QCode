@@ -22,6 +22,8 @@ Web and shared by the main agent and subagents.
 - Hosts submit operations; they do not execute provider/tool/sandbox logic.
 - Business loops stay in `internal/runtime/agent`.
 - Construction stays in `internal/runtime/app/wire`.
+- Shared contracts and utilities belong in focused `internal/common` subpackages;
+  common must not import other QCode layers.
 - Consequential tools pass through `internal/adapter/tool/guard`.
 - Do not bypass policy, approval, constitution, journal, or sandbox.
 - Do not store raw secrets in tracked code, config, fixtures, logs, or docs.
@@ -42,6 +44,7 @@ Web and shared by the main agent and subagents.
 ## Ownership
 
 ```text
+shared contracts/utilities internal/common
 Web host                   internal/host
 protocol/app/agent/wiring  internal/runtime
 providers/tools/ecosystem internal/adapter

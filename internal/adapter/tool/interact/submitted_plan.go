@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"strings"
 
-	agentcontext "github.com/fwtllh-png/QCode/internal/runtime/agent/context"
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
 )
 
@@ -109,14 +108,14 @@ func (p *SubmittedPlan) NormalizeAndValidate() error {
 	return nil
 }
 
-func (p SubmittedPlan) ContextPlan() agentcontext.Plan {
-	steps := make([]agentcontext.PlanStep, len(p.Steps))
+func (p SubmittedPlan) executionPlan() Plan {
+	steps := make([]PlanStep, len(p.Steps))
 	for index, step := range p.Steps {
-		steps[index] = agentcontext.PlanStep{
+		steps[index] = PlanStep{
 			Title: step.Title, Status: step.Status,
 		}
 	}
-	return agentcontext.Plan{
+	return Plan{
 		Title: p.Title, Steps: steps, Objective: p.Objective,
 		ContextSummary:      p.ContextSummary,
 		SourcesUsed:         append([]string(nil), p.SourcesUsed...),

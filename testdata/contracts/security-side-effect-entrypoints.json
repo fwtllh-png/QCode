@@ -46,7 +46,7 @@
         "network"
       ],
       "owner": "provider adapter",
-      "reason": "Model transports, credential-file readers, and hermetic fixture server."
+      "reason": "Model transports, credential-file readers, provider debug dumps, and hermetic fixture server."
     },
     {
       "path": "internal/adapter/skill",
@@ -123,6 +123,14 @@
       "reason": "Guarded web transports and the isolated Chromium CDP process/profile lifecycle."
     },
     {
+      "path": "internal/common/atomicfile/atomicfile.go",
+      "categories": [
+        "file"
+      ],
+      "owner": "atomic file utility",
+      "reason": "Atomic replacement of caller-owned files; authorization and path selection remain with the caller."
+    },
+    {
       "path": "internal/host/native_directory.go",
       "categories": [
         "process"
@@ -142,16 +150,7 @@
       "reason": "Local listener, supervisor state, and operator browser launch."
     },
     {
-      "path": "internal/observability",
-      "prefix": true,
-      "categories": [
-        "file"
-      ],
-      "owner": "observability",
-      "reason": "Runtime-owned logs, metrics, traces, and provider debug dumps."
-    },
-    {
-      "path": "internal/observability/diagnostics/diagnostics.go",
+      "path": "internal/observability/verify/diagnostics.go",
       "categories": [
         "process"
       ],
@@ -209,15 +208,6 @@
       "reason": "getconf reads the Darwin user temp root."
     },
     {
-      "path": "internal/platform/ownerlease",
-      "prefix": true,
-      "categories": [
-        "file"
-      ],
-      "owner": "owner lease",
-      "reason": "Runtime-owned supervisor lease persistence."
-    },
-    {
       "path": "internal/platform/process",
       "prefix": true,
       "categories": [
@@ -236,20 +226,20 @@
       "reason": "Runtime-owned sandboxed read-only Git file enumeration."
     },
     {
-      "path": "internal/platform/workspacequery/git.go",
+      "path": "internal/runtime/app/workspacequery/git.go",
       "categories": [
         "process"
       ],
       "owner": "workspace query",
-      "reason": "Runtime-owned fixed read-only Git metadata queries; mutations are delegated to VCS Broker."
+      "reason": "Application-owned fixed read-only Git metadata queries; Git mutations belong to Runtime GitControl and guarded tools."
     },
     {
-      "path": "internal/platform/workspacequery/git_inspect.go",
+      "path": "internal/runtime/app/workspacequery/git_inspect.go",
       "categories": [
         "process"
       ],
       "owner": "workspace query",
-      "reason": "Runtime-owned fixed read-only Git metadata queries; mutations are delegated to VCS Broker."
+      "reason": "Application-owned fixed read-only Git metadata and diff queries; Git mutations belong to Runtime GitControl and guarded tools."
     },
     {
       "path": "internal/runtime/app/wire",

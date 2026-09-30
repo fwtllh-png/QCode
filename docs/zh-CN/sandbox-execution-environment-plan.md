@@ -526,7 +526,7 @@ macOS 拿不到精确 errno 时保留退出状态和原始输出，标记 `unkno
 
 | Owner | 职责 |
 | --- | --- |
-| `internal/environment` | `EnvironmentSpec`、`ResourceRequest`、声明校验、结构化失败事实；仅依赖标准库，无宿主探测或实现依赖 |
+| `internal/common/environment` | `EnvironmentSpec`、`ResourceRequest`、声明校验、结构化失败事实；仅依赖标准库，无宿主探测或实现依赖 |
 | `internal/adapter/envprep` | 来源快照、通用声明编译到 `authority.Resource`、平台物化、`confstr` 与最终 `sandbox.Options` 投影；只接收声明 |
 | `internal/security/authority`、`policy` | namespace、`AccessUse`、Grant、Lease 绑定、修订、撤销 |
 | `internal/security/sandbox` | 已批准资源 → OS 约束；报告真实能力；迁出 toolchains/certificates 的环境权威 |
@@ -631,7 +631,7 @@ Workspace 共享进程 Gate 不再写入。
 `[[execution.environment.resources]]` 已进入准备链。`write_paths` 可指向已存在
 工作区子目录并授予树写；工作区根仍拒绝。P2b 已把这些树写接到隔离工作区结算。
 
-工作：`internal/environment` 中的环境契约与 `internal/adapter/envprep` 中的准备器；`AccessUse` 与新 namespace 的协议生成；
+工作：`internal/common/environment` 中的环境契约与 `internal/adapter/envprep` 中的准备器；`AccessUse` 与新 namespace 的协议生成；
 声明接入（无生态名的 `ResourceRequest`）与可选的第一个 Go 翻译器；
 `native` / `shared_user_temp` 显式开关；证书发现迁入准备链；Skill 根回归；
 目录树写授权（不含三方结算）。
@@ -640,7 +640,7 @@ Workspace 共享进程 Gate 不再写入。
 核心从未识别过名称的工具只靠声明读写配置/缓存/临时文件；核心无语言名分支；
 旧 HOME 重写在 `v1` 下不执行；去掉 Go 适配器后声明路径仍能准备。
 
-验证：`go test ./internal/environment ./internal/adapter/envprep ./internal/security/sandbox`；
+验证：`go test ./internal/common/environment ./internal/adapter/envprep ./internal/security/sandbox`；
 现有 Skill sandbox 测试；按 Posture 拆分的临时区测试。
 
 ### P2b 隔离工作区结算
@@ -714,7 +714,7 @@ Shell 语言变量重写。当前仅保留通用 CONNECT / HTTP 转发、Gate �
 
 完成：无共享动态进程授权，无隐式环境路径，无双权威。默认切换见 P6。
 
-验证：`go test ./internal/environment ./internal/adapter/envprep ./internal/security/sandbox
+验证：`go test ./internal/common/environment ./internal/adapter/envprep ./internal/security/sandbox
 ./internal/platform/process ./internal/adapter/tool/shell
 ./internal/runtime/app/wire`；`make docs-check`。
 
@@ -740,7 +740,7 @@ Shell 语言变量重写。当前仅保留通用 CONNECT / HTTP 转发、Gate �
 Go 工具链和缓存。文档区分已交付默认与原 EDS 业务证据。
 
 验证：`go test ./internal/config
-./internal/environment ./internal/runtime/app/wire
+./internal/common/environment ./internal/runtime/app/wire
 ./internal/adapter/envprep`；`make docs-check`。
 
 若 P0 发现平台边界无法满足，修正执行配置或实现后端，不得为通过检查而扩大权限。

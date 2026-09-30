@@ -1,4 +1,0 @@
-schema_version = 1
-name = "system-code-review"
-version = "1.0.0"
-qcode = ">=0.0.0-0"

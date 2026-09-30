@@ -8,7 +8,7 @@ import (
 
 	"github.com/fwtllh-png/QCode/internal/adapter/provider"
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
-	"github.com/fwtllh-png/QCode/internal/observability/diagnostics"
+	"github.com/fwtllh-png/QCode/internal/observability/verify"
 )
 
 var resultHandleTools = map[string]struct{}{
@@ -165,7 +165,7 @@ func (a *Authority) ObserveChange(
 
 func (a *Authority) ObserveDiagnostics(
 	workspace string,
-	receipts []diagnostics.Receipt,
+	receipts []verify.DiagnosticReceipt,
 ) {
 	for _, receipt := range receipts {
 		if receipt.Status == "unavailable" {

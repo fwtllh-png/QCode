@@ -12,7 +12,6 @@ import (
 	reverttool "github.com/fwtllh-png/QCode/internal/adapter/tool/revert"
 	"github.com/fwtllh-png/QCode/internal/observability/verify"
 	"github.com/fwtllh-png/QCode/internal/orchestration/subagent"
-	"github.com/fwtllh-png/QCode/internal/platform/envprobe"
 	agentengine "github.com/fwtllh-png/QCode/internal/runtime/agent/engine"
 	promptcontext "github.com/fwtllh-png/QCode/internal/runtime/agent/prompt"
 	"github.com/fwtllh-png/QCode/internal/runtime/app"
@@ -42,9 +41,7 @@ func (agentModule) Build(ctx context.Context, state *buildState) error {
 	)
 	baseSystem := strings.TrimSpace(execution.BaseSystem)
 	if baseSystem == "" {
-		baseSystem = promptcontext.DefaultBaseSystem(
-			execution.Workspace, envprobe.Fingerprint(),
-		)
+		baseSystem = promptcontext.DefaultBaseSystem(execution.Workspace)
 	}
 	home := ""
 	if resolved, err := os.UserHomeDir(); err == nil {
@@ -280,7 +277,7 @@ func (agentModule) Build(ctx context.Context, state *buildState) error {
 		threadManager.SetHostJournal(state.security.journal)
 	}
 	session.threads = threadManager
-	subagent.BindRuntimeContext(state.orchestration.subagents, threadManager)
+	state.orchestration.subagents.BindContextSource(threadManager)
 	threadManager.SetChildFactory(coreBuilder.BuildChild)
 	session.chatWorkspaces = buildChatWorkspaces(
 		state, threadManager, workspaceTurnGate,

@@ -8,13 +8,13 @@
   "files": [
     "internal/platform/repowalk/repowalk.go",
     "internal/platform/repowalk/repowalk_test.go",
-    "internal/platform/symbols/symbols.go",
-    "internal/platform/symbols/symbols_test.go",
-    "internal/platform/symbols/syntax.go",
-    "internal/platform/symbols/syntax_test.go",
-    "internal/platform/symbols/references_go.go",
-    "internal/platform/symbols/references_script.go",
-    "internal/platform/symbols/references_test.go"
+    "internal/common/symbols/symbols.go",
+    "internal/common/symbols/symbols_test.go",
+    "internal/common/symbols/syntax.go",
+    "internal/common/symbols/syntax_test.go",
+    "internal/common/symbols/references_go.go",
+    "internal/common/symbols/references_script.go",
+    "internal/common/symbols/references_test.go"
   ],
   "tasks": [
     {
@@ -54,12 +54,12 @@
       "kind": "locate",
       "prompt": "扩展名未知时，源码语言识别入口在哪里？",
       "expected_files": [
-        "internal/platform/symbols/symbols.go"
+        "internal/common/symbols/symbols.go"
       ],
       "required_tests": [],
       "anchors": [
         {
-          "file": "internal/platform/symbols/symbols.go",
+          "file": "internal/common/symbols/symbols.go",
           "text": "func DetectLanguage("
         }
       ],
@@ -86,24 +86,24 @@
       "kind": "change_scope",
       "prompt": "调整 Go 引用绑定规则前，应定位提取实现、接入点并选择回归测试。",
       "expected_files": [
-        "internal/platform/symbols/references_go.go",
-        "internal/platform/symbols/syntax.go",
-        "internal/platform/symbols/references_test.go",
-        "internal/platform/symbols/syntax_test.go",
-        "internal/platform/symbols/symbols_test.go"
+        "internal/common/symbols/references_go.go",
+        "internal/common/symbols/syntax.go",
+        "internal/common/symbols/references_test.go",
+        "internal/common/symbols/syntax_test.go",
+        "internal/common/symbols/symbols_test.go"
       ],
       "required_tests": [
-        "internal/platform/symbols/references_test.go",
-        "internal/platform/symbols/syntax_test.go",
-        "internal/platform/symbols/symbols_test.go"
+        "internal/common/symbols/references_test.go",
+        "internal/common/symbols/syntax_test.go",
+        "internal/common/symbols/symbols_test.go"
       ],
       "anchors": [
         {
-          "file": "internal/platform/symbols/references_go.go",
+          "file": "internal/common/symbols/references_go.go",
           "text": "func goReferenceSites("
         },
         {
-          "file": "internal/platform/symbols/syntax.go",
+          "file": "internal/common/symbols/syntax.go",
           "text": "= goReferenceSites(ctx, data, options.ReferenceMaxCount)"
         }
       ],
@@ -138,7 +138,7 @@
           "tool": "search_related_tests",
           "arguments": {
             "paths": [
-              "internal/platform/symbols/references_go.go"
+              "internal/common/symbols/references_go.go"
             ]
           }
         }
@@ -240,14 +240,14 @@
       "kind": "verify",
       "prompt": "修改 symbols.go 的结构提取入口后，推荐提取及引用绑定回归测试。",
       "expected_files": [
-        "internal/platform/symbols/symbols_test.go",
-        "internal/platform/symbols/syntax_test.go",
-        "internal/platform/symbols/references_test.go"
+        "internal/common/symbols/symbols_test.go",
+        "internal/common/symbols/syntax_test.go",
+        "internal/common/symbols/references_test.go"
       ],
       "required_tests": [
-        "internal/platform/symbols/symbols_test.go",
-        "internal/platform/symbols/syntax_test.go",
-        "internal/platform/symbols/references_test.go"
+        "internal/common/symbols/symbols_test.go",
+        "internal/common/symbols/syntax_test.go",
+        "internal/common/symbols/references_test.go"
       ],
       "anchors": [],
       "text": [
@@ -263,7 +263,7 @@
           "tool": "search_related_tests",
           "arguments": {
             "paths": [
-              "internal/platform/symbols/symbols.go"
+              "internal/common/symbols/symbols.go"
             ]
           }
         }

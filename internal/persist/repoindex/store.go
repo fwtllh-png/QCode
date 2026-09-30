@@ -15,7 +15,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"github.com/fwtllh-png/QCode/internal/platform/symbols"
+	"github.com/fwtllh-png/QCode/internal/common/symbols"
 	"sort"
 	"strings"
 	"time"

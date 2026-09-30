@@ -17,13 +17,13 @@ import (
 	shelltool "github.com/fwtllh-png/QCode/internal/adapter/tool/shell"
 	"github.com/fwtllh-png/QCode/internal/adapter/tool/toolsearch"
 	webtool "github.com/fwtllh-png/QCode/internal/adapter/tool/web"
+	"github.com/fwtllh-png/QCode/internal/common/symbols"
+	"github.com/fwtllh-png/QCode/internal/orchestration/workspacebroker"
 	"github.com/fwtllh-png/QCode/internal/persist/contentstore"
 	"github.com/fwtllh-png/QCode/internal/persist/repoindex"
 	"github.com/fwtllh-png/QCode/internal/platform/process"
-	"github.com/fwtllh-png/QCode/internal/platform/symbols"
 	"github.com/fwtllh-png/QCode/internal/security/authority"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
-	"github.com/fwtllh-png/QCode/internal/orchestration/workspacebroker"
 )
 
 func NewWithDependencies(

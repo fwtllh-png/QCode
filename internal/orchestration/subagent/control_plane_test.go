@@ -1,4 +1,4 @@
-package subagent_test
+package subagent
 
 import (
 	"context"
@@ -6,36 +6,35 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/fwtllh-png/QCode/internal/observability/tracecontext"
-	"github.com/fwtllh-png/QCode/internal/orchestration/subagent"
+	"github.com/fwtllh-png/QCode/internal/common/tracecontext"
 )
 
 func TestDelegationPolicyExplicitAndAdaptiveTriggers(t *testing.T) {
-	explicit, err := subagent.NewDelegationPolicy(subagent.DelegationExplicit)
+	explicit, err := NewDelegationPolicy(DelegationExplicit)
 	if err != nil {
 		t.Fatal(err)
 	}
-	base := subagent.DelegationIntent{
-		TaskName: "inspect_runtime", Role: subagent.RoleExplore,
+	base := DelegationIntent{
+		TaskName: "inspect_runtime", Role: RoleExplore,
 		Objective: "inspect runtime", ExpectedOutput: "key files and findings",
 	}
-	base.Trigger = subagent.TriggerAdaptive
+	base.Trigger = TriggerAdaptive
 	if err := explicit.Admit(base); err == nil {
 		t.Fatal("explicit policy accepted adaptive trigger")
 	}
-	base.Trigger = subagent.TriggerUser
+	base.Trigger = TriggerUser
 	if err := explicit.Admit(base); err != nil {
 		t.Fatalf("explicit user trigger: %v", err)
 	}
-	adaptive, err := subagent.NewDelegationPolicy(subagent.DelegationAdaptive)
+	adaptive, err := NewDelegationPolicy(DelegationAdaptive)
 	if err != nil {
 		t.Fatal(err)
 	}
-	base.Trigger = subagent.TriggerAdaptive
+	base.Trigger = TriggerAdaptive
 	if err := adaptive.Admit(base); err != nil {
 		t.Fatalf("adaptive trigger: %v", err)
 	}
-	disabled, err := subagent.NewDelegationPolicy(subagent.DelegationDisabled)
+	disabled, err := NewDelegationPolicy(DelegationDisabled)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -45,21 +44,21 @@ func TestDelegationPolicyExplicitAndAdaptiveTriggers(t *testing.T) {
 	if err := disabled.Admit(base); err == nil {
 		t.Fatal("disabled policy accepted spawn")
 	}
-	base.Trigger = subagent.TriggerSystem
+	base.Trigger = TriggerSystem
 	if err := disabled.Admit(base); err != nil {
 		t.Fatalf("disabled policy rejected internal system task: %v", err)
 	}
 }
 
 func TestDelegationIntentRejectsUnsafeOwnership(t *testing.T) {
-	policy, err := subagent.NewDelegationPolicy(subagent.DelegationExplicit)
+	policy, err := NewDelegationPolicy(DelegationExplicit)
 	if err != nil {
 		t.Fatal(err)
 	}
-	intent := subagent.DelegationIntent{
-		TaskName: "write_outside", Role: subagent.RoleImplementer,
+	intent := DelegationIntent{
+		TaskName: "write_outside", Role: RoleImplementer,
 		Objective: "write outside", ExpectedOutput: "a patch",
-		OwnedPaths: []string{"../outside"}, Trigger: subagent.TriggerUser,
+		OwnedPaths: []string{"../outside"}, Trigger: TriggerUser,
 	}
 	if err := policy.Admit(intent); err == nil || !strings.Contains(err.Error(), "workspace-relative") {
 		t.Fatalf("unsafe owned path error = %v", err)
@@ -67,42 +66,42 @@ func TestDelegationIntentRejectsUnsafeOwnership(t *testing.T) {
 }
 
 func TestRoleCatalogAndAgentControlFreezeSpawnContract(t *testing.T) {
-	manager, err := subagent.Open(subagent.Options{
+	manager, err := Open(Options{
 		Root: t.TempDir(), Gate: &fakeGate{},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	policy, err := subagent.NewDelegationPolicy(subagent.DelegationExplicit)
+	policy, err := NewDelegationPolicy(DelegationExplicit)
 	if err != nil {
 		t.Fatal(err)
 	}
-	control, err := subagent.NewAgentControl(
+	control, err := NewAgentControl(
 		manager,
-		subagent.DefaultRoleCatalog(),
+		DefaultRoleCatalog(),
 		policy,
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	agent, err := control.SpawnIntent(subagent.DelegationIntent{
-		TaskName: "inspect_runtime", Role: subagent.RoleExplore,
+	agent, err := control.SpawnIntent(DelegationIntent{
+		TaskName: "inspect_runtime", Role: RoleExplore,
 		Objective: "inspect runtime", ExpectedOutput: "key files and findings",
-		Trigger: subagent.TriggerDeveloper,
+		Trigger: TriggerDeveloper,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if agent.Role != subagent.RoleExplore || agent.Stance != subagent.StanceReadOnly ||
+	if agent.Role != RoleExplore || agent.Stance != StanceReadOnly ||
 		agent.TaskName != "inspect_runtime" ||
-		agent.DelegationTrigger != subagent.TriggerDeveloper ||
+		agent.DelegationTrigger != TriggerDeveloper ||
 		!strings.Contains(agent.RoleInstructions, "do not modify") {
 		t.Fatalf("spawned agent = %+v", agent)
 	}
 }
 
 func TestReviewRoleAllowsReadOnlyProcesses(t *testing.T) {
-	role, err := subagent.DefaultRoleCatalog().Resolve(subagent.RoleReview)
+	role, err := DefaultRoleCatalog().Resolve(RoleReview)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -113,19 +112,19 @@ func TestReviewRoleAllowsReadOnlyProcesses(t *testing.T) {
 
 func TestAgentControlPropagatesChildTraceIntoTurn(t *testing.T) {
 	runtime := &recordingRuntime{}
-	manager, err := subagent.Open(subagent.Options{
+	manager, err := Open(Options{
 		Root: t.TempDir(), Gate: &fakeGate{}, Runtime: runtime,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	policy, err := subagent.NewDelegationPolicy(subagent.DelegationExplicit)
+	policy, err := NewDelegationPolicy(DelegationExplicit)
 	if err != nil {
 		t.Fatal(err)
 	}
-	control, err := subagent.NewAgentControl(
+	control, err := NewAgentControl(
 		manager,
-		subagent.DefaultRoleCatalog(),
+		DefaultRoleCatalog(),
 		policy,
 	)
 	if err != nil {
@@ -136,10 +135,10 @@ func TestAgentControlPropagatesChildTraceIntoTurn(t *testing.T) {
 		t.Fatal(err)
 	}
 	parent, _ := tracecontext.Current(ctx)
-	agent, err := control.SpawnIntentContext(ctx, subagent.DelegationIntent{
-		TaskName: "trace_runtime", Role: subagent.RoleExplore,
+	agent, err := control.SpawnIntentContext(ctx, DelegationIntent{
+		TaskName: "trace_runtime", Role: RoleExplore,
 		Objective: "trace runtime", ExpectedOutput: "trace evidence",
-		Trigger: subagent.TriggerDeveloper,
+		Trigger: TriggerDeveloper,
 	})
 	if err != nil {
 		t.Fatal(err)

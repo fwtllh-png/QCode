@@ -4,7 +4,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/fwtllh-png/QCode/internal/environment"
+	"github.com/fwtllh-png/QCode/internal/common/environment"
 	"github.com/fwtllh-png/QCode/internal/security/authority"
 	securitymodel "github.com/fwtllh-png/QCode/internal/security/model"
 )

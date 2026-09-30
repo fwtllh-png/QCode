@@ -23,10 +23,13 @@ Go 发现和 GOPROXY 自动认证的设计。各阶段的交付范围见下方�
 
 验证结果：空工作区、Python 项目及带挂起语言工具的 Go 项目均完成 Runtime 初始化，
 探针调用记录为空。显式声明的真实 Go 沙箱编译测试实际执行并通过，没有跳过。
-`environment`、`adapter/envprep`、`platform/envprobe`、`platform/process`、
+当时的 `environment`、`adapter/envprep`、`platform/envprobe`、`platform/process`、
 `runtime/app/wire`、`adapter/tool/guard`、`adapter/tool/shell`、`security/goproxy`
 八个包的 race 检查通过；`make docs-check security-side-effect-check` 与
 `git diff --check` 通过。
+
+原 `platform/envprobe` 已收拢至 `runtime/agent/prompt.DefaultBaseSystem`，直接以
+`runtime.GOOS` 与 `runtime.GOARCH` 生成平台信息；不执行宿主工具的回归测试随之迁入。
 
 P1 仍保留 Git Discoverer、进程层语言变量处理和显式 GOPROXY 服务；这些分别按
 P2、P3 继续清理。本阶段未改变默认 Profile、权限与凭证隔离规则。
@@ -147,7 +150,7 @@ P4 初次验收时，`make docs-check` 因工作区文档删除产生的失效�
 | 原 `wire/sandbox_home.go` 固定装配 Go 发现器 | 任意工作区都探测 Go；`go env` 错误可中断沙箱构造 | 删除默认 Go 发现及其实现 |
 | 原 Go 发现器查询 Go 变量、分配 Go 缓存 | 环境准备器需要知道语言工具的配置规则 | 改由通用声明提供变量与资源 |
 | 同文件扫描 `go.mod`、比较版本、解释 `GOTOOLCHAIN` | 通用准备阶段承担项目构建分析 | 删除该逻辑，项目分析经 Agent 正常工具链完成 |
-| `platform/envprobe` 默认运行 Go、Node、Python 版本命令 | Runtime 构造仍持有语言清单，并执行 PATH 中的工具 | 默认指纹只记录平台与已绑定环境事实 |
+| 原 `platform/envprobe` 默认运行 Go、Node、Python 版本命令 | Runtime 构造仍持有语言清单，并执行 PATH 中的工具 | 默认提示词只记录运行平台事实 |
 | `platform/process/environment.go` 枚举 Go 变量 | 进程层按语言判断环境继承 | 按来源、声明与安全类别处理 |
 | `platform/process/process.go` 为只读命令注入 `PYTHONDONTWRITEBYTECODE` | 只读语义依赖某种解释器的开关 | 由文件系统权限保证只读，变量由调用者显式配置 |
 | `wire/auth_service.go` 默认读取 GOPROXY 和宿主凭证来源 | 空认证配置仍触发语言专属认证 | 移除隐式认证和内置 GOPROXY 绑定 |
@@ -178,15 +181,15 @@ flowchart TD
 
 | 包 | 保留职责 | 调整 |
 | --- | --- | --- |
-| `internal/environment` | 声明、校验、Profile、结构化事实 | 保持纯契约；删除失去调用方的 Discoverer 接口，不加入宿主探测或可变报告仓库 |
+| `internal/common/environment` | 声明、校验、Profile、结构化事实 | 保持纯契约；删除失去调用方的 Discoverer 接口，不加入宿主探测或可变报告仓库 |
 | `internal/adapter/envprep` | 平台基线、声明编译、私有目录物化、沙箱配置生成 | 删除 Go 实现；编译器直接使用 `security/model` 的访问类型 |
 | `internal/runtime/app/wire` | 配置与依赖构造 | 不执行语言查询、不分析清单、不绑定默认语言认证 |
 | `internal/platform/process` | 命令环境应用、进程和 PTY 生命周期 | 不读取语言变量清单，不按解释器改写运行语义 |
-| `internal/platform/envprobe` | 平台与已绑定执行环境的可见信息 | 删除默认语言版本探针，不把宿主登录 Shell 当作实际执行 Shell |
+| `internal/runtime/agent/prompt` | 默认系统提示词与运行平台信息 | 直接使用 Go Runtime 的 OS 与架构，不执行宿主工具或将登录 Shell 当作实际执行 Shell |
 | `internal/security/egress` | 目标授权、代理通道认证、连接治理、撤销与回执 | 不解析模块路径或决定语言代理行为 |
 | `internal/adapter/tool/guard`、`shell` | 工具治理、进程会话与结果 | 不依赖 GOPROXY 类型，不改写语言专属变量 |
 
-环境契约位于 `internal/environment`，供 Config、Guard、Shell 与 Egress 共享，
+环境契约位于 `internal/common/environment`，供 Config、Guard、Shell 与 Egress 共享，
 仅依赖标准库。准备器位于 `internal/adapter/envprep`，依赖契约与安全实现。
 调用方使用 `environment.ResourceRequest` 描述资源，通过 `envprep.Prepare` 准备环境。
 两者保持独立 Go 包，避免契约调用方引入宿主准备与沙箱实现依赖。
@@ -330,7 +333,7 @@ Gate、OS 后端和已有权威组件仍提供结构化事实。只有退出码�
 
 | 阶段 | 主要工作与路径 | 阶段验收 |
 | --- | --- | --- |
-| P1 移除隐式语言探测 | 删除 Go 发现器与默认 Go 装配；`platform/envprobe` 去掉语言版本命令；`wire/auth_service.go` 取消宿主自动认证回退 | 空工作区、非 Go 工作区以及 PATH 上存在失败或挂起的语言工具时，初始化均不触发这些工具；空认证配置不探测或绑定宿主认证 |
+| P1 移除隐式语言探测 | 删除 Go 发现器与默认 Go 装配；默认提示词仅保留 OS 与架构；`wire/auth_service.go` 取消宿主自动认证回退 | 空工作区、非 Go 工作区以及 PATH 上存在失败或挂起的语言工具时，初始化均不触发这些工具；空认证配置不探测或绑定宿主认证 |
 | P2 统一环境来源与声明 | 修改 `adapter/envprep/{prepare,compile,sandbox}.go`、`platform/process/{environment,process}.go`；删除 Go 变量清单、Python 自动注入；Git 集成自行提供声明，清理 Discoverer 接口 | 未知工具用声明完成配置读取与缓存写入；受控执行不回读宿主环境；Profile、声明覆盖和路径拒绝测试通过 |
 | P3 移除语言认证消费链 | 修改 `wire` 状态与构造、`guard/{guard,pipeline_attempt}.go`、`shell/{protocol,environment_receipt}.go`、`security/egress`；独立传递环境事实；删除 `security/goproxy` 和配置入口 | Guard/Shell/Runtime 无 GOPROXY 类型或变量改写；普通出网、拒绝、撤销、PTY 和会话清理行为保持受控 |
 | P4 收口与产品验收 | 清理旧测试开关、样本依赖、配置引用，更新中文文档和受影响的生成文件 | 所有最终验收场景通过，已交付文档同步为目标行为，无未声明的体验回退 |
@@ -356,13 +359,13 @@ P1 中 Go 缓存等测试先改用显式资源声明，保留其沙箱覆盖；�
 | PATH 上的语言工具为记录调用的桩 | 构造 Runtime 后调用记录为空；通过普通工具显式调用时才执行 | `wire/environment_startup_test.go` 中真实 Guard 显式执行 |
 | 未知工具 | 无 Discoverer，仅凭配置文件、变量和私有缓存声明完成运行 | `wire/environment_execution_test.go`：可信配置到真实沙箱 |
 | 来源快照 | 准备后修改宿主环境不改变同一次已绑定执行；显式空来源不恢复宿主变量 | `adapter/envprep/source_test.go`、wire 主/子执行 |
-| 环境覆盖 | 普通变量按规定优先级合并，同层冲突拒绝；HOME、临时区和代理约束不被覆盖 | `security/envpolicy/environment_test.go`、`process/environment_guard_test.go` |
+| 环境覆盖 | 普通变量按规定优先级合并，同层冲突拒绝；HOME、临时区和代理约束不被覆盖 | `security/envpolicy/environment_test.go`、`process/environment_test.go` |
 | 资源边界 | 精确读、私有树写成功；未声明路径、越界路径和符号链接逃逸拒绝 | wire 未声明路径/链接拒绝、`security/sandbox` 攻击验收 |
-| 只读命令 | 不依赖 Python 变量保证只读，真实文件系统写入被后端拒绝 | wire 未知工具写拒绝、`process/private_temp_sandbox_darwin_test.go` |
+| 只读命令 | 不依赖 Python 变量保证只读，真实文件系统写入被后端拒绝 | wire 未知工具写拒绝、`process/process_capability_test.go` |
 | 子 Agent | 使用独立私有 Home，继承权限不超过父级；环境变量不带来额外路径授权 | wire 主/子/兄弟真实执行及缓存内容隔离 |
-| 普通网络 | 已批准目标可用；未批准目标、私有地址、撤销后的访问按现有规则拒绝 | `security/egress` 授权/撤销、`process/managed_egress_attack_test.go` |
+| 普通网络 | 已批准目标可用；未批准目标、私有地址、撤销后的访问按现有规则拒绝 | `security/egress` 授权/撤销、`process/process_capability_test.go` |
 | 空网络声明 | 仅按真实执行权威及已有环境目标解释，不因隐藏认证服务获得联网能力 | `shell/environment_receipt_test.go`、wire 空目标声明执行 |
-| 代理清理 | 无认证的通道使用和非法 origin-form 请求不能成为转发旁路；连接与进程取消后正确回收 | `egress/session_test.go`、`process/session_completion_capability_test.go` |
+| 代理清理 | 无认证的通道使用和非法 origin-form 请求不能成为转发旁路；连接与进程取消后正确回收 | `egress/session_test.go`、`process/session_process_capability_test.go` |
 | 凭证 | 初始化不探测 GOPROXY 或 `.netrc`；长期秘密不进入进程环境、回执或日志 | wire 启动与执行、`config/removed_environment_config_test.go` |
 | 失败事实 | 无关准备事实不分类当前失败；结构化拒绝保留来源，普通程序错误保持真实退出码与正文 | `shell/preparation_facts_test.go`、wire 真实退出码 37 |
 | 执行形态 | 前台、PTY、后台、`write_stdin` 与子 Agent 使用一致的环境和授权规则 | wire 前台/PTY/后台/轮询/子 Agent 集成验收 |
@@ -375,7 +378,7 @@ P1 中 Go 缓存等测试先改用显式资源声明，保留其沙箱覆盖；�
 实施时先运行受影响包测试，再扩大到消费方：
 
 ```bash
-go test ./internal/environment ./internal/adapter/envprep ./internal/config ./internal/platform/envprobe
+go test ./internal/common/environment ./internal/adapter/envprep ./internal/config ./internal/runtime/agent/prompt
 go test ./internal/platform/process ./internal/adapter/tool/guard ./internal/adapter/tool/shell ./internal/runtime/app/wire
 go test -tags=capability ./internal/platform/process
 go test -race ./internal/platform/process ./internal/security/egress ./internal/adapter/tool/guard ./internal/adapter/tool/shell ./internal/runtime/app/wire

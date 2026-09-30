@@ -288,15 +288,6 @@ func ConsumeStream(
 	}
 }
 
-func ProjectionRecoveryID(
-	recovery *protocol.TurnRecoveryContext,
-) string {
-	if recovery == nil {
-		return ""
-	}
-	return string(recovery.Action) + "\x00" + string(recovery.SourceTurnID)
-}
-
 func eventContentBlock(
 	event provider.StreamEvent,
 	fallback provider.ContentType,

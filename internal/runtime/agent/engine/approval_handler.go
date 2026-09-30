@@ -10,7 +10,6 @@ import (
 	agentcontext "github.com/fwtllh-png/QCode/internal/runtime/agent/context"
 	promptcontext "github.com/fwtllh-png/QCode/internal/runtime/agent/prompt"
 	"github.com/fwtllh-png/QCode/internal/runtime/agent/turnkernel"
-	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
 )
 
 func (e *Engine) configureApprovalHandlers() {
@@ -140,53 +139,6 @@ func (e *Engine) takeRecoveredInput(
 	e.scopeMu.Lock()
 	defer e.scopeMu.Unlock()
 	return e.inputRecovery.Take(requestID)
-}
-
-func (e *Engine) ApplyPlan(plan interact.Plan) error {
-	current := e.buildTruthCapsule(e.buildCompactSummary(nil), nil)
-	var resolved []string
-	for _, entity := range current.Entities {
-		if entity.Kind == agentcontext.EntityGoal || entity.Kind == agentcontext.EntityTodo {
-			resolved = append(resolved, entity.ID)
-		}
-	}
-	added := agentcontext.PlanTruthEntities(plan, e.turn)
-	decision := (agentcontext.ContextAdmissionController{
-		Policy: e.options.Context.TruthRetention,
-	}).Decide(current, agentcontext.AdmissionRequest{
-		BaseContextRevision:  e.sessionRevision,
-		RouteCompatibility:   current.CompatibilityHash,
-		AddedMandatory:       added,
-		ResolvedMandatoryIDs: resolved,
-	})
-	if !decision.Allowed {
-		return protocol.NewProblem(
-			protocol.CodeResourceExhausted,
-			"context admission rejected plan update: "+decision.Reason,
-			false,
-			nil,
-		)
-	}
-	e.setPlan(plan)
-	for _, path := range plan.CriticalFiles {
-		e.contextAuthority().ObservePath(
-			e.options.Workspace,
-			agentcontext.SourcePlan,
-			e.turn,
-			path,
-		)
-	}
-	return nil
-}
-
-func (e *Engine) setPlan(plan interact.Plan) {
-	text := interact.FormatPlan(plan)
-	receipt := interact.PlanReceipt(plan)
-	e.planMu.Lock()
-	e.planText = text
-	e.plan = plan
-	e.planReceipt = &receipt
-	e.planMu.Unlock()
 }
 
 func (e *Engine) ContextReceipts() []promptcontext.Receipt {

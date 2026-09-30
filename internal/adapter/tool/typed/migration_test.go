@@ -12,9 +12,9 @@ func TestTierOneToolsUseTypedBoundary(t *testing.T) {
 	files := []string{
 		"completion/completion.go",
 		"lsp/lsp.go",
-		"memory/memory.go",
+		"../memory/tools.go",
 		"revert/revert.go",
-		"skill/discovery.go",
+		"../skill/adapter.go",
 		"toolsearch/tool_search.go",
 	}
 	for _, relative := range files {
@@ -45,7 +45,7 @@ func TestTierTwoToolsUseTypedBoundaryOrDocumentException(t *testing.T) {
 		{path: "shell/protocol.go", typed: true, forbidRawRoot: true},
 		{path: "handle/handle.go", typed: true},
 		{path: "shell/shell.go", typed: true, forbidRawRoot: true},
-		{path: "mcp/mcp.go", typed: true, exception: true},
+		{path: "../mcp/adapter.go", typed: true, exception: true},
 	}
 	for _, test := range cases {
 		t.Run(test.path, func(t *testing.T) {

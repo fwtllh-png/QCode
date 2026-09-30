@@ -4,8 +4,8 @@ import (
 	"github.com/fwtllh-png/QCode/internal/adapter/model"
 	"github.com/fwtllh-png/QCode/internal/adapter/provider"
 	"github.com/fwtllh-png/QCode/internal/adapter/provider/httpclient"
-	providerrouter "github.com/fwtllh-png/QCode/internal/adapter/provider/modelcatalog"
 	"github.com/fwtllh-png/QCode/internal/adapter/provider/openai"
+	providerrouter "github.com/fwtllh-png/QCode/internal/adapter/provider/router"
 	providerwire "github.com/fwtllh-png/QCode/internal/adapter/provider/wire"
 )
 

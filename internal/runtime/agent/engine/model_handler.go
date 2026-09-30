@@ -405,7 +405,7 @@ func (e *Engine) modelStep(
 					WindowNumber:    attribution.WindowNumber,
 					Retry: providerRetries > 0 || rateLimitRetries > 0 ||
 						assembly.TransportCount() > 0,
-					RecoveryID: providerassembly.ProjectionRecoveryID(
+					RecoveryID: projectionRecoveryID(
 						scope.spec.Request.Recovery,
 					),
 				},
@@ -1021,4 +1021,13 @@ func (e *Engine) maxOutputFor(route model.ReadyRoute) uint64 {
 		return min(configured, modelLimit)
 	}
 	return modelLimit
+}
+
+func projectionRecoveryID(
+	recovery *protocol.TurnRecoveryContext,
+) string {
+	if recovery == nil {
+		return ""
+	}
+	return string(recovery.Action) + "\x00" + string(recovery.SourceTurnID)
 }

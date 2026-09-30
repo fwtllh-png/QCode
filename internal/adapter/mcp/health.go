@@ -19,14 +19,29 @@ const (
 )
 
 var (
-	ErrServerUnavailable = errors.New("MCP server unavailable")
-	ErrCircuitOpen       = errors.New("MCP circuit breaker is open")
+	ErrServerUnavailable error = &availabilityError{
+		message: "MCP server unavailable", category: ErrorCategoryUnavailable,
+	}
+	ErrCircuitOpen error = &availabilityError{
+		message: "MCP circuit breaker is open", category: ErrorCategoryCircuitOpen,
+	}
 )
 
 const (
 	ErrorCategoryUnavailable = "mcp_unavailable"
 	ErrorCategoryCircuitOpen = "mcp_circuit_open"
 )
+
+type availabilityError struct {
+	message  string
+	category string
+}
+
+func (e *availabilityError) Error() string { return e.message }
+
+// RecoverableCategory lets the tool result boundary classify MCP availability
+// failures without importing the MCP implementation. It does not authorize a retry.
+func (e *availabilityError) RecoverableCategory() string { return e.category }
 
 func ErrorCategory(err error) string {
 	switch {

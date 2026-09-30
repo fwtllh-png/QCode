@@ -8,8 +8,8 @@ import (
 
 	"github.com/fwtllh-png/QCode/internal/adapter/provider"
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
-	"github.com/fwtllh-png/QCode/internal/observability/diagnostics"
 	"github.com/fwtllh-png/QCode/internal/observability/telemetry"
+	"github.com/fwtllh-png/QCode/internal/observability/verify"
 	agentcontext "github.com/fwtllh-png/QCode/internal/runtime/agent/context"
 )
 
@@ -85,19 +85,19 @@ func TestAnEditAfterAReadIsNotBlind(t *testing.T) {
 func TestDiagnosticsCloseAndOpenTheEvidenceGap(t *testing.T) {
 	engine := evidenceEngine(t)
 	engine.observeChangeEvidence(tool.WorkspaceChange{Path: "a.go", Kind: tool.WorkspaceModified})
-	engine.observeDiagnosticsEvidence([]diagnostics.Receipt{{
+	engine.observeDiagnosticsEvidence([]verify.DiagnosticReceipt{{
 		Path: "a.go", Status: "failed",
-		Diagnostics: []diagnostics.Diagnostic{{Path: "a.go", Message: "broken"}},
+		Diagnostics: []verify.Diagnostic{{Path: "a.go", Message: "broken"}},
 	}})
 	if !hasRisk(engine, agentcontext.RiskOpenDiagnostics) {
 		t.Fatal("a failing check left no risk")
 	}
 	// An unavailable runner checked nothing, so it must not read as clean.
-	engine.observeDiagnosticsEvidence([]diagnostics.Receipt{{Path: "a.go", Status: "unavailable"}})
+	engine.observeDiagnosticsEvidence([]verify.DiagnosticReceipt{{Path: "a.go", Status: "unavailable"}})
 	if !hasRisk(engine, agentcontext.RiskOpenDiagnostics) {
 		t.Fatal("an unavailable runner cleared the risk")
 	}
-	engine.observeDiagnosticsEvidence([]diagnostics.Receipt{{Path: "a.go", Status: "passed"}})
+	engine.observeDiagnosticsEvidence([]verify.DiagnosticReceipt{{Path: "a.go", Status: "passed"}})
 	if hasRisk(engine, agentcontext.RiskOpenDiagnostics) {
 		t.Fatal("a clean check left the risk standing")
 	}

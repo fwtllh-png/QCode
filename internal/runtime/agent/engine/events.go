@@ -10,7 +10,7 @@ import (
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
 	toolguard "github.com/fwtllh-png/QCode/internal/adapter/tool/guard"
 	"github.com/fwtllh-png/QCode/internal/adapter/tool/interact"
-	"github.com/fwtllh-png/QCode/internal/observability/diagnostics"
+	"github.com/fwtllh-png/QCode/internal/observability/verify"
 	agentcontext "github.com/fwtllh-png/QCode/internal/runtime/agent/context"
 	promptcontext "github.com/fwtllh-png/QCode/internal/runtime/agent/prompt"
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
@@ -61,7 +61,7 @@ type Event struct {
 	Approval           *toolguard.ApprovalRequest        `json:"approval,omitempty"`
 	ApprovalResolution *ApprovalResolution               `json:"approval_resolution,omitempty"`
 	Input              *interact.Request                 `json:"input,omitempty"`
-	Diagnostics        []diagnostics.Receipt             `json:"diagnostics,omitempty"`
+	Diagnostics        []verify.DiagnosticReceipt        `json:"diagnostics,omitempty"`
 	FileChanges        []tool.WorkspaceChange            `json:"file_changes,omitempty"`
 	Verification       *VerificationReceipt              `json:"verification,omitempty"`
 	Completion         *tool.CompletionDeclaration       `json:"completion,omitempty"`

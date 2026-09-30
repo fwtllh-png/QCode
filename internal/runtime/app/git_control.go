@@ -10,7 +10,7 @@ import (
 	"strings"
 
 	"github.com/fwtllh-png/QCode/internal/adapter/tool/guard"
-	"github.com/fwtllh-png/QCode/internal/platform/workspacequery"
+	"github.com/fwtllh-png/QCode/internal/runtime/app/workspacequery"
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
 	"github.com/fwtllh-png/QCode/internal/security/policy"
 )

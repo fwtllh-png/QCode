@@ -8,7 +8,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/fwtllh-png/QCode/internal/platform/workspacequery"
+	"github.com/fwtllh-png/QCode/internal/runtime/app/workspacequery"
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
 )
 

@@ -1,4 +1,5 @@
-// Package verify reduces execution and diagnostic evidence into receipts.
+// Package verify collects post-edit diagnostics and reduces execution and
+// diagnostic evidence into verification receipts.
 package verify
 
 import (
@@ -13,7 +14,6 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/fwtllh-png/QCode/internal/observability/diagnostics"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
 )
 
@@ -107,7 +107,7 @@ func (r Receipt) Feedback(limit int) string {
 type Request struct {
 	Scope             Scope
 	Paths             []string
-	Diagnostics       []diagnostics.Receipt
+	Diagnostics       []DiagnosticReceipt
 	WorkspaceRevision uint64
 	MutationRevision  uint64
 	Evidence          []Evidence
@@ -164,7 +164,7 @@ func InputDigest(root string, paths []string) (string, error) {
 // receipt still shows why a pass was noisy. When no receipt covers the changed
 // paths the pass is unavailable rather than passed, so a missing diagnostics
 // runner never reads as a green light.
-func FromDiagnostics(receipts []diagnostics.Receipt, paths []string) Receipt {
+func FromDiagnostics(receipts []DiagnosticReceipt, paths []string) Receipt {
 	receipt := Receipt{Scope: ScopeDiagnostics, Status: StatusPassed}
 	evaluated := 0
 	covered := make(map[string]bool)
@@ -230,14 +230,14 @@ func FromDiagnostics(receipts []diagnostics.Receipt, paths []string) Receipt {
 	return receipt
 }
 
-func diagnosticsCheckName(receipt diagnostics.Receipt) string {
+func diagnosticsCheckName(receipt DiagnosticReceipt) string {
 	if receipt.Runner != "" {
 		return receipt.Runner
 	}
 	return "diagnostics"
 }
 
-func formatDiagnostic(path string, diagnostic diagnostics.Diagnostic) string {
+func formatDiagnostic(path string, diagnostic Diagnostic) string {
 	location := path
 	if diagnostic.Path != "" {
 		location = diagnostic.Path

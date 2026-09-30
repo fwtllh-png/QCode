@@ -9,7 +9,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/fwtllh-png/QCode/internal/persist/sqlkit"
+	"github.com/fwtllh-png/QCode/internal/common/sqlkit"
 	sqlitestate "github.com/fwtllh-png/QCode/internal/persist/state/sqlite"
 )
 

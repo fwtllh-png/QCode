@@ -9,7 +9,7 @@ import (
 	"github.com/fwtllh-png/QCode/internal/adapter/model"
 	"github.com/fwtllh-png/QCode/internal/adapter/provider"
 	providerwire "github.com/fwtllh-png/QCode/internal/adapter/provider/wire"
-	"github.com/fwtllh-png/QCode/internal/observability/tracecontext"
+	"github.com/fwtllh-png/QCode/internal/common/tracecontext"
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
 )
 

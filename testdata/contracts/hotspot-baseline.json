@@ -80,16 +80,14 @@
         "internal/adapter/tool/result",
         "internal/adapter/tool/toolsearch",
         "internal/adapter/tool/turnhistory",
-        "internal/observability/diagnostics",
         "internal/observability/telemetry",
         "internal/observability/trace",
         "internal/observability/verify",
         "internal/persist/workspacejournal",
-        "internal/platform/tokenestimate",
+        "internal/common/tokenestimate",
         "internal/runtime/agent/context",
         "internal/runtime/agent/contextview",
         "internal/runtime/agent/prompt",
-        "internal/runtime/agent/repository",
         "internal/runtime/agent/turnkernel",
         "internal/runtime/protocol",
         "internal/security/policy"
@@ -166,7 +164,7 @@
         "provenance": "provenance.go"
       },
       "allowed_internal_imports": [
-        "internal/environment",
+        "internal/common/environment",
         "internal/runtime/protocol"
       ],
       "required_test_assets": [
@@ -238,7 +236,7 @@
         "problem_and_error_normalization": "problem.go"
       },
       "allowed_internal_imports": [
-        "internal/runtime/fault"
+        "internal/common/fault"
       ],
       "required_test_assets": [
         "internal/runtime/protocol/message_test.go",

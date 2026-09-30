@@ -1,32 +1,30 @@
-package subagent_test
+package subagent
 
 import (
 	"testing"
-
-	"github.com/fwtllh-png/QCode/internal/orchestration/subagent"
 )
 
 func TestCanonicalAgentPathsAreReadableNestedAndUnique(t *testing.T) {
-	control, err := subagent.OpenControl(subagent.Options{
-		Root: t.TempDir(), Gate: &fakeGate{}, Budget: subagent.Budget{MaxDepth: 3, MaxParallel: 4},
-	}, subagent.DelegationExplicit)
+	control, err := OpenControl(Options{
+		Root: t.TempDir(), Gate: &fakeGate{}, Budget: Budget{MaxDepth: 3, MaxParallel: 4},
+	}, DelegationExplicit)
 	if err != nil {
 		t.Fatal(err)
 	}
 	parent, err := control.SpawnSystem(
-		"Plan Runtime", "", subagent.RolePlan, "plan", "plan",
+		"Plan Runtime", "", RolePlan, "plan", "plan",
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
 	child, err := control.SpawnSystem(
-		"Inspect Store", parent.ID, subagent.RoleExplore, "inspect", "report",
+		"Inspect Store", parent.ID, RoleExplore, "inspect", "report",
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
 	sibling, err := control.SpawnSystem(
-		"Inspect Store", parent.ID, subagent.RoleReview, "inspect", "report",
+		"Inspect Store", parent.ID, RoleReview, "inspect", "report",
 	)
 	if err != nil {
 		t.Fatal(err)

@@ -5,8 +5,6 @@ import (
 	"path/filepath"
 	"slices"
 	"testing"
-
-	"github.com/fwtllh-png/QCode/internal/observability/diagnostics"
 )
 
 func TestCommandReceiptKeepsDistinctCoverageForTheSameCommand(t *testing.T) {
@@ -79,7 +77,7 @@ func TestVerificationDoesNotSilentlyDropInvalidPaths(t *testing.T) {
 }
 
 func TestDiagnosticsRequireEveryChangedPath(t *testing.T) {
-	receipt := FromDiagnostics([]diagnostics.Receipt{
+	receipt := FromDiagnostics([]DiagnosticReceipt{
 		{Path: "a.go", Status: "completed"},
 		{Path: "b.go", Status: "unavailable"},
 		{Path: "c.go", Status: "unknown"},

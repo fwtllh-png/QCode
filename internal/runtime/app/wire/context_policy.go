@@ -7,10 +7,10 @@ import (
 
 	memorystore "github.com/fwtllh-png/QCode/internal/adapter/memory"
 	"github.com/fwtllh-png/QCode/internal/adapter/model"
+	"github.com/fwtllh-png/QCode/internal/common/tokenestimate"
 	"github.com/fwtllh-png/QCode/internal/config"
 	"github.com/fwtllh-png/QCode/internal/persist/state"
 	turnstate "github.com/fwtllh-png/QCode/internal/persist/state/turnstate"
-	"github.com/fwtllh-png/QCode/internal/platform/tokenestimate"
 	agentcontext "github.com/fwtllh-png/QCode/internal/runtime/agent/context"
 	agentengine "github.com/fwtllh-png/QCode/internal/runtime/agent/engine"
 	promptcontext "github.com/fwtllh-png/QCode/internal/runtime/agent/prompt"

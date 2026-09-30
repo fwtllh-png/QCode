@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -17,8 +18,6 @@ import (
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
 	"github.com/fwtllh-png/QCode/internal/adapter/tool/typed"
 	"github.com/fwtllh-png/QCode/internal/platform/repowalk"
-	agentcontext "github.com/fwtllh-png/QCode/internal/runtime/agent/context"
-	promptcontext "github.com/fwtllh-png/QCode/internal/runtime/agent/prompt"
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
 )
@@ -30,15 +29,6 @@ type Options struct {
 	Vision    VisionClient
 	OnPlan    func(Plan) error
 }
-
-const (
-	StepPending    = agentcontext.StepPending
-	StepInProgress = agentcontext.StepInProgress
-	StepDone       = agentcontext.StepDone
-)
-
-type PlanStep = agentcontext.PlanStep
-type Plan = agentcontext.Plan
 
 type Tools struct {
 	host      *Host
@@ -352,7 +342,7 @@ func (t *Tools) updatePlan(input operationInput, submitted bool) (tool.Result, e
 	if !submitted && plan.Purpose != protocol.PlanPurposeExecution {
 		return tool.Result{}, errors.New("update_plan only accepts execution plans; use submit_plan for deliverables")
 	}
-	next := plan.ContextPlan()
+	next := plan.executionPlan()
 	if !submitted && t.samePlanProgress(next) {
 		return unchangedPlanResult(), nil
 	}
@@ -406,7 +396,7 @@ func (t *Tools) samePlanProgress(plan Plan) bool {
 	current := t.plan
 	t.planMu.Unlock()
 	return len(current.Steps) > 0 &&
-		current.ProgressSignature() == plan.ProgressSignature()
+		slices.Equal(current.Steps, plan.Steps)
 }
 
 const requiredActionFinishOrDeclareIncomplete = "finish_open_plan_steps_or_declare_incomplete"
@@ -641,77 +631,4 @@ func (t *Tools) Plan() (Plan, bool) {
 		return Plan{}, false
 	}
 	return t.plan, true
-}
-
-// FormatPlan renders a plan partition for WorldState projection.
-func FormatPlan(plan Plan) string {
-	var b strings.Builder
-	b.WriteString("<plan")
-	if plan.Title != "" {
-		b.WriteString(` title="`)
-		b.WriteString(plan.Title)
-		b.WriteString(`"`)
-	}
-	b.WriteString(">\n")
-	writePlanField(&b, "objective", plan.Objective)
-	writePlanField(&b, "context_summary", plan.ContextSummary)
-	writePlanList(&b, "sources_used", plan.SourcesUsed)
-	writePlanList(&b, "critical_files", plan.CriticalFiles)
-	writePlanList(&b, "constraints", plan.Constraints)
-	writePlanField(&b, "recommended_approach", plan.RecommendedApproach)
-	writePlanField(&b, "verification_plan", plan.VerificationPlan)
-	writePlanField(&b, "risks_and_unknowns", plan.RisksAndUnknowns)
-	writePlanField(&b, "handoff_packet", plan.HandoffPacket)
-	for index, step := range plan.Steps {
-		fmt.Fprintf(&b, "%d. %s", index+1, step.Title)
-		// A pending step needs no marker: it is the default, and marking every
-		// line would cost bytes to say nothing.
-		if step.Status != "" && step.Status != StepPending {
-			fmt.Fprintf(&b, " [%s]", step.Status)
-		}
-		b.WriteByte('\n')
-	}
-	if plan.Notes != "" {
-		b.WriteString("Notes: ")
-		b.WriteString(plan.Notes)
-		b.WriteByte('\n')
-	}
-	b.WriteString("</plan>")
-	return b.String()
-}
-
-func writePlanField(b *strings.Builder, name, value string) {
-	if strings.TrimSpace(value) == "" {
-		return
-	}
-	b.WriteString(name)
-	b.WriteString(": ")
-	b.WriteString(value)
-	b.WriteByte('\n')
-}
-
-func writePlanList(b *strings.Builder, name string, values []string) {
-	if len(values) == 0 {
-		return
-	}
-	b.WriteString(name)
-	b.WriteString(":\n")
-	for _, value := range values {
-		b.WriteString("- ")
-		b.WriteString(value)
-		b.WriteByte('\n')
-	}
-}
-
-// PlanReceipt builds the audit receipt for an applied plan.
-func PlanReceipt(plan Plan) promptcontext.Receipt {
-	text := FormatPlan(plan)
-	tokens := promptcontext.HeuristicTokenCounter{}.Count(text)
-	digest := sha256.Sum256([]byte(text))
-	return promptcontext.Receipt{
-		Kind: promptcontext.PartitionPlan, SourcePath: "session://plan",
-		OriginalBytes: len(text), RetainedBytes: len(text),
-		OriginalTokens: tokens, RetainedTokens: tokens,
-		Digest: fmt.Sprintf("sha256:%x", digest[:]),
-	}
 }

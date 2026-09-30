@@ -1,6 +1,6 @@
 package protocol
 
-import runtimefault "github.com/fwtllh-png/QCode/internal/runtime/fault"
+import runtimefault "github.com/fwtllh-png/QCode/internal/common/fault"
 
 type FaultOrigin = runtimefault.Origin
 type FaultStage = runtimefault.Stage

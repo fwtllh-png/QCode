@@ -5,19 +5,6 @@ import (
 	"testing"
 )
 
-func testRoute(t *testing.T, providerID, modelID string) ReadyRoute {
-	t.Helper()
-	resolver, err := NewResolver(testCatalog(t))
-	if err != nil {
-		t.Fatal(err)
-	}
-	route, err := resolver.Resolve(RouteRequest{ProviderID: providerID, ModelID: modelID})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return route
-}
-
 func TestASetWithoutSlotsAnswersEveryPurposeWithAct(t *testing.T) {
 	act := testRoute(t, "deepseek-v4-flash", "deepseek-v4-flash-vision-exp")
 
@@ -191,15 +178,30 @@ func TestSlotsAndPurposesKeepAStableOrder(t *testing.T) {
 	}
 }
 
-func TestParsePurposeNamesTheValueItRejected(t *testing.T) {
-	if _, err := ParsePurpose("act"); err != nil {
+func TestAVisionSlotWithoutVisionIsRefusedAtConstruction(t *testing.T) {
+	act := testRoute(t, "deepseek", "deepseek-chat")
+	// deepseek-chat is an ordinary chat model: no vision bit in the catalog.
+	blind := testRoute(t, "deepseek", "deepseek-chat")
+
+	_, err := NewRouteSet(act, map[Purpose]ReadyRoute{PurposeVision: blind}, false)
+	if err == nil || !strings.Contains(err.Error(), "vision") {
+		t.Fatalf("NewRouteSet() error = %v, want a vision capability refusal", err)
+	}
+}
+
+func TestFallingBackToABlindActForVisionIsRefused(t *testing.T) {
+	act := testRoute(t, "deepseek", "deepseek-chat")
+
+	routes, err := NewRouteSet(act, nil, false)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ParsePurpose("plan"); err == nil {
-		t.Fatal("removed plan purpose was accepted")
+	// Summary is ordinary chat, so it still falls back.
+	if _, routeErr := routes.For(PurposeSummary); routeErr != nil {
+		t.Fatalf("For(%q) error = %v", PurposeSummary, routeErr)
 	}
-	_, err := ParsePurpose("planning")
-	if err == nil || !strings.Contains(err.Error(), `"planning"`) {
-		t.Fatalf("ParsePurpose() error = %v, want the rejected value quoted", err)
+	_, err = routes.For(PurposeVision)
+	if err == nil || !strings.Contains(err.Error(), "vision") {
+		t.Fatalf("For(vision) error = %v, want a capability refusal on the act fallback", err)
 	}
 }

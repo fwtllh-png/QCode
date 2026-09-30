@@ -24,7 +24,6 @@ import (
 	"github.com/fwtllh-png/QCode/internal/adapter/model"
 	"github.com/fwtllh-png/QCode/internal/config"
 	"github.com/fwtllh-png/QCode/internal/persist/state"
-	"github.com/fwtllh-png/QCode/internal/platform/ownerlease"
 	apppersistence "github.com/fwtllh-png/QCode/internal/runtime/app/persistence"
 	"github.com/fwtllh-png/QCode/internal/runtime/app/wire"
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
@@ -244,17 +243,17 @@ func runWeb(
 		workspaceManager, configErr = newWorkspaceRuntimeManager(dataDir, workspaceRoot)
 	}
 
-	var lease *ownerlease.Lease
+	var lease *ownerLease
 	if configErr == nil {
 		info := buildinfo.Current()
-		leasePath := ownerlease.Path(dataDir, webSupervisorScope)
-		ownerMetadata := ownerlease.Metadata{
+		leasePath := ownerLeasePath(dataDir, webSupervisorScope)
+		ownerMetadata := ownerLeaseMetadata{
 			OwnerKind: "web",
 			Build:     webOwnerBuild(info),
 		}
-		lease, err = ownerlease.Acquire(leasePath, ownerMetadata)
+		lease, err = acquireOwnerLease(leasePath, ownerMetadata)
 		if err != nil {
-			var held *ownerlease.HeldError
+			var held *ownerLeaseHeldError
 			if errors.As(err, &held) && held.Metadata.PublicURL != "" {
 				if status, probeErr := probeWebStatus(
 					ctx,
@@ -453,7 +452,7 @@ func runWeb(
 	}()
 	_, _ = fmt.Fprintf(stdout, "QCode Web Listening: %s\n", publicURL)
 	if lease != nil {
-		metadata := ownerlease.Metadata{
+		metadata := ownerLeaseMetadata{
 			OwnerKind:       "web",
 			Build:           webOwnerBuild(buildinfo.Current()),
 			PublicURL:       publicURL,

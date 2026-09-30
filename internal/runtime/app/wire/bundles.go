@@ -18,8 +18,8 @@ import (
 	sqlitestate "github.com/fwtllh-png/QCode/internal/persist/state/sqlite"
 	"github.com/fwtllh-png/QCode/internal/persist/workspacejournal"
 	"github.com/fwtllh-png/QCode/internal/platform/process"
-	"github.com/fwtllh-png/QCode/internal/platform/workspacequery"
 	"github.com/fwtllh-png/QCode/internal/runtime/app"
+	"github.com/fwtllh-png/QCode/internal/runtime/app/workspacequery"
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
 	securitypolicy "github.com/fwtllh-png/QCode/internal/security/policy"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
@@ -44,7 +44,7 @@ type platformBundle struct {
 
 type capabilityBundle struct {
 	mcpPool    *mcpruntime.Pool
-	mcpPrewarm *MCPPrewarm
+	mcpPrewarm *mcpruntime.Prewarm
 	memory     *memory.Store
 }
 

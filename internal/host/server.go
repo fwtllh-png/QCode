@@ -29,8 +29,8 @@ import (
 	usagestate "github.com/fwtllh-png/QCode/internal/observability/usage"
 	"github.com/fwtllh-png/QCode/internal/orchestration/subagent"
 	"github.com/fwtllh-png/QCode/internal/persist/repoindex"
-	"github.com/fwtllh-png/QCode/internal/platform/workspacequery"
 	"github.com/fwtllh-png/QCode/internal/runtime/app"
+	"github.com/fwtllh-png/QCode/internal/runtime/app/workspacequery"
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
 	"github.com/fwtllh-png/QCode/internal/security/credential"
 )

@@ -6,7 +6,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/fwtllh-png/QCode/internal/observability/diagnostics"
+	"github.com/fwtllh-png/QCode/internal/observability/verify"
 )
 
 func TestDiagnosticCommandReadRootsIncludeScriptAndInterpreterTrees(t *testing.T) {
@@ -35,7 +35,7 @@ func TestDiagnosticCommandReadRootsIncludeScriptAndInterpreterTrees(t *testing.T
 	}
 	t.Setenv("PATH", commandDir+string(os.PathListSeparator)+nodeBin)
 
-	roots := diagnosticCommandReadRoots(map[string]diagnostics.Command{
+	roots := diagnosticCommandReadRoots(map[string]verify.DiagnosticCommand{
 		".md": {Name: "fixture-lint", Args: []string{"{path}"}},
 	})
 	canonicalPackage, err := filepath.EvalSymlinks(commandPackage)

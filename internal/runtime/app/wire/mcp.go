@@ -54,7 +54,7 @@ func RegisterMCPConfig(
 	registry *tool.Registry,
 	config mcpruntime.Config,
 	runtimeAuthority *mcpruntime.RuntimeAuthority,
-) (*mcpruntime.Pool, *MCPPrewarm, error) {
+) (*mcpruntime.Pool, *mcpruntime.Prewarm, error) {
 	config = mcpruntime.CloneConfig(config)
 	if err := config.Validate(); err != nil {
 		return nil, nil, err
@@ -64,7 +64,7 @@ func RegisterMCPConfig(
 	}
 	factory := mcpruntime.NewAuthorizedTransportFactory(runtimeAuthority)
 	pool := mcpruntime.NewPool(factory)
-	prewarm := NewMCPPrewarmConfig(pool, config)
+	prewarm := mcpruntime.NewPrewarm(pool, config)
 	prewarm.SetRegistry(registry)
 	prewarm.RequestRefresh()
 	return pool, prewarm, nil

@@ -489,7 +489,8 @@ cwd 与资源之外增加 Assessment 的 Effect 与 Facets 摘要：argv 扩展�
   按实际能力报告。Process Owner 继续验证 Prepared 的控制和代理端口。
 - `NetworkLoopbackAny` 如实表达任意本机端口；Profile Schema=5、Operation Schema=3。
   不做预发布兼容迁移。Darwin shell 临时文件例外移至带来源的
-  `platform/oscontract` 数据表，编译器不再识别具体 shell 名。
+  数据表（现位于 `internal/security/sandbox/executable_contract.go`），编译器不再识别
+  具体 shell 名。
 - Egress Gate 保持 `NewStaticGate`、`NewCallScopedGate`、`NewBrowserGate` 固定模式；
   Backend 使用显式组合，无 `InnerBackend` 解包。通用化 P3 删除的认证服务不恢复。
 - Phase 5 的架构清理结果见下一阶段实施记录。
@@ -609,7 +610,7 @@ Authority、各 Broker、Sandbox 和 Egress 按授权与执行职责保留边界
 
 - **Effect 决策表**：表驱动，每行一个用例，外加"未命中任何行"的拒绝用例。
 - **决策分层**：每层的 Allow/Deny/Malformed，及相邻层冲突时的优先级。
-- **攻击测试**（沿用 `managed_egress_attack_test.go` 模式）：
+- **攻击测试**（沿用 `process/process_capability_test.go` 模式）：
   loopback 访问兄弟 Session 与 Workspace 通道；NAT64/6to4/`0.0.0.0/8`/IPv4 映射地址；
   DNS 重绑定到内嵌 IPv4 形式；Constitution glob 与 `AccessTree` 写入；
   argv 前缀扩展引入网络或写入后不再命中 Grant。

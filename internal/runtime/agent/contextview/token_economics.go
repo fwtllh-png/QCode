@@ -2,7 +2,7 @@ package contextview
 
 import (
 	"github.com/fwtllh-png/QCode/internal/adapter/provider"
-	"github.com/fwtllh-png/QCode/internal/platform/tokenestimate"
+	"github.com/fwtllh-png/QCode/internal/common/tokenestimate"
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
 )
 

@@ -14,6 +14,7 @@ import (
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
 	filetool "github.com/fwtllh-png/QCode/internal/adapter/tool/file"
 	"github.com/fwtllh-png/QCode/internal/adapter/tool/handle"
+	"github.com/fwtllh-png/QCode/internal/common/contextsnapshot"
 	"github.com/fwtllh-png/QCode/internal/observability/verify"
 	"github.com/fwtllh-png/QCode/internal/orchestration/subagent"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
@@ -226,7 +227,7 @@ func (t *Tool) spawn(ctx context.Context, input operationInput) (tool.Result, er
 		},
 		ContextMode: subagent.ContextMode(strings.TrimSpace(input.ContextMode)),
 		LastTurns:   input.ContextTurns,
-		Source: subagent.ContextSourceRef{
+		Source: contextsnapshot.SourceRef{
 			ThreadID: identity.ThreadID,
 			TurnID:   identity.TurnID,
 		},

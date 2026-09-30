@@ -14,6 +14,7 @@ import (
 	agenttool "github.com/fwtllh-png/QCode/internal/adapter/tool/agent"
 	toolguard "github.com/fwtllh-png/QCode/internal/adapter/tool/guard"
 	"github.com/fwtllh-png/QCode/internal/adapter/tool/handle"
+	"github.com/fwtllh-png/QCode/internal/common/contextsnapshot"
 	"github.com/fwtllh-png/QCode/internal/orchestration/subagent"
 	"github.com/fwtllh-png/QCode/internal/security/policy"
 	"github.com/fwtllh-png/QCode/testutil/tooltest"
@@ -49,13 +50,13 @@ func (r *dualRuntime) CancelTurn(_ context.Context, agentID, turnID string) erro
 }
 
 type staticContextSource struct {
-	snapshot subagent.ParentContextSnapshot
+	snapshot contextsnapshot.Snapshot
 }
 
 func (s staticContextSource) Snapshot(
 	context.Context,
-	subagent.ContextSourceRef,
-) (subagent.ParentContextSnapshot, error) {
+	contextsnapshot.SourceRef,
+) (contextsnapshot.Snapshot, error) {
 	return s.snapshot, nil
 }
 
@@ -319,7 +320,7 @@ func TestAgentTaskCapsuleUsesRuntimeParentSnapshot(t *testing.T) {
 		t.Fatal(err)
 	}
 	control.BindContextSource(staticContextSource{
-		snapshot: subagent.ParentContextSnapshot{
+		snapshot: contextsnapshot.Snapshot{
 			SourceThread: "thread-parent", SourceTurn: "turn-parent",
 			ParentGoal:     "PARENT_MARKER_ALPHA decisions=keep-plan",
 			UserRequest:    "review the runtime api_key=do-not-leak",
@@ -472,7 +473,7 @@ func TestNestedAgentScopeBindsCallerAndRejectsSiblingControl(t *testing.T) {
 		t.Fatal(err)
 	}
 	control.BindContextSource(staticContextSource{
-		snapshot: subagent.ParentContextSnapshot{
+		snapshot: contextsnapshot.Snapshot{
 			SourceThread: "thread-parent", SourceTurn: "turn-parent",
 			ParentGoal: "nested control test",
 		},

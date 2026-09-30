@@ -30,7 +30,7 @@ import (
 	filetool "github.com/fwtllh-png/QCode/internal/adapter/tool/file"
 	"github.com/fwtllh-png/QCode/internal/adapter/tool/interact"
 	webtool "github.com/fwtllh-png/QCode/internal/adapter/tool/web"
-	"github.com/fwtllh-png/QCode/internal/observability/diagnostics"
+	"github.com/fwtllh-png/QCode/internal/observability/verify"
 	"github.com/fwtllh-png/QCode/internal/persist/contentstore"
 	"github.com/fwtllh-png/QCode/internal/persist/workspacejournal"
 	agentcontext "github.com/fwtllh-png/QCode/internal/runtime/agent/context"
@@ -3282,10 +3282,10 @@ func runWorkspaceEditTurn(
 
 type fakeDiagnosticRunner struct{}
 
-func (fakeDiagnosticRunner) Run(_ context.Context, path string) (diagnostics.Receipt, error) {
-	return diagnostics.Receipt{
+func (fakeDiagnosticRunner) Run(_ context.Context, path string) (verify.DiagnosticReceipt, error) {
+	return verify.DiagnosticReceipt{
 		Path: path, Status: "completed", Runner: "fake",
-		Diagnostics: []diagnostics.Diagnostic{{
+		Diagnostics: []verify.Diagnostic{{
 			Path: path, Severity: "warning", Code: "fixture",
 			Message: "fake diagnostic", Source: "fake",
 		}},

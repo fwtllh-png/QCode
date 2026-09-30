@@ -9,8 +9,7 @@ import (
 	filetool "github.com/fwtllh-png/QCode/internal/adapter/tool/file"
 	toolguard "github.com/fwtllh-png/QCode/internal/adapter/tool/guard"
 	webtool "github.com/fwtllh-png/QCode/internal/adapter/tool/web"
-	"github.com/fwtllh-png/QCode/internal/environment"
-	"github.com/fwtllh-png/QCode/internal/observability/diagnostics"
+	"github.com/fwtllh-png/QCode/internal/common/environment"
 	"github.com/fwtllh-png/QCode/internal/observability/verify"
 	"github.com/fwtllh-png/QCode/internal/orchestration/childrun"
 	"github.com/fwtllh-png/QCode/internal/orchestration/subagent"
@@ -61,7 +60,7 @@ type capabilityBuildState struct {
 	skillCatalog *skill.Catalog
 	memory       *memory.Store
 	mcpPool      *mcpruntime.Pool
-	mcpPrewarm   *MCPPrewarm
+	mcpPrewarm   *mcpruntime.Prewarm
 }
 
 type securityBuildState struct {
@@ -70,7 +69,7 @@ type securityBuildState struct {
 	constitution securitypolicy.ConstitutionBundle
 	permissions  *securitypolicy.PermissionsStore
 	guardFactory guardFactory
-	diagnostics  diagnostics.Runner
+	diagnostics  verify.DiagnosticRunner
 	verify       verify.Runner
 	guard        *toolguard.Guard
 }

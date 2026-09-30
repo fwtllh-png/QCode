@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fwtllh-png/QCode/internal/platform/symbols"
+	"github.com/fwtllh-png/QCode/internal/common/symbols"
 )
 
 // The resident tests drive the fixture process the checker tests use: its
@@ -209,13 +209,19 @@ func TestResidentSerializesQueriesOnOneSession(t *testing.T) {
 	// serialize. Fire a burst and require every answer complete.
 	var group sync.WaitGroup
 	results := make([]error, 8)
-	for index := 0; index < 8; index++ {
+	start := make(chan struct{})
+	for index := range results {
 		group.Add(1)
 		go func(slot int) {
 			defer group.Done()
-			_, results[slot] = resident.Definition(t.Context(), query)
+			<-start
+			// Distinct positions keep every concurrent call on the exchange path.
+			current := query
+			current.Character += slot
+			_, results[slot] = resident.Definition(t.Context(), current)
 		}(index)
 	}
+	close(start)
 	group.Wait()
 	for slot, err := range results {
 		if err != nil {

@@ -22,8 +22,8 @@ import (
 	"github.com/fwtllh-png/QCode/internal/adapter/provider"
 	providerratelimit "github.com/fwtllh-png/QCode/internal/adapter/provider/ratelimit"
 	providerwire "github.com/fwtllh-png/QCode/internal/adapter/provider/wire"
+	"github.com/fwtllh-png/QCode/internal/common/tracecontext"
 	"github.com/fwtllh-png/QCode/internal/observability/telemetry"
-	"github.com/fwtllh-png/QCode/internal/observability/tracecontext"
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
 	"github.com/fwtllh-png/QCode/internal/security/egress"
 )

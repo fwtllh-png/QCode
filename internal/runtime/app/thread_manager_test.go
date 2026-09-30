@@ -12,6 +12,7 @@ import (
 	"github.com/fwtllh-png/QCode/internal/adapter/provider"
 	providerfixture "github.com/fwtllh-png/QCode/internal/adapter/provider/fixture"
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
+	"github.com/fwtllh-png/QCode/internal/common/contextsnapshot"
 	"github.com/fwtllh-png/QCode/internal/observability/telemetry"
 	agentengine "github.com/fwtllh-png/QCode/internal/runtime/agent/engine"
 	"github.com/fwtllh-png/QCode/internal/runtime/agent/turnkernel"
@@ -178,8 +179,30 @@ func TestThreadManagerBindsToolIdentityAndContextLookup(t *testing.T) {
 		resolved != engine {
 		t.Fatalf("context engine = %p, err = %v", resolved, err)
 	}
-	if _, err := manager.ContextEngine("thread-missing"); err == nil {
-		t.Fatal("missing context lookup created an engine")
+	snapshot, err := manager.Snapshot(t.Context(), contextsnapshot.SourceRef{
+		ThreadID: "thread-parent", TurnID: "turn-parent",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.SourceThread != "thread-parent" || snapshot.SourceTurn != "turn-parent" ||
+		snapshot.UserRequest != "capture identity" || snapshot.ParentGoal != "capture identity" ||
+		len(snapshot.Messages) == 0 {
+		t.Fatalf("parent snapshot = %+v", snapshot)
+	}
+	for _, test := range []struct {
+		ref       contextsnapshot.SourceRef
+		wantError string
+	}{
+		{contextsnapshot.SourceRef{ThreadID: "thread-missing", TurnID: "turn-parent"}, "has no context engine"},
+		{contextsnapshot.SourceRef{TurnID: "turn-parent"}, "thread id is required"},
+		{contextsnapshot.SourceRef{ThreadID: "thread-parent"}, "parent turn id is required"},
+		{contextsnapshot.SourceRef{ThreadID: "thread-parent", TurnID: "turn-previous"}, "parent turn changed"},
+	} {
+		if _, err := manager.Snapshot(t.Context(), test.ref); err == nil ||
+			!strings.Contains(err.Error(), test.wantError) {
+			t.Fatalf("snapshot(%+v) error = %v, want %q", test.ref, err, test.wantError)
+		}
 	}
 	if created != 1 {
 		t.Fatalf("engine factory calls = %d, want 1", created)

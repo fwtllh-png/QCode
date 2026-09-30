@@ -97,6 +97,7 @@ Agent 固定使用 `act`，按需规划并执行用户请求，不提供模式�
 
 ```text
 cmd/qcode/          进程入口
+internal/common/         按职责组织的公共契约与基础工具
 internal/host/           Web Host 与 Runtime Transport
 internal/runtime/        Operation/Event Runtime 与 Agent Engine
 internal/adapter/        Provider、Model、Tool、MCP、Skill

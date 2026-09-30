@@ -4,59 +4,57 @@ import (
 	"context"
 	"strings"
 	"testing"
-
-	"github.com/fwtllh-png/QCode/internal/observability/diagnostics"
 )
 
 func TestFromDiagnosticsGradesBySeverity(t *testing.T) {
-	errorReceipt := diagnostics.Receipt{
+	errorReceipt := DiagnosticReceipt{
 		Path: "a.go", Status: "completed", Runner: "gopls",
-		Diagnostics: []diagnostics.Diagnostic{{
+		Diagnostics: []Diagnostic{{
 			Path: "a.go", Severity: "error", Message: "undefined: foo",
-			Range: diagnostics.Range{Start: diagnostics.Position{Line: 4, Character: 2}},
+			Range: DiagnosticRange{Start: DiagnosticPosition{Line: 4, Character: 2}},
 		}},
 	}
-	warningReceipt := diagnostics.Receipt{
+	warningReceipt := DiagnosticReceipt{
 		Path: "b.go", Status: "completed", Runner: "gopls",
-		Diagnostics: []diagnostics.Diagnostic{{
+		Diagnostics: []Diagnostic{{
 			Path: "b.go", Severity: "warning", Message: "shadowed variable",
 		}},
 	}
 
 	tests := map[string]struct {
-		receipts     []diagnostics.Receipt
+		receipts     []DiagnosticReceipt
 		paths        []string
 		wantStatus   string
 		wantErrors   int
 		wantWarnings int
 	}{
 		"error fails": {
-			receipts: []diagnostics.Receipt{errorReceipt},
+			receipts: []DiagnosticReceipt{errorReceipt},
 			paths:    []string{"a.go"}, wantStatus: StatusFailed, wantErrors: 1,
 		},
 		"warning passes": {
-			receipts: []diagnostics.Receipt{warningReceipt},
+			receipts: []DiagnosticReceipt{warningReceipt},
 			paths:    []string{"b.go"}, wantStatus: StatusPassed, wantWarnings: 1,
 		},
 		"runner failure fails": {
-			receipts: []diagnostics.Receipt{{
+			receipts: []DiagnosticReceipt{{
 				Path: "a.go", Status: "failed", Runner: "gopls", Message: "gopls exited with code 2",
 			}},
 			paths: []string{"a.go"}, wantStatus: StatusFailed, wantErrors: 1,
 		},
 		"unavailable is not a green light": {
-			receipts: []diagnostics.Receipt{{Path: "a.go", Status: "unavailable"}},
+			receipts: []DiagnosticReceipt{{Path: "a.go", Status: "unavailable"}},
 			paths:    []string{"a.go"}, wantStatus: StatusUnavailable,
 		},
 		"no receipts at all": {paths: []string{"a.go"}, wantStatus: StatusUnavailable},
 		"unrelated path is ignored": {
-			receipts: []diagnostics.Receipt{errorReceipt},
+			receipts: []DiagnosticReceipt{errorReceipt},
 			paths:    []string{"other.go"}, wantStatus: StatusUnavailable,
 		},
 		"absolute receipt path matches relative change": {
-			receipts: []diagnostics.Receipt{{
+			receipts: []DiagnosticReceipt{{
 				Path: "/workspace/pkg/a.go", Status: "completed", Runner: "gopls",
-				Diagnostics: []diagnostics.Diagnostic{{Severity: "error", Message: "boom"}},
+				Diagnostics: []Diagnostic{{Severity: "error", Message: "boom"}},
 			}},
 			paths: []string{"pkg/a.go"}, wantStatus: StatusFailed, wantErrors: 1,
 		},
@@ -76,11 +74,11 @@ func TestFromDiagnosticsGradesBySeverity(t *testing.T) {
 }
 
 func TestFromDiagnosticsFeedbackLocatesTheError(t *testing.T) {
-	receipt := FromDiagnostics([]diagnostics.Receipt{{
+	receipt := FromDiagnostics([]DiagnosticReceipt{{
 		Path: "a.go", Status: "completed", Runner: "gopls",
-		Diagnostics: []diagnostics.Diagnostic{{
+		Diagnostics: []Diagnostic{{
 			Path: "a.go", Severity: "error", Message: "undefined: foo",
-			Range: diagnostics.Range{Start: diagnostics.Position{Line: 4, Character: 2}},
+			Range: DiagnosticRange{Start: DiagnosticPosition{Line: 4, Character: 2}},
 		}},
 	}}, nil)
 
@@ -106,9 +104,9 @@ func TestDiagnosticsScopeReadsTheRequestReceipts(t *testing.T) {
 	runner := &ReceiptRunner{}
 	receipt, err := runner.Verify(context.Background(), Request{
 		Scope: ScopeDiagnostics, Paths: []string{"a.go"},
-		Diagnostics: []diagnostics.Receipt{{
+		Diagnostics: []DiagnosticReceipt{{
 			Path: "a.go", Status: "completed", Runner: "gopls",
-			Diagnostics: []diagnostics.Diagnostic{{Severity: "error", Message: "boom"}},
+			Diagnostics: []Diagnostic{{Severity: "error", Message: "boom"}},
 		}},
 	})
 	if err != nil {

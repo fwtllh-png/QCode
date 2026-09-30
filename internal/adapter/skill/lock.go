@@ -173,7 +173,7 @@ func validateLockfile(lockfile Lockfile) error {
 		}
 		versions[entry.Name] = entry.Version
 		switch entry.Source {
-		case SourceWorkspace, SourceConfigured, SourceUser, SourceBuiltin:
+		case SourceWorkspace, SourceConfigured, SourceUser:
 		default:
 			return fmt.Errorf("skill lock entry %q source is invalid", entry.Name)
 		}

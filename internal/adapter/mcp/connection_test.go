@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -138,3 +139,147 @@ func TestConnectionDiscoversPaginatedTools(t *testing.T) {
 		t.Fatalf("tools=%+v list calls=%d", tools, transport.listCalls)
 	}
 }
+
+// failingCloseTransport is a transport that fails on Close.
+type failingCloseTransport struct {
+	closed   bool
+	closeErr error
+}
+
+func (t *failingCloseTransport) Request(ctx context.Context, method string, params any, result any) error {
+	return errors.New("not implemented")
+}
+
+func (t *failingCloseTransport) Notify(ctx context.Context, method string, params any) error {
+	return nil
+}
+
+func (t *failingCloseTransport) Close(ctx context.Context) error {
+	t.closed = true
+	return t.closeErr
+}
+
+func (t *failingCloseTransport) StderrTail() string { return "" }
+
+// TestConnectionCloseFailureDoesNotLeakResources verifies that when a connection's
+// Close fails, the transport is still closed and the connection is idempotent.
+// This catches the bug where old connection close failure causes the transport
+// to be leaked.
+func TestConnectionCloseFailureDoesNotLeakResources(t *testing.T) {
+	transport := &failingCloseTransport{
+		closeErr: errors.New("transport close failed"),
+	}
+
+	conn, err := NewConnection("test-server", transport, 30*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Attempt to close the connection — it should return the transport error.
+	err = conn.Close(t.Context())
+	if err == nil {
+		t.Error("expected Close to return an error from the failing transport")
+	}
+
+	// The transport should have been closed (even if it returned an error).
+	if !transport.closed {
+		t.Error("BUG: transport.Close was not called; connection was leaked")
+	}
+
+	// Second close attempt should be idempotent (via sync.Once).
+	// The first error is preserved and returned on subsequent calls.
+	err2 := conn.Close(t.Context())
+	t.Logf("first close error: %v, second close error: %v", err, err2)
+
+	// The transport should only be closed once.
+	transport.closed = false // Reset to verify it's not called again.
+	_ = conn.Close(t.Context())
+	if transport.closed {
+		t.Error("BUG: transport.Close was called more than once (double-close)")
+	}
+}
+
+// FuzzMCPConnectionCloseIsIdempotent verifies that calling Close() on a
+// Connection multiple times (possibly with different contexts) is safe and
+// does not panic, leak, or double-close the transport. This catches the
+// bug where old connection close failure causes the transport to be leaked.
+func FuzzMCPConnectionCloseIsIdempotent(f *testing.F) {
+	f.Add(uint8(1), uint8(0))
+	f.Add(uint8(5), uint8(1))
+	f.Add(uint8(10), uint8(2))
+
+	f.Fuzz(func(t *testing.T, closeCount uint8, failMode uint8) {
+		closeCount = uint8(int(closeCount)%10 + 1)
+		failMode = failMode % 3
+
+		var closeCalls int
+		var mu sync.Mutex
+
+		transport := &fuzzTransport{
+			closeFn: func() error {
+				mu.Lock()
+				closeCalls++
+				count := closeCalls
+				mu.Unlock()
+				switch failMode {
+				case 0:
+					return nil
+				case 1:
+					return errors.New("simulated close failure")
+				default:
+					// First close fails, subsequent succeed.
+					if count == 1 {
+						return errors.New("simulated close failure")
+					}
+					return nil
+				}
+			},
+		}
+
+		conn, err := NewConnection("fuzz-server", transport, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		var wg sync.WaitGroup
+		for i := uint8(0); i < closeCount; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				_ = conn.Close(t.Context())
+			}()
+		}
+		wg.Wait()
+
+		mu.Lock()
+		count := closeCalls
+		mu.Unlock()
+
+		// Transport Close should be called exactly once (sync.Once protection).
+		if count != 1 {
+			t.Errorf("transport.Close called %d times, expected exactly 1", count)
+		}
+	})
+}
+
+// fuzzTransport implements Transport for fuzz testing.
+type fuzzTransport struct {
+	closeFn func() error
+}
+
+func (t *fuzzTransport) Request(ctx context.Context, method string, params any, result any) error {
+	return errors.New("not implemented")
+}
+
+func (t *fuzzTransport) Notify(ctx context.Context, method string, params any) error {
+	return nil
+}
+
+func (t *fuzzTransport) Close(ctx context.Context) error {
+	if t.closeFn != nil {
+		return t.closeFn()
+	}
+	return nil
+}
+
+func (t *fuzzTransport) StderrTail() string { return "" }

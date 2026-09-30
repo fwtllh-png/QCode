@@ -9,7 +9,6 @@ import (
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
 	toolguard "github.com/fwtllh-png/QCode/internal/adapter/tool/guard"
 	"github.com/fwtllh-png/QCode/internal/adapter/tool/interact"
-	"github.com/fwtllh-png/QCode/internal/observability/diagnostics"
 	"github.com/fwtllh-png/QCode/internal/observability/trace"
 	"github.com/fwtllh-png/QCode/internal/observability/verify"
 	agentcontext "github.com/fwtllh-png/QCode/internal/runtime/agent/context"
@@ -55,7 +54,7 @@ type scopeState struct {
 	sampledTools         map[string]bool
 	contextLedger        *agentcontext.MessageLedger
 	mcpProjected         bool
-	diagnostics          []diagnostics.Receipt
+	diagnostics          []verify.DiagnosticReceipt
 	verification         []verify.Evidence
 	pendingVerification  map[string]verify.Evidence
 	rollback             []string

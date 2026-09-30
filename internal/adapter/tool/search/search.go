@@ -16,9 +16,9 @@ import (
 
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
 	"github.com/fwtllh-png/QCode/internal/adapter/tool/typed"
+	"github.com/fwtllh-png/QCode/internal/common/symbols"
 	"github.com/fwtllh-png/QCode/internal/persist/repoindex"
 	"github.com/fwtllh-png/QCode/internal/platform/repowalk"
-	"github.com/fwtllh-png/QCode/internal/platform/symbols"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
 )
 

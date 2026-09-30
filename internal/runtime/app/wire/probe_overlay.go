@@ -6,6 +6,7 @@ import (
 	"reflect"
 
 	"github.com/fwtllh-png/QCode/internal/adapter/model"
+	"github.com/fwtllh-png/QCode/internal/persist/modelcapability"
 	"github.com/fwtllh-png/QCode/internal/persist/state"
 )
 
@@ -21,7 +22,7 @@ func overlayProbeCapabilities(
 	if store == nil || !routes.Ready() {
 		return routes, nil
 	}
-	repo := model.NewCapabilityRepository(store.SQLite().DB())
+	repo := modelcapability.NewRepository(store.SQLite().DB())
 	act, err := overlayRouteProbe(ctx, repo, routes.Act(), trustProbe)
 	if err != nil {
 		return model.RouteSet{}, err
@@ -43,7 +44,7 @@ func overlayProbeCapabilities(
 
 func overlayRouteProbe(
 	ctx context.Context,
-	repo *model.CapabilityRepository,
+	repo *modelcapability.Repository,
 	route model.ReadyRoute,
 	trustProbe bool,
 ) (model.ReadyRoute, error) {

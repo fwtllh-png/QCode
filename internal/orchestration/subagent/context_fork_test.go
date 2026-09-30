@@ -1,39 +1,41 @@
-package subagent_test
+package subagent
 
 import (
 	"context"
 	"encoding/json"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"unicode/utf8"
 
-	"github.com/fwtllh-png/QCode/internal/orchestration/subagent"
-	"github.com/fwtllh-png/QCode/internal/runtime/contextfork"
+	"github.com/fwtllh-png/QCode/internal/common/contextsnapshot"
 )
 
 type contextFixtureSource struct {
-	snapshot subagent.ParentContextSnapshot
+	snapshot contextsnapshot.Snapshot
 }
 
 func (s contextFixtureSource) Snapshot(
 	context.Context,
-	subagent.ContextSourceRef,
-) (subagent.ParentContextSnapshot, error) {
+	contextsnapshot.SourceRef,
+) (contextsnapshot.Snapshot, error) {
 	return s.snapshot, nil
 }
 
 func TestTaskCapsuleRedactsAndExcludesParentTranscript(t *testing.T) {
-	forker := subagent.NewContextForker(subagent.DefaultContextPolicy())
+	forker := NewContextForker(DefaultContextPolicy())
 	forker.BindSource(contextFixtureSource{
-		snapshot: subagent.ParentContextSnapshot{
+		snapshot: contextsnapshot.Snapshot{
 			SourceThread: "thread-parent", SourceTurn: "turn-parent",
 			ParentGoal: "repair auth", UserRequest: "inspect token=secret-value",
 			WorkspaceRules: []string{"authorization: hidden-value"},
-			Messages: []subagent.ContextMessage{{
+			Messages: []contextsnapshot.Message{{
 				Role: "assistant", Turn: 1,
-				Blocks: []subagent.ContextBlock{{
+				Blocks: []contextsnapshot.Block{{
 					Kind: "text", Text: "unrelated transcript",
 				}},
 			}},
@@ -45,7 +47,7 @@ func TestTaskCapsuleRedactsAndExcludesParentTranscript(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fork.Receipt.Mode != subagent.ContextTaskCapsule ||
+	if fork.Receipt.Mode != ContextTaskCapsule ||
 		fork.Receipt.SourceTurn != "turn-parent" {
 		t.Fatalf("receipt = %+v", fork.Receipt)
 	}
@@ -65,16 +67,16 @@ func TestTaskCapsuleRedactsAndExcludesParentTranscript(t *testing.T) {
 }
 
 func TestTaskCapsuleReportsNormalizedAgentBudget(t *testing.T) {
-	request := contextRequest(subagent.ContextFresh)
-	request.Agent.Budget = subagent.AgentBudget{
+	request := contextRequest(ContextFresh)
+	request.Agent.Budget = AgentBudget{
 		MaxSteps: 8, MaxTokens: 40_000, MaxCostUSD: 0.25,
 	}
-	request.Role.DefaultBudget = subagent.Budget{
+	request.Role.DefaultBudget = Budget{
 		MaxSteps: 12, MaxTokens: 200_000, MaxCostUSD: 1,
 		MaxDepth: 2, MaxParallel: 4,
 	}
-	fork, err := subagent.NewContextForker(
-		subagent.DefaultContextPolicy(),
+	fork, err := NewContextForker(
+		DefaultContextPolicy(),
 	).Fork(t.Context(), request)
 	if err != nil {
 		t.Fatal(err)
@@ -88,12 +90,12 @@ func TestTaskCapsuleReportsNormalizedAgentBudget(t *testing.T) {
 }
 
 func TestTaskCapsuleUsesParentRemainingCapacityAndChildBudget(t *testing.T) {
-	forker := subagent.NewContextForker(subagent.DefaultContextPolicy())
-	forker.BindSource(contextFixtureSource{snapshot: subagent.ParentContextSnapshot{
+	forker := NewContextForker(DefaultContextPolicy())
+	forker.BindSource(contextFixtureSource{snapshot: contextsnapshot.Snapshot{
 		SourceThread: "thread-parent", SourceTurn: "turn-parent",
 		AvailableTokens: 600,
 	}})
-	request := contextRequest(subagent.ContextTaskCapsule)
+	request := contextRequest(ContextTaskCapsule)
 	fork, err := forker.Fork(t.Context(), request)
 	if err != nil {
 		t.Fatal(err)
@@ -112,26 +114,26 @@ func TestTaskCapsuleUsesParentRemainingCapacityAndChildBudget(t *testing.T) {
 }
 
 func TestLastNTurnsKeepsOnlyCompleteToolPairs(t *testing.T) {
-	forker := subagent.NewContextForker(subagent.DefaultContextPolicy())
+	forker := NewContextForker(DefaultContextPolicy())
 	forker.BindSource(contextFixtureSource{
-		snapshot: subagent.ParentContextSnapshot{
+		snapshot: contextsnapshot.Snapshot{
 			SourceThread: "thread-parent", SourceTurn: "turn-parent",
-			Messages: []subagent.ContextMessage{
+			Messages: []contextsnapshot.Message{
 				{
 					Role: "assistant", Turn: 1,
-					Blocks: []subagent.ContextBlock{{
+					Blocks: []contextsnapshot.Block{{
 						Kind: "tool_call", CallID: "old-pair", ToolName: "old_read",
 					}},
 				},
 				{
 					Role: "tool", Turn: 1,
-					Blocks: []subagent.ContextBlock{{
+					Blocks: []contextsnapshot.Block{{
 						Kind: "tool_result", CallID: "old-pair", Text: "old body",
 					}},
 				},
 				{
 					Role: "assistant", Turn: 2,
-					Blocks: []subagent.ContextBlock{
+					Blocks: []contextsnapshot.Block{
 						{Kind: "text", Text: "current"},
 						{Kind: "tool_call", CallID: "paired", ToolName: "file_read", Arguments: `{"path":"a.go"}`},
 						{Kind: "tool_call", CallID: "orphan-call", ToolName: "exec_command"},
@@ -139,7 +141,7 @@ func TestLastNTurnsKeepsOnlyCompleteToolPairs(t *testing.T) {
 				},
 				{
 					Role: "tool", Turn: 2,
-					Blocks: []subagent.ContextBlock{
+					Blocks: []contextsnapshot.Block{
 						{Kind: "tool_result", CallID: "paired", Text: "file body"},
 						{Kind: "tool_result", CallID: "orphan-result", Text: "must drop"},
 					},
@@ -147,7 +149,7 @@ func TestLastNTurnsKeepsOnlyCompleteToolPairs(t *testing.T) {
 			},
 		},
 	})
-	request := contextRequest(subagent.ContextLastNTurns)
+	request := contextRequest(ContextLastNTurns)
 	request.LastTurns = 1
 	fork, err := forker.Fork(t.Context(), request)
 	if err != nil {
@@ -165,22 +167,22 @@ func TestLastNTurnsKeepsOnlyCompleteToolPairs(t *testing.T) {
 }
 
 func TestFullContextRequiresAuthorityOrRolePolicy(t *testing.T) {
-	forker := subagent.NewContextForker(subagent.DefaultContextPolicy())
+	forker := NewContextForker(DefaultContextPolicy())
 	forker.BindSource(contextFixtureSource{})
-	request := contextRequest(subagent.ContextFull)
-	for _, trigger := range []subagent.DelegationTrigger{
-		"", subagent.TriggerAdaptive, "unknown",
+	request := contextRequest(ContextFull)
+	for _, trigger := range []DelegationTrigger{
+		"", TriggerAdaptive, "unknown",
 	} {
 		request.Trigger = trigger
 		if _, err := forker.Fork(t.Context(), request); err == nil {
 			t.Fatalf("full context accepted trigger %q without role policy", trigger)
 		}
 	}
-	request.Trigger = subagent.TriggerUser
+	request.Trigger = TriggerUser
 	if _, err := forker.Fork(t.Context(), request); err != nil {
 		t.Fatalf("user-authorized full context: %v", err)
 	}
-	request.Trigger = subagent.TriggerAdaptive
+	request.Trigger = TriggerAdaptive
 	request.Role.FullContext = true
 	if _, err := forker.Fork(t.Context(), request); err != nil {
 		t.Fatalf("role-authorized full context: %v", err)
@@ -188,20 +190,20 @@ func TestFullContextRequiresAuthorityOrRolePolicy(t *testing.T) {
 }
 
 func TestContextBudgetIsDeterministicAndUTF8Safe(t *testing.T) {
-	policy := subagent.DefaultContextPolicy()
+	policy := DefaultContextPolicy()
 	policy.MaxBytes = 1400
 	policy.MaxTokens = 350
-	forker := subagent.NewContextForker(policy)
-	snapshot := subagent.ParentContextSnapshot{
+	forker := NewContextForker(policy)
+	snapshot := contextsnapshot.Snapshot{
 		SourceThread: "thread-parent", SourceTurn: "turn-parent",
 		ParentGoal:  strings.Repeat("目标", 400),
 		UserRequest: strings.Repeat("请求", 400),
 	}
 	for index := 0; index < 20; index++ {
-		snapshot.RelevantFiles = append(snapshot.RelevantFiles, subagent.RelevantFile{
+		snapshot.RelevantFiles = append(snapshot.RelevantFiles, contextsnapshot.RelevantFile{
 			Path: strings.Repeat("路径", 20),
 		})
-		snapshot.Evidence = append(snapshot.Evidence, subagent.EvidenceSummary{
+		snapshot.Evidence = append(snapshot.Evidence, contextsnapshot.Evidence{
 			Summary: strings.Repeat("证据", 40), Handle: "evidence://item",
 		})
 	}
@@ -225,42 +227,42 @@ func TestContextBudgetIsDeterministicAndUTF8Safe(t *testing.T) {
 }
 
 func TestContextModesMatchGolden(t *testing.T) {
-	forker := subagent.NewContextForker(subagent.DefaultContextPolicy())
+	forker := NewContextForker(DefaultContextPolicy())
 	forker.BindSource(contextFixtureSource{
-		snapshot: subagent.ParentContextSnapshot{
+		snapshot: contextsnapshot.Snapshot{
 			SourceThread: "thread-parent", SourceTurn: "turn-parent",
 			ParentGoal: "parent goal", UserRequest: "current request token=secret",
-			RelevantFiles: []subagent.RelevantFile{{
+			RelevantFiles: []contextsnapshot.RelevantFile{{
 				Path:    "internal/runtime/app/runtime.go",
 				Sources: []string{"tool_read"}, Critical: true,
 			}},
-			Evidence: []subagent.EvidenceSummary{{
+			Evidence: []contextsnapshot.Evidence{{
 				Summary: "runtime owns the turn", Handle: "evidence://parent/1",
 			}},
 			WorkspaceRules: []string{"keep hosts thin"},
-			Messages: []subagent.ContextMessage{
+			Messages: []contextsnapshot.Message{
 				{
 					Role: "user", Turn: 1,
-					Blocks: []subagent.ContextBlock{{Kind: "text", Text: "old request"}},
+					Blocks: []contextsnapshot.Block{{Kind: "text", Text: "old request"}},
 				},
 				{
 					Role: "assistant", Turn: 1,
-					Blocks: []subagent.ContextBlock{
+					Blocks: []contextsnapshot.Block{
 						{Kind: "text", Text: "old answer"},
 						{Kind: "tool_call", CallID: "old", ToolName: "read", Arguments: `{"path":"old.go"}`},
 					},
 				},
 				{
 					Role: "tool", Turn: 1,
-					Blocks: []subagent.ContextBlock{{Kind: "tool_result", CallID: "old", Text: "old body"}},
+					Blocks: []contextsnapshot.Block{{Kind: "tool_result", CallID: "old", Text: "old body"}},
 				},
 				{
 					Role: "user", Turn: 2,
-					Blocks: []subagent.ContextBlock{{Kind: "text", Text: "current request"}},
+					Blocks: []contextsnapshot.Block{{Kind: "text", Text: "current request"}},
 				},
 				{
 					Role: "assistant", Turn: 2,
-					Blocks: []subagent.ContextBlock{
+					Blocks: []contextsnapshot.Block{
 						{Kind: "text", Text: "current answer"},
 						{Kind: "tool_call", CallID: "current", ToolName: "search", Arguments: `{"query":"owner"}`},
 						{Kind: "tool_call", CallID: "orphan", ToolName: "read"},
@@ -268,7 +270,7 @@ func TestContextModesMatchGolden(t *testing.T) {
 				},
 				{
 					Role: "tool", Turn: 2,
-					Blocks: []subagent.ContextBlock{
+					Blocks: []contextsnapshot.Block{
 						{Kind: "tool_result", CallID: "current", Text: "current body"},
 						{Kind: "tool_result", CallID: "result-only", Text: "drop me"},
 					},
@@ -277,23 +279,23 @@ func TestContextModesMatchGolden(t *testing.T) {
 		},
 	})
 	type goldenEntry struct {
-		Mode           subagent.ContextMode       `json:"mode"`
-		SourceThread   string                     `json:"source_thread,omitempty"`
-		SourceTurn     string                     `json:"source_turn,omitempty"`
-		ParentGoal     string                     `json:"parent_goal,omitempty"`
-		UserRequest    string                     `json:"user_request,omitempty"`
-		RelevantFiles  []subagent.RelevantFile    `json:"relevant_files,omitempty"`
-		Evidence       []subagent.EvidenceSummary `json:"evidence,omitempty"`
-		WorkspaceRules []string                   `json:"workspace_rules,omitempty"`
-		RecentTurns    []subagent.ContextTurn     `json:"recent_turns,omitempty"`
-		Included       []subagent.ContextItem     `json:"included"`
-		Excluded       []subagent.ContextItem     `json:"excluded"`
+		Mode           ContextMode                    `json:"mode"`
+		SourceThread   string                         `json:"source_thread,omitempty"`
+		SourceTurn     string                         `json:"source_turn,omitempty"`
+		ParentGoal     string                         `json:"parent_goal,omitempty"`
+		UserRequest    string                         `json:"user_request,omitempty"`
+		RelevantFiles  []contextsnapshot.RelevantFile `json:"relevant_files,omitempty"`
+		Evidence       []contextsnapshot.Evidence     `json:"evidence,omitempty"`
+		WorkspaceRules []string                       `json:"workspace_rules,omitempty"`
+		RecentTurns    []ContextTurn                  `json:"recent_turns,omitempty"`
+		Included       []ContextItem                  `json:"included"`
+		Excluded       []ContextItem                  `json:"excluded"`
 	}
-	modes := []subagent.ContextMode{
-		subagent.ContextFresh,
-		subagent.ContextTaskCapsule,
-		subagent.ContextLastNTurns,
-		subagent.ContextFull,
+	modes := []ContextMode{
+		ContextFresh,
+		ContextTaskCapsule,
+		ContextLastNTurns,
+		ContextFull,
 	}
 	entries := make([]goldenEntry, 0, len(modes))
 	for _, mode := range modes {
@@ -344,10 +346,10 @@ func TestTaskContractSurvivesIntactWithinBudget(t *testing.T) {
 	if len(objective) != 5234 {
 		t.Fatalf("objective bytes = %d, want 5234", len(objective))
 	}
-	forker := subagent.NewContextForker(subagent.ContextPolicy{MaxBytes: 400_000})
-	request := contextRequest(subagent.ContextFresh)
+	forker := NewContextForker(ContextPolicy{MaxBytes: 400_000})
+	request := contextRequest(ContextFresh)
 	request.Objective = objective
-	request.Role.DefaultBudget = subagent.Budget{
+	request.Role.DefaultBudget = Budget{
 		MaxTokens: 100_000, MaxDepth: 3, MaxParallel: 2,
 	}
 	fork, err := forker.Fork(t.Context(), request)
@@ -369,8 +371,8 @@ func TestTaskContractSurvivesIntactWithinBudget(t *testing.T) {
 
 func TestTaskContractRejectsWhenItCannotFit(t *testing.T) {
 	objective := strings.Repeat("验收标准与迁移细节描述。", 200) // 7200 bytes
-	forker := subagent.NewContextForker(subagent.ContextPolicy{MaxBytes: 2_000})
-	request := contextRequest(subagent.ContextFresh)
+	forker := NewContextForker(ContextPolicy{MaxBytes: 2_000})
+	request := contextRequest(ContextFresh)
 	request.Objective = objective
 	_, err := forker.Fork(t.Context(), request)
 	if err == nil {
@@ -382,31 +384,31 @@ func TestTaskContractRejectsWhenItCannotFit(t *testing.T) {
 	}
 }
 
-func contextRequest(mode subagent.ContextMode) subagent.ContextRequest {
-	return subagent.ContextRequest{
+func contextRequest(mode ContextMode) ContextRequest {
+	return ContextRequest{
 		Mode: mode,
-		Source: subagent.ContextSourceRef{
+		Source: contextsnapshot.SourceRef{
 			ThreadID: "thread-parent", TurnID: "turn-parent",
 		},
-		Agent: subagent.Agent{
-			TaskName: "inspect_auth", Role: subagent.RoleExplore,
-			Profile: "explore", Stance: subagent.StanceReadOnly,
+		Agent: Agent{
+			TaskName: "inspect_auth", Role: RoleExplore,
+			Profile: "explore", Stance: StanceReadOnly,
 			ExpectedOutput:   "key files and evidence",
 			RoleInstructions: "inspect only",
 		},
-		Role: subagent.RoleSpec{
-			Role: subagent.RoleExplore, Profile: "explore",
-			Stance:       subagent.StanceReadOnly,
+		Role: RoleSpec{
+			Role: RoleExplore, Profile: "explore",
+			Stance:       StanceReadOnly,
 			AllowedTools: []string{"read", "search"},
-			DefaultBudget: subagent.Budget{
+			DefaultBudget: Budget{
 				MaxTokens: 1000, MaxDepth: 3, MaxParallel: 2,
 			},
 		},
-		Objective: "inspect auth", Trigger: subagent.TriggerUser,
+		Objective: "inspect auth", Trigger: TriggerUser,
 	}
 }
 
-func hasExcludedReason(items []subagent.ContextItem, reason string) bool {
+func hasExcludedReason(items []ContextItem, reason string) bool {
 	for _, item := range items {
 		if item.Reason == reason {
 			return true
@@ -416,12 +418,12 @@ func hasExcludedReason(items []subagent.ContextItem, reason string) bool {
 }
 
 func TestTaskCapsuleCarriesRedactedFileExcerpts(t *testing.T) {
-	forker := subagent.NewContextForker(subagent.DefaultContextPolicy())
+	forker := NewContextForker(DefaultContextPolicy())
 	forker.BindSource(contextFixtureSource{
-		snapshot: subagent.ParentContextSnapshot{
+		snapshot: contextsnapshot.Snapshot{
 			SourceThread: "thread-parent", SourceTurn: "turn-parent",
 			ParentGoal: "repair auth",
-			RelevantFiles: []subagent.RelevantFile{{
+			RelevantFiles: []contextsnapshot.RelevantFile{{
 				Path:    "pkg/auth.go",
 				Sources: []string{"read"},
 				Excerpt: "package auth\n// token=secret-value " +
@@ -442,7 +444,7 @@ func TestTaskCapsuleCarriesRedactedFileExcerpts(t *testing.T) {
 	}
 	for _, file := range fork.Capsule.RelevantFiles {
 		if file.Excerpt != "" &&
-			len(file.Excerpt) > contextfork.MaxRelevantFileExcerptBytes {
+			len(file.Excerpt) > contextsnapshot.MaxRelevantFileExcerptBytes {
 			t.Fatalf("excerpt exceeds the delegation bound: %d", len(file.Excerpt))
 		}
 	}
@@ -460,14 +462,14 @@ func TestTaskCapsuleCarriesRedactedFileExcerpts(t *testing.T) {
 }
 
 func TestTaskCapsuleStripsExcerptsBeforeDroppingFiles(t *testing.T) {
-	forker := subagent.NewContextForker(subagent.ContextPolicy{
+	forker := NewContextForker(ContextPolicy{
 		MaxBytes: 1200, MaxFiles: 2,
 	})
 	forker.BindSource(contextFixtureSource{
-		snapshot: subagent.ParentContextSnapshot{
+		snapshot: contextsnapshot.Snapshot{
 			SourceThread: "thread-parent", SourceTurn: "turn-parent",
 			ParentGoal: "repair auth",
-			RelevantFiles: []subagent.RelevantFile{
+			RelevantFiles: []contextsnapshot.RelevantFile{
 				{Path: "pkg/auth.go", Excerpt: strings.Repeat("a ", 600)},
 				{Path: "pkg/token.go", Excerpt: strings.Repeat("b ", 600)},
 			},
@@ -496,5 +498,31 @@ func TestTaskCapsuleStripsExcerptsBeforeDroppingFiles(t *testing.T) {
 	}
 	if len(fork.Prompt) > 1200 {
 		t.Fatalf("prompt exceeds budget: %d", len(fork.Prompt))
+	}
+}
+
+func TestSubagentDoesNotImportRuntimeImplementation(t *testing.T) {
+	files, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const runtimePath = "github.com/fwtllh-png/QCode/internal/runtime/"
+	for _, name := range files {
+		if strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		file, err := parser.ParseFile(token.NewFileSet(), name, nil, parser.ImportsOnly)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, spec := range file.Imports {
+			imported, err := strconv.Unquote(spec.Path.Value)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.HasPrefix(imported, runtimePath) && imported != runtimePath+"protocol" {
+				t.Errorf("%s imports %s: subagent must use shared contracts and injected interfaces", name, imported)
+			}
+		}
 	}
 }

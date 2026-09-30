@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -321,26 +322,47 @@ func TestAssembleInstructionLayers(t *testing.T) {
 	})
 }
 
-func TestDefaultBaseSystemCarriesPersonaWorkspaceAndEnvironment(t *testing.T) {
-	value := DefaultBaseSystem("/work/repo", []string{
-		"os: darwin (arm64)", "git 2.39.5", "", "go 1.26.3",
-	})
+func TestDefaultBaseSystemCarriesPersonaWorkspaceAndPlatform(t *testing.T) {
+	value := DefaultBaseSystem("/work/repo")
+	platform := "os: " + runtime.GOOS + " (" + runtime.GOARCH + ")"
 	for _, want := range []string{
 		"software engineering agent",
 		"approval and sandbox policy",
 		"workspace: /work/repo",
-		"os: darwin (arm64)",
-		"git 2.39.5",
-		"go 1.26.3",
+		platform,
 	} {
 		if !strings.Contains(value, want) {
 			t.Errorf("base system missing %q:\n%s", want, value)
 		}
 	}
-	if !strings.HasSuffix(value, "go 1.26.3") {
-		t.Errorf("blank environment lines leaked or trailing newline: %q", value)
+	if !strings.HasSuffix(value, platform) {
+		t.Errorf("platform missing at end or trailing newline: %q", value)
 	}
-	if DefaultBaseSystem("", nil) == "" {
-		t.Fatal("empty inputs produced an empty persona")
+	if got := DefaultBaseSystem(""); strings.Contains(got, "workspace:") || !strings.HasSuffix(got, platform) {
+		t.Fatalf("base system without workspace = %q", got)
+	}
+}
+
+func TestDefaultBaseSystemDoesNotExecuteHostTools(t *testing.T) {
+	bin := t.TempDir()
+	marker := filepath.Join(t.TempDir(), "probes")
+	t.Setenv("QCODE_TEST_PROBE_MARKER", marker)
+	t.Setenv("PATH", bin)
+	t.Setenv("SHELL", "/host/login-shell")
+	for _, name := range []string{"git", "go", "node", "python3"} {
+		if err := os.WriteFile(filepath.Join(bin, name), []byte(`#!/bin/sh
+printf '%s\n' "$0" >> "$QCODE_TEST_PROBE_MARKER"
+exit 1
+`), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want := "os: " + runtime.GOOS + " (" + runtime.GOARCH + ")"
+	lines := strings.Split(DefaultBaseSystem(""), "\n")
+	if len(lines) != 2 || lines[1] != want {
+		t.Fatalf("base system lines = %q, want persona and %q", lines, want)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("base system executed a host tool: marker stat = %v", err)
 	}
 }

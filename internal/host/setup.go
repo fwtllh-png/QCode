@@ -21,8 +21,8 @@ import (
 	"strings"
 
 	"github.com/fwtllh-png/QCode/internal/adapter/model"
+	"github.com/fwtllh-png/QCode/internal/common/atomicfile"
 	"github.com/fwtllh-png/QCode/internal/config"
-	"github.com/fwtllh-png/QCode/internal/persist/atomicfile"
 	"github.com/fwtllh-png/QCode/internal/runtime/app/wire"
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
 	"github.com/fwtllh-png/QCode/internal/security/credential"

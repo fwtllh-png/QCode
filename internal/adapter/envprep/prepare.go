@@ -10,7 +10,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/fwtllh-png/QCode/internal/environment"
+	"github.com/fwtllh-png/QCode/internal/common/environment"
 	"github.com/fwtllh-png/QCode/internal/security/envpolicy"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
 )

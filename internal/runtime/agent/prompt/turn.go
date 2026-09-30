@@ -7,7 +7,6 @@ import (
 	"github.com/fwtllh-png/QCode/internal/adapter/provider"
 	"github.com/fwtllh-png/QCode/internal/persist/repoindex"
 	agentcontext "github.com/fwtllh-png/QCode/internal/runtime/agent/context"
-	"github.com/fwtllh-png/QCode/internal/runtime/agent/repository"
 )
 
 const (
@@ -24,7 +23,7 @@ const truncationNotice = "(this section was cut to fit its budget; " +
 // TurnOptions uses workspace-relative paths matching the repository index.
 type TurnOptions struct {
 	Turn       uint64
-	RepoMap    repository.Map
+	RepoMap    RepositoryMap
 	WorkingSet []agentcontext.WorkingSetEntry
 	Evidence   agentcontext.EvidenceSnapshot
 	// DirectoryInstructions are the nearest sub-root instruction files for
@@ -348,7 +347,7 @@ func joinSources(sources []agentcontext.WorkingSetSource) string {
 	return strings.Join(names, ", ")
 }
 
-func unavailableRepoMap(built repository.Map) string {
+func unavailableRepoMap(built RepositoryMap) string {
 	reason := strings.TrimSpace(built.Detail)
 	if reason == "" {
 		reason = "no detail was reported"

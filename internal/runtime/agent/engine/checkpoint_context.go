@@ -5,7 +5,6 @@ import (
 	"fmt"
 
 	"github.com/fwtllh-png/QCode/internal/adapter/provider"
-	"github.com/fwtllh-png/QCode/internal/adapter/tool/interact"
 	agentcontext "github.com/fwtllh-png/QCode/internal/runtime/agent/context"
 )
 
@@ -177,7 +176,7 @@ func (e *Engine) applyContextSnapshot(snapshot agentcontext.ContextSnapshot) {
 	if snapshot.Plan != nil {
 		e.setPlan(snapshot.Plan.Clone())
 	} else {
-		e.setPlan(interact.Plan{})
+		e.setPlan(agentcontext.Plan{})
 	}
 	e.checkpointMu.Lock()
 	e.turnCheckpoints = agentcontext.CloneTurnCheckpoints(snapshot.TurnCheckpoints)

@@ -31,21 +31,12 @@ func TestExtensionControlIsIdempotentReplayableAndNonBlocking(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(initial.Extensions) != 5 {
+	if len(initial.Extensions) != 1 {
 		t.Fatalf("initial projection = %+v", initial.Extensions)
 	}
 	review := extensionByName(initial.Extensions, "review")
 	if review == nil || !review.Enabled {
 		t.Fatalf("review projection = %+v", review)
-	}
-	for _, name := range []string{
-		"system-code-review", "system-debugging",
-		"system-refactor", "system-test-expansion",
-	} {
-		item := extensionByName(initial.Extensions, name)
-		if item == nil || item.Source != "builtin" || !item.Enabled {
-			t.Fatalf("builtin projection %q = %+v", name, item)
-		}
 	}
 
 	channel, unsubscribe, err := control.Service.Subscribe(1)

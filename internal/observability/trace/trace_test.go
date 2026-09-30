@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/fwtllh-png/QCode/internal/common/tracecontext"
 	"github.com/fwtllh-png/QCode/internal/observability/trace"
-	"github.com/fwtllh-png/QCode/internal/observability/tracecontext"
 )
 
 // clock is the injected time source. Latency assertions have to be exact, and a

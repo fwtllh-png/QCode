@@ -8,10 +8,10 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/fwtllh-png/QCode/internal/common/durablecodec"
 	"github.com/fwtllh-png/QCode/internal/persist/state/cas"
 	agentcontext "github.com/fwtllh-png/QCode/internal/runtime/agent/context"
 	"github.com/fwtllh-png/QCode/internal/runtime/agent/turnkernel"
-	"github.com/fwtllh-png/QCode/internal/runtime/durablecodec"
 )
 
 // Payload and response assembly are opaque schema fields: their bytes do not

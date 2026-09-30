@@ -7,7 +7,6 @@ import (
 	"github.com/fwtllh-png/QCode/internal/adapter/provider"
 	"github.com/fwtllh-png/QCode/internal/persist/repoindex"
 	agentcontext "github.com/fwtllh-png/QCode/internal/runtime/agent/context"
-	"github.com/fwtllh-png/QCode/internal/runtime/agent/repository"
 )
 
 func receiptFor(t *testing.T, receipts []Receipt, kind string) Receipt {
@@ -21,15 +20,15 @@ func receiptFor(t *testing.T, receipts []Receipt, kind string) Receipt {
 	return Receipt{}
 }
 
-func readyMap() repository.Map {
-	return repository.Map{
+func readyMap() RepositoryMap {
+	return RepositoryMap{
 		Status: repoindex.StatusReady, FileCount: 12, SymbolCount: 40,
 		Build: []string{"go.mod"}, Entries: []string{"cmd/app/main.go"},
-		Directories: []repository.Directory{
+		Directories: []RepositoryDirectory{
 			{Path: "internal/store", Files: 8, Symbols: 30, Languages: []string{"go"}},
 		},
 		OmittedDirectories: 3,
-		Outlines: []repository.Outline{{
+		Outlines: []RepositoryOutline{{
 			Path: "internal/store/store.go",
 			Symbols: []repoindex.Symbol{
 				{Path: "internal/store/store.go", Name: "Store", Kind: "type", Line: 10},
@@ -108,7 +107,7 @@ func TestAssembleTurnRendersBothSectionsAsSystemMessages(t *testing.T) {
 func TestAssembleTurnSaysWhyTheMapIsMissing(t *testing.T) {
 	assembled := AssembleTurn(TurnOptions{
 		Turn:    3,
-		RepoMap: repository.Map{Status: repoindex.StatusDegraded, Detail: "database is locked"},
+		RepoMap: RepositoryMap{Status: repoindex.StatusDegraded, Detail: "database is locked"},
 	})
 	if len(assembled.Messages) != 1 {
 		t.Fatalf("messages = %d, want only the degraded map", len(assembled.Messages))
@@ -124,7 +123,7 @@ func TestAssembleTurnSaysWhyTheMapIsMissing(t *testing.T) {
 
 	mute := AssembleTurn(TurnOptions{
 		Turn:    3,
-		RepoMap: repository.Map{Status: repoindex.StatusDisabled},
+		RepoMap: RepositoryMap{Status: repoindex.StatusDisabled},
 	})
 	if !strings.Contains(mute.Messages[0].Text(), "no detail was reported") {
 		t.Fatalf("text = %q", mute.Messages[0].Text())
@@ -134,7 +133,7 @@ func TestAssembleTurnSaysWhyTheMapIsMissing(t *testing.T) {
 func TestAssembleTurnStaysSilentWithNothingToReport(t *testing.T) {
 	assembled := AssembleTurn(TurnOptions{
 		Turn:    1,
-		RepoMap: repository.Map{Status: repoindex.StatusReady},
+		RepoMap: RepositoryMap{Status: repoindex.StatusReady},
 	})
 	if len(assembled.Messages) != 0 {
 		t.Fatalf("messages = %+v, want none for an empty repository", assembled.Messages)

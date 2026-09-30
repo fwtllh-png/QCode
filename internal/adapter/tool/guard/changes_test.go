@@ -10,7 +10,7 @@ import (
 	"testing"
 
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
-	"github.com/fwtllh-png/QCode/internal/observability/diagnostics"
+	"github.com/fwtllh-png/QCode/internal/observability/verify"
 	"github.com/fwtllh-png/QCode/internal/persist/contentstore"
 	"github.com/fwtllh-png/QCode/internal/persist/workspacejournal"
 	"github.com/fwtllh-png/QCode/internal/security/policy"
@@ -428,9 +428,9 @@ type failingDiagnosticRunner struct {
 	calls atomic.Int32
 }
 
-func (r *failingDiagnosticRunner) Run(context.Context, string) (diagnostics.Receipt, error) {
+func (r *failingDiagnosticRunner) Run(context.Context, string) (verify.DiagnosticReceipt, error) {
 	r.calls.Add(1)
-	return diagnostics.Receipt{}, errors.New("diagnostic process failed")
+	return verify.DiagnosticReceipt{}, errors.New("diagnostic process failed")
 }
 
 func TestGuardKeepsSuccessfulWritesWhenPostEditDiagnosticsFail(t *testing.T) {

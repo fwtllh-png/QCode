@@ -13,7 +13,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/fwtllh-png/QCode/internal/persist/sqlkit"
+	"github.com/fwtllh-png/QCode/internal/common/sqlkit"
 	modernsqlite "modernc.org/sqlite"
 	sqlite3 "modernc.org/sqlite/lib"
 )

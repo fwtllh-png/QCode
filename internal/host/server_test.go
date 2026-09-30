@@ -35,9 +35,9 @@ import (
 	sqlitestate "github.com/fwtllh-png/QCode/internal/persist/state/sqlite"
 	threadstate "github.com/fwtllh-png/QCode/internal/persist/thread"
 	"github.com/fwtllh-png/QCode/internal/platform/repowalk"
-	"github.com/fwtllh-png/QCode/internal/platform/workspacequery"
 	"github.com/fwtllh-png/QCode/internal/runtime/app"
 	apppersistence "github.com/fwtllh-png/QCode/internal/runtime/app/persistence"
+	"github.com/fwtllh-png/QCode/internal/runtime/app/workspacequery"
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
 	"github.com/fwtllh-png/QCode/internal/security/authority"
 	securitymodel "github.com/fwtllh-png/QCode/internal/security/model"
@@ -686,11 +686,11 @@ func TestRoutesSessionsAndEventsByWorkspace(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	queryA, err := workspacequery.New(rootA, webTestBackend{}, nil)
+	queryA, err := workspacequery.New(rootA, webTestBackend{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	queryB, err := workspacequery.New(rootB, webTestBackend{}, nil)
+	queryB, err := workspacequery.New(rootB, webTestBackend{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1095,7 +1095,7 @@ func TestWorkspaceRoutesUseBoundedWorkspaceQuery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	query, err := workspacequery.New(root, webTestBackend{}, vcs)
+	query, err := workspacequery.New(root, webTestBackend{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1608,7 +1608,7 @@ func TestValidateWebEditorContextRequiresEnumeratedResource(t *testing.T) {
 	); err != nil {
 		t.Fatal(err)
 	}
-	query, err := workspacequery.New(root, eventAuthorizationBackend{}, nil)
+	query, err := workspacequery.New(root, eventAuthorizationBackend{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1878,7 +1878,7 @@ func webContextWorkspace(
 			t.Fatal(err)
 		}
 	}
-	query, err := workspacequery.New(root, eventAuthorizationBackend{}, nil)
+	query, err := workspacequery.New(root, eventAuthorizationBackend{})
 	if err != nil {
 		t.Fatal(err)
 	}

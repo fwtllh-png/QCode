@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/fwtllh-png/QCode/internal/persist/sqlkit"
+	"github.com/fwtllh-png/QCode/internal/common/sqlkit"
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
 )
 

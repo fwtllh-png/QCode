@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/fwtllh-png/QCode/internal/observability/diagnostics"
 	"github.com/fwtllh-png/QCode/internal/observability/verify"
 	securitymodel "github.com/fwtllh-png/QCode/internal/security/model"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
@@ -169,15 +168,15 @@ type Outcome struct {
 }
 
 type OutcomeFacts struct {
-	WorkspaceRead    *WorkspaceReadFact     `json:"workspace_read,omitempty"`
-	WorkspaceChanges []WorkspaceChange      `json:"workspace_changes,omitempty"`
-	Diagnostics      []diagnostics.Receipt  `json:"diagnostics,omitempty"`
-	Evidence         []EvidenceHit          `json:"evidence,omitempty"`
-	Verification     *verify.Evidence       `json:"verification,omitempty"`
-	Completion       *CompletionDeclaration `json:"completion,omitempty"`
-	Failure          *FailureFact           `json:"failure,omitempty"`
-	ProcessSession   *ProcessSessionFact    `json:"process_session,omitempty"`
-	ResultHandle     string                 `json:"result_handle,omitempty"`
+	WorkspaceRead    *WorkspaceReadFact         `json:"workspace_read,omitempty"`
+	WorkspaceChanges []WorkspaceChange          `json:"workspace_changes,omitempty"`
+	Diagnostics      []verify.DiagnosticReceipt `json:"diagnostics,omitempty"`
+	Evidence         []EvidenceHit              `json:"evidence,omitempty"`
+	Verification     *verify.Evidence           `json:"verification,omitempty"`
+	Completion       *CompletionDeclaration     `json:"completion,omitempty"`
+	Failure          *FailureFact               `json:"failure,omitempty"`
+	ProcessSession   *ProcessSessionFact        `json:"process_session,omitempty"`
+	ResultHandle     string                     `json:"result_handle,omitempty"`
 }
 
 type WorkspaceReadFact struct {
@@ -248,8 +247,8 @@ func factsFromResult(result Result) *OutcomeFacts {
 		if value, ok := result.Metadata[MetadataEvidence].([]EvidenceHit); ok {
 			facts.Evidence = append([]EvidenceHit(nil), value...)
 		}
-		if value, ok := result.Metadata["diagnostics"].([]diagnostics.Receipt); ok {
-			facts.Diagnostics = append([]diagnostics.Receipt(nil), value...)
+		if value, ok := result.Metadata["diagnostics"].([]verify.DiagnosticReceipt); ok {
+			facts.Diagnostics = append([]verify.DiagnosticReceipt(nil), value...)
 		}
 		if value, ok := result.Metadata[MetadataCompletionDeclaration].(CompletionDeclaration); ok {
 			copy := value
@@ -287,7 +286,7 @@ func CloneOutcome(source *Outcome) *Outcome {
 			source.Facts.WorkspaceChanges...,
 		)
 		facts.Diagnostics = append(
-			[]diagnostics.Receipt(nil),
+			[]verify.DiagnosticReceipt(nil),
 			source.Facts.Diagnostics...,
 		)
 		facts.Evidence = append([]EvidenceHit(nil), source.Facts.Evidence...)

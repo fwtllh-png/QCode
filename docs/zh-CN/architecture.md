@@ -32,20 +32,20 @@ Web
 | 层 | 路径 | 职责 |
 | --- | --- | --- |
 | 入口 | `cmd/qcode` | 进程上下文和 Web 启动入口 |
+| Common | `internal/common` | 跨层共享的契约、纯计算与基础 I/O 工具，按职责保留子包 |
 | Host | `internal/host` | 用户/客户端 I/O 与呈现 |
 | Runtime | `internal/runtime` | 协议、应用状态、Agent 循环、装配 |
 | Adapter | `internal/adapter` | 模型、Provider、Tool、MCP、Skill |
 | Security | `internal/security` | Policy、Permission、Constitution、Sandbox |
 | Orchestration | `internal/orchestration` | Subagent、Admission/Budget、Chat Merge、Exec Settle |
 | Persistence | `internal/persist` | 关系状态、Event、CAS、Session、Snapshot、Journal |
-| Observability | `internal/observability` | Usage、Trace、Receipt、Diagnostics、Verify、Telemetry |
+| Observability | `internal/observability` | Usage、Trace、Diagnostics、Verify、Telemetry |
 | Platform | `internal/platform` | 进程、PTY、操作系统差异 |
-| Environment Contract | `internal/environment` | 环境声明、校验、结构化事实与准备事实快照 |
 | Configuration | `internal/config` | 默认值、TOML、环境变量、校验、Provenance |
 
 ## 硬依赖规则
 
-1. `runtime/protocol` 不依赖其他实现包。
+1. `runtime/protocol` 只依赖公共契约，不依赖业务实现包。
 2. Host 不直接 Import 并调用 Provider、Tool、Sandbox 或 Agent Engine 实现。
 3. Model/Tool/Security 的构造属于 `runtime/app/wire`。
 4. Turn 业务循环属于 `runtime/agent`。
@@ -69,12 +69,40 @@ Web
 13. `internal/security` 不导入 Adapter、Runtime、Persistence 或 Host；
     `TestSecurityImportDirection` 无允许清单。调用方把目录身份、资源和协议信息
     投影为安全层自己的输入类型，再调用决策与执行授权。
+14. `internal/common` 的生产代码只能依赖标准库、第三方库或其他 common 子包，
+    不能导入仓库内其他层；测试可以引用调用方验证集成。
 
 Architecture Test 会检查重要 Import 限制：第 9 条由 `TestOnlyHostsImportHostPackages`
 检查，第 10 条由 `TestWebHostDoesNotScanEventHistory` 检查，第 11 条由
 `TestWireOnlyConstructsChildRunner` 检查，第 12 条由
-`TestManagerIsTheOnlyChildBudgetOwner` 检查。需要违反这些规则的设计必须先进行显式架构
+`TestManagerIsTheOnlyChildBudgetOwner` 检查，第 14 条由
+`TestCommonImportDirection` 检查，包括其他平台和 Build Tag 下的生产文件。
+需要违反这些规则的设计必须先进行显式架构
 调整，不能用局部捷径绕过。
+
+## Common 公共层
+
+公共层统一放在 `internal/common`，按职责保留独立 Go 子包。调用方直接导入需要的
+子包；公共层根包不聚合或转发子包 API。
+
+| 子包 | 职责 |
+| --- | --- |
+| `environment` | 环境声明、校验、结构化事实与准备事实快照；保持仅依赖标准库 |
+| `contextsnapshot` | 父上下文快照契约：来源轮次、可继承消息、相关文件、证据与规则；不依赖 Engine 或编排实现 |
+| `fault` | 跨层错误码、Problem、Fault 元数据与恢复分类 |
+| `durablecodec` | 确定性的持久化 JSON 压缩信封与版本校验 |
+| `atomicfile` | 原子文件替换 |
+| `sqlkit` | 通用事务、行扫描、JSON 归一化与可空值处理 |
+| `textdiff` | 文本差异与行数统计 |
+| `symbols` | 从源码字节提取声明、注释、导入与引用候选，提供跨语言结果和语义查询接口；不读取仓库或管理索引 |
+| `tokenestimate` | 文本、字节与 Token 估算 |
+| `tracecontext` | W3C Trace Context 解析与传播 |
+
+迁入的依据是跨层复用且不拥有业务流程或领域状态，仅依赖标准库不是充分条件。
+模型能力目录、权限策略、持久化 Repository、环境准备器与平台执行服务仍由各自领域
+维护。`fault` 只提供错误与恢复语义，重试和恢复的执行仍由 Runtime 决定。
+`atomicfile` 和 `sqlkit` 只提供 I/O 基础操作，授权、路径选择、Schema 和事务边界仍由
+调用方负责；副作用清单仅为 `atomicfile.go` 登记文件操作，不给 common 整层放行。
 
 ## Runtime 组合根
 
@@ -157,6 +185,21 @@ Builtin、Skill、Memory 与 MCP Tool 共享同一个 Registry 实例。Composit
 按固定顺序直接构造 Skill Catalog、Memory Store 和 MCP Pool，并只向后续模块发布
 必要结果。Subagent 工具由 Orchestration Module 单独装配。
 
+Adapter 内部按职责保持独立包：`model` 定义模型能力与路由数据，`provider`
+实现请求、传输和响应归并；`tool`、`skill`、`memory`、`mcp` 提供工具与扩展能力。
+Wire 直接使用 `provider/router` 装配采样入口，`provider/modelcatalog` 只负责模型发现
+与能力探测。工具内模型调用的 Sample 编号、Usage、费用和 Trace 归
+`runtime/agent/engine/toolsample.go`，Provider 不依赖 Tool。
+
+`tool/interact` 定义计划提交数据，Engine 接纳时复制为 `agent/context.Plan`；
+计划文本和 Receipt 由 `agent/prompt/plan.go` 生成。`tool/turnhistory` 注入的查询函数
+只返回已渲染的 Transcript 与 Findings Index；Turn 可见性、归档查询和渲染归 Engine
+及 Context，工具只负责参数校验和分页。Tool 生产代码不导入 `runtime/agent`。
+这些导入边界由 `internal/adapter/architecture_test.go` 检查。
+
+内容处理工具及其 OCR、语音转写、Pandoc、FFmpeg 依赖探测统一属于
+`internal/adapter/tool/content`；该工具专用的二进制配置和可用性判断由同一包维护。
+
 Registry 分别冻结模型可见的 `ExternalDescriptor` 与执行权威
 `TrustedBinding`。External Requested Effects 只用于呈现和审计；Guard、Policy、
 Authority、Journal、Sandbox 和验证证据接纳只消费 Trusted Binding。外部 Source 必须
@@ -179,9 +222,11 @@ Broker 副作用统一经过 `authority` 的 `RunSettled` 事务骨架：消费�
 Runtime 构造具有 Prepared 状态。`RuntimeModule` 只构造 Facade 并恢复静态 Durable
 State，不接受 Operation；`BackgroundModule` 依次执行 MCP 初次 Refresh、启动 Runtime
 的 Terminal Outbox/Pending Turn Recovery，再启动 MCP Prewarm。任一步失败都会终止
-构造并由 ResourceStack 回滚；Runtime Recovery 成功前不会接受 Operation。MCP Prewarm
-的生命周期归 Session 所有、由 `Session.Close` 停止，不随发起构造的请求 Context 结束，
-因此构造请求返回后后台刷新仍会继续。
+构造并由 ResourceStack 回滚；Runtime Recovery 成功前不会接受 Operation。
+`internal/adapter/mcp/prewarm.go` 持有刷新合并、健康重试和目录同步逻辑；Wire 负责
+授权 Transport、Pool 和 Prewarm 的装配及启动顺序。每次采样前仍调用 `SyncCatalog`
+同步 Pool 与 Tool Registry。Prewarm 的生命周期归 Session 所有、由 `Session.Close`
+停止，不随发起构造的请求 Context 结束，因此构造请求返回后后台刷新仍会继续。
 
 当 Web 启动时没有显式或已保存的 Provider/Model，Host 先进入受限 Setup 状态，不构造
 默认 Runtime。该状态只暴露受同源 Capability Token 保护的 `setup/apply`；用户提交的
@@ -202,6 +247,10 @@ Workspace 单独拥有 `wire.Session`、Sandbox、Tool Registry、Repository Ind
 MCP 生命周期。共享 SQLite 中的 Session、Event Recovery 与 Terminal Outbox
 按规范化 Workspace Root 过滤；关闭一个 Runtime 不能关闭 Supervisor 持有的共享
 Store。
+
+Owner Lease 的元数据、路径规范化和文件锁由 `internal/host/owner_lease.go` 与
+`owner_lease_darwin.go` 维护，属于 Supervisor 启动生命周期的包内实现。文件锁保证
+单实例互斥；释放后允许接管，锁文件以 `0600` 权限保存元数据。
 
 构造与关闭共享 `wire.ResourceStack`。Session 只注册一次资源关闭函数；部分构造
 失败回滚与正常关闭都按注册逆序关闭同一 Stack。每项资源最多关闭一次，单项关闭失败
@@ -228,7 +277,7 @@ OperationService -> TurnService -> TurnCoordinator -> TurnScope
 
 wire.NewExec -> 仅负责构造 Module
 orchestration/chatmerge.Service -> 隔离 Chat Preview / Journal Apply / Git Baseline
-eventview + Web Projection -> 仅负责 Host Presentation
+Web Projection -> 仅负责 Host Presentation
 ```
 
 | Owner | 路径 | 独占职责 |
@@ -238,6 +287,7 @@ eventview + Web Projection -> 仅负责 Host Presentation
 | Chat Merge Service | `internal/orchestration/chatmerge` | Isolated Baseline、Three-way Preview、Journaled Apply |
 | Exec Settle | `internal/orchestration/execsettle` | 命令级隔离工作区、写树三方结算 |
 | Operation Service | `internal/runtime/app` | Queue、Idempotency、Typed Dispatch 与 Operation Commit/Reject |
+| Workspace Query | `internal/runtime/app/workspacequery` | 工作区浏览、搜索、文本与图片资源、Git 状态与差异的只读查询语义 |
 | Turn Service | `internal/runtime/app` | Active Lease、Control、Cancel Provenance 与 Turn goroutine 生命周期 |
 | Event/Recovery Service | `internal/runtime/app` | Event Projection 索引、Observer、History Evidence 查询与 Durable Recovery |
 | Turn Coordinator/Scope | `internal/runtime/agent` | Reducer Authority、Effect、Control 与 Turn-local State |
@@ -247,9 +297,10 @@ eventview + Web Projection -> 仅负责 Host Presentation
 | Thread Repository | `internal/persist/thread` | Thread 元数据与生命周期的 SQLite 持久化 |
 | Skill Control | `internal/runtime/app/extension`、`internal/adapter/skill` | Skill 状态、Lock、控制操作与 Receipt |
 | Trace/Usage Plane | `internal/observability/trace`、`internal/observability/usage` | Span、Latency、Token、Cost 与查询投影 |
+| Turn Receipt Builder | `internal/runtime/app/extension` | 汇总 Engine 事实、冻结终态计量并构建和校验执行回执 |
 | Session/Artifact/Trace Service | `internal/runtime/app` | Runtime-owned Port 上的 Host-facing Query 行为 |
 | Agent Preset Service | `internal/runtime/app`、`internal/persist/agentpreset` | Workspace 范围的版本化 Preset 校验、原子持久化与 Session 应用 |
-| Benchmark Projection | `internal/runtime/eventview` | Go Benchmark 的 Typed Event Interpretation |
+| Benchmark Projection | `internal/host/intergration_test/event_projection_test.go` | Go Benchmark 包内私有的事件解释辅助代码 |
 | Web Projection | `web/src` | 浏览器端 Event Projection 与交互状态 |
 
 Web 直接调用 Runtime 的窄化 Session、Operation、History 与 Artifact Service。
@@ -287,7 +338,8 @@ Host 中存在的 Runtime 能力都不完整。
 Event 分类是 Protocol 数据，而不是 Host Policy。`event_traits.json` 是唯一生成源，
 生成 Go Trait Table、Protocol Schema、TypeScript Table 与 Golden；新增 Event 缺少
 Class、Item Owner、Durability、Correlation 或 Terminal Trait 时生成直接失败。
-Go Benchmark 消费 `eventview` 的 Typed Semantic Update，不再分类 `Event.Data`。
+Go Benchmark 使用 `internal/host/intergration_test/event_projection_test.go` 中的
+私有事件投影，复用 Protocol Trait 和终态语义。
 
 Provider Delta 按消费进度合并：`Recv` 立即交付已有片段，不等待字节阈值或定时窗口；
 只有下游忙碌、上一批尚未取走时才合并同类型、同索引且工具身份兼容的片段。公开合同
@@ -488,6 +540,11 @@ Snapshot、待审批/输入与队列查询仍能返回；跨函数死锁由 `go 
 
 ## Turn 数据流
 
+Repository Map 属于 `internal/runtime/agent/prompt` 的模型输入投影。
+`repository_map.go` 根据 Repo Index 快照聚合、筛选目录和符号提纲；
+`repository.go` 按 Turn 缓存结果，`turn.go` 完成预算内呈现。
+索引、查询和快照仍由 `internal/persist/repoindex` 负责，`wire` 只注入索引与配置。
+
 执行前，Engine 构造不可变 `TurnSpec`，冻结 Identity、Request、Session Profile、
 Route、Policy、Limit、Prompt Prefix、Tool Catalog、Skill 与 MCP Health。Engine 内的
 Scope Factory 从该 Spec 打开单 Turn `engine.Scope`；Scope 运行期间 Sampling
@@ -668,6 +725,13 @@ Adapter。每条用户配置的连接都通过 OpenAI-compatible Adapter 接入�
 Chat 请求统一携带 `tool_stream=true`（工具参数逐段接收）；不广告 Incremental
 Responses 的模型始终使用完整 HTTP/SSE 请求，不发送 `previous_response_id`。
 
+`internal/adapter/model` 拥有模型目录、能力定义、观测结果的应用规则与路由解析；
+`internal/adapter/provider/modelcatalog` 负责实际的模型发现和能力探测请求。
+能力观测的 SQL 读写归 `internal/persist/modelcapability`，复用
+`internal/persist/state/sqlite` 的 `provider_capabilities` 表；观测按连接身份、
+模型 Wire ID 和能力隔离。`runtime/app/wire` 构造 Repository，并将读取的观测应用到
+各用途路由。
+
 Turn 开始时冻结 `ContextCapacity`：模型 Context Window 扣除模型能力、Operator
 Ceiling 和 Turn/Session Budget 共同确定的 Output Reserve 后，得到硬输入容量。
 默认 Prepare、Auto Compact 与 Emergency 都等于该容量，不再按百分比提前触发；
@@ -723,6 +787,13 @@ Trace 与 Receipt 保留逻辑公共前缀指标和最终 Transport Payload Dige
 验证状态、缺失覆盖和调用 ID 来自同一次筛选与输入复核；相同命令针对不同路径的证据
 分别保留。重复失败不会因新的调用 ID 重置 Repair Budget，失败进程已经产生的文件
 变更也必须进入 Turn Diff。诊断只覆盖部分修改文件时不能声明整体通过。
+
+`internal/observability/verify` 统一拥有编辑后诊断与验证证据归约。
+`diagnostics.go` 中的 `DiagnosticRunner` 在 Guard 完成文件编辑后采集诊断，
+`DiagnosticCommandRunner` 通过现有沙箱运行配置的检查命令并生成 `DiagnosticReceipt`；
+`FromDiagnostics` 将诊断回执归约为验证结论，`ReceiptRunner` 复用这些回执或命令证据。
+诊断执行器仍由 `runtime/app/wire` 为主 Agent 与子 Agent 按各自工作区和沙箱构造。
+
 Tool Result 在首次准入时定稿，后续 Sample 不改写已发送内容，以便 Provider
 前缀缓存保持 append-only。超限结果第一次就带 Handle，全文留在 ResultStore，
 需要时用 `result_get` 取回。增量 Route 保持严格追加投影，不执行这些会破坏
@@ -891,9 +962,13 @@ Turn 的 Model Route 继续在 Scope 创建时冻结，统一选择 `PurposeAct`
 因此 Auto 流程可以在同一 Turn 中从规划继续执行，而不会
 发生中途换模型或重建 Context 的隐式状态变化。
 
-Workspace Git 状态由 `internal/platform/workspacequery` 在已绑定沙箱中查询。Web Host
-只路由显式、带幂等键的分支切换请求；服务只接受已存在的本地分支，并在 Runtime 有活动
-Turn 或待处理 Operation 时拒绝切换。Session 列表聚合同时保存
+工作区查询由 `internal/runtime/app/workspacequery` 提供，`wire` 直接构造并注入服务。
+目录浏览、搜索、文本与图片资源读取复用 `platform/repowalk` 和工作区安全读取边界；
+资源查询要求 Git 枚举成功，不接受缺少 Git 忽略规则的普通目录遍历结果。Git 状态与
+差异查询通过 `platform/process` 执行固定的只读命令。查询服务不持有 VCS Broker，
+不提供分支切换或其他写入入口；修改操作统一由 Runtime `GitControl` 经 Guard 执行。
+Web Host 只路由显式、带幂等键的分支切换请求；`GitControl` 只接受已存在的本地分支，
+并在 Runtime 有活动 Turn 或待处理 Operation 时拒绝切换。Session 列表聚合同时保存
 `session_id -> workspace_id` 来源映射，所有 Session 请求固定使用 Owner Workspace，
 不从切换中的 UI 状态临时推断。
 
@@ -1005,8 +1080,12 @@ Provider 配额耗尽与瞬时限流分开处理。OpenAI-compatible 的明确
 完整原因摘要而非截断前缀。
 
 Runtime Event 是 Host Protocol，也是生命周期回放的权威记录。Terminal Envelope
-原子保存冻结 Measurement、Receipt、Session Delta 与 Projection Outbox。除此之外，
-系统只维护面向 Coding 主线的轻量可观测数据：
+原子保存冻结 Measurement、Receipt、Session Delta 与 Projection Outbox。
+回执构建由 `internal/runtime/app/extension/turn_receipt.go` 中的私有 Recorder 负责，
+由 `EngineAdapter` 收集执行事实并在终态冻结；`turn_receipt_terminal.go` 将 Trace 与
+Kernel Usage 绑定为计量快照，并校验回执 Outcome、实际变更与终态一致。
+生成的 `protocol.ExecutionReceiptData` 与其他终态材料一起提交。
+系统维护面向 Coding 主线的轻量可观测数据：
 
 - **Trace**：Turn 内存 Span Tree 在结束时写入 SQLite，用于 Phase Latency 与查询；
 - **Usage**：按 Provider、Model、Session、Thread 和 Turn 聚合 Token 与 Cost；
@@ -1020,6 +1099,19 @@ Subagent 传播，用于关联调用；它不获得执行权威。故障分析�
 Envelope、Trace、Usage、Receipt、Job Log 与 Workspace Journal 交叉核对。
 
 ## 上下文架构
+
+源码分析由 `internal/common/symbols` 提供：支持的语言优先使用语法树。文件包含语法
+错误时，只保留结构完整、作用域可靠的顶层子树；跳过损坏的声明及其内部节点，结果
+与声明标记为 `syntax_partial`，提取结果同时设置 `Incomplete`。此时不建立需要完整
+文件绑定的 Go/JS/TS 作用域引用，引用查询保留明确标记的文本候选。解析器不可用或
+无法生成语法树时，才回退到语言专用词法规则或通用启发式规则。
+
+语言特定规则在包内维护：C/C++ 限定名根据文件中已声明的类作用域判断方法，命名空间
+限定名保持函数分类；不通过 `::` 猜测来自其他文件的类型。所有提取路径共享引用数量
+限制和 UTF-8 安全截断，达到名字数量上限后仍统计已有名字的后续出现。索引器规则
+版本为 6，已有缓存通过下一次刷新重建，无需数据库 Schema 迁移。每个结果携带提取
+方式，引用候选不等同于编译器确认的语义绑定。仓库扫描、索引存储与跨文件关系属于 `internal/persist/repoindex`，
+语义查询接口由 `internal/adapter/tool/lsp` 实现，工具呈现属于 `internal/adapter/tool/search`。
 
 仓库符号查询由实际索引查询方法执行一次刷新，仍检查文件列表与修改时间。并发到达
 的查询共享同一次刷新：在刷新等待队列中排队的调用者，若刷新在其进入后完成，直接
@@ -1136,7 +1228,7 @@ macOS 读取 Mach-O 依赖和 RPATH，递归绑定实际动态库及加载所需
 
 将私有 Home 过滤模型替换为可授权环境契约的设计见
 [Sandbox 执行环境重构方案](./sandbox-execution-environment-plan.md)。
-`internal/environment` 只承载环境声明、校验与结构化失败事实，生产代码
+`internal/common/environment` 只承载环境声明、校验与结构化失败事实，生产代码
 仅依赖标准库。`internal/adapter/envprep` 负责来源快照、声明编译、路径物化与
 最终 `sandbox.Options` 投影，编译器直接使用 `security/model` 的访问词汇。
 Git 配置文件声明由 `adapter/tool/git` 生成，`wire` 将它们与可信配置组合，
@@ -1153,7 +1245,8 @@ Git 配置文件声明由 `adapter/tool/git` 生成，`wire` 将它们与可信�
 变量值不授予文件或网络权限。秘密名、预加载变量与非法变量声明继续拒绝。
 默认准备链不运行 `go env`、不扫描 `go.mod`，也不为语言工具自动分配缓存；
 只读命令不再自动设置 Python 字节码开关，由文件系统权限执行只读约束。
-Runtime 的环境指纹只包含运行平台事实，不执行语言工具或 Git 版本命令，
+默认系统提示词的平台信息由 `internal/runtime/agent/prompt.DefaultBaseSystem` 直接
+使用 `runtime.GOOS` 与 `runtime.GOARCH` 生成，不执行语言工具或 Git 版本命令，
 也不将宿主登录 Shell 当作实际执行 Shell。任务需要工具版本时通过普通受控工具查询。
 环境编译通过通用资源声明测试验证；平台能力通过实际后端和 capability 测试验证。
 产品默认现为 `execution.environment.contract=v1` 与 `profile=native`：
@@ -1217,7 +1310,20 @@ Web Transport `extension/list`/`extension/control` 与 Web Extensions View 使�
 Runtime Control Plane。Mutation 按 Operation ID 幂等，并持久化
 Prepare/Commit Receipt；Host 只提交 Operation 与投影 Runtime-owned State。
 
+### Memory
+
+`internal/adapter/memory` 统一拥有记忆记录存储、Scope 隔离、提示词投影和工具注册。
+`store.go`、`records.go` 管理记录与持久化，`tools.go` 将 `remember`、`memory_list`、
+`memory_get`、`memory_update`、`forget` 接入共享 Tool Registry。`wire` 打开 Store
+并注册工具，提示词构建复用同一 Store；模型侧的记忆操作继续经过 Tool Guard。
+
 ### MCP
+
+`internal/adapter/mcp` 统一拥有协议与传输、连接池、认证、健康状态，以及
+`adapter.go` 中的工具注册和资源／提示模板适配。`wire` 构造 Pool 与 Adapter，
+Adapter 将远端目录接入共享 Tool Registry，模型调用继续经过 Tool Guard。
+通用工具结果层通过错误的 `RecoverableCategory()` 接口取得可恢复故障分类，
+不依赖 MCP 实现；该分类用于回填工具失败，不触发自动重试。
 
 外部 Server 通过协议 Adapter 暴露 Tool。Health、Timeout、Circuit Breaker 和 Tool
 Binding 隔离避免单个 Server 故障污染全部工具。当前 stdio Server 仍是宿主进程，
@@ -1225,7 +1331,15 @@ Binding 隔离避免单个 Server 故障污染全部工具。当前 stdio Server
 
 ### Skill
 
-Skill 打包指令和资源。Discovery、Manifest、Lock 与 Enablement State 让最终内容可见。
+`internal/adapter/skill` 统一拥有目录发现、Catalog、Manifest、依赖解析、Lock、
+启用状态、候选选择和工具适配。`adapter.go` 将 `skills_list`、`skills_read` 接入
+共享 Tool Registry；`wire` 构造 Catalog 并注册工具，模型调用继续经过 Tool Guard。
+通用工具结果层通过错误接口读取分类和可恢复性，不依赖 Skill 实现。
+`ErrorCategory()` 只提供分类，`RecoverableCategory()` 才声明可作为工具失败返回；
+无效句柄由工具入口附加 `skills_list` 恢复提示。错误分类和恢复提示均不触发自动重试。
+
+Skill 从文件系统加载打包的指令和资源。Discovery、Manifest、Lock 与 Enablement State
+让最终内容可见。
 Runtime 构造时从实际 Sandbox Policy 取得私有 Home，将其中的标准 Skill 目录以
 Workspace 来源加入 Catalog；模型工具和 Web Skill Control 使用同一 Home，不根据
 宿主 HOME 或另算的 Workspace ID 推断安装位置。私有 Skill 根不得经符号链接逃出
@@ -1253,7 +1367,6 @@ Dependency Plan 与 Lock。`skills_read` 接受该冻结条目广告的
 相对引用、脚本和资源以所属 Skill 的实际目录解析，不从 Skill 名称猜目录，
 也不沿用根 Skill 的目录解析依赖。工作区内资源用 `file_read`，外部路径可用
 `shell_read`，继续经过现有 Policy 与 Sandbox；来源元数据本身不授予权限。
-内置 Skill 的 `builtin://` 来源标记为自包含嵌入内容，不作为文件系统路径使用。
 真正无效或过期的 Handle 会返回结构化 `skills_list` 恢复动作，而不会直接终止 Turn。
 Execution Receipt 会记录选择规模、显式命中、Token Projection、Cache 使用情况以及
 Query/Candidate 截断。
@@ -1272,6 +1385,16 @@ Parent Turn
   -> Guarded Tool + Worktree
   -> Typed Result + Mailbox + Journaled Integration
 ```
+
+父上下文继承通过 `subagent.ContextSource` 窄接口获取
+`common/contextsnapshot` 数据契约。`runtime/app.ThreadManager.Snapshot` 只查找已存在
+的父线程，交给 `agent/engine.ParentContextSnapshot` 校验轮次并投影上下文；找不到线程
+或轮次不匹配时返回错误，不创建替代 Engine。`runtime/app/wire` 负责绑定来源。
+Engine 导出消息时排除模型推理与 opaque replay；继承模式、权限校验、脱敏、完整工具
+调用配对、预算裁剪、Task Capsule 和 Receipt 仍由 `subagent.ContextForker` 负责。
+`subagent` 仅通过公共契约与注入接口连接 Runtime 实现；
+`TestSubagentDoesNotImportRuntimeImplementation` 检查其生产代码的 Runtime 导入，
+仅允许 `runtime/protocol`。
 
 - **Supervisor**：编排入口。Tool 只提交 Intent；Admit 在 Takeover 前用与 Child
   Engine 相同的首包窗口投影预算，不足则拒绝 spawn，不创建 running agent。

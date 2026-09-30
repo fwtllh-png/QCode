@@ -11,7 +11,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/fwtllh-png/QCode/internal/platform/tokenestimate"
+	"github.com/fwtllh-png/QCode/internal/common/tokenestimate"
 )
 
 const (
@@ -28,12 +28,6 @@ type SelectionMode string
 const (
 	SelectionShadow    SelectionMode = "shadow"
 	SelectionCandidate SelectionMode = "candidate"
-)
-
-var (
-	ErrSkillHandleInvalid = errors.New("skill handle is invalid or stale")
-	ErrSkillAmbiguous     = errors.New("skill name is ambiguous")
-	ErrSelectionBudget    = errors.New("skill selection budget exceeded")
 )
 
 type SelectionRequest struct {

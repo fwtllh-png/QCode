@@ -6,7 +6,6 @@ import (
 
 	"github.com/fwtllh-png/QCode/internal/adapter/provider"
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
-	"github.com/fwtllh-png/QCode/internal/adapter/tool/interact"
 	turnhistory "github.com/fwtllh-png/QCode/internal/adapter/tool/turnhistory"
 	agentcontext "github.com/fwtllh-png/QCode/internal/runtime/agent/context"
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
@@ -16,11 +15,19 @@ func (e *Engine) registerTurnHistoryTool() error {
 	if e.options.Tools == nil {
 		return nil
 	}
-	return turnhistory.Register(e.options.Tools, func(
-		ctx context.Context, turn uint64,
-	) ([]provider.Message, error) {
-		return e.lookupTurnHistory(ctx, turn)
-	}, e.lookupTurnFindings)
+	return turnhistory.Register(e.options.Tools, e.lookupTurnHistoryEntry)
+}
+
+func (e *Engine) lookupTurnHistoryEntry(ctx context.Context, turn uint64) (*turnhistory.Entry, error) {
+	messages, err := e.lookupTurnHistory(ctx, turn)
+	if err != nil || len(messages) == 0 {
+		return nil, err
+	}
+	findings, _ := e.lookupTurnFindings(ctx, turn)
+	return &turnhistory.Entry{
+		Transcript:    agentcontext.RenderTurnTranscript(messages),
+		FindingsIndex: agentcontext.RenderTurnFindings(turn, findings),
+	}, nil
 }
 
 func (e *Engine) lookupTurnFindings(
@@ -301,7 +308,7 @@ func (e *Engine) promoteOpenWork(artifact agentcontext.NarrativeArtifact) {
 	e.setPlan(promoted)
 }
 
-func planStepsEqual(left, right interact.Plan) bool {
+func planStepsEqual(left, right agentcontext.Plan) bool {
 	if len(left.Steps) != len(right.Steps) {
 		return false
 	}

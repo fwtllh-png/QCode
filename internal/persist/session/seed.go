@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/fwtllh-png/QCode/internal/persist/sqlkit"
+	"github.com/fwtllh-png/QCode/internal/common/sqlkit"
 )
 
 // EnsureSeed creates the workspace and session rows required by background

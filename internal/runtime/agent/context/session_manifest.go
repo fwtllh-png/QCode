@@ -11,7 +11,7 @@ import (
 	"io"
 
 	"github.com/fwtllh-png/QCode/internal/adapter/provider"
-	"github.com/fwtllh-png/QCode/internal/runtime/durablecodec"
+	"github.com/fwtllh-png/QCode/internal/common/durablecodec"
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
 )
 

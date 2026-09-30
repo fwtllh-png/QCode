@@ -82,30 +82,6 @@ func TestHeadTailBufferBoundsOneGiBSyntheticStream(t *testing.T) {
 	}
 }
 
-func TestObservedBufferArchivesCompleteOutputBeyondRetention(t *testing.T) {
-	var archived bytes.Buffer
-	archive := &archiveState{append: func(chunk Chunk) error {
-		_, err := archived.Write(chunk.Data)
-		return err
-	}}
-	buffer := newObservedBuffer(StreamStdout, 8, nil, archive)
-	for _, value := range []string{"abcd", "efgh", "ijkl"} {
-		if _, err := buffer.Write([]byte(value)); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if archived.String() != "abcdefghijkl" {
-		t.Fatalf("archive = %q", archived.String())
-	}
-	if output := buffer.String(); !strings.HasPrefix(output, "abcd\n...") ||
-		!strings.HasSuffix(output, "ijkl") {
-		t.Fatalf("bounded output = %q", output)
-	}
-	if receipt := buffer.Receipt(); receipt.OmittedBytes != 4 {
-		t.Fatalf("receipt = %+v", receipt)
-	}
-}
-
 func TestArchiveStateRecordsFirstConcurrentFailure(t *testing.T) {
 	archiveErr := errors.New("archive unavailable")
 	archive := &archiveState{append: func(Chunk) error { return archiveErr }}

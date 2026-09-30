@@ -10,9 +10,9 @@ import (
 
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
 	"github.com/fwtllh-png/QCode/internal/adapter/tool/typed"
+	"github.com/fwtllh-png/QCode/internal/common/symbols"
 	"github.com/fwtllh-png/QCode/internal/persist/repoindex"
 	"github.com/fwtllh-png/QCode/internal/platform/repowalk"
-	"github.com/fwtllh-png/QCode/internal/platform/symbols"
 )
 
 // Symbol tool names.
@@ -112,7 +112,7 @@ func symbolDescription(kind string) string {
 	switch kind {
 	case KindDefinition:
 		return "Find where a symbol is declared, by exact name. " +
-			"Results report syntax, lexical or heuristic extraction quality."
+			"Results report syntax, syntax_partial, lexical or heuristic extraction quality; syntax_partial means only reliable declarations from an incomplete parse are included."
 	case KindReferences:
 		return "Find reference evidence by name or import alias. Auto mode uses scoped cross-file " +
 			"candidates and text fallback for unsupported files; results report source and completeness. " +
@@ -125,7 +125,7 @@ func symbolDescription(kind string) string {
 			"impact analysis, not proven function-level test coverage."
 	default:
 		return "Search declarations (functions, types, classes, constants) by name " +
-			"substring. Results report syntax, lexical or heuristic extraction quality."
+			"substring. Results report syntax, syntax_partial, lexical or heuristic extraction quality; syntax_partial means only reliable declarations from an incomplete parse are included."
 	}
 }
 

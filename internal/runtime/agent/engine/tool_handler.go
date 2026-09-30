@@ -9,8 +9,8 @@ import (
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
 	toolresult "github.com/fwtllh-png/QCode/internal/adapter/tool/result"
 	"github.com/fwtllh-png/QCode/internal/adapter/tool/toolsearch"
-	"github.com/fwtllh-png/QCode/internal/observability/diagnostics"
-	"github.com/fwtllh-png/QCode/internal/platform/tokenestimate"
+	"github.com/fwtllh-png/QCode/internal/common/tokenestimate"
+	"github.com/fwtllh-png/QCode/internal/observability/verify"
 	agentcontext "github.com/fwtllh-png/QCode/internal/runtime/agent/context"
 	"github.com/fwtllh-png/QCode/internal/runtime/agent/turnkernel"
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
@@ -97,7 +97,7 @@ func (e *Engine) runToolsWithCache(
 	defer cancel(nil)
 
 	sched := scope.state.scheduler
-	diagnosticReceipts := make(map[string][]diagnostics.Receipt, len(calls))
+	diagnosticReceipts := make(map[string][]verify.DiagnosticReceipt, len(calls))
 	return kernel.ExecuteToolEffect(turnkernel.ToolEffect{
 		Context: toolCtx, Calls: calls, Executed: executed,
 		Cache: cache, Registry: e.options.Tools,

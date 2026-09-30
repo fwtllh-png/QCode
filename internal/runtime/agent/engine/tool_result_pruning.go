@@ -3,7 +3,7 @@ package engine
 import (
 	"github.com/fwtllh-png/QCode/internal/adapter/provider"
 	toolresult "github.com/fwtllh-png/QCode/internal/adapter/tool/result"
-	"github.com/fwtllh-png/QCode/internal/platform/tokenestimate"
+	"github.com/fwtllh-png/QCode/internal/common/tokenestimate"
 	agentcontext "github.com/fwtllh-png/QCode/internal/runtime/agent/context"
 	contextview "github.com/fwtllh-png/QCode/internal/runtime/agent/contextview"
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"

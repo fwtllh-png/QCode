@@ -11,7 +11,6 @@ import (
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
 	toolguard "github.com/fwtllh-png/QCode/internal/adapter/tool/guard"
 	"github.com/fwtllh-png/QCode/internal/adapter/tool/interact"
-	"github.com/fwtllh-png/QCode/internal/observability/diagnostics"
 	"github.com/fwtllh-png/QCode/internal/observability/verify"
 	"github.com/fwtllh-png/QCode/internal/persist/workspacejournal"
 	agentcontext "github.com/fwtllh-png/QCode/internal/runtime/agent/context"
@@ -94,7 +93,7 @@ type Engine struct {
 	historyTurns     map[string]uint64
 	planMu           sync.Mutex
 	planText         string
-	plan             interact.Plan
+	plan             agentcontext.Plan
 	planReceipt      *promptcontext.Receipt
 	checkpointMu     sync.Mutex
 	turnCheckpoints  []agentcontext.TurnCheckpoint
@@ -135,7 +134,7 @@ func (e *Engine) activeRoute() model.ReadyRoute {
 	return e.options.Route
 }
 
-func (e *Engine) recordTurnDiagnostics(receipts []diagnostics.Receipt) {
+func (e *Engine) recordTurnDiagnostics(receipts []verify.DiagnosticReceipt) {
 	if len(receipts) == 0 {
 		return
 	}
@@ -156,14 +155,14 @@ func (e *Engine) recordTurnDiagnostics(receipts []diagnostics.Receipt) {
 	scope.mu.Unlock()
 }
 
-func (e *Engine) turnDiagnostics() []diagnostics.Receipt {
+func (e *Engine) turnDiagnostics() []verify.DiagnosticReceipt {
 	scope := e.currentScope()
 	if scope == nil {
 		return nil
 	}
 	scope.mu.Lock()
 	defer scope.mu.Unlock()
-	return append([]diagnostics.Receipt(nil), scope.state.diagnostics...)
+	return append([]verify.DiagnosticReceipt(nil), scope.state.diagnostics...)
 }
 
 func New(options Options) (*Engine, error) {

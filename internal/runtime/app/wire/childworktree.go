@@ -18,9 +18,8 @@ import (
 	toolguard "github.com/fwtllh-png/QCode/internal/adapter/tool/guard"
 	interacttool "github.com/fwtllh-png/QCode/internal/adapter/tool/interact"
 	webtool "github.com/fwtllh-png/QCode/internal/adapter/tool/web"
+	"github.com/fwtllh-png/QCode/internal/common/environment"
 	"github.com/fwtllh-png/QCode/internal/config"
-	"github.com/fwtllh-png/QCode/internal/environment"
-	"github.com/fwtllh-png/QCode/internal/observability/diagnostics"
 	"github.com/fwtllh-png/QCode/internal/observability/verify"
 	"github.com/fwtllh-png/QCode/internal/orchestration/chatmerge"
 	"github.com/fwtllh-png/QCode/internal/orchestration/subagent"
@@ -315,7 +314,7 @@ type childToolset struct {
 	journal          *workspacejournal.Manager
 	jobLogs          *joblog.Store
 	inputHost        *interacttool.Host
-	diagnostics      diagnostics.Runner
+	diagnostics      verify.DiagnosticRunner
 	verify           verify.Runner
 	files            *filetool.Tools
 	skillCatalog     *skill.Catalog
@@ -343,7 +342,7 @@ type childToolsets struct {
 	web                 webtool.Options
 	verify              config.Verify
 	journals            config.Journal
-	diagnosticCommands  map[string]diagnostics.Command
+	diagnosticCommands  map[string]verify.DiagnosticCommand
 	diagnosticReadRoots []string
 	diagnosticReadFiles []string
 	gitCommonDir        string
@@ -397,7 +396,7 @@ func (c *childToolsets) bindInteractions(
 func newChildToolsets(
 	content contentstore.Store, web webtool.Options,
 	verifyConfig config.Verify, journals config.Journal,
-	diagnosticCommands map[string]diagnostics.Command,
+	diagnosticCommands map[string]verify.DiagnosticCommand,
 	diagnosticReadRoots []string,
 	diagnosticReadFiles []string,
 	gitCommonDir string, managedProxyPort uint16,
@@ -560,7 +559,7 @@ func (c *childToolsets) open(
 		preparationFacts: preparationFacts,
 		registry:         registry, backend: backend, processes: processes, journal: journal,
 		jobLogs: jobs, inputHost: inputHost,
-		diagnostics: diagnostics.NewCommandRunner(root, backend, c.diagnosticCommands),
+		diagnostics: verify.NewDiagnosticCommandRunner(root, backend, c.diagnosticCommands),
 		verify:      runner, files: files,
 	}
 	// Keep the owner's enablement and lock policy, but discover only this

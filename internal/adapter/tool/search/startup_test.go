@@ -10,6 +10,7 @@ import (
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
 	"github.com/fwtllh-png/QCode/internal/persist/repoindex"
 	"github.com/fwtllh-png/QCode/internal/platform/repowalk"
+	"github.com/fwtllh-png/QCode/internal/security/sandbox"
 )
 
 func TestRegisterSymbolToolsDuringIndexBuild(t *testing.T) {
@@ -32,6 +33,12 @@ func TestRegisterSymbolToolsDuringIndexBuild(t *testing.T) {
 		}
 		return time.Now()
 	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Production wiring injects an already bound backend. Keep platform
+	// discovery outside the interval measuring contention with index building.
+	backend, err := sandbox.BindPolicy(searchTestBackend{}, sandbox.Options{WorkspaceRoot: root})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,7 +69,7 @@ func TestRegisterSymbolToolsDuringIndexBuild(t *testing.T) {
 	registrationFinished = make(chan struct{})
 	go func() {
 		defer close(registrationFinished)
-		registered <- RegisterWithIndex(registry, root, searchTestBackend{}, index)
+		registered <- RegisterWithIndex(registry, root, backend, index)
 	}()
 	select {
 	case err := <-registered:

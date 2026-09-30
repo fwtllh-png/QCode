@@ -3,27 +3,73 @@ package turnhistory
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
-	"github.com/fwtllh-png/QCode/internal/adapter/provider"
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
-	agentcontext "github.com/fwtllh-png/QCode/internal/runtime/agent/context"
 )
+
+func TestTurnHistoryLookupErrorAndEmptyTranscript(t *testing.T) {
+	wantErr := errors.New("archive unavailable")
+	registry := tool.NewRegistry(nil, nil)
+	if err := Register(registry, func(_ context.Context, turn uint64) (*Entry, error) {
+		if turn == 1 {
+			return nil, wantErr
+		}
+		return &Entry{}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_, _, executor, err := registry.Resolve(Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := executor.Execute(t.Context(), []byte(`{"turn":1}`)); !errors.Is(err, wantErr) {
+		t.Fatalf("lookup error = %v, want %v", err, wantErr)
+	}
+	if result, err := executor.Execute(t.Context(), []byte(`{"turn":2}`)); err != nil || result.Content != "" {
+		t.Fatalf("existing turn with empty transcript = %+v, %v", result, err)
+	}
+}
+
+func TestAssemblePageUTF8AndFindingsBudget(t *testing.T) {
+	for _, test := range []struct {
+		name, transcript, index, from string
+		limit                         int
+		want                          string
+	}{
+		{name: "head", transcript: "甲乙丙", from: "head", limit: 4, want: "甲"},
+		{name: "tail", transcript: "甲乙丙", limit: 4, want: "丙"},
+		{name: "head sub-rune", transcript: "甲乙丙", from: "head", limit: 1},
+		{name: "tail sub-rune", transcript: "甲乙丙", limit: 1},
+		{name: "head with index", transcript: "甲乙丙", index: "sites", from: "head", limit: 11, want: "甲\n\nsites\n"},
+		{name: "tail with index", transcript: "甲乙丙", index: "sites", limit: 11, want: "丙\n\nsites\n"},
+		{name: "oversized index head", transcript: "甲乙丙", index: "sites", from: "head", limit: 1, want: "\n\nsites\n"},
+		// Preserve the existing tail behavior when the index exhausts the body budget.
+		{name: "oversized index tail", transcript: "甲乙丙", index: "sites", limit: 1, want: "甲乙丙\n\nsites\n"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			got, truncated, original := assemblePage(test.transcript, test.index, test.from, test.limit)
+			wantOriginal := len(test.transcript)
+			if test.index != "" {
+				wantOriginal += len(test.index) + 3
+			}
+			if got != test.want || !utf8.ValidString(got) || !truncated || original != wantOriginal {
+				t.Fatalf("page = %q, truncated=%v, original=%d; want %q, true, %d", got, truncated, original, test.want, wantOriginal)
+			}
+		})
+	}
+}
 
 func TestTurnHistoryReadsBoundedTurnAndIsIdempotentRegister(t *testing.T) {
 	registry := tool.NewRegistry(nil, nil)
-	lookup := func(_ context.Context, turn uint64) ([]provider.Message, error) {
+	lookup := func(_ context.Context, turn uint64) (*Entry, error) {
 		if turn != 2 {
 			return nil, nil
 		}
-		return []provider.Message{{
-			Role: provider.RoleUser, Turn: 2,
-			Blocks: []provider.ContentBlock{{
-				Type: provider.ContentText,
-				Text: strings.Repeat("explore ", 40) + "P2: missing overflow test",
-			}},
-		}}, nil
+		return &Entry{Transcript: "[turn 2 user] " + strings.Repeat("explore ", 40) + "P2: missing overflow test\n"}, nil
 	}
 	if err := Register(registry, lookup); err != nil {
 		t.Fatal(err)
@@ -56,31 +102,14 @@ func TestTurnHistoryReadsBoundedTurnAndIsIdempotentRegister(t *testing.T) {
 
 func TestTurnHistoryFirstPageKeepsFindingsAfterTail(t *testing.T) {
 	registry := tool.NewRegistry(nil, nil)
-	lookup := func(_ context.Context, turn uint64) ([]provider.Message, error) {
-		return []provider.Message{
-			{
-				Role: provider.RoleUser, Turn: 7,
-				Blocks: []provider.ContentBlock{{
-					Type: provider.ContentText,
-					Text: "audit the parser " + strings.Repeat("explore ", 80),
-				}},
-			},
-			{
-				Role: provider.RoleAssistant, Turn: 7,
-				Blocks: []provider.ContentBlock{{
-					Type: provider.ContentText,
-					Text: "summary without paths",
-				}},
-			},
+	lookup := func(_ context.Context, turn uint64) (*Entry, error) {
+		return &Entry{
+			Transcript: "[turn 7 user] audit the parser " + strings.Repeat("explore ", 80) +
+				"\n[turn 7 assistant] summary without paths\n",
+			FindingsIndex: "[turn 7 findings]\nconclusion: hasGlobalLock is the root cause\nsites: eds_metaserver.cc:88 hasGlobalLock\n",
 		}, nil
 	}
-	findings := func(_ context.Context, turn uint64) (agentcontext.TurnFindings, bool) {
-		return agentcontext.TurnFindings{
-			Conclusion: "hasGlobalLock is the root cause",
-			Sites:      []string{"eds_metaserver.cc:88 hasGlobalLock"},
-		}, turn == 7
-	}
-	if err := Register(registry, lookup, findings); err != nil {
+	if err := Register(registry, lookup); err != nil {
 		t.Fatal(err)
 	}
 	_, _, executor, err := registry.Resolve(Name)
@@ -101,23 +130,9 @@ func TestTurnHistoryFirstPageKeepsFindingsAfterTail(t *testing.T) {
 
 func TestTurnHistoryFirstPagePrefersTailConclusions(t *testing.T) {
 	registry := tool.NewRegistry(nil, nil)
-	lookup := func(_ context.Context, turn uint64) ([]provider.Message, error) {
-		return []provider.Message{
-			{
-				Role: provider.RoleUser, Turn: 1,
-				Blocks: []provider.ContentBlock{{
-					Type: provider.ContentText,
-					Text: "audit the parser " + strings.Repeat("explore ", 80),
-				}},
-			},
-			{
-				Role: provider.RoleAssistant, Turn: 1,
-				Blocks: []provider.ContentBlock{{
-					Type: provider.ContentText,
-					Text: "five P2s: missing overflow test",
-				}},
-			},
-		}, nil
+	lookup := func(_ context.Context, turn uint64) (*Entry, error) {
+		return &Entry{Transcript: "[turn 1 user] audit the parser " + strings.Repeat("explore ", 80) +
+			"\n[turn 1 assistant] five P2s: missing overflow test\n"}, nil
 	}
 	if err := Register(registry, lookup); err != nil {
 		t.Fatal(err)

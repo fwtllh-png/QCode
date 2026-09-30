@@ -6,7 +6,7 @@ import (
 	"path"
 	"sort"
 
-	"github.com/fwtllh-png/QCode/internal/platform/symbols"
+	"github.com/fwtllh-png/QCode/internal/common/symbols"
 )
 
 // ReferenceRelation is a candidate backed by an occurrence in a specific

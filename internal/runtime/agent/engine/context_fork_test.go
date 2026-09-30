@@ -12,6 +12,8 @@ import (
 
 	"github.com/fwtllh-png/QCode/internal/adapter/provider"
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
+	"github.com/fwtllh-png/QCode/internal/common/contextsnapshot"
+	agentcontext "github.com/fwtllh-png/QCode/internal/runtime/agent/context"
 )
 
 func TestCurrentTurnSpecReturnsFrozenActiveSpec(t *testing.T) {
@@ -40,6 +42,37 @@ func TestCurrentTurnSpecReturnsFrozenActiveSpec(t *testing.T) {
 	second := engine.CurrentTurnSpec()
 	if second.Request.Attachments[0].Name != "context.txt" {
 		t.Fatalf("snapshot aliases engine state: %+v", second)
+	}
+}
+
+func TestParentContextSnapshotRequiresExactTurn(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		activeTurn  string
+		requestTurn string
+		wantError   string
+	}{
+		{"missing scope", "", "turn-parent", "has no context snapshot"},
+		{"missing turn", "turn-parent", "", "parent turn id is required"},
+		{"changed turn", "turn-next", "turn-parent", "parent turn changed from turn-parent to turn-next"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			engine := &Engine{}
+			if test.activeTurn != "" {
+				engine.publishScope(&Scope{
+					engine: engine,
+					spec: TurnSpec{Identity: TurnIdentity{
+						ThreadID: "thread-parent", TurnID: test.activeTurn,
+					}},
+				})
+			}
+			_, err := engine.ParentContextSnapshot(contextsnapshot.SourceRef{
+				ThreadID: "thread-parent", TurnID: test.requestTurn,
+			})
+			if err == nil || !strings.Contains(err.Error(), test.wantError) {
+				t.Fatalf("snapshot error = %v, want %q", err, test.wantError)
+			}
+		})
 	}
 }
 
@@ -164,5 +197,87 @@ func TestWorkspaceExcerptRejectsEscapesAndUnreadableInput(t *testing.T) {
 	}
 	if _, ok := engine.WorkspaceExcerpt("node.go", 0); ok {
 		t.Fatal("zero bound produced an excerpt")
+	}
+}
+
+func TestProjectMessagesExcludesOpaqueParentContent(t *testing.T) {
+	messages := []provider.Message{
+		provider.TextMessage(provider.RoleUser, "parent goal"),
+		{
+			Role: provider.RoleAssistant, Turn: 1,
+			Provenance: &provider.AssistantProvenance{
+				Adapter: "openai", Provider: "openai", Model: "model",
+				Replay: &provider.ReplayState{
+					Version:       provider.ReplayVersion,
+					ContentDigest: "opaque-digest",
+					Data:          []byte(`{"private":"replay"}`),
+				},
+			},
+			Blocks: []provider.ContentBlock{
+				{Type: provider.ContentText, Text: "visible"},
+				{Type: provider.ContentReasoning, Text: "private reasoning"},
+				{Type: provider.ContentToolCall, ToolCall: &provider.ToolCall{
+					ID: "call-1", Name: "file_read", Arguments: `{"path":"a.go"}`,
+				}},
+			},
+		},
+		{
+			Role: provider.RoleTool, Turn: 1,
+			Blocks: []provider.ContentBlock{{
+				Type: provider.ContentToolResult,
+				ToolResult: &provider.ToolResult{
+					CallID: "call-1", Content: "file body",
+				},
+			}},
+		},
+	}
+	projected := projectMessages(messages)
+	if parentGoal(projected, "") != "parent goal" {
+		t.Fatalf("projected = %+v", projected)
+	}
+	rendered := strings.Builder{}
+	for _, message := range projected {
+		for _, block := range message.Blocks {
+			rendered.WriteString(block.Text)
+			rendered.WriteString(block.Arguments)
+		}
+	}
+	if strings.Contains(rendered.String(), "private reasoning") ||
+		strings.Contains(rendered.String(), "opaque") ||
+		strings.Contains(rendered.String(), "replay") ||
+		!strings.Contains(rendered.String(), "visible") ||
+		!strings.Contains(rendered.String(), "file body") {
+		t.Fatalf("projected messages = %+v", projected)
+	}
+}
+
+func TestLatestWorldTextUsesTypedMarkerAndTombstone(t *testing.T) {
+	message := provider.TextMessage(provider.RoleSystem, "coding rules")
+	full, err := agentcontext.ProjectWorld(
+		[]agentcontext.WorldSection{{
+			ID: "coding_policy", Digest: "digest-1",
+			Present: true, Message: &message,
+		}},
+		agentcontext.WorldBaseline{},
+		nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := latestWorldText(full.Messages, "coding_policy"); got != "coding rules" {
+		t.Fatalf("world text=%q", got)
+	}
+	history := append([]provider.Message(nil), full.Messages...)
+	removed, err := agentcontext.ProjectWorld(
+		nil,
+		full.Baseline,
+		history,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	history = append(history, removed.Messages...)
+	if got := latestWorldText(history, "coding_policy"); got != "" {
+		t.Fatalf("removed world text=%q", got)
 	}
 }

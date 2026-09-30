@@ -16,7 +16,7 @@ import (
 	"sync"
 
 	"github.com/fwtllh-png/QCode/internal/adapter/model"
-	"github.com/fwtllh-png/QCode/internal/persist/atomicfile"
+	"github.com/fwtllh-png/QCode/internal/common/atomicfile"
 	"github.com/fwtllh-png/QCode/internal/persist/state"
 	apppersistence "github.com/fwtllh-png/QCode/internal/runtime/app/persistence"
 	"github.com/fwtllh-png/QCode/internal/runtime/app/wire"

@@ -9,7 +9,7 @@ import (
 	"github.com/fwtllh-png/QCode/internal/adapter/provider"
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
 	"github.com/fwtllh-png/QCode/internal/adapter/tool/interact"
-	"github.com/fwtllh-png/QCode/internal/observability/diagnostics"
+	"github.com/fwtllh-png/QCode/internal/observability/verify"
 	agentcontext "github.com/fwtllh-png/QCode/internal/runtime/agent/context"
 	promptcontext "github.com/fwtllh-png/QCode/internal/runtime/agent/prompt"
 	"github.com/fwtllh-png/QCode/internal/runtime/agent/turnkernel"
@@ -135,7 +135,7 @@ func TestDiagnosticsAndPlanFeedTheWorkingSet(t *testing.T) {
 	engine.options.Workspace = t.TempDir()
 	engine.turn = 2
 
-	engine.recordTurnDiagnostics([]diagnostics.Receipt{{Path: "broken.go", Status: "failed"}})
+	engine.recordTurnDiagnostics([]verify.DiagnosticReceipt{{Path: "broken.go", Status: "failed"}})
 	engine.observePaths(agentcontext.SourcePlan, []string{"design.md"})
 
 	entries := engine.WorkingSetEntries(2, 10)

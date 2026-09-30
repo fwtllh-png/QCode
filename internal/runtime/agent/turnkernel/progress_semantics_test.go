@@ -7,7 +7,6 @@ import (
 
 	"github.com/fwtllh-png/QCode/internal/adapter/provider"
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
-	"github.com/fwtllh-png/QCode/internal/observability/diagnostics"
 	"github.com/fwtllh-png/QCode/internal/observability/verify"
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
 )
@@ -52,7 +51,7 @@ func TestResultObservationIgnoresPresentationAndAttemptIdentity(t *testing.T) {
 	for _, isError := range []bool{false, true} {
 		first := tool.Result{Admission: &provider.AdmissionReceipt{Digest: "first-output"}, IsError: isError, Content: "elapsed=1 /tmp/first", Handle: "one", Outcome: &tool.Outcome{Facts: &tool.OutcomeFacts{
 			ProcessSession: &tool.ProcessSessionFact{SessionID: "one", Cursor: 10, ExitCode: 1},
-			Diagnostics:    []diagnostics.Receipt{{Path: "a.go", Status: "failed", Message: "elapsed=1", Diagnostics: []diagnostics.Diagnostic{{Path: "a.go", Code: "E1", Message: "/tmp/first"}}}},
+			Diagnostics:    []verify.DiagnosticReceipt{{Path: "a.go", Status: "failed", Message: "elapsed=1", Diagnostics: []verify.Diagnostic{{Path: "a.go", Code: "E1", Message: "/tmp/first"}}}},
 			Verification:   &verify.Evidence{Kind: "test", Status: verify.StatusFailed, InputDigest: "input", CallID: "one", CommandDigest: "one", MutationRevision: 1},
 		}}}
 		second := first
@@ -89,8 +88,8 @@ func TestStructuredResultChangesRenewProgress(t *testing.T) {
 			{WorkspaceChanges: []tool.WorkspaceChange{{Path: "a.go", Kind: tool.WorkspaceModified, AfterDigest: "new"}}},
 		},
 		"diagnostic code": {
-			{Diagnostics: []diagnostics.Receipt{{Path: "a.go", Diagnostics: []diagnostics.Diagnostic{{Path: "a.go", Code: "E1"}}}}},
-			{Diagnostics: []diagnostics.Receipt{{Path: "a.go", Diagnostics: []diagnostics.Diagnostic{{Path: "a.go", Code: "E2"}}}}},
+			{Diagnostics: []verify.DiagnosticReceipt{{Path: "a.go", Diagnostics: []verify.Diagnostic{{Path: "a.go", Code: "E1"}}}}},
+			{Diagnostics: []verify.DiagnosticReceipt{{Path: "a.go", Diagnostics: []verify.Diagnostic{{Path: "a.go", Code: "E2"}}}}},
 		},
 		"verification passed": {
 			{Verification: &verify.Evidence{Kind: "test", Status: verify.StatusFailed, InputDigest: "input", ExitCode: 1}},

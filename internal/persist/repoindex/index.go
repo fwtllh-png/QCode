@@ -10,8 +10,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/fwtllh-png/QCode/internal/common/symbols"
 	"github.com/fwtllh-png/QCode/internal/platform/repowalk"
-	"github.com/fwtllh-png/QCode/internal/platform/symbols"
 )
 
 // IndexerVersion identifies the extraction rules that produced the stored rows.
@@ -27,7 +27,8 @@ import (
 // the file rows.
 // Version 4 adds grammar-based declarations, identifiers and imports.
 // Version 5 records scoped reference sites for Go and JS/TS.
-const IndexerVersion = 5
+// Version 6 retains reliable partial syntax and fixes scope and detail bounds.
+const IndexerVersion = 6
 
 // Index states a consumer can see.
 const (
@@ -822,7 +823,7 @@ func (i *Index) scan(ctx context.Context, entry repowalk.Entry) (Record, bool) {
 	}
 	// Import specifiers are recorded raw; the graph build resolves them once
 	// the whole file set is confirmed.
-	if extracted.Resolution == symbols.ResolutionSyntax {
+	if extracted.Resolution == symbols.ResolutionSyntax || extracted.Resolution == symbols.ResolutionSyntaxPartial {
 		record.Imports = extracted.Imports
 	} else {
 		record.Imports = parseImports(language, content.Data)
@@ -862,9 +863,10 @@ func (i *Index) prune(ctx context.Context, entries []repowalk.Entry, existing ma
 // Resolution labels grammar-derived syntax, lexical rules or generic heuristics.
 // Consumers propagate the weakest tier instead of claiming semantic precision.
 const (
-	ResolutionHeuristic = symbols.ResolutionHeuristic
-	ResolutionLexical   = symbols.ResolutionLexical
-	ResolutionSyntax    = symbols.ResolutionSyntax
+	ResolutionHeuristic     = symbols.ResolutionHeuristic
+	ResolutionLexical       = symbols.ResolutionLexical
+	ResolutionSyntax        = symbols.ResolutionSyntax
+	ResolutionSyntaxPartial = symbols.ResolutionSyntaxPartial
 )
 
 // WeakestResolution names the least trusted tier a result set carries, so a
@@ -877,6 +879,10 @@ func WeakestResolution(found []Symbol) string {
 			return ResolutionHeuristic
 		case ResolutionLexical:
 			weakest = ResolutionLexical
+		case ResolutionSyntaxPartial:
+			if weakest == "" || weakest == ResolutionSyntax {
+				weakest = ResolutionSyntaxPartial
+			}
 		case ResolutionSyntax:
 			if weakest == "" {
 				weakest = ResolutionSyntax

@@ -5,8 +5,8 @@ import (
 
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
 	toolguard "github.com/fwtllh-png/QCode/internal/adapter/tool/guard"
-	"github.com/fwtllh-png/QCode/internal/environment"
-	"github.com/fwtllh-png/QCode/internal/observability/diagnostics"
+	"github.com/fwtllh-png/QCode/internal/common/environment"
+	"github.com/fwtllh-png/QCode/internal/observability/verify"
 	"github.com/fwtllh-png/QCode/internal/persist/workspacejournal"
 	securitypolicy "github.com/fwtllh-png/QCode/internal/security/policy"
 )
@@ -17,7 +17,7 @@ type guardFactory struct {
 	workspace, workspaceID string
 	journal                *workspacejournal.Manager
 	readTracker            *workspacejournal.ReadTracker
-	diagnostics            diagnostics.Runner
+	diagnostics            verify.DiagnosticRunner
 	permissions            *securitypolicy.PermissionsStore
 	onNetworkAllow         toolguard.NetworkAllow
 	leaseAuthority         *toolguard.LeaseAuthority

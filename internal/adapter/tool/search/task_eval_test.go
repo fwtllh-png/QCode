@@ -123,7 +123,9 @@ func TestRepositoryTaskEvaluation(t *testing.T) {
 	files := map[string]string{}
 	digests := map[string]string{}
 	for _, path := range corpus.Files {
-		if !strings.HasPrefix(path, "internal/platform/") || filepath.ToSlash(filepath.Clean(path)) != path || strings.Contains(path, "..") || !strings.HasSuffix(path, ".go") {
+		allowed := strings.HasPrefix(path, "internal/platform/") ||
+			strings.HasPrefix(path, "internal/common/symbols/")
+		if !allowed || filepath.ToSlash(filepath.Clean(path)) != path || strings.Contains(path, "..") || !strings.HasSuffix(path, ".go") {
 			t.Fatalf("not an allowed source path: %s", path)
 		}
 		full := filepath.Join("../../../..", path)

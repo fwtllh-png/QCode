@@ -49,7 +49,10 @@ func TestChildSkillsUseOwnCatalogAndRediscoverPrivateHome(t *testing.T) {
 			}
 			options := child.Underlying().OptionsSeed()
 			listed := listChildSkills(t, options.Tools)
-			for _, name := range []string{"local-guide", "user-guide", "system-debugging"} {
+			if len(listed) != 2 {
+				t.Fatalf("child skills = %+v", listed)
+			}
+			for _, name := range []string{"local-guide", "user-guide"} {
 				if listed[name].Handle == "" {
 					t.Fatalf("child skills missing %s: %+v", name, listed)
 				}
@@ -166,6 +169,7 @@ func TestChildSkillsUseOwnCatalogAndRediscoverPrivateHome(t *testing.T) {
 func TestChildSkillsKeepOwnerLockAndRejectDrift(t *testing.T) {
 	workspace, root := t.TempDir(), t.TempDir()
 	paths := childSkillPaths(t, workspace)
+	writeChildSkill(t, root, "local-guide", "Local instructions without a manifest.")
 	for _, directory := range []string{workspace, root} {
 		writeChildSkill(t, directory, "governed", "Locked instructions.")
 		manifest := "schema_version = 1\nname = \"governed\"\nversion = \"1.0.0\"\nqcode = \">=0.0.0-0\"\n"
@@ -179,7 +183,7 @@ func TestChildSkillsKeepOwnerLockAndRejectDrift(t *testing.T) {
 		t.Fatal(err)
 	}
 	catalog, err := skill.Discover(skill.DiscoveryOptions{
-		Workspace: workspace, UserHome: paths.UserHome, IncludeBuiltins: true,
+		Workspace: workspace, UserHome: paths.UserHome,
 		Lock: lock, RuntimeVersion: buildinfo.Version,
 	})
 	if err != nil {
@@ -217,9 +221,9 @@ func TestChildSkillsKeepOwnerLockAndRejectDrift(t *testing.T) {
 	if _, err := readChildSkill(t, registry, handle); !errors.Is(err, skill.ErrLockDrift) {
 		t.Fatalf("rebuilt child accepted unlocked content: %v", err)
 	}
-	builtin := listChildSkills(t, registry)["system-debugging"]
-	if _, err := readChildSkill(t, registry, builtin.Handle); err != nil {
-		t.Fatalf("lock drift blocked builtin skill: %v", err)
+	local := listChildSkills(t, registry)["local-guide"]
+	if _, err := readChildSkill(t, registry, local.Handle); err != nil {
+		t.Fatalf("lock drift blocked local skill without a manifest: %v", err)
 	}
 	after, err := os.ReadFile(paths.SkillsLockPath)
 	if err != nil || string(after) != string(lockedBytes) {

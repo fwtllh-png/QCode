@@ -4,41 +4,10 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
-	"sync"
 	"testing"
 )
-
-func TestManifestStrictSchemaAndCompatibility(t *testing.T) {
-	_, err := ParseManifest([]byte(`
-schema_version = 1
-name = "review"
-version = "1.2"
-qcode = ">=1.0.0"
-unknown = true
-`))
-	if err == nil {
-		t.Fatal("invalid manifest was accepted")
-	}
-	manifest, err := ParseManifest([]byte(`
-schema_version = 1
-name = "review"
-version = "1.2.0"
-qcode = ">=1.0.0 <2.0.0"
-
-[dependencies]
-repository-context = "^2.1.0"
-`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := checkVersion(manifest.QCode, "1.5.0"); err != nil {
-		t.Fatal(err)
-	}
-	if err := checkVersion(manifest.QCode, "2.0.0"); err == nil {
-		t.Fatal("incompatible runtime was accepted")
-	}
-}
 
 func TestResolveLockLoadPlanAndDigestDrift(t *testing.T) {
 	workspace := t.TempDir()
@@ -173,73 +142,87 @@ func TestLegacyWorkspaceSkillRemainsLocalUnlocked(t *testing.T) {
 	}
 }
 
-func TestConfiguredSkillWithoutManifestFailsDiscovery(t *testing.T) {
-	configured := t.TempDir()
-	writeSkill(t, configured, "review", "Review", "Run the review.")
-	_, err := Discover(DiscoveryOptions{
+func TestSkillLockInventoryIsIndependentOfEnablement(t *testing.T) {
+	configured, stateDir := t.TempDir(), t.TempDir()
+	writeGovernedSkill(t, configured, "alpha", "1.0.0", "alpha", "Alpha instructions.", nil)
+	writeGovernedSkill(t, configured, "beta", "1.0.0", "beta", "Beta instructions.", nil)
+	writeGovernedSkill(t, configured, "dependent", "1.0.0", "dependent", "Dependent instructions.",
+		map[string]string{"alpha": "^1.0.0"})
+	state, err := NewStateStore(filepath.Join(stateDir, "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	lock, err := NewLockStore(filepath.Join(stateDir, "lock.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	options := DiscoveryOptions{
 		Workspace: t.TempDir(), ConfiguredDir: configured, UserHome: t.TempDir(),
-		RuntimeVersion: "1.0.0",
-	})
-	if err == nil || !strings.Contains(err.Error(), "requires skill.toml") {
-		t.Fatalf("Discover() error = %v", err)
+		RuntimeVersion: "1.0.0", State: state, Lock: lock,
 	}
-}
-
-func TestLockStoreConcurrentWritesRemainDecodable(t *testing.T) {
-	store, err := NewLockStore(filepath.Join(t.TempDir(), "skills.lock.json"))
+	catalog, err := Discover(options)
 	if err != nil {
 		t.Fatal(err)
 	}
-	lockfile := Lockfile{
-		SchemaVersion: LockSchemaV1, RuntimeVersion: "1.0.0",
-		Skills: []LockEntry{{
-			Name: "review", Version: "1.0.0", Source: SourceConfigured,
-			Digest: strings.Repeat("a", 64),
-		}},
-	}
-	const count = 32
-	var wait sync.WaitGroup
-	for range count {
-		wait.Add(1)
-		go func() {
-			defer wait.Done()
-			if err := store.Write(lockfile); err != nil {
-				t.Errorf("Write(): %v", err)
-			}
-			if _, err := store.Read(); err != nil {
-				t.Errorf("Read(): %v", err)
-			}
-		}()
-	}
-	wait.Wait()
-	if _, err := store.Read(); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestLockStoreRejectsUnknownFieldsAndSymlinkParent(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "skills.lock.json")
-	store, err := NewLockStore(path)
+	baseline, err := catalog.WriteLock(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, []byte(`{
-		"schema_version": 1,
-		"runtime_version": "1.0.0",
-		"skills": [],
-		"unknown": true
-	}`), 0o600); err != nil {
+	lockedBytes, err := os.ReadFile(lock.Path())
+	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Read(); err == nil {
-		t.Fatal("lock with unknown field was accepted")
-	}
-	realParent := t.TempDir()
-	linkRoot := filepath.Join(t.TempDir(), "linked")
-	if err := os.Symlink(realParent, linkRoot); err != nil {
+	if err := catalog.SetEnabled("alpha", false); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := NewLockStore(filepath.Join(linkRoot, "lock.json")); err == nil {
-		t.Fatal("lock store accepted symlink parent")
+	afterDisable, err := os.ReadFile(lock.Path())
+	if err != nil || string(afterDisable) != string(lockedBytes) {
+		t.Fatalf("disable changed lock bytes: %v", err)
+	}
+	for _, reopen := range []bool{false, true} {
+		if reopen {
+			catalog, err = Discover(options)
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := catalog.Verify(t.Context()); err != nil {
+			t.Fatalf("reopen=%t: disable invalidated lock: %v", reopen, err)
+		}
+		loaded, err := catalog.Load(t.Context(), "beta")
+		if err != nil || loaded.Content != "Beta instructions." || !loaded.Locked {
+			t.Fatalf("reopen=%t: independent load = %+v, %v", reopen, loaded, err)
+		}
+		for _, name := range []string{"alpha", "dependent"} {
+			if _, err := catalog.LoadPlan(t.Context(), name); !errors.Is(err, ErrDependencyConflict) {
+				t.Fatalf("reopen=%t: disabled dependency load %q = %v", reopen, name, err)
+			}
+		}
+		inventory, err := catalog.Resolve(t.Context())
+		if err != nil || len(inventory) != 3 {
+			t.Fatalf("reopen=%t: inventory = %+v, %v", reopen, inventory, err)
+		}
+		relocked, err := catalog.WriteLock(t.Context())
+		if err != nil || !reflect.DeepEqual(baseline, relocked) {
+			t.Fatalf("reopen=%t: relock changed inventory: %+v, %v", reopen, relocked, err)
+		}
+	}
+	if err := catalog.SetEnabled("alpha", true); err != nil {
+		t.Fatal(err)
+	}
+	if plan, err := catalog.LoadPlan(t.Context(), "dependent"); err != nil || len(plan) != 2 {
+		t.Fatalf("re-enabled dependency plan = %+v, %v", plan, err)
+	}
+
+	// Disabling an entry must not exempt its installed bytes from integrity checks.
+	if err := catalog.SetEnabled("alpha", false); err != nil {
+		t.Fatal(err)
+	}
+	writeGovernedSkill(t, configured, "alpha", "1.0.0", "alpha", "Changed instructions.", nil)
+	if err := catalog.Verify(t.Context()); !errors.Is(err, ErrLockDrift) {
+		t.Fatalf("disabled content drift verification = %v", err)
+	}
+	if _, err := catalog.WriteLock(t.Context()); !errors.Is(err, ErrLockDrift) {
+		t.Fatalf("stale catalog relocked changed disabled content: %v", err)
 	}
 }

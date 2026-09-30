@@ -3,7 +3,7 @@ package protocol
 import (
 	"errors"
 
-	runtimefault "github.com/fwtllh-png/QCode/internal/runtime/fault"
+	runtimefault "github.com/fwtllh-png/QCode/internal/common/fault"
 )
 
 type ErrorCode = runtimefault.Code

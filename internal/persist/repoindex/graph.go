@@ -2,7 +2,7 @@ package repoindex
 
 import (
 	"context"
-	"github.com/fwtllh-png/QCode/internal/platform/symbols"
+	"github.com/fwtllh-png/QCode/internal/common/symbols"
 	"path"
 	"sort"
 )

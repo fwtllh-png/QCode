@@ -7,7 +7,6 @@ import (
 
 	"github.com/fwtllh-png/QCode/internal/adapter/provider"
 	providerwire "github.com/fwtllh-png/QCode/internal/adapter/provider/wire"
-	"github.com/fwtllh-png/QCode/internal/observability/providerdump"
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
 )
 
@@ -50,8 +49,8 @@ func (c *Client) openResponse(
 		protocol.FaultStageResponseHeaders,
 	)
 	problem = c.limits.Observe(rateLimitKey, c.RequestsPerSecond, response.StatusCode, response.Header, problem)
-	if providerdump.Enabled(response.StatusCode) {
-		if dumpPath, dumpErr := providerdump.Write(
+	if providerDumpEnabled(response.StatusCode) {
+		if dumpPath, dumpErr := writeProviderDump(
 			request, call.Body, call.Path, response.StatusCode, errorText,
 		); dumpErr == nil && dumpPath != "" {
 			if typed, ok := problem.(*protocol.Problem); ok {

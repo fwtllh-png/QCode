@@ -18,7 +18,6 @@ import (
 	sqlitestate "github.com/fwtllh-png/QCode/internal/persist/state/sqlite"
 	"github.com/fwtllh-png/QCode/internal/platform/repowalk"
 	promptcontext "github.com/fwtllh-png/QCode/internal/runtime/agent/prompt"
-	"github.com/fwtllh-png/QCode/internal/runtime/agent/repository"
 	"github.com/fwtllh-png/QCode/internal/security/policy"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
 )
@@ -165,7 +164,7 @@ func newRepoContext(
 	}
 	// A typed nil *repoindex.Index would satisfy the interface and then panic on
 	// use, so an absent index has to be passed as an untyped nil.
-	var source repository.Index
+	var source promptcontext.RepositoryIndex
 	if index != nil {
 		source = index
 	}
@@ -178,7 +177,7 @@ func newRepoContext(
 		WorkingSet: settings.WorkingSet.Enabled,
 		Evidence:   settings.Evidence.Enabled,
 		Root:       root,
-		Map: repository.Options{
+		Map: promptcontext.RepositoryMapOptions{
 			MaxDirectories: settings.RepoMap.MaxDirectories,
 		},
 		Budgets: scoped,

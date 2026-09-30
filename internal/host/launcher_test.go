@@ -21,7 +21,6 @@ import (
 
 	buildinfo "github.com/fwtllh-png/QCode/internal"
 	"github.com/fwtllh-png/QCode/internal/config"
-	"github.com/fwtllh-png/QCode/internal/platform/ownerlease"
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
 	securitycredential "github.com/fwtllh-png/QCode/internal/security/credential"
 )
@@ -804,14 +803,14 @@ func launchOrigin(t *testing.T, printed string) string {
 // owners do: from the owner lease, never from the Web host.
 func fetchSupervisorToken(t *testing.T, dataDir string) string {
 	t.Helper()
-	data, err := os.ReadFile(ownerlease.Path(dataDir, webSupervisorScope))
+	data, err := os.ReadFile(ownerLeasePath(dataDir, webSupervisorScope))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(data) < 2 {
 		t.Fatal("owner lease has no metadata")
 	}
-	var metadata ownerlease.Metadata
+	var metadata ownerLeaseMetadata
 	if err := json.Unmarshal(data[1:], &metadata); err != nil {
 		t.Fatal(err)
 	}

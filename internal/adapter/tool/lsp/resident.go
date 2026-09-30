@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/fwtllh-png/QCode/internal/platform/symbols"
+	"github.com/fwtllh-png/QCode/internal/common/symbols"
 )
 
 // A resident session keeps one language server per server binary alive across
@@ -68,7 +68,7 @@ func (o ResidentOptions) withDefaults() ResidentOptions {
 // the search tools can hand a Resident instead and decide, by configuration,
 // which one it built.
 type Resident struct {
-	base    Checker
+	base Checker
 	// root is the resolved workspace root every document path and every
 	// returned location is measured against, captured once so the pool and
 	// its sessions cannot disagree about it mid-life.
@@ -95,6 +95,7 @@ type residentSession struct {
 	server   string
 	versions map[string]int
 	texts    map[string]string
+	// lastUsed is pool metadata and is protected by Resident.mu.
 	lastUsed time.Time
 }
 
@@ -229,7 +230,7 @@ func (r *Resident) exchange(
 	case opened != digest:
 		session.versions[uri]++
 		if err := session.client.notify("textDocument/didChange", map[string]any{
-			"textDocument": map[string]any{"uri": uri, "version": session.versions[uri]},
+			"textDocument":   map[string]any{"uri": uri, "version": session.versions[uri]},
 			"contentChanges": []map[string]any{{"text": text}},
 		}); err != nil {
 			r.retire(spec)
@@ -237,7 +238,9 @@ func (r *Resident) exchange(
 		}
 	}
 	session.texts[uri] = digest
+	r.mu.Lock()
 	session.lastUsed = time.Now()
+	r.mu.Unlock()
 
 	params := map[string]any{
 		"textDocument": map[string]any{"uri": uri},

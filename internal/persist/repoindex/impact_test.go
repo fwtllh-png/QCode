@@ -236,7 +236,7 @@ func TestQCodeRelatedTestsEvidence(t *testing.T) {
 	root := t.TempDir()
 	const source = "internal/platform/repowalk/repowalk.go"
 	const expected = "internal/platform/repowalk/repowalk_test.go"
-	paths := []string{source, expected, "internal/platform/symbols/references_test.go"}
+	paths := []string{source, expected, "internal/common/symbols/references_test.go"}
 	content := map[string]string{}
 	for _, path := range paths {
 		data, err := os.ReadFile("../../../" + path)

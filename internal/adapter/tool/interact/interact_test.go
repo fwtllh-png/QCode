@@ -6,7 +6,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -179,16 +178,6 @@ func TestUpdatePlanAppearsInContextReceipts(t *testing.T) {
 	if !strings.Contains(result.Content, "ship interact tools") {
 		t.Fatalf("rich fields missing: %+v", result)
 	}
-	rendered := interact.FormatPlan(interact.Plan{
-		Title: "P24", Steps: []interact.PlanStep{{Title: "wire input"}}, Objective: "ship interact tools",
-		VerificationPlan: "go test", CriticalFiles: []string{"interact.go"},
-		HandoffPacket: "next: land relay",
-	})
-	if !strings.Contains(rendered, "objective: ship interact tools") ||
-		!strings.Contains(rendered, "verification_plan: go test") ||
-		!strings.Contains(rendered, "handoff_packet: next: land relay") {
-		t.Fatalf("FormatPlan = %s", rendered)
-	}
 	found := false
 	for _, receipt := range eng.ContextReceipts() {
 		if receipt.Kind == promptcontext.PartitionPlan {
@@ -197,45 +186,6 @@ func TestUpdatePlanAppearsInContextReceipts(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("receipts = %+v", eng.ContextReceipts())
-	}
-}
-
-func TestPlanReceiptDigestTracksSameLengthChanges(t *testing.T) {
-	first := interact.PlanReceipt(interact.Plan{
-		Steps: []interact.PlanStep{{Title: "read a.go"}},
-	})
-	second := interact.PlanReceipt(interact.Plan{
-		Steps: []interact.PlanStep{{Title: "read b.go"}},
-	})
-	if first.OriginalBytes != second.OriginalBytes || first.Digest == second.Digest {
-		t.Fatalf("plan receipts = %+v / %+v", first, second)
-	}
-}
-
-// A plan written before steps carried a status still deserializes, which is what
-// lets a recorded history or an older model reply survive the schema change.
-func TestPlanStepsAcceptBothShapes(t *testing.T) {
-	var plan interact.Plan
-	raw := `{"steps":["bare step",{"title":"typed step","status":"in_progress"},{"title":"odd","status":"WAT"}]}`
-	if err := json.Unmarshal([]byte(raw), &plan); err != nil {
-		t.Fatal(err)
-	}
-	want := []interact.PlanStep{
-		{Title: "bare step", Status: interact.StepPending},
-		{Title: "typed step", Status: interact.StepInProgress},
-		{Title: "odd", Status: interact.StepPending},
-	}
-	for index, step := range want {
-		if !reflect.DeepEqual(plan.Steps[index], step) {
-			t.Fatalf("step %d = %+v, want %+v", index, plan.Steps[index], step)
-		}
-	}
-	rendered := interact.FormatPlan(plan)
-	if !strings.Contains(rendered, "1. bare step\n") {
-		t.Fatalf("pending step was decorated: %s", rendered)
-	}
-	if !strings.Contains(rendered, "2. typed step [in_progress]") {
-		t.Fatalf("status missing: %s", rendered)
 	}
 }
 
@@ -327,17 +277,6 @@ func TestDebugSubmitPlanDirectoryBaselineEvidence(t *testing.T) {
 	}
 	if result.IsError {
 		t.Fatalf("submit_plan result = %+v", result)
-	}
-}
-
-func TestOutstandingStepsCountsFinishedWork(t *testing.T) {
-	plan := interact.Plan{Steps: []interact.PlanStep{
-		{Title: "a", Status: interact.StepDone},
-		{Title: "b", Status: interact.StepInProgress},
-	}}
-	open, done := plan.OutstandingSteps()
-	if done != 1 || len(open) != 1 || open[0].Title != "b" {
-		t.Fatalf("open = %+v done = %d", open, done)
 	}
 }
 

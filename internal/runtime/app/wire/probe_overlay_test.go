@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/fwtllh-png/QCode/internal/adapter/model"
+	"github.com/fwtllh-png/QCode/internal/persist/modelcapability"
 	sqlitestate "github.com/fwtllh-png/QCode/internal/persist/state/sqlite"
 )
 
@@ -18,7 +19,7 @@ func TestProbeOverlayUsesWireIDAndReportsMixedProvenance(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = store.Close() })
 	route := probeTestRoute(t, "logical-model", "wire-current")
-	repository := model.NewCapabilityRepository(store.DB())
+	repository := modelcapability.NewRepository(store.DB())
 	if err := repository.Upsert(t.Context(), model.CapabilityObservation{
 		ConnectionID: route.ConnectionID(),
 		ModelID:      "wire-previous",

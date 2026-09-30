@@ -9,10 +9,10 @@ import (
 	"testing"
 
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
+	"github.com/fwtllh-png/QCode/internal/common/symbols"
 	"github.com/fwtllh-png/QCode/internal/persist/repoindex"
 	sqlitestate "github.com/fwtllh-png/QCode/internal/persist/state/sqlite"
 	"github.com/fwtllh-png/QCode/internal/platform/repowalk"
-	"github.com/fwtllh-png/QCode/internal/platform/symbols"
 )
 
 type fakeSemanticProvider struct {
@@ -395,4 +395,13 @@ func openIndexDatabase(t *testing.T) *sql.DB {
 func decodeSymbols(t *testing.T, content string) []map[string]any {
 	t.Helper()
 	return decodeMatches(t, content)
+}
+
+func TestSearchSymbolReportsPartialSyntax(t *testing.T) {
+	registry := indexedRegistry(t, map[string]string{"api.go": "package p\nfunc Real() {}\nfunc Broken(\n"})
+	result := execute(t, registry, KindSymbol, map[string]any{"query": "Real"})
+	matches := decodeSymbols(t, result.Content)
+	if len(matches) != 1 || result.Metadata["resolution"] != repoindex.ResolutionSyntaxPartial {
+		t.Fatalf("partial symbol result=%+v", result)
+	}
 }

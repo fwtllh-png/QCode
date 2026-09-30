@@ -17,7 +17,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/fwtllh-png/QCode/internal/platform/oscontract"
 	securitymodel "github.com/fwtllh-png/QCode/internal/security/model"
 	securitypaths "github.com/fwtllh-png/QCode/internal/security/pathpolicy"
 )
@@ -386,8 +385,8 @@ func seatbeltProfileForCommand(
 		"(allow file-write* (subpath %s))\n",
 		seatbeltQuote(policy.PrivateTemp),
 	)
-	if contract, ok := oscontract.DarwinExecutable(executable); ok {
-		profile.WriteString(contract.SeatbeltRules)
+	if contract, ok := darwinExecutableContract(executable); ok {
+		profile.WriteString(contract.seatbeltRules)
 	}
 
 	// macOS tools often lstat ancestors (/private, /private/var, …) while

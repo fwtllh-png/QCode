@@ -19,9 +19,9 @@ import (
 	"unicode/utf8"
 
 	"github.com/fwtllh-png/QCode/internal/adapter/provider"
-	"github.com/fwtllh-png/QCode/internal/observability/diagnostics"
+	"github.com/fwtllh-png/QCode/internal/common/tokenestimate"
+	"github.com/fwtllh-png/QCode/internal/observability/verify"
 	"github.com/fwtllh-png/QCode/internal/persist/contentstore"
-	"github.com/fwtllh-png/QCode/internal/platform/tokenestimate"
 	securitymodel "github.com/fwtllh-png/QCode/internal/security/model"
 	"github.com/fwtllh-png/QCode/internal/security/netpolicy"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
@@ -1610,7 +1610,7 @@ func ModelResult(name string, result Result) Result {
 		len(result.Outcome.Facts.Diagnostics) != 0 {
 		result.Metadata = cloneMetadata(result.Metadata)
 		result.Metadata["diagnostics"] = append(
-			[]diagnostics.Receipt(nil),
+			[]verify.DiagnosticReceipt(nil),
 			result.Outcome.Facts.Diagnostics...,
 		)
 	}

@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"github.com/creack/pty"
-	"github.com/fwtllh-png/QCode/internal/observability/tracecontext"
+	"github.com/fwtllh-png/QCode/internal/common/tracecontext"
 	"github.com/fwtllh-png/QCode/internal/security/envpolicy"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
 )

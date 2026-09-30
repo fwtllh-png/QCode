@@ -10,7 +10,7 @@ import (
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
 )
 
-func TestMCPContributorDefersAdapterUntilBackgroundRefresh(t *testing.T) {
+func TestMCPContributorDefersConnectionsUntilBackgroundRefresh(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "mcp.json")
 	if err := os.WriteFile(
 		path,
@@ -37,6 +37,7 @@ func TestMCPContributorDefersAdapterUntilBackgroundRefresh(t *testing.T) {
 		t.Fatal(err)
 	}
 	registry := tool.NewRegistry(nil, nil)
+	initialGeneration := registry.Generation()
 	config, err := mcpruntime.LoadConfig(path)
 	if err != nil {
 		t.Fatal(err)
@@ -59,8 +60,14 @@ func TestMCPContributorDefersAdapterUntilBackgroundRefresh(t *testing.T) {
 		prewarm.Stop()
 		_ = pool.ShutdownAll(t.Context())
 	})
-	if prewarm.adapter != nil || prewarm.cancel != nil {
-		t.Fatal("MCP contributor started background adapter work")
+	if snapshots := pool.HealthSnapshots(); len(snapshots) != 0 {
+		t.Fatalf("MCP contributor initialized server connections: %+v", snapshots)
+	}
+	if catalog := pool.Catalog(); len(catalog) != 0 {
+		t.Fatalf("MCP contributor discovered tools: %+v", catalog)
+	}
+	if registry.Generation() != initialGeneration {
+		t.Fatal("MCP contributor changed the tool registry before refresh")
 	}
 }
 

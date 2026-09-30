@@ -3,22 +3,73 @@
 package process
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/fwtllh-png/QCode/internal/observability/tracecontext"
+	"github.com/fwtllh-png/QCode/internal/common/tracecontext"
 	securitymodel "github.com/fwtllh-png/QCode/internal/security/model"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
 )
+
+func TestToolchainSearchPathOrdersAndDedupes(t *testing.T) {
+	first := t.TempDir()
+	second := t.TempDir()
+	host := t.TempDir()
+	t.Setenv(
+		"PATH",
+		strings.Join([]string{"", host, host, first}, string(os.PathListSeparator)),
+	)
+	ordered := ToolchainSearchPath([]string{"PATH=" + strings.Join([]string{second, first, "", host, host, first}, string(os.PathListSeparator))})
+	if len(ordered) == 0 || ordered[0] != second {
+		t.Fatalf("toolchain bins must resolve first: %v", ordered)
+	}
+	seen := make(map[string]bool)
+	for _, entry := range ordered {
+		if entry == "" {
+			t.Fatalf("empty PATH entry survived: %v", ordered)
+		}
+		if seen[entry] {
+			t.Fatalf("duplicate entry %q survived: %v", entry, ordered)
+		}
+		seen[entry] = true
+	}
+	if !seen[host] || !seen[first] {
+		t.Fatalf("host entries lost: %v", ordered)
+	}
+}
+
+func TestObservedBufferArchivesCompleteOutputBeyondRetention(t *testing.T) {
+	var archived bytes.Buffer
+	archive := &archiveState{append: func(chunk Chunk) error {
+		_, err := archived.Write(chunk.Data)
+		return err
+	}}
+	buffer := newObservedBuffer(StreamStdout, 8, nil, archive)
+	for _, value := range []string{"abcd", "efgh", "ijkl"} {
+		if _, err := buffer.Write([]byte(value)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if archived.String() != "abcdefghijkl" {
+		t.Fatalf("archive = %q", archived.String())
+	}
+	if output := buffer.String(); !strings.HasPrefix(output, "abcd\n...") ||
+		!strings.HasSuffix(output, "ijkl") {
+		t.Fatalf("bounded output = %q", output)
+	}
+	if receipt := buffer.Receipt(); receipt.OmittedBytes != 4 {
+		t.Fatalf("receipt = %+v", receipt)
+	}
+}
 
 func TestRunCapturesStreamsAndExitCode(t *testing.T) {
 	result, err := Run(t.Context(), Options{
@@ -237,67 +288,6 @@ func TestTraceContextOnlyReachesTrustedRuntimeHelpers(t *testing.T) {
 	}
 }
 
-func TestSanitizedEnvironmentRejectsSecretsAndMalformedNames(t *testing.T) {
-	for _, extra := range [][]string{
-		{"API_TOKEN=value"},
-		{"malformed"},
-		{"=leading-equals"},
-		{"1STARTSWITHDIGIT=value"},
-	} {
-		if _, err := SanitizedEnvironment(extra); err == nil {
-			t.Fatalf("SanitizedEnvironment(%q) succeeded", extra)
-		}
-	}
-	// Well-formed non-secret names are explicit reviewed input: language
-	// and build variables (CGO_ENABLED, CARGO_HOME, ...) declare freely.
-	environment, err := SanitizedEnvironment([]string{
-		"LANG=C", "CGO_ENABLED=0", "CARGO_HOME=/cargo", "GOTMPDIR=/tmp/go-tmp",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, want := range []string{
-		"LANG=C", "CGO_ENABLED=0", "CARGO_HOME=/cargo", "GOTMPDIR=/tmp/go-tmp",
-	} {
-		if !slices.Contains(environment, want) {
-			t.Fatalf("environment omitted %q: %q", want, environment)
-		}
-	}
-}
-
-func TestSanitizedEnvironmentDropsHostLanguageVariables(t *testing.T) {
-	values := map[string]string{
-		"GOPROXY":   "https://proxy.internal.example|direct",
-		"GOPRIVATE": "code.internal.example",
-		"GOSUMDB":   "sum.golang.org",
-		"GOVCS":     "public:git|hg,private:all",
-	}
-	for name, value := range values {
-		t.Setenv(name, value)
-	}
-	environment, err := SanitizedEnvironment(nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for name := range values {
-		for _, entry := range environment {
-			if strings.HasPrefix(entry, name+"=") {
-				t.Fatalf("host language variable %s leaked: %q", name, entry)
-			}
-		}
-	}
-	// Explicit declarations are the delivery path for the same names.
-	environment, err = SanitizedEnvironment([]string{
-		"GOPROXY=https://proxy.internal.example|direct",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !slices.Contains(environment, "GOPROXY=https://proxy.internal.example|direct") {
-		t.Fatalf("declared GOPROXY omitted: %q", environment)
-	}
-}
-
 func TestRunUsesInjectedStrongSandboxBackend(t *testing.T) {
 	root := t.TempDir()
 	directory, err := os.Open(root)
@@ -449,51 +439,6 @@ func TestV1ShellUsesNonLoginCommand(t *testing.T) {
 		if arg == "-lc" {
 			t.Fatalf("v1 still used a login shell: %+v", backend.command.Args)
 		}
-	}
-}
-
-func TestRunPinsWorkingDirectoryToDescriptor(t *testing.T) {
-	root := t.TempDir()
-	outside := t.TempDir()
-	directory := filepath.Join(root, "dir")
-	if err := os.Mkdir(directory, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(directory, "marker"), []byte("inside"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(outside, "marker"), []byte("outside"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	workspace, err := sandbox.NewWorkspace(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	directoryFile, err := workspace.OpenDirectory("dir")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer directoryFile.Close()
-	if err := os.Rename(directory, filepath.Join(root, "original")); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(outside, directory); err != nil {
-		t.Fatal(err)
-	}
-
-	backend := &recordingBackend{root: root}
-	result, err := Run(t.Context(), Options{
-		Command: "cat marker", Dir: directory, DirFile: directoryFile,
-		Sandbox: backend, RequireSandbox: true,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.Stdout != "inside" || result.ExitCode != 0 {
-		t.Fatalf("descriptor cwd result = %+v", result)
-	}
-	if backend.command.DirectoryFD != 3 {
-		t.Fatalf("prepared directory fd = %d, want 3", backend.command.DirectoryFD)
 	}
 }
 
@@ -1051,29 +996,6 @@ func TestPreparedToolchainExposurePrependsPathAndEnv(t *testing.T) {
 	}
 }
 
-func TestShellRestoresSelectedGitToolchainAfterLoginProfile(t *testing.T) {
-	if runtime.GOOS != "darwin" {
-		t.Skip("macOS login shell behavior")
-	}
-	const git = "/Library/Developer/CommandLineTools/usr/bin/git"
-	if _, err := os.Stat(git); err != nil {
-		t.Skip("Command Line Tools Git is unavailable")
-	}
-	result, err := Run(t.Context(), Options{
-		Command: `printf '%s|%s\n' "$1" "$2"; command -v git`,
-		Dir:     t.TempDir(),
-		Env:     []string{"PATH=/usr/bin:/bin", "LANG=C"},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.ExitCode != 0 ||
-		!strings.HasPrefix(result.Stdout, "|\n") ||
-		!strings.Contains(result.Stdout, filepath.Dir(git)+"/git") {
-		t.Fatalf("result = %+v", result)
-	}
-}
-
 func recordingEnvironment(values []string) []string {
 	if environmentValue(values, "PATH") != "" {
 		return append([]string(nil), values...)
@@ -1085,4 +1007,121 @@ func testNetworkControls(network securitymodel.Network) securitymodel.Controls {
 	controls := testControlMatrix()
 	controls.Network = network
 	return controls
+}
+
+// A command that prints for a while used to be invisible until it exited. The
+// observer has to see output before the command finishes, not after.
+func TestOutputArrivesBeforeTheCommandFinishes(t *testing.T) {
+	var (
+		mu     sync.Mutex
+		chunks []Chunk
+		early  = make(chan struct{})
+		once   sync.Once
+	)
+	result, err := Run(t.Context(), Options{
+		Command: `printf "first\n"; sleep 0.2; printf "second\n"`,
+		Dir:     t.TempDir(),
+		OnOutput: func(chunk Chunk) {
+			mu.Lock()
+			chunks = append(chunks, chunk)
+			mu.Unlock()
+			once.Do(func() { close(early) })
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-early:
+	default:
+		t.Fatal("no chunk was delivered while the command was running")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(chunks) < 2 {
+		t.Fatalf("chunks = %+v, want the two prints delivered separately", chunks)
+	}
+	var streamed strings.Builder
+	for _, chunk := range chunks {
+		if chunk.Stream != StreamStdout {
+			t.Fatalf("chunk stream = %q, want stdout", chunk.Stream)
+		}
+		streamed.Write(chunk.Data)
+	}
+	if streamed.String() != result.Stdout {
+		t.Fatalf("streamed %q but result has %q", streamed.String(), result.Stdout)
+	}
+	// The cursor counts bytes of the stream, so a consumer can tell it missed some.
+	if last := chunks[len(chunks)-1]; last.Cursor != uint64(len(result.Stdout)) {
+		t.Fatalf("final cursor = %d, want %d", last.Cursor, len(result.Stdout))
+	}
+}
+
+// stderr has to be distinguishable: "compiling" and "error:" belong in different
+// places even when they interleave.
+func TestChunksSayWhichStreamTheyCameFrom(t *testing.T) {
+	var (
+		mu       sync.Mutex
+		byStream = map[Stream]string{}
+	)
+	if _, err := Run(t.Context(), Options{
+		Command: `printf "out\n"; printf "err\n" 1>&2`,
+		Dir:     t.TempDir(),
+		OnOutput: func(chunk Chunk) {
+			mu.Lock()
+			byStream[chunk.Stream] += string(chunk.Data)
+			mu.Unlock()
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if byStream[StreamStdout] != "out\n" || byStream[StreamStderr] != "err\n" {
+		t.Fatalf("streams = %+v", byStream)
+	}
+}
+
+// Chunks are handed out as copies: exec reuses the read buffer, so an observer
+// that keeps a chunk must not find it rewritten underneath.
+func TestChunksSurviveLaterReads(t *testing.T) {
+	var (
+		mu   sync.Mutex
+		kept [][]byte
+	)
+	if _, err := Run(t.Context(), Options{
+		Command: `for index in 1 2 3 4 5; do printf "line-$index\n"; sleep 0.02; done`,
+		Dir:     t.TempDir(),
+		OnOutput: func(chunk Chunk) {
+			mu.Lock()
+			kept = append(kept, chunk.Data)
+			mu.Unlock()
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(kept) < 2 {
+		t.Skipf("the shell batched its writes into %d chunk(s)", len(kept))
+	}
+	for index, data := range kept {
+		if !strings.Contains(string(data), "line-") {
+			t.Fatalf("chunk %d was overwritten: %q", index, data)
+		}
+	}
+}
+
+// An unobserved command must not pay for streaming, and must still report
+// everything it printed.
+func TestOutputIsCompleteWithoutAnObserver(t *testing.T) {
+	result, err := Run(t.Context(), Options{
+		Command: `printf "one\ntwo\n"`, Dir: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Stdout != "one\ntwo\n" {
+		t.Fatalf("stdout = %q", result.Stdout)
+	}
 }

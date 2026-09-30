@@ -7,7 +7,6 @@ import (
 	"github.com/fwtllh-png/QCode/internal"
 	"github.com/fwtllh-png/QCode/internal/adapter/skill"
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
-	skilltool "github.com/fwtllh-png/QCode/internal/adapter/tool/skill"
 )
 
 type skillContributor struct {
@@ -35,16 +34,15 @@ func (c skillContributor) Contribute(
 	catalog, err := skill.Discover(skill.DiscoveryOptions{
 		Workspace: c.workspace, ConfiguredDir: c.paths.SkillsConfiguredDir,
 		UserHome: c.paths.UserHome, Locale: c.paths.SkillsLocale,
-		SandboxHome:     c.sandboxHome,
-		IncludeBuiltins: true,
-		State:           stateStore, Lock: lockStore, RuntimeVersion: buildinfo.Version,
+		SandboxHome: c.sandboxHome,
+		State:       stateStore, Lock: lockStore, RuntimeVersion: buildinfo.Version,
 	})
 	if err != nil {
 		return fmt.Errorf("skill discovery: %w", err)
 	}
 	// Keep the runtime and its repair control plane reachable on lock drift.
 	// Catalog.LoadPlan verifies integrity before exposing governed content.
-	if err := skilltool.RegisterDiscovery(registry, catalog); err != nil {
+	if err := skill.RegisterDiscovery(registry, catalog); err != nil {
 		return fmt.Errorf("skill discovery tools: %w", err)
 	}
 	c.output.skillCatalog = catalog

@@ -1,6 +1,7 @@
 package engine
 
 import (
+	agentcontext "github.com/fwtllh-png/QCode/internal/runtime/agent/context"
 	"testing"
 
 	"github.com/fwtllh-png/QCode/internal/adapter/provider"
@@ -66,7 +67,7 @@ func TestDeliverablePlanCompletionPreservesExecutionObligations(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				engine.setPlan(interact.Plan{})
+				engine.setPlan(agentcontext.Plan{})
 				if _, err := engine.RestoreContextSnapshot(snapshot); err != nil {
 					t.Fatal(err)
 				}

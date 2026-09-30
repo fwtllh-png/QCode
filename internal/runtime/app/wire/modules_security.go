@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/fwtllh-png/QCode/internal/observability/diagnostics"
 	"github.com/fwtllh-png/QCode/internal/observability/verify"
 	securitypolicy "github.com/fwtllh-png/QCode/internal/security/policy"
 )
@@ -37,7 +36,7 @@ func (securityModule) Build(
 		return err
 	}
 	session.journal = journal
-	diagnosticRunner := diagnostics.NewCommandRunner(
+	diagnosticRunner := verify.NewDiagnosticCommandRunner(
 		execution.Workspace,
 		state.platform.backend,
 		state.config.diagnosticCommands,

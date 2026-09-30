@@ -1,6 +1,10 @@
 package model
 
 import (
+	"bytes"
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -192,20 +196,6 @@ func TestRouteIdentityExcludesVolatilePricing(t *testing.T) {
 	}
 }
 
-func TestCatalogRejectsAdapterProtocolMismatch(t *testing.T) {
-	_, err := NewCatalog(Provider{
-		ID: "invalid", Adapter: AdapterID("legacy"),
-		Endpoint: "https://example.com", Protocol: ProtocolOpenAIChat,
-		Models: map[string]Model{"model": {
-			ID: "model", CanonicalID: "model", WireID: "model",
-			Limits: Limits{ContextTokens: 1024, MaxOutputTokens: 128},
-		}},
-	})
-	if err == nil || !strings.Contains(err.Error(), "does not support protocol") {
-		t.Fatalf("NewCatalog() error = %v, want adapter/protocol refusal", err)
-	}
-}
-
 func TestZeroReadyRouteIsInvalid(t *testing.T) {
 	var route ReadyRoute
 	if err := route.Validate(); err == nil {
@@ -213,14 +203,124 @@ func TestZeroReadyRouteIsInvalid(t *testing.T) {
 	}
 }
 
-func TestCatalogDefensivelyCopiesProvider(t *testing.T) {
-	catalog := testCatalog(t)
-	provider, ok := catalog.Provider("openai")
-	if !ok {
-		t.Fatal("openai provider missing")
+func TestResolverRequireRefusesAModelMissingTheBit(t *testing.T) {
+	resolver, err := NewResolver(testCatalog(t))
+	if err != nil {
+		t.Fatal(err)
 	}
-	delete(provider.Models, "gpt-4.1")
-	if second, _ := catalog.Provider("openai"); len(second.Models) != 1 {
-		t.Fatal("catalog was mutated through returned provider")
+	_, err = resolver.Resolve(RouteRequest{
+		ProviderID: "deepseek", ModelID: "deepseek-chat",
+		Require: []Capability{CapVision},
+	})
+	if err == nil || !strings.Contains(err.Error(), "vision") {
+		t.Fatalf("Resolve() error = %v, want a vision refusal", err)
 	}
+	route, err := resolver.Resolve(RouteRequest{
+		ProviderID: "openai", ModelID: "gpt-4.1",
+		Require: []Capability{CapVision},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !route.Model().Capabilities.Vision {
+		t.Fatal("gpt-4.1 should advertise vision in the catalog")
+	}
+}
+
+func TestIncrementalResponsesIsAdvertisedOnlyByBundledResponsesRoute(t *testing.T) {
+	resolver, err := NewResolver(testCatalog(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	responses, err := resolver.Resolve(RouteRequest{
+		ProviderID: "openai-responses", ModelID: "gpt-4.1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	chat, err := resolver.Resolve(RouteRequest{
+		ProviderID: "openai", ModelID: "gpt-4.1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !responses.Model().Capabilities.IncrementalResponses {
+		t.Fatal("bundled Responses route must advertise incremental transport")
+	}
+	if chat.Model().Capabilities.IncrementalResponses {
+		t.Fatal("Chat route must not advertise Responses transport")
+	}
+}
+
+func TestReadyRouteWithModelIDPreservesConnection(t *testing.T) {
+	resolver, err := NewResolver(testCatalog(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	route, err := resolver.Resolve(RouteRequest{
+		ProviderID: "deepseek",
+		ModelID:    "deepseek-chat",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated := route.WithModelID("deepseek-next")
+	if updated.ProviderID() != route.ProviderID() ||
+		updated.Endpoint() != route.Endpoint() ||
+		updated.Credential() != route.Credential() {
+		t.Fatalf("connection changed: %+v", updated)
+	}
+	if updated.Model().ID != "deepseek-next" ||
+		updated.Model().WireID != "deepseek-next" {
+		t.Fatalf("model identity = %+v", updated.Model())
+	}
+	if updated.Model().Provenance != ProvenanceStartup ||
+		updated.Model().MetadataProvenance.Pricing != ProvenanceStartup ||
+		updated.Model().Pricing.Known {
+		t.Fatalf("derived model provenance = %+v", updated.Model())
+	}
+}
+
+func TestReadyRouteGolden(t *testing.T) {
+	resolver, err := NewResolver(testCatalog(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	route, err := resolver.Resolve(RouteRequest{
+		ProviderID: "openai",
+		ModelID:    "gpt-4.1",
+		Provenance: ProvenanceStartup,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	descriptor, err := route.Describe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := json.MarshalIndent(descriptor, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got = append(got, '\n')
+	want, err := os.ReadFile(filepath.Join("testdata", "route.golden.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("route golden mismatch\nGOT:\n%s\nWANT:\n%s", got, want)
+	}
+}
+
+func testRoute(t *testing.T, providerID, modelID string) ReadyRoute {
+	t.Helper()
+	resolver, err := NewResolver(testCatalog(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	route, err := resolver.Resolve(RouteRequest{ProviderID: providerID, ModelID: modelID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return route
 }

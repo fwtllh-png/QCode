@@ -188,10 +188,11 @@ func TestSessionDeltaRestoresLatestDurableSnapshot(t *testing.T) {
 	)
 	source.workingLedger().Observe(agentcontext.SourceRead, 4, "a.go")
 	source.evidenceSet().MarkChanged("a.go", 4, true)
-	plan := planFixture()
-	if err := source.ApplyPlan(plan); err != nil {
+	submitted := planFixture()
+	if err := source.ApplyPlan(submitted); err != nil {
 		t.Fatal(err)
 	}
+	plan := source.currentPlan()
 	windowContext := protocol.SampleContextData{
 		ContextDigest: "sha256:window", EstimatedTokens: 900,
 		ToolDefinitionTokens: 100,

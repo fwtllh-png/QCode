@@ -11,7 +11,7 @@ import (
 	"github.com/fwtllh-png/QCode/internal/adapter/provider"
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
 	completiontool "github.com/fwtllh-png/QCode/internal/adapter/tool/completion"
-	"github.com/fwtllh-png/QCode/internal/adapter/tool/interact"
+	agentcontext "github.com/fwtllh-png/QCode/internal/runtime/agent/context"
 	"github.com/fwtllh-png/QCode/internal/runtime/agent/turnkernel"
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
 )
@@ -21,9 +21,9 @@ func TestProgressSignatureDoesNotCountReadsWhenImplementWorkIsOpen(
 ) {
 	engine := newEngine(t, &scriptedProvider{}, tool.NewRegistry(nil, nil))
 	engine.turn = 7
-	engine.setPlan(interact.Plan{Steps: []interact.PlanStep{
-		{Title: "audit", Status: interact.StepDone},
-		{Title: "fix overflow", Status: interact.StepPending},
+	engine.setPlan(agentcontext.Plan{Steps: []agentcontext.PlanStep{
+		{Title: "audit", Status: agentcontext.StepDone},
+		{Title: "fix overflow", Status: agentcontext.StepPending},
 	}})
 	answer := newEngineTurnKernel(
 		protocol.TurnIntentAnswer,
@@ -47,9 +47,9 @@ func TestProgressSignatureDoesNotCountReadsWhenImplementWorkIsOpen(
 func TestApplyImplementProgressLeaseTightensFinishOnly(t *testing.T) {
 	engine := newEngine(t, &scriptedProvider{}, tool.NewRegistry(nil, nil))
 	engine.options.ImplementNoProgressSamples = 6
-	engine.setPlan(interact.Plan{Steps: []interact.PlanStep{
-		{Title: "audit", Status: interact.StepDone},
-		{Title: "fix overflow", Status: interact.StepPending},
+	engine.setPlan(agentcontext.Plan{Steps: []agentcontext.PlanStep{
+		{Title: "audit", Status: agentcontext.StepDone},
+		{Title: "fix overflow", Status: agentcontext.StepPending},
 	}})
 	spec := TurnSpec{
 		Kernel: turnkernel.Policy{
@@ -206,18 +206,18 @@ func TestProgressSignatureOnlyRenewsForMonotonicPlanProgress(t *testing.T) {
 		nil,
 		nil,
 	)
-	engine.setPlan(interact.Plan{Steps: []interact.PlanStep{{
-		Title: "Implement parser", Status: interact.StepPending,
+	engine.setPlan(agentcontext.Plan{Steps: []agentcontext.PlanStep{{
+		Title: "Implement parser", Status: agentcontext.StepPending,
 	}}})
 	pending := engine.progressSignature(kernel)
 
-	engine.setPlan(interact.Plan{Steps: []interact.PlanStep{{
-		Title: "Implement parser", Status: interact.StepInProgress,
+	engine.setPlan(agentcontext.Plan{Steps: []agentcontext.PlanStep{{
+		Title: "Implement parser", Status: agentcontext.StepInProgress,
 	}}})
 	inProgress := engine.progressSignature(kernel)
 
-	engine.setPlan(interact.Plan{Steps: []interact.PlanStep{{
-		Title: "Implement parser", Status: interact.StepDone,
+	engine.setPlan(agentcontext.Plan{Steps: []agentcontext.PlanStep{{
+		Title: "Implement parser", Status: agentcontext.StepDone,
 	}}})
 	done := engine.progressSignature(kernel)
 	if pending != inProgress || inProgress == done {

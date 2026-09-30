@@ -11,10 +11,11 @@ import (
 	"github.com/fwtllh-png/QCode/internal/adapter/tool/builtin"
 	"github.com/fwtllh-png/QCode/internal/adapter/tool/lsp"
 	webtool "github.com/fwtllh-png/QCode/internal/adapter/tool/web"
+	"github.com/fwtllh-png/QCode/internal/common/symbols"
 	"github.com/fwtllh-png/QCode/internal/config"
 	"github.com/fwtllh-png/QCode/internal/persist/contentstore"
 	"github.com/fwtllh-png/QCode/internal/platform/process"
-	"github.com/fwtllh-png/QCode/internal/platform/symbols"
+	"github.com/fwtllh-png/QCode/internal/runtime/app/workspacequery"
 	"github.com/fwtllh-png/QCode/internal/security/egress"
 )
 
@@ -94,7 +95,7 @@ func (platformModule) Build(_ context.Context, state *buildState) error {
 	session.sandbox = backend
 	state.platform.backend = backend
 	state.platform.preparationFacts = prepareFacts
-	session.workspaceQuery, err = builtin.NewWorkspaceQuery(execution.Workspace, backend, state.platform.leaseAuthority, execution.LeaseTimeout)
+	session.workspaceQuery, err = workspacequery.New(execution.Workspace, backend)
 	if err != nil {
 		return fmt.Errorf("create workspace query: %w", err)
 	}

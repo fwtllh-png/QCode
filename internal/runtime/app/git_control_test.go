@@ -13,12 +13,12 @@ import (
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
 	gittool "github.com/fwtllh-png/QCode/internal/adapter/tool/git"
 	"github.com/fwtllh-png/QCode/internal/adapter/tool/guard"
-	"github.com/fwtllh-png/QCode/internal/platform/workspacequery"
+	"github.com/fwtllh-png/QCode/internal/orchestration/workspacebroker"
+	"github.com/fwtllh-png/QCode/internal/runtime/app/workspacequery"
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
 	"github.com/fwtllh-png/QCode/internal/security/authority"
 	"github.com/fwtllh-png/QCode/internal/security/policy"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
-	"github.com/fwtllh-png/QCode/internal/orchestration/workspacebroker"
 )
 
 func gitFixture(t *testing.T, root string, args ...string) string {
@@ -62,7 +62,7 @@ func newGitRuntime(t *testing.T, initial bool) (*Runtime, string) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = sandbox.CloseBackend(backend) })
-	query, err := workspacequery.New(root, backend, brokers.VCS)
+	query, err := workspacequery.New(root, backend)
 	if err != nil {
 		t.Fatal(err)
 	}

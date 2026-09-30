@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/fwtllh-png/QCode/internal/common/contextsnapshot"
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
 )
 
@@ -39,7 +40,7 @@ type DelegationRequest struct {
 	Intent      DelegationIntent
 	ContextMode ContextMode
 	LastTurns   int
-	Source      ContextSourceRef
+	Source      contextsnapshot.SourceRef
 }
 
 // DelegationResult is the accepted child after admission and turn start.

@@ -3,7 +3,7 @@ package config
 import (
 	"strings"
 
-	"github.com/fwtllh-png/QCode/internal/environment"
+	"github.com/fwtllh-png/QCode/internal/common/environment"
 )
 
 func (e ExecutionEnvironment) DeclaredRequests() []environment.ResourceRequest {

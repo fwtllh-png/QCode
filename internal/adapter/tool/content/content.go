@@ -15,11 +15,10 @@ import (
 
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
 	"github.com/fwtllh-png/QCode/internal/adapter/tool/typed"
-	"github.com/fwtllh-png/QCode/internal/platform/contentdeps"
+	"github.com/fwtllh-png/QCode/internal/orchestration/workspacebroker"
 	"github.com/fwtllh-png/QCode/internal/platform/process"
 	"github.com/fwtllh-png/QCode/internal/security/filebroker"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
-	"github.com/fwtllh-png/QCode/internal/orchestration/workspacebroker"
 )
 
 const contentOutputLimit = 4 << 20
@@ -232,7 +231,22 @@ func (t *Tool) run(ctx context.Context, value input) (tool.Result, error) {
 // Probe reports whether optional content binaries are resolvable via LookPath
 // (honoring QCODE_*_BINARY overrides). Keys: ocr, speech, pandoc, ffmpeg.
 func Probe() map[string]bool {
-	return contentdeps.Probe()
+	dependencies := map[string]struct{ environment, fallback string }{
+		"ocr":    {"QCODE_TESSERACT_BINARY", "tesseract"},
+		"speech": {"QCODE_SPEECH_BINARY", "whisper"},
+		"pandoc": {"QCODE_PANDOC_BINARY", "pandoc"},
+		"ffmpeg": {"QCODE_FFMPEG_BINARY", "ffmpeg"},
+	}
+	available := make(map[string]bool, len(dependencies))
+	for name, dependency := range dependencies {
+		binary := strings.TrimSpace(os.Getenv(dependency.environment))
+		if binary == "" {
+			binary = dependency.fallback
+		}
+		_, err := exec.LookPath(binary)
+		available[name] = err == nil
+	}
+	return available
 }
 
 func (t *Tool) capabilities() (tool.Result, error) {

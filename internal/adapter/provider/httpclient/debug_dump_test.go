@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	"github.com/fwtllh-png/QCode/internal/adapter/provider"
-	"github.com/fwtllh-png/QCode/internal/observability/providerdump"
 )
 
 func TestDumpProviderFailureWritesFile(t *testing.T) {
@@ -27,7 +26,7 @@ func TestDumpProviderFailureWritesFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	dumpPath, err := providerdump.Write(
+	dumpPath, err := writeProviderDump(
 		request, body, path, 400,
 		`The 'reasoning_text' in the thinking mode must be passed back to the API.`,
 	)
@@ -56,15 +55,26 @@ func TestDumpProviderFailureWritesFile(t *testing.T) {
 
 func TestShouldDumpProviderModes(t *testing.T) {
 	t.Setenv("QCODE_PROVIDER_DUMP", "off")
-	if providerdump.Enabled(400) {
+	if providerDumpEnabled(400) {
 		t.Fatal("off should not dump")
 	}
 	t.Setenv("QCODE_PROVIDER_DUMP", "error")
-	if !providerdump.Enabled(500) {
+	if !providerDumpEnabled(500) {
 		t.Fatal("error mode should dump any 4xx/5xx")
 	}
 	t.Setenv("QCODE_PROVIDER_DUMP", "reasoning")
-	if providerdump.Enabled(400) {
+	if providerDumpEnabled(400) {
 		t.Fatal("legacy reasoning mode must not classify errors by text")
 	}
+}
+
+func encodeRequest(
+	request provider.ModelRequest,
+) ([]byte, string, error) {
+	adapter, err := testAdapter(request.Route.Adapter())
+	if err != nil {
+		return nil, "", err
+	}
+	call, err := adapter.Prepare(request)
+	return call.Body, call.Path, err
 }

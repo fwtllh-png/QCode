@@ -17,7 +17,6 @@ import (
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
 	toolguard "github.com/fwtllh-png/QCode/internal/adapter/tool/guard"
 	"github.com/fwtllh-png/QCode/internal/adapter/tool/interact"
-	executionreceipt "github.com/fwtllh-png/QCode/internal/observability/receipt"
 	agentcontext "github.com/fwtllh-png/QCode/internal/runtime/agent/context"
 	agentengine "github.com/fwtllh-png/QCode/internal/runtime/agent/engine"
 	promptcontext "github.com/fwtllh-png/QCode/internal/runtime/agent/prompt"
@@ -219,8 +218,8 @@ func (a *EngineAdapter) StartTurn(
 	if resolveErr != nil {
 		return resolveErr
 	}
-	receipt := executionreceipt.New(payload.Prompt)
-	receipt.Configure(
+	receipt := newTurnReceiptRecorder(payload.Prompt)
+	receipt.configure(
 		intent,
 		editorContext,
 	)
@@ -228,7 +227,7 @@ func (a *EngineAdapter) StartTurn(
 		if event.Commentary != nil {
 			return sink.Emit(event.Commentary)
 		}
-		receipt.Observe(event)
+		receipt.observe(event)
 		if event.CatalogChanged != nil {
 			convert := func(changes []tool.CatalogChange) []protocol.ToolCatalogChange {
 				result := make([]protocol.ToolCatalogChange, len(changes))
@@ -288,7 +287,7 @@ func (a *EngineAdapter) StartTurn(
 				Images:        turnImageAttachments(attachments),
 			})
 		case agentengine.Completed:
-			receipt.SetOutcome(protocol.OutcomeForIntent(intent))
+			receipt.setOutcome(protocol.OutcomeForIntent(intent))
 			secondary := terminalIssues(event.SecondaryIssues)
 			return a.commitTerminal(ctx, receipt, sink, true, &protocol.TurnCompletedData{
 				Text: event.Text, Outcome: protocol.OutcomeForIntent(intent),
@@ -518,7 +517,7 @@ func (a *EngineAdapter) StartTurn(
 			if event.Verification == nil {
 				return nil
 			}
-			return sink.Emit(executionreceipt.VerificationData(event.Verification))
+			return sink.Emit(turnVerificationData(event.Verification))
 		case agentengine.Streaming:
 			return emitRichEngineEvent(sink, event)
 		case agentengine.CallingModel:
@@ -601,24 +600,24 @@ func turnImageAttachments(
 }
 
 func (a *EngineAdapter) buildReceipt(
-	recorder *executionreceipt.Recorder,
+	recorder *turnReceiptRecorder,
 	completed bool,
 ) (*protocol.ExecutionReceiptData, error) {
-	if recorder == nil || !recorder.HasBudget() {
+	if recorder == nil || !recorder.hasBudget() {
 		return nil, errors.New("terminal event is missing a frozen context budget")
 	}
-	data := recorder.Build()
+	data := recorder.build()
 	if data == nil {
 		return nil, nil
 	}
-	if err := executionreceipt.ValidateTerminal(data, completed); err != nil {
+	if err := validateTerminalReceipt(data, completed); err != nil {
 		return nil, err
 	}
 	return data, nil
 }
 func (a *EngineAdapter) commitTerminal(
 	ctx context.Context,
-	recorder *executionreceipt.Recorder,
+	recorder *turnReceiptRecorder,
 	sink EngineSink,
 	completed bool,
 	terminal protocol.EventData,
@@ -627,7 +626,7 @@ func (a *EngineAdapter) commitTerminal(
 	if err != nil {
 		return err
 	}
-	measurement, err := executionreceipt.FreezeTerminalMeasurement(
+	measurement, err := freezeTerminalMeasurement(
 		a.engine.FreezeTerminalMeasurement(
 			terminalTraceStatus(terminal),
 		),
@@ -636,7 +635,7 @@ func (a *EngineAdapter) commitTerminal(
 	if err != nil {
 		return err
 	}
-	recorder.Freeze(a.engine, &measurement)
+	recorder.freeze(a.engine, &measurement)
 	receipt, err := a.buildReceipt(recorder, completed)
 	if err != nil {
 		return err

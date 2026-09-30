@@ -14,6 +14,7 @@ import (
 	"github.com/fwtllh-png/QCode/internal/adapter/provider"
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
 	"github.com/fwtllh-png/QCode/internal/adapter/tool/interact"
+	"github.com/fwtllh-png/QCode/internal/common/contextsnapshot"
 	"github.com/fwtllh-png/QCode/internal/persist/workspacejournal"
 	agentcontext "github.com/fwtllh-png/QCode/internal/runtime/agent/context"
 	agentengine "github.com/fwtllh-png/QCode/internal/runtime/agent/engine"
@@ -769,6 +770,19 @@ func (m *ThreadManager) EstimateFirstWindow(
 	}
 	projected, limit := engine.EstimateFirstWindow(prompt)
 	return projected, limit, nil
+}
+
+// Snapshot resolves an existing parent thread and projects its requested turn
+// for context delegation. A missing thread must not create a new engine.
+func (m *ThreadManager) Snapshot(
+	_ context.Context,
+	ref contextsnapshot.SourceRef,
+) (contextsnapshot.Snapshot, error) {
+	engine, err := m.ContextEngine(ref.ThreadID)
+	if err != nil {
+		return contextsnapshot.Snapshot{}, err
+	}
+	return engine.ParentContextSnapshot(ref)
 }
 
 func (m *ThreadManager) ContextEngine(threadID string) (*agentengine.Engine, error) {

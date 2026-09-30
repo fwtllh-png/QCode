@@ -19,10 +19,10 @@ import (
 	"time"
 
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
-	"github.com/fwtllh-png/QCode/internal/environment"
-	"github.com/fwtllh-png/QCode/internal/observability/diagnostics"
+	"github.com/fwtllh-png/QCode/internal/common/environment"
+	"github.com/fwtllh-png/QCode/internal/common/textdiff"
+	"github.com/fwtllh-png/QCode/internal/observability/verify"
 	"github.com/fwtllh-png/QCode/internal/persist/workspacejournal"
-	"github.com/fwtllh-png/QCode/internal/platform/textdiff"
 	"github.com/fwtllh-png/QCode/internal/security/authority"
 	"github.com/fwtllh-png/QCode/internal/security/egress"
 	securitymodel "github.com/fwtllh-png/QCode/internal/security/model"
@@ -97,7 +97,7 @@ type Options struct {
 	LeaseTTL            time.Duration
 	ReadTracker         *workspacejournal.ReadTracker
 	Journal             *workspacejournal.Manager
-	Diagnostics         diagnostics.Runner
+	Diagnostics         verify.DiagnosticRunner
 	Escalation          *EscalationPolicy
 	WorkspaceID         string
 	WorkspaceGeneration uint64
@@ -153,7 +153,7 @@ type Guard struct {
 	leaseTTL            time.Duration
 	readTracker         *workspacejournal.ReadTracker
 	journal             *workspacejournal.Manager
-	diagnostics         diagnostics.Runner
+	diagnostics         verify.DiagnosticRunner
 	escalation          EscalationPolicy
 	workspaceID         string
 	workspaceGeneration uint64
@@ -212,7 +212,7 @@ func New(options Options) (*Guard, error) {
 		options.ReadTracker = workspacejournal.NewReadTracker()
 	}
 	if options.Diagnostics == nil {
-		options.Diagnostics = diagnostics.UnavailableRunner{}
+		options.Diagnostics = verify.UnavailableDiagnosticRunner{}
 	}
 	if options.WorkspaceGeneration == 0 {
 		options.WorkspaceGeneration = 1
@@ -695,7 +695,7 @@ func (g *Guard) finishFileWrites(
 	result *tool.Result,
 	succeeded, refreshRead, runDiagnostics bool,
 ) error {
-	var receipts []diagnostics.Receipt
+	var receipts []verify.DiagnosticReceipt
 	var changes []FileChange
 	for _, path := range paths {
 		var after workspacejournal.Fingerprint
@@ -750,15 +750,15 @@ func (g *Guard) finishFileWrites(
 					errors.Is(err, context.DeadlineExceeded) {
 					return fmt.Errorf("post-edit diagnostics %q: %w", path, err)
 				}
-				receipt = diagnostics.Receipt{
-					Path: path, Status: "unavailable", Diagnostics: []diagnostics.Diagnostic{},
+				receipt = verify.DiagnosticReceipt{
+					Path: path, Status: "unavailable", Diagnostics: []verify.Diagnostic{},
 					Message: err.Error(), ErrorCategory: "runner_failure",
 				}
 			}
 			receipts = append(receipts, receipt)
 		}
 		tool.EnsureOutcomeFacts(result).Diagnostics = append(
-			[]diagnostics.Receipt(nil),
+			[]verify.DiagnosticReceipt(nil),
 			receipts...,
 		)
 	}
@@ -789,9 +789,9 @@ func (g *Guard) finishBrokerFileWrites(
 				errors.Is(err, context.DeadlineExceeded) {
 				return fmt.Errorf("post-edit diagnostics %q: %w", path, err)
 			}
-			receipt = diagnostics.Receipt{
+			receipt = verify.DiagnosticReceipt{
 				Path: path, Status: "unavailable",
-				Diagnostics: []diagnostics.Diagnostic{},
+				Diagnostics: []verify.Diagnostic{},
 				Message:     err.Error(), ErrorCategory: "runner_failure",
 			}
 		}

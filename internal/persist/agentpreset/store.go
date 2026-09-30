@@ -15,7 +15,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/fwtllh-png/QCode/internal/persist/atomicfile"
+	"github.com/fwtllh-png/QCode/internal/common/atomicfile"
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
 )
 

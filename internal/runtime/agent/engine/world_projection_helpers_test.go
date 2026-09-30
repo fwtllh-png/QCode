@@ -5,10 +5,9 @@ import (
 	"github.com/fwtllh-png/QCode/internal/adapter/provider"
 	providerassembly "github.com/fwtllh-png/QCode/internal/adapter/provider/assembly"
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
-	"github.com/fwtllh-png/QCode/internal/observability/diagnostics"
+	"github.com/fwtllh-png/QCode/internal/observability/verify"
 	agentcontext "github.com/fwtllh-png/QCode/internal/runtime/agent/context"
 	promptcontext "github.com/fwtllh-png/QCode/internal/runtime/agent/prompt"
-	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
 )
 
 func blocksText(blocks []provider.ContentBlock) string {
@@ -21,12 +20,6 @@ func messageToolCalls(message provider.Message) []provider.ToolCall {
 
 func messageToolResultID(message provider.Message) string {
 	return providerassembly.MessageToolResultID(message)
-}
-
-func projectionRecoveryID(
-	recovery *protocol.TurnRecoveryContext,
-) string {
-	return providerassembly.ProjectionRecoveryID(recovery)
 }
 
 func estimateCost(pricing model.Pricing, usage provider.Usage) float64 {
@@ -87,7 +80,7 @@ func (e *Engine) observeChangeEvidence(change tool.WorkspaceChange) {
 }
 
 func (e *Engine) observeDiagnosticsEvidence(
-	receipts []diagnostics.Receipt,
+	receipts []verify.DiagnosticReceipt,
 ) {
 	e.contextAuthority().ObserveDiagnostics(
 		e.options.Workspace,

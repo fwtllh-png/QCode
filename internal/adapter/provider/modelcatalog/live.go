@@ -18,11 +18,8 @@ import (
 	"github.com/fwtllh-png/QCode/internal/adapter/provider"
 	"github.com/fwtllh-png/QCode/internal/adapter/provider/httpclient"
 	provideropenai "github.com/fwtllh-png/QCode/internal/adapter/provider/openai"
-	"github.com/fwtllh-png/QCode/internal/adapter/provider/router"
 	"github.com/fwtllh-png/QCode/internal/security/egress"
 )
-
-var NewRegistry, New = router.NewRegistry, router.New
 
 type liveModelRow struct {
 	ID              string `json:"id"`

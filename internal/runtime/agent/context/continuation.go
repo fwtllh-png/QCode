@@ -12,7 +12,7 @@ import (
 	"strings"
 
 	"github.com/fwtllh-png/QCode/internal/adapter/provider"
-	"github.com/fwtllh-png/QCode/internal/runtime/durablecodec"
+	"github.com/fwtllh-png/QCode/internal/common/durablecodec"
 )
 
 // ContinuationVersion is the schema version of TurnContinuation records.

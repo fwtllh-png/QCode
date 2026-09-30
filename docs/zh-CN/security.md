@@ -138,8 +138,9 @@ Facets 得到一次；Command Prepare 验证实际控制不宽于编译的控制
 不读取文件或重新解析路径；`WithProfile` 使用已冻结绝对路径验证新根并重绑身份。
 文件内容身份仍是初次编译时的 SHA-256；后续执行漂移由 Broker/Lease 校验。
 Profile Schema 为 5，Operation Schema 为 3；旧回执不参与执行校验，不增加兼容迁移。
-Darwin `/bin/sh` here-document 的平台例外在 `platform/oscontract` 数据表中维护，
-包含来源说明，沙箱编译器不再按具体可执行文件名分支。
+Darwin `/bin/sh` here-document 的平台例外由
+`internal/security/sandbox/executable_contract.go` 中的包内数据表维护，包含来源说明；
+沙箱编译器查询该表，不按具体可执行文件名分支。
 
 ## Posture 建议
 
@@ -547,6 +548,10 @@ Trace Attribute 与 Metric Label 只能使用固定低基数集合，绝不能�
 Argument、Resource ID、Credential 或 Raw Error。Provider Debug Dump 默认关闭；启用
 时必须继续经过专用脱敏与本地文件权限边界。QCode 不持久化独立 Observation
 Payload，也不提供 OTLP 或 Observation Journal 导出。
+
+Provider Debug Dump 的实现位于 `internal/adapter/provider/httpclient/debug_dump.go`，
+与 HTTP 错误处理同属一个包。当前仅在非 2xx 响应时检查 `QCODE_PROVIDER_DUMP`
+开关并生成诊断文件；写入失败不改变原有 Provider 错误。
 
 ## 安全测试
 

@@ -4,9 +4,8 @@ import (
 	"context"
 	"fmt"
 
-	memorystore "github.com/fwtllh-png/QCode/internal/adapter/memory"
+	"github.com/fwtllh-png/QCode/internal/adapter/memory"
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
-	memorytool "github.com/fwtllh-png/QCode/internal/adapter/tool/memory"
 	"github.com/fwtllh-png/QCode/internal/config"
 )
 
@@ -22,14 +21,14 @@ func contributeMemory(
 	if !configuration.Enabled {
 		return nil
 	}
-	store, err := memorystore.Open(configuration.Path, memorystore.Options{
+	store, err := memory.Open(configuration.Path, memory.Options{
 		MaxCandidates:  configuration.MaxCandidates,
 		MaxPromptBytes: configuration.MaxPromptBytes,
 	})
 	if err != nil {
 		return fmt.Errorf("open store: %w", err)
 	}
-	if err := memorytool.Register(registry, store); err != nil {
+	if err := memory.Register(registry, store); err != nil {
 		return fmt.Errorf("register tools: %w", err)
 	}
 	output.memory = store

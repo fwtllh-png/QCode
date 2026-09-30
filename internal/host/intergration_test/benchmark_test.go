@@ -27,7 +27,6 @@ import (
 	"github.com/fwtllh-png/QCode/internal/runtime/app"
 	apppersistence "github.com/fwtllh-png/QCode/internal/runtime/app/persistence"
 	"github.com/fwtllh-png/QCode/internal/runtime/app/wire"
-	"github.com/fwtllh-png/QCode/internal/runtime/eventview"
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
 )
 
@@ -909,27 +908,27 @@ func runTurn(
 					fmt.Sprintf("%d:%s:%s", event.Sequence, event.Kind, event.TurnID),
 				)
 			}
-			update, err := eventview.Project(event)
+			update, err := projectEvent(event)
 			if err != nil {
 				return err
 			}
-			if agent, ok := update.(eventview.AgentUpdate); ok {
+			if agent, ok := update.(agentUpdate); ok {
 				observeAgentUpdate(observed, agent)
 			}
 			parentEvent := event.TurnID == turnID
 			if !parentEvent {
-				interaction, ok := update.(eventview.InteractionUpdate)
+				interaction, ok := update.(interactionUpdate)
 				if !ok || interaction.ApprovalRequired == nil ||
 					interaction.ApprovalRequired.Source == nil {
 					continue
 				}
 			}
 			switch data := update.(type) {
-			case eventview.TextUpdate:
+			case textUpdate:
 				if data.Channel == "output" {
 					output.WriteString(data.Text)
 				}
-			case eventview.ToolUpdate:
+			case toolUpdate:
 				if data.Result == nil {
 					continue
 				}
@@ -947,7 +946,7 @@ func runTurn(
 					observed.recoveredToolFailures++
 					observed.pendingToolFailures[data.Tool]--
 				}
-			case eventview.InteractionUpdate:
+			case interactionUpdate:
 				request := data.ApprovalRequired
 				if request == nil || approvalDecision == "" {
 					continue
@@ -978,23 +977,23 @@ func runTurn(
 				}
 				observed.approvals++
 				observed.approvalDecision = approvalDecision
-			case eventview.EvidenceUpdate:
+			case evidenceUpdate:
 				if data.Receipt != nil {
 					observed.receipt = data.Receipt
 				}
 				if data.Verification != nil {
 					observed.verification = data.Verification
 				}
-			case eventview.LifecycleUpdate:
+			case lifecycleUpdate:
 				if data.TurnCompaction != nil {
 					observed.compactions++
 					observed.compaction = data.TurnCompaction
 				}
-			case eventview.AccountingUpdate:
+			case accountingUpdate:
 				if data.Usage != nil {
 					usageSamples[data.Usage.Sample] = *data.Usage
 				}
-			case eventview.TerminalUpdate:
+			case terminalUpdate:
 				if !parentEvent {
 					continue
 				}
@@ -1027,7 +1026,7 @@ func runTurn(
 	}
 }
 
-func observeAgentUpdate(observed *observation, update eventview.AgentUpdate) {
+func observeAgentUpdate(observed *observation, update agentUpdate) {
 	switch {
 	case update.Spawned != nil:
 		id := update.Spawned.AgentID

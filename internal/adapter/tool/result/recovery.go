@@ -6,14 +6,34 @@ import (
 	"maps"
 	"strings"
 
-	mcpruntime "github.com/fwtllh-png/QCode/internal/adapter/mcp"
 	"github.com/fwtllh-png/QCode/internal/adapter/provider"
-	skillruntime "github.com/fwtllh-png/QCode/internal/adapter/skill"
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
 	"github.com/fwtllh-png/QCode/internal/persist/workspacejournal"
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
 	"github.com/fwtllh-png/QCode/internal/security/policy"
 )
+
+// recoverableCategorizedError lets adapters identify failures that can be
+// returned to the model as tool results without coupling result handling to
+// their implementation. A nonempty category opts in; it does not request a retry.
+type recoverableCategorizedError interface {
+	error
+	RecoverableCategory() string
+}
+
+// categorizedError supplies a failure category without opting in to recovery.
+// Adapters may require an explicit recovery hint before a failure is returned.
+type categorizedError interface {
+	error
+	ErrorCategory() string
+}
+
+func recoverableErrorCategory(err error) string {
+	if failure, ok := errors.AsType[recoverableCategorizedError](err); ok {
+		return failure.RecoverableCategory()
+	}
+	return ""
+}
 
 func RecoverResult(
 	registry *tool.Registry,
@@ -206,14 +226,9 @@ func RecoverableFailure(err error) (string, bool) {
 		errors.Is(err, tool.ErrCatalogStale),
 		errors.Is(err, tool.ErrToolRevoked),
 		errors.Is(err, tool.ErrToolLoadFailed),
-		errors.Is(err, tool.ErrCatalogLimit),
-		errors.Is(err, mcpruntime.ErrServerUnavailable),
-		errors.Is(err, mcpruntime.ErrCircuitOpen),
-		errors.Is(err, skillruntime.ErrDependencyConflict),
-		errors.Is(err, skillruntime.ErrDependencyCycle),
-		errors.Is(err, skillruntime.ErrCompatibilityMismatch),
-		errors.Is(err, skillruntime.ErrLockDrift),
-		errors.Is(err, skillruntime.ErrNotSelected):
+		errors.Is(err, tool.ErrCatalogLimit):
+		return err.Error(), true
+	case recoverableErrorCategory(err) != "":
 		return err.Error(), true
 	case errors.Is(err, tool.ErrPrecondition):
 		return err.Error() + "; the workspace was not changed", true
@@ -291,10 +306,13 @@ func FailureCategory(err error) string {
 	if category := tool.ErrorCategory(err); category != "" {
 		return category
 	}
-	if category := mcpruntime.ErrorCategory(err); category != "" {
+	if category := recoverableErrorCategory(err); category != "" {
 		return category
 	}
-	return skillruntime.ErrorCategory(err)
+	if failure, ok := errors.AsType[categorizedError](err); ok {
+		return failure.ErrorCategory()
+	}
+	return ""
 }
 
 func BudgetExhaustionCategory(err error) (string, bool) {

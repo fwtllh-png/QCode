@@ -9,8 +9,8 @@ import (
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
 	toolguard "github.com/fwtllh-png/QCode/internal/adapter/tool/guard"
 	"github.com/fwtllh-png/QCode/internal/adapter/tool/interact"
-	"github.com/fwtllh-png/QCode/internal/observability/diagnostics"
 	"github.com/fwtllh-png/QCode/internal/observability/trace"
+	"github.com/fwtllh-png/QCode/internal/observability/verify"
 	"github.com/fwtllh-png/QCode/internal/persist/workspacejournal"
 	agentcontext "github.com/fwtllh-png/QCode/internal/runtime/agent/context"
 	promptcontext "github.com/fwtllh-png/QCode/internal/runtime/agent/prompt"
@@ -62,7 +62,7 @@ type ToolConfig struct {
 	Guard          *toolguard.Guard
 	GuardFactory   func(context.Context) (*toolguard.Guard, error)
 	OnNetworkAllow toolguard.NetworkAllow
-	Diagnostics    diagnostics.Runner
+	Diagnostics    verify.DiagnosticRunner
 	Verify         VerifyOptions
 	// VerificationOnly restricts verifier-role process launches to declared,
 	// workspace-read-only verification commands.

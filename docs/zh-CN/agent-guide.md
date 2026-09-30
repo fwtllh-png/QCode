@@ -20,6 +20,7 @@
 
 | 变更领域 | 起始路径 |
 | --- | --- |
+| 跨层公共契约与基础工具 | `internal/common` 下的职责子包 |
 | Web Process/Flag、HTTP/WebSocket Transport | `internal/host` |
 | Runtime/Web 集成测试、Coding Benchmark | `internal/host/intergration_test`（仅 `_test.go`） |
 | Host 共享视图 DTO | `internal/host/view.go` |
@@ -40,6 +41,8 @@
 
 - Host 不直接执行 Tool。
 - `wire` 不实现业务循环。
+- 公共契约和基础工具按职责放在 `internal/common` 子包，只依赖标准库、第三方库或
+  其他 common 子包；不能反向导入业务层，也不因仅依赖标准库就迁入领域实现。
 - Web 不建立第二套 Runtime。
 - 不绕过 Guard、Policy、Constitution、Journal 或 Sandbox。
 - Subagent 生命周期只写入 Agent Graph，不建立并行的后台任务生命周期。

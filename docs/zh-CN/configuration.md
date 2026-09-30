@@ -372,12 +372,9 @@ Contract 的交集，Read-only Role 固定使用 `never`。在 `suggest` 下，C
 Runtime 将决定路由到权威 Child Thread，并在重启后保留 Pending Approval。Deny 会向
 Child 返回结构化 Problem 与 `approval_denied` Tool Result。
 
-QCode 在二进制中内置版本化的 `system-code-review`、`system-debugging`、
-`system-refactor` 和 `system-test-expansion` Skill。它们提供领域工作流及 Subagent
-拆分建议，不承载安全或委派授权。Skill 同名覆盖顺序为 Workspace 目录、显式配置目录、
-当前 Workspace 的沙箱 Home、宿主 User、Builtin；因此项目可以替换默认工作流。Builtin Skill 可通过现有 Skill Control
-禁用，其版本、来源和内容摘要会进入 Catalog 与 Receipt；由于内容随二进制固定，
-单独使用 Builtin Skill 不要求 Workspace Lock。
+Skill 从文件系统目录发现，同名 Skill 按以下顺序取首个匹配：Workspace 目录、
+显式配置目录、当前 Workspace 的沙箱 Home、宿主 User 目录。
+Skill 的启用状态由 Skill Control 管理，版本、来源和内容摘要进入 Catalog 与 Receipt。
 
 沙箱中执行 `npx skills add <package> -g` 时，`-g` 指向当前 Workspace 的私有 HOME，
 不会写入宿主用户目录或其他 Workspace。Skill 发现会扫描该 HOME 下的
@@ -386,7 +383,7 @@ QCode 在二进制中内置版本化的 `system-code-review`、`system-debugging
 Manifest、Lock 和内容摘要校验保持不变。Catalog 在 Runtime 构造时加载，安装完成后
 需重启 Runtime 才会发现新 Skill，浏览器刷新不会重新扫描磁盘。
 
-包含 `skill.toml` 的外部 Skill 必须通过 Skill Control 显式锁定后才能加载内容。
+包含 `skill.toml` 的 Skill 必须通过 Skill Control 显式锁定后才能加载内容。
 Lock 缺失或与新 Catalog 不一致时，Runtime 和管理入口仍可启动；可先执行 `verify`
 查看错误，再执行 `lock` 接受当前已发现的内容和依赖。启动不会自动接受新内容。
 Lock 覆盖已发现的受治理包及其依赖，包括禁用项；启停 Skill 不修改锁定集合。
