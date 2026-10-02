@@ -12,13 +12,12 @@ import (
 
 	sessionstate "github.com/fwtllh-png/QCode/internal/persist/session"
 	sqlitestate "github.com/fwtllh-png/QCode/internal/persist/state/sqlite"
-	"github.com/fwtllh-png/QCode/internal/runtime/app"
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
 )
 
 var (
 	ErrNotFound          = errors.New("thread record not found")
-	ErrActiveTurn        = app.ErrActiveTurn
+	ErrActiveTurn        = errors.New("thread already has an active turn")
 	ErrTerminal          = errors.New("turn already has a terminal state")
 	ErrOperationConflict = errors.New("operation identity was reused with a different payload")
 )

@@ -13,8 +13,9 @@ import (
 	"github.com/fwtllh-png/QCode/internal/config"
 	"github.com/fwtllh-png/QCode/internal/orchestration/childrun"
 	"github.com/fwtllh-png/QCode/internal/orchestration/subagent"
+	"github.com/fwtllh-png/QCode/internal/orchestration/workspacebroker"
 	sessionstate "github.com/fwtllh-png/QCode/internal/persist/session"
-	persiststate "github.com/fwtllh-png/QCode/internal/persist/state"
+	apppersistence "github.com/fwtllh-png/QCode/internal/runtime/app/persistence"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
 )
 
@@ -30,14 +31,19 @@ func buildChildOrchestration(
 	if err := os.MkdirAll(agentRoot, 0o700); err != nil {
 		return fmt.Errorf("agent root: %w", err)
 	}
-	childTrees, err := newChildWorktrees(
-		execution.Workspace, agentRoot, limits.Workspace, state.platform.backend,
-		state.platform.leaseAuthority, execution.LeaseTimeout,
-	)
+	broker, err := workspacebroker.New(execution.Workspace, state.platform.leaseAuthority, execution.LeaseTimeout)
+	if err != nil {
+		return fmt.Errorf("workspace broker: %w", err)
+	}
+	output.workspaceBroker = broker
+	childTrees, err := subagent.NewWorktrees(subagent.WorktreeOptions{
+		Workspace: execution.Workspace, Root: agentRoot,
+		Strategy: limits.Workspace, Broker: broker,
+	})
 	if err != nil {
 		return fmt.Errorf("child worktrees: %w", err)
 	}
-	gitCommonDir, err := childTrees.commonGitDir(ctx)
+	gitCommonDir, err := childTrees.CommonGitDir(ctx)
 	if err != nil {
 		return fmt.Errorf("resolve repository Git metadata: %w", err)
 	}
@@ -63,10 +69,11 @@ func buildChildOrchestration(
 	if err := os.MkdirAll(chatRoot, 0o700); err != nil {
 		return fmt.Errorf("Chat worktree root: %w", err)
 	}
-	output.chatTrees, err = newChildWorktrees(
-		execution.Workspace, chatRoot, config.SubagentWorkspaceAuto,
-		state.platform.backend, state.platform.leaseAuthority, execution.LeaseTimeout,
-	)
+	output.chatRoot = chatRoot
+	output.chatTrees, err = subagent.NewWorktrees(subagent.WorktreeOptions{
+		Workspace: execution.Workspace, Root: chatRoot,
+		Strategy: config.SubagentWorkspaceAuto, Broker: broker,
+	})
 	if err != nil {
 		return fmt.Errorf("Chat worktrees: %w", err)
 	}
@@ -100,7 +107,7 @@ func buildChildOrchestration(
 		Control: output.subagents, Handles: state.tools.handleStore,
 
 		Root: agentRoot, Gate: state.security.guard,
-		Graph: persiststate.NewAgentGraph(
+		Graph: apppersistence.NewAgentGraph(
 			state.options.PersistentStore, execution.Workspace, state.config.runtimeSessionID,
 		),
 		Files:   output.parentFiles,

@@ -2,9 +2,35 @@ package app
 
 import (
 	"sort"
+	"sync"
 
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
 )
+
+// EventService owns in-memory event projections and observer delivery. The
+// durable EventStore and Hub remain injected runtime resources.
+type EventService struct {
+	runtime *Runtime
+
+	// publishMu serializes event publication end to end: identity and
+	// terminal dedupe, durable append, and synchronous projection. It is the
+	// only Runtime lock held across that I/O; readers never take it.
+	publishMu sync.Mutex
+	// mu guards the in-memory indexes below and the turn queue maps. It is
+	// held only around map reads and writes, never across I/O or callbacks.
+	mu                  sync.Mutex
+	terminals           map[protocol.TurnID]protocol.EventKind
+	approvals           map[string]PendingApproval
+	inputs              map[string]PendingInput
+	observerMu          sync.Mutex
+	observers           map[uint64]func(protocol.Event)
+	nextObserver        uint64
+	observerQueue       []protocol.Event
+	observerDispatching bool
+	toolItems           map[EventItemOwner]protocol.ItemID
+	approvalItems       map[EventItemOwner]protocol.ItemID
+	inputItems          map[EventItemOwner]protocol.ItemID
+}
 
 // PendingApproval returns the authoritative identity for one unresolved
 // approval. Hosts use it to route a decision to a child thread without

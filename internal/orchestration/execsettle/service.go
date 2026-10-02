@@ -18,10 +18,9 @@ import (
 
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
 	filetool "github.com/fwtllh-png/QCode/internal/adapter/tool/file"
-	"github.com/fwtllh-png/QCode/internal/orchestration/chatmerge"
+	"github.com/fwtllh-png/QCode/internal/orchestration/workspacemerge"
 	"github.com/fwtllh-png/QCode/internal/persist/workspacejournal"
 	"github.com/fwtllh-png/QCode/internal/platform/process"
-	agentengine "github.com/fwtllh-png/QCode/internal/runtime/agent/engine"
 	securitypaths "github.com/fwtllh-png/QCode/internal/security/pathpolicy"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
 )
@@ -39,8 +38,8 @@ type Options struct {
 	Scratch    string
 	Parent     *filetool.Tools
 	Journal    *workspacejournal.Manager
-	Gate       *agentengine.WorkspaceTurnGate
-	Brokers    chatmerge.WorkspaceBroker
+	Gate       workspacemerge.WorkspaceGate
+	Brokers    workspacemerge.WorkspaceBroker
 	AllowApply bool
 	NewBackend func(sandbox.Options) (sandbox.Backend, error)
 }
@@ -48,8 +47,8 @@ type Options struct {
 type Service struct {
 	repository string
 	scratch    string
-	merger     *chatmerge.Service
-	brokers    chatmerge.WorkspaceBroker
+	merger     *workspacemerge.Service
+	brokers    workspacemerge.WorkspaceBroker
 	newBackend func(sandbox.Options) (sandbox.Backend, error)
 
 	mu   sync.Mutex
@@ -79,7 +78,7 @@ func New(options Options) *Service {
 	if err != nil {
 		return nil
 	}
-	merger := chatmerge.New(
+	merger := workspacemerge.New(
 		repository, options.Scratch, options.Parent, options.Journal,
 		options.Gate, options.Brokers, options.AllowApply,
 	)
@@ -195,7 +194,7 @@ func (s *session) PrepareBackend(
 func (s *session) Settle(ctx context.Context) ([]tool.WorkspaceChange, error) {
 	plan, err := s.service.merger.PlanPaths(ctx, s.root, s.trees)
 	if err != nil {
-		if errors.Is(err, chatmerge.ErrWorkspaceClean) {
+		if errors.Is(err, workspacemerge.ErrWorkspaceClean) {
 			return nil, nil
 		}
 		return nil, err

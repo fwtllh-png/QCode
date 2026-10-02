@@ -13,7 +13,6 @@ import (
 	"github.com/fwtllh-png/QCode/internal/observability/telemetry"
 	agentengine "github.com/fwtllh-png/QCode/internal/runtime/agent/engine"
 	"github.com/fwtllh-png/QCode/internal/runtime/agent/turnkernel"
-	"github.com/fwtllh-png/QCode/internal/runtime/app/eventhub"
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
 	"github.com/fwtllh-png/QCode/internal/security/policy"
 )
@@ -50,10 +49,10 @@ func TestC5RuntimeRecoversOutboxWithDriftedOperationIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	commentaryEventID := eventhub.CommentaryEventID(commentaryData.MessageID)
+	commentaryEventID := CommentaryEventID(commentaryData.MessageID)
 	commentary := turnkernel.ProjectionOutboxEntry{
-		ID:      "commentary:turn-1-step-1",
-		EventID: commentaryEventID,
+		ID:       "commentary:turn-1-step-1",
+		EventID:  commentaryEventID,
 		ThreadID: protocol.ThreadID(envelope.Outbox[0].ThreadID),
 		TurnID:   protocol.TurnID(envelope.TurnID),
 		Kind:     string(protocol.EventCommentaryCompleted),
@@ -140,7 +139,7 @@ func TestC5RuntimeRecoversTerminalOutboxWithoutDuplicateEvent(t *testing.T) {
 	}
 	eventStore := NewMemoryEventStore(16)
 	receipt := envelope.Outbox[0]
-	receiptData, err := eventhub.DecodeTerminalOutboxEntry(receipt)
+	receiptData, err := DecodeTerminalOutboxEntry(receipt)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1013,7 +1012,7 @@ func c5TerminalEnvelope(t *testing.T) turnkernel.TerminalEnvelope {
 	) turnkernel.ProjectionOutboxEntry {
 		return turnkernel.ProjectionOutboxEntry{
 			ID:          id,
-			EventID:     eventhub.TerminalOutboxEventID(turnID, id),
+			EventID:     TerminalOutboxEventID(turnID, id),
 			OperationID: operationID,
 			ThreadID:    threadID,
 			TurnID:      turnID,

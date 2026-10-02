@@ -1,7 +1,6 @@
 package app
 
 import (
-	appextension "github.com/fwtllh-png/QCode/internal/runtime/app/extension"
 	"testing"
 
 	agentcontext "github.com/fwtllh-png/QCode/internal/runtime/agent/context"
@@ -42,7 +41,7 @@ func TestPostTurnCompactionReceiptProducesValidProtocolEvent(t *testing.T) {
 		CanonicalID: "bundled", WireID: "bundled", Limits: "bundled",
 		Capabilities: "bundled", Pricing: "bundled",
 	}
-	data := appextension.ProtocolCompactionData(&agentengine.CompactionReceipt{
+	data := ProtocolCompactionData(&agentengine.CompactionReceipt{
 		CompactionID:        "compact-1",
 		Status:              "completed",
 		Mode:                "post_turn",

@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	appextension "github.com/fwtllh-png/QCode/internal/runtime/app/extension"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -37,10 +36,10 @@ func TestValidToolArgumentsOmitsMalformedProviderPayload(t *testing.T) {
 	}
 	for _, testCase := range tests {
 		t.Run(testCase.name, func(t *testing.T) {
-			got := appextension.ValidToolArguments(testCase.value)
+			got := ValidToolArguments(testCase.value)
 			if string(got) != testCase.want {
 				t.Fatalf(
-					"appextension.ValidToolArguments(%q) = %q, want %q",
+					"ValidToolArguments(%q) = %q, want %q",
 					testCase.value, got, testCase.want,
 				)
 			}
@@ -813,11 +812,11 @@ func TestRuntimeCancelAfterLiveCommentaryDrainsTerminalOutbox(t *testing.T) {
 	}
 	worker, err := newTestAgentEngine(agentengine.Options{
 		ProviderConfig: agentengine.ProviderConfig{
-			Provider:      &runtimeCommentaryCancelProvider{},
-			Route:         runtimeTestRoute(t),
+			Provider:        &runtimeCommentaryCancelProvider{},
+			Route:           runtimeTestRoute(t),
 			MaxOutputTokens: 128,
 		},
-		ToolConfig:     agentengine.ToolConfig{Tools: registry},
+		ToolConfig: agentengine.ToolConfig{Tools: registry},
 		SecurityConfig: agentengine.SecurityConfig{
 			Security:  policy.DefaultRuntime(policy.ModeAct, policy.PermissionBypass),
 			Workspace: t.TempDir(),

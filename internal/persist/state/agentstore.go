@@ -172,9 +172,9 @@ func loadAgentResultRow(
 	return result, true, nil
 }
 
-func (s *Store) PlanAgentReconciliation(
+func (s *Store) ListAgentRecoveryNodes(
 	ctx context.Context, workspaceRoot, sessionID string,
-) ([]subagent.GraphTransition, error) {
+) ([]subagent.RecoveryNode, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed {
@@ -190,16 +190,12 @@ func (s *Store) PlanAgentReconciliation(
 		return nil, err
 	}
 	defer rows.Close()
-	type node struct {
-		id, path, threadID, turnID, status string
-		revision                           uint64
-	}
-	var nodes []node
+	var nodes []subagent.RecoveryNode
 	for rows.Next() {
-		var value node
+		var value subagent.RecoveryNode
 		if err := rows.Scan(
-			&value.id, &value.path, &value.threadID, &value.turnID,
-			&value.status, &value.revision,
+			&value.AgentID, &value.Path, &value.ThreadID, &value.TurnID,
+			&value.Status, &value.Revision,
 		); err != nil {
 			return nil, err
 		}
@@ -211,58 +207,22 @@ func (s *Store) PlanAgentReconciliation(
 	if err := rows.Close(); err != nil {
 		return nil, err
 	}
-	var transitions []subagent.GraphTransition
-	for _, value := range nodes {
+	for i := range nodes {
+		value := &nodes[i]
 		var turnID, turnStatus string
 		err := s.sqlite.DB().QueryRowContext(ctx, `
 			SELECT id, status FROM turns
 			WHERE thread_id = ? ORDER BY ordinal DESC LIMIT 1`,
-			value.threadID,
+			value.ThreadID,
 		).Scan(&turnID, &turnStatus)
 		if err == sql.ErrNoRows {
 			turnID, turnStatus = "", ""
 		} else if err != nil {
 			return nil, err
 		}
-		revision := value.revision
-		appendTransition := func(status subagent.Status, reason string, result *subagent.Result) {
-			transitions = append(transitions, subagent.GraphTransition{
-				SessionID: sessionID,
-				AgentID:   value.id, Path: value.path,
-				ExpectedRevision: revision, Status: status, TurnID: turnID,
-				Message: reason, OperationID: fmt.Sprintf(
-					"reconcile:%s:%d", value.id, revision+1,
-				),
-				Actor: "startup_reconciler", Reason: reason,
-				Result: result, CreatedAt: time.Now().UTC(),
-			})
-			revision++
-		}
-		current := subagent.Status(value.status)
-		if turnStatus == "active" {
-			if current == subagent.StatusRequested {
-				appendTransition(subagent.StatusStarting, "rebound accepted durable turn", nil)
-				current = subagent.StatusStarting
-			}
-			if current == subagent.StatusStarting {
-				appendTransition(subagent.StatusRunning, "rebound active durable turn", nil)
-			}
-			continue
-		}
-		reason := "no durable child turn survived restart"
-		if turnID != "" {
-			reason = fmt.Sprintf(
-				"durable turn %s reached %s before agent result commit",
-				turnID, turnStatus,
-			)
-		}
-		result := &subagent.Result{
-			AgentID: value.id, ThreadID: value.threadID, TurnID: turnID,
-			Status: subagent.StatusFailed, Summary: reason,
-		}
-		appendTransition(subagent.StatusFailed, reason, result)
+		value.TurnID, value.TurnStatus = turnID, turnStatus
 	}
-	return transitions, nil
+	return nodes, nil
 }
 
 func projectDurableAgentTx(ctx context.Context, tx *sql.Tx, event protocol.Event) error {

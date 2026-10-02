@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	agentengine "github.com/fwtllh-png/QCode/internal/runtime/agent/engine"
-	appextension "github.com/fwtllh-png/QCode/internal/runtime/app/extension"
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
 )
 
@@ -79,7 +78,7 @@ func (r *SessionService) prepareSessionTitle(
 				Provider: result.Provider, Model: result.Model, ModelMetadata: result.ModelMetadata,
 				InputTokens: result.Usage.InputTokens, OutputTokens: result.Usage.OutputTokens,
 				ReasoningTokens: result.Usage.ReasoningTokens, CachedTokens: result.Usage.CachedTokens,
-				CostMicrounits: appextension.CostMicrounits(result.CostUSD), CostKnown: result.CostKnown,
+				CostMicrounits: CostMicrounits(result.CostUSD), CostKnown: result.CostKnown,
 			})
 		}
 		if err != nil {

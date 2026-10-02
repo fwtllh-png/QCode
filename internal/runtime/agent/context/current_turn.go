@@ -14,7 +14,7 @@ const PriorDecisionProjectionPrefix = "(non-authoritative prior decision) "
 // CurrentTurnUserIndex is the first non-world user message of the active
 // turn. The sampling path pins this request when collapsing closed groups.
 func CurrentTurnUserIndex(history []provider.Message) int {
-	current := lastNonWorldTurn(history)
+	current := LastNonWorldTurn(history)
 	if current == 0 {
 		return -1
 	}
@@ -38,7 +38,7 @@ func CurrentTurnWorkingSetCuts(history []provider.Message) []int {
 		return nil
 	}
 	var cuts []int
-	for _, cut := range compactionCuts(history, true) {
+	for _, cut := range HistoryCuts(history, true) {
 		if cut <= user+1 {
 			continue
 		}
@@ -66,7 +66,7 @@ func currentTurnExcisionHasClosedPair(messages []provider.Message) bool {
 // LatestCurrentTurnWorld keeps the newest current-turn world message for each
 // section and drops earlier append-only patches of the same turn.
 func LatestCurrentTurnWorld(history []provider.Message) []provider.Message {
-	current := lastNonWorldTurn(history)
+	current := LastNonWorldTurn(history)
 	if current == 0 {
 		return nil
 	}
@@ -94,7 +94,7 @@ func LatestCurrentTurnWorld(history []provider.Message) []provider.Message {
 
 // CollapseCurrentTurnWorld drops superseded current-turn world patches.
 func CollapseCurrentTurnWorld(history []provider.Message) ([]provider.Message, bool) {
-	current := lastNonWorldTurn(history)
+	current := LastNonWorldTurn(history)
 	if current == 0 {
 		return history, false
 	}

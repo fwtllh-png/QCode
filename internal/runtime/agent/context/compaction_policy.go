@@ -142,7 +142,7 @@ func SelectCompaction(
 		if accept := selectReducingCandidate(
 			request,
 			working,
-			compactionCuts(working, request.AllowCurrentTurn),
+			HistoryCuts(working, request.AllowCurrentTurn),
 			original,
 			workingWindow,
 			input,

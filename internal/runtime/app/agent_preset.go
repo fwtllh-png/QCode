@@ -7,6 +7,8 @@ import (
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
 )
 
+type AgentPresetService struct{ runtime *Runtime }
+
 func (s *AgentPresetService) List(
 	ctx context.Context,
 	request protocol.AgentPresetListRequest,

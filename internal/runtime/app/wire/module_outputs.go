@@ -13,6 +13,7 @@ import (
 	"github.com/fwtllh-png/QCode/internal/observability/verify"
 	"github.com/fwtllh-png/QCode/internal/orchestration/childrun"
 	"github.com/fwtllh-png/QCode/internal/orchestration/subagent"
+	"github.com/fwtllh-png/QCode/internal/orchestration/workspacebroker"
 	"github.com/fwtllh-png/QCode/internal/persist/contentstore"
 	"github.com/fwtllh-png/QCode/internal/persist/joblog"
 	"github.com/fwtllh-png/QCode/internal/persist/repoindex"
@@ -75,9 +76,11 @@ type securityBuildState struct {
 }
 
 type orchestrationBuildState struct {
-	children      *childrun.Runner
-	childToolsets *childToolsets
-	chatTrees     *childWorktrees
-	parentFiles   *filetool.Tools
-	subagents     *subagent.AgentControl
+	children        *childrun.Runner
+	childToolsets   *childToolsets
+	chatTrees       subagent.WorktreeProvider
+	chatRoot        string
+	workspaceBroker *workspacebroker.Runtime
+	parentFiles     *filetool.Tools
+	subagents       *subagent.AgentControl
 }

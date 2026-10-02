@@ -44,7 +44,7 @@ type scopeState struct {
 	kernel               *turnkernel.RuntimeKernel
 	recorder             *trace.Recorder
 	toolSpans            map[string]uint64
-	scheduler            *turnkernel.ToolScheduler
+	scheduler            *toolScheduler
 	diff                 *turnkernel.TurnDiffTracker
 	contextSeen          []promptcontext.Receipt
 	selections           []promptcontext.Selection
@@ -91,7 +91,7 @@ type ScopeSnapshot struct {
 func newScopeState(engine *Engine) scopeState {
 	return scopeState{
 		turnArchive: engine.snapshotTurnArchive(),
-		scheduler:   turnkernel.NewToolScheduler(engine.options.MaxToolConcurrent),
+		scheduler:   newToolScheduler(engine.options.MaxToolConcurrent),
 		diff:        turnkernel.NewTurnDiffTracker(engine.options.Workspace),
 		mailbox:     turnkernel.NewMailbox[PendingInput](0),
 		requests:    turnkernel.NewRequestLedger(),

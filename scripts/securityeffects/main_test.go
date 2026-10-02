@@ -100,9 +100,9 @@ func TestWorkspaceAndVCSWritersStayBrokered(t *testing.T) {
 		"internal/adapter/tool/file": {
 			".AtomicWrite(", ".AtomicCreate(", "process.NewCommand(",
 		},
-		"internal/adapter/tool/content/content.go":   {".AtomicWrite("},
-		"internal/runtime/app/wire/childworktree.go": {"process.Run("},
-		"internal/orchestration/chatmerge/service.go": {
+		"internal/adapter/tool/content/content.go":        {".AtomicWrite("},
+		"internal/orchestration/subagent/git_worktree.go": {"process.Run("},
+		"internal/orchestration/workspacemerge/service.go": {
 			"copyRegularFile(", `c.git(ctx, worktree, "apply"`,
 			`c.git(ctx, worktree, "add"`, `c.git(ctx, worktree, "commit"`,
 		},

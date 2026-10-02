@@ -5,6 +5,7 @@ import (
 
 	"github.com/fwtllh-png/QCode/internal/adapter/provider"
 	agentcontext "github.com/fwtllh-png/QCode/internal/runtime/agent/context"
+	"github.com/fwtllh-png/QCode/internal/runtime/agent/contextview"
 )
 
 type ContextPolicy struct {
@@ -68,7 +69,7 @@ func (e *Engine) estimateTokens(messages []provider.Message) uint64 {
 func (e *Engine) estimateNonTailTokens(history []provider.Message) uint64 {
 	var mandatory []provider.Message
 	mandatory = append(mandatory, e.promptMessages()...)
-	for _, message := range agentcontext.ProjectContextViewFrom(history, len(history)) {
+	for _, message := range contextview.ProjectContextViewFrom(history, len(history)) {
 		if agentcontext.IsWorldStateMessage(message) {
 			mandatory = append(mandatory, message)
 		}

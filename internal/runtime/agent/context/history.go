@@ -142,7 +142,7 @@ func RetainedTailCuts(
 	recentMaxTokens uint64,
 	estimateTokens func([]provider.Message) uint64,
 ) []int {
-	cuts := compactionCuts(history, allowCurrentTurn)
+	cuts := HistoryCuts(history, allowCurrentTurn)
 	if len(cuts) == 0 || recentTurns <= 0 && recentMaxTokens == 0 {
 		return cuts
 	}
@@ -165,7 +165,9 @@ func RetainedTailCuts(
 	return fallback
 }
 
-func compactionCuts(
+// HistoryCuts returns split points that preserve complete tool-call pairs.
+// Unless allowCurrentTurn is set, only closed-turn boundaries are eligible.
+func HistoryCuts(
 	history []provider.Message,
 	allowCurrentTurn bool,
 ) []int {
@@ -175,7 +177,7 @@ func compactionCuts(
 	var cuts []int
 	currentTurn := history[len(history)-1].Turn
 	for cut := 1; cut < len(history); cut++ {
-		if !safeToolBoundary(history, cut) {
+		if !SafeToolBoundary(history, cut) {
 			continue
 		}
 		if !allowCurrentTurn && history[cut-1].Turn == currentTurn {
@@ -213,7 +215,9 @@ func recentTurnStart(history []provider.Message, count int) int {
 	return start
 }
 
-func safeToolBoundary(history []provider.Message, cut int) bool {
+// SafeToolBoundary reports whether an interior split leaves both sides with
+// complete tool-call pairs. Endpoints are not interior history boundaries.
+func SafeToolBoundary(history []provider.Message, cut int) bool {
 	if cut <= 0 || cut >= len(history) {
 		return false
 	}

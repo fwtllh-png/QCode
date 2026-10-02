@@ -5,7 +5,6 @@ import (
 	"errors"
 
 	"github.com/fwtllh-png/QCode/internal/persist/state/eventlog"
-	"github.com/fwtllh-png/QCode/internal/runtime/app/eventhub"
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
 )
 
@@ -154,7 +153,7 @@ func (r *EventService) publishProjected(
 			)
 		}
 	}
-	kind := eventhub.EventKind(data)
+	kind := EventKind(data)
 	terminal := protocol.IsTerminalEvent(kind)
 	r.mu.Lock()
 	itemID = r.eventOwnedItemID(turnID, data, itemID)

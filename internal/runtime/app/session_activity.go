@@ -3,7 +3,7 @@ package app
 import (
 	"context"
 
-	"github.com/fwtllh-png/QCode/internal/persist/artifact"
+	"github.com/fwtllh-png/QCode/internal/persist/snapshot"
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
 )
 
@@ -73,11 +73,11 @@ func (r *SessionService) sessionThreads(ctx context.Context, ids []string) (map[
 	return result, nil
 }
 
-func (r *SessionService) sessionCheckpointSummaries(ctx context.Context, ids []string) (map[string]artifact.SessionCheckpointSummary, error) {
-	if reader, ok := r.runtime.sessionArtifacts.(artifact.SessionCheckpointSummaryStore); ok {
+func (r *SessionService) sessionCheckpointSummaries(ctx context.Context, ids []string) (map[string]snapshot.CheckpointSummary, error) {
+	if reader, ok := r.runtime.sessionArtifacts.(SessionCheckpointSummaryStore); ok {
 		return reader.CheckpointSummaries(ctx, ids)
 	}
-	result := make(map[string]artifact.SessionCheckpointSummary, len(ids))
+	result := make(map[string]snapshot.CheckpointSummary, len(ids))
 	if r.runtime.sessionArtifacts == nil {
 		return result, nil
 	}
@@ -86,7 +86,7 @@ func (r *SessionService) sessionCheckpointSummaries(ctx context.Context, ids []s
 		if err != nil {
 			return nil, err
 		}
-		summary := artifact.SessionCheckpointSummary{Count: count}
+		summary := snapshot.CheckpointSummary{Count: count}
 		if count > 0 {
 			checkpoints, err := r.runtime.sessionArtifacts.ListCheckpoints(ctx, id, 1)
 			if err != nil {

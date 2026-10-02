@@ -6,8 +6,6 @@ import (
 	"testing"
 	"time"
 
-	sessionhistory "github.com/fwtllh-png/QCode/internal/persist/history"
-
 	"github.com/fwtllh-png/QCode/internal/adapter/provider"
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
 	"github.com/fwtllh-png/QCode/internal/observability/telemetry"
@@ -33,7 +31,7 @@ func TestCompactWindowChainAndResume(t *testing.T) {
 		return AdaptEngine(clone), nil
 	})
 	manager.SetWindowRestorer(func(ctx context.Context, threadID protocol.ThreadID) (*protocol.ThreadCompactedData, error) {
-		return sessionhistory.LatestThreadHistorySeed(ctx, store, threadID)
+		return agentcontext.LatestThreadHistorySeed(ctx, store, threadID)
 	})
 	manager.SetSequenceReader(func(ctx context.Context) (protocol.Cursor, error) {
 		return store.LastSequence(ctx)
@@ -110,7 +108,7 @@ func TestCompactWindowChainAndResume(t *testing.T) {
 		return AdaptEngine(clone), nil
 	})
 	resumed.SetWindowRestorer(func(ctx context.Context, threadID protocol.ThreadID) (*protocol.ThreadCompactedData, error) {
-		return sessionhistory.LatestThreadHistorySeed(ctx, store, threadID)
+		return agentcontext.LatestThreadHistorySeed(ctx, store, threadID)
 	})
 	hist, err := resumed.History("thread-window")
 	if err != nil {
@@ -187,7 +185,7 @@ func TestThreadResumeKeepsCompactedWindowNewerThanTerminalDelta(t *testing.T) {
 		provider.RoleSystem,
 		"new compacted history",
 	)
-	encoded, err := sessionhistory.EncodeCompactedHistory(
+	encoded, err := agentcontext.EncodeCompactedHistory(
 		[]provider.Message{newMessage},
 	)
 	if err != nil {
@@ -254,7 +252,7 @@ func TestCompactForkResume(t *testing.T) {
 	}
 	manager := NewThreadManager(factory)
 	manager.SetWindowRestorer(func(ctx context.Context, threadID protocol.ThreadID) (*protocol.ThreadCompactedData, error) {
-		return sessionhistory.LatestThreadHistorySeed(ctx, store, threadID)
+		return agentcontext.LatestThreadHistorySeed(ctx, store, threadID)
 	})
 	manager.SetSequenceReader(func(ctx context.Context) (protocol.Cursor, error) {
 		return store.LastSequence(ctx)
@@ -343,7 +341,7 @@ func TestCompactForkResume(t *testing.T) {
 
 	resumed := NewThreadManager(factory)
 	resumed.SetWindowRestorer(func(ctx context.Context, threadID protocol.ThreadID) (*protocol.ThreadCompactedData, error) {
-		return sessionhistory.LatestThreadHistorySeed(ctx, store, threadID)
+		return agentcontext.LatestThreadHistorySeed(ctx, store, threadID)
 	})
 	restored, err := resumed.History("thread-child")
 	if err != nil {
@@ -402,11 +400,11 @@ func TestEncodeDecodeCompactedHistoryRoundTrip(t *testing.T) {
 		}}},
 		assistant,
 	}
-	encoded, err := sessionhistory.EncodeCompactedHistory(input)
+	encoded, err := agentcontext.EncodeCompactedHistory(input)
 	if err != nil {
 		t.Fatal(err)
 	}
-	decoded, err := sessionhistory.DecodeCompactedHistory(encoded)
+	decoded, err := agentcontext.DecodeCompactedHistory(encoded)
 	if err != nil {
 		t.Fatal(err)
 	}

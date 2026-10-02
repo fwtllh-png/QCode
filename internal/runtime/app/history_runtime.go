@@ -3,12 +3,11 @@ package app
 import (
 	"context"
 
-	"github.com/fwtllh-png/QCode/internal/persist/history"
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
 )
 
-func (r *Runtime) HistoryEventReader() history.BackwardReader {
-	reader, _ := r.events.(history.BackwardReader)
+func (r *Runtime) HistoryEventReader() HistoryBackwardReader {
+	reader, _ := r.events.(HistoryBackwardReader)
 	return reader
 }
 

@@ -80,6 +80,7 @@
         "internal/adapter/tool/result",
         "internal/adapter/tool/toolsearch",
         "internal/adapter/tool/turnhistory",
+        "internal/common/contextsnapshot",
         "internal/observability/telemetry",
         "internal/observability/trace",
         "internal/observability/verify",

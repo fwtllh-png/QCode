@@ -37,7 +37,7 @@ Web
 | Runtime | `internal/runtime` | 协议、应用状态、Agent 循环、装配 |
 | Adapter | `internal/adapter` | 模型、Provider、Tool、MCP、Skill |
 | Security | `internal/security` | Policy、Permission、Constitution、Sandbox |
-| Orchestration | `internal/orchestration` | Subagent、Admission/Budget、Chat Merge、Exec Settle |
+| Orchestration | `internal/orchestration` | Subagent、Admission/Budget、Workspace Merge、Exec Settle |
 | Persistence | `internal/persist` | 关系状态、Event、CAS、Session、Snapshot、Journal |
 | Observability | `internal/observability` | Usage、Trace、Diagnostics、Verify、Telemetry |
 | Platform | `internal/platform` | 进程、PTY、操作系统差异 |
@@ -71,12 +71,21 @@ Web
     投影为安全层自己的输入类型，再调用决策与执行授权。
 14. `internal/common` 的生产代码只能依赖标准库、第三方库或其他 common 子包，
     不能导入仓库内其他层；测试可以引用调用方验证集成。
+15. 工作树提供者属于 `orchestration/subagent`，通过 `WorktreeBroker` 调用受控 Git
+    操作；Session 隔离工作区的状态属于 `runtime/app.IsolatedSessionWorkspaces`，通过
+    Threads、Tools、Merger 接口管理资源。`wire` 只构造和注入这些服务，不实现
+    Provision、Restore、Discard 或合并流程。
+16. `runtime/agent` 内部由 `engine` 协调 `turnkernel`、`context`、`contextview` 与
+    `prompt`；`contextview` 和 `prompt` 只依赖 `context`，`context` 与 `turnkernel`
+    不依赖其他 Agent 子包。Agent 子包不能反向导入 `runtime/app` 或 Host。
 
 Architecture Test 会检查重要 Import 限制：第 9 条由 `TestOnlyHostsImportHostPackages`
 检查，第 10 条由 `TestWebHostDoesNotScanEventHistory` 检查，第 11 条由
 `TestWireOnlyConstructsChildRunner` 检查，第 12 条由
 `TestManagerIsTheOnlyChildBudgetOwner` 检查，第 14 条由
-`TestCommonImportDirection` 检查，包括其他平台和 Build Tag 下的生产文件。
+`TestCommonImportDirection` 检查，包括其他平台和 Build Tag 下的生产文件。第 15 条由
+`TestWireOnlyConstructsWorkspaceServices` 检查。
+第 16 条由 `TestAgentPackageImportDirection` 检查，包括其他平台和 Build Tag 下的生产文件。
 需要违反这些规则的设计必须先进行显式架构
 调整，不能用局部捷径绕过。
 
@@ -147,7 +156,9 @@ Attempt 都会先签发和消费 Lease，再把 Operation/Lease/Settlement 证�
 `tool.result.execution`。Process Broker 接管 stdio MCP 生命周期，模型侧不再开放
 宿主进程冒烟工具；File/VCS Broker 接管模型文件工具、Agent/Chat Merge、生成型 Workspace
 输出和 Git Metadata Mutation。`orchestration/workspacebroker.Runtime` 组合 File/VCS
-Broker 与 Journal，不把组合逻辑放入 `wire` 或安全核心。
+Broker，并通过 `filebroker.Journal` 接口接受调用方的事务日志；它不依赖具体的
+Persistence 实现。安全 Broker 继续负责 Lease 与副作用校验，编排服务负责操作顺序和
+事务生命周期。
 
 `internal/security` 按契约、决策、授权和执行职责组织。共享的资源、Effect、评估、
 调用身份和控制矩阵集中在 `model`，同一模型内的阶段用类型和文件划分：
@@ -271,37 +282,60 @@ OperationService -> TurnService -> TurnCoordinator -> TurnScope
         v
     EventService -> eventhub.Hub <-------- Event Projection
         |
-        +-> TerminalPublisher -> app/persistence -> SQLite / Event Log / CAS
+        +-> TerminalPublisher -> persist/state/turnstate -> SQLite / Event Log / CAS
         |
         +-> SessionService / ArtifactService -> Host Query
 
 wire.NewExec -> 仅负责构造 Module
-orchestration/chatmerge.Service -> 隔离 Chat Preview / Journal Apply / Git Baseline
+orchestration/workspacemerge.Service -> 工作区 Preview / Journal Apply / Git Baseline
 Web Projection -> 仅负责 Host Presentation
 ```
 
 | Owner | 路径 | 独占职责 |
 | --- | --- | --- |
 | Composition Root | `internal/runtime/app/wire` | Concrete Construction 与 Resource Registration |
-| Durable Runtime Assembly | `internal/runtime/app/persistence` | Repository、Lifecycle Recovery、Persistent Runtime Options |
-| Chat Merge Service | `internal/orchestration/chatmerge` | Isolated Baseline、Three-way Preview、Journaled Apply |
+| Durable Runtime Adapter | `internal/runtime/app/persistence` | 持久化端口适配、Turn 租约与 Fact 恢复、线程运行态重建及 Subagent Graph 事件发布绑定 |
+| Workspace Merge Service | `internal/orchestration/workspacemerge` | Chat 与隔离命令共享的 Baseline、Three-way Preview、Journaled Apply |
+| Session Workspaces | `internal/runtime/app/session_workspaces.go` | Session/Thread 绑定、隔离工作区创建、恢复、丢弃与合并入口 |
 | Exec Settle | `internal/orchestration/execsettle` | 命令级隔离工作区、写树三方结算 |
 | Operation Service | `internal/runtime/app` | Queue、Idempotency、Typed Dispatch 与 Operation Commit/Reject |
 | Workspace Query | `internal/runtime/app/workspacequery` | 工作区浏览、搜索、文本与图片资源、Git 状态与差异的只读查询语义 |
 | Turn Service | `internal/runtime/app` | Active Lease、Control、Cancel Provenance 与 Turn goroutine 生命周期 |
 | Event/Recovery Service | `internal/runtime/app` | Event Projection 索引、Observer、History Evidence 查询与 Durable Recovery |
 | Turn Coordinator/Scope | `internal/runtime/agent` | Reducer Authority、Effect、Control 与 Turn-local State |
-| Event Hub/Terminal Publisher | `internal/runtime/app/eventhub`、`internal/runtime/app` | Sequence/Fanout 与 Atomic Terminal Publication |
+| Event Hub | `internal/runtime/app/eventhub` | 事件序号、回放、订阅与分发 |
+| Engine Adapter/Terminal Publisher | `internal/runtime/app` | Engine 契约与事件适配、终态原子提交及 Outbox 恢复 |
 | Subagent Control | `internal/orchestration/subagent` | Agent Graph、唯一的 Budget/Concurrency 权威与 Worktree Authority |
 | Child Runner | `internal/orchestration/childrun` | Child Turn 提交、驻留、墙钟租约与终态结算；不做预算准入或记账 |
-| Thread Repository | `internal/persist/thread` | Thread 元数据与生命周期的 SQLite 持久化 |
+| Thread Repository | `internal/persist/thread` | Thread 元数据、Operation Accept/Commit、事件投影事务与恢复事实查询 |
+| Context Repository | `internal/persist/contextstate` | Context Rebase、Current Context、Turn Baseline 与撤回标记的 SQL/CAS 原子持久化 |
 | Skill Control | `internal/runtime/app/extension`、`internal/adapter/skill` | Skill 状态、Lock、控制操作与 Receipt |
 | Trace/Usage Plane | `internal/observability/trace`、`internal/observability/usage` | Span、Latency、Token、Cost 与查询投影 |
-| Turn Receipt Builder | `internal/runtime/app/extension` | 汇总 Engine 事实、冻结终态计量并构建和校验执行回执 |
-| Session/Artifact/Trace Service | `internal/runtime/app` | Runtime-owned Port 上的 Host-facing Query 行为 |
+| Turn Receipt Builder | `internal/runtime/app` | 汇总 Engine 事实、冻结终态计量并构建和校验执行回执 |
+| Session/Artifact/History/Trace Service | `internal/runtime/app` | Session 应用服务、Checkpoint/Plan 操作、历史呈现与导出 |
 | Agent Preset Service | `internal/runtime/app`、`internal/persist/agentpreset` | Workspace 范围的版本化 Preset 校验、原子持久化与 Session 应用 |
 | Benchmark Projection | `internal/host/intergration_test/event_projection_test.go` | Go Benchmark 包内私有的事件解释辅助代码 |
 | Web Projection | `web/src` | 浏览器端 Event Projection 与交互状态 |
+
+`internal/persist` 按持久化资源组织：`state` 协调 Event Log、SQLite 与 CAS，
+`session`、`thread`、`snapshot` 和 `contextstate` 分别维护所属数据及事务。
+`history` 仅保留搜索字段与索引查询契约；模型历史重建和 Compact 编解码属于
+`runtime/agent/context`。Artifact 与 History 应用服务直接归 `runtime/app`。
+
+线程恢复由 `app/persistence.Lifecycle` 读取 Persist 的事件及 Operation 事实，重建
+Approval/Input、Turn Queue、Tool Item 与待恢复操作。Subagent 的重启状态转换规则在
+`orchestration/subagent/recovery.go`，`persist/state` 查询节点、Turn 和 Integration 事实，
+`app/persistence` 绑定 Graph 并发布恢复事件。Persist 可以使用 Protocol、Context 和
+TurnKernel 的存储契约，不依赖 App 应用服务或 Agent Engine 实现。
+
+`app` 根包保留应用服务，各 Service 的状态与方法按职责放在同包文件中；
+`runtime_services.go` 只初始化内部服务。Artifact 的 Checkpoint、Plan 执行和 Turn
+恢复分别放在 `artifact_checkpoint.go`、`artifact_plan_execution.go` 和
+`artifact_recovery.go`，恢复证据编解码与提示词渲染放在 `artifact_recovery_evidence.go`。
+`extension` 只承担 Skill 控制；Engine 适配、待办路由和执行回执直接属于 App。
+`terminal_publisher.go` 使用 Runtime 已有资源完成提交，`event_terminal.go` 负责投影，
+Event Hub 不承担终态事务。`persistence/coordinator.go` 管理持久化 Turn 租约及心跳，
+Wire 只构造和注册该协调器。
 
 Web 直接调用 Runtime 的窄化 Session、Operation、History 与 Artifact Service。
 浏览器 Transport 不复制 Agent 循环，也不存在第二条兼容执行路径。
@@ -311,7 +345,7 @@ Session 生命周期写操作由 `SessionService` 的 mutation lock 串行化。
 是唯一生产 Turn 入口；它冻结 `TurnRequest` 和 Context Authority，并为每个 Turn
 创建隔离 Scope。`turnkernel.Reducer.Apply` 是唯一状态转换入口，其实现按 Command
 Family 分布在 `reducer_sampling.go`、`reducer_tool.go`、
-`reducer_interaction.go`、`reducer_context.go`、
+`reducer_interaction.go`、`reducer_continuation.go`、
 `reducer_verification.go` 和 `reducer_terminal.go`。
 
 Engine 对外发布的 `State` 是 Kernel `Phase` 的呈现细化，不是第二套权威状态机：
@@ -540,6 +574,21 @@ Snapshot、待审批/输入与队列查询仍能返回；跨函数死锁由 `go 
 
 ## Turn 数据流
 
+`internal/runtime/agent` 按状态所有权与投影职责分成五个包：
+
+| 包 | 职责 |
+| --- | --- |
+| `engine` | Model/Tool 业务循环、Engine/Scope 生命周期，以及 Scope 私有的工具并发准入 |
+| `turnkernel` | 权威 Turn 状态、Reducer、Domain Fact 提交和 Effect 身份与恢复 |
+| `context` | History、Working Set、Evidence、压缩、快照、恢复，以及历史边界与工具配对规则 |
+| `contextview` | 模型可见历史选择、尾部裁剪、Economic Admission、Stateless 投影与 Prefix Manifest |
+| `prompt` | 指令、仓库信息等输入分区的内容组装、文本呈现与 Receipt |
+
+`contextview/view.go` 根据容量与已选折叠位置生成模型输入，不修改 Durable History。
+历史切分是否保留完整工具调用由 `context.HistoryCuts` / `SafeToolBoundary` 判定；
+当前折叠位置和调用时机仍属于 Engine。工具并发调度器属于 `engine.Scope`，
+不参与 Kernel 状态转换或恢复。
+
 Repository Map 属于 `internal/runtime/agent/prompt` 的模型输入投影。
 `repository_map.go` 根据 Repo Index 快照聚合、筛选目录和符号提纲；
 `repository.go` 按 Turn 缓存结果，`turn.go` 完成预算内呈现。
@@ -680,7 +729,7 @@ Control State。Cancel、Steer、Approval、Input 统一进入 `ControlPort`；�
     `operation.rejected` 或已提交 Outcome 事件，再写 Commit Receipt，最后推进队列；
     任一步失败（日志写 IO 错误、投影失败、Receipt 写失败）都把剩余步骤登记到
     `OperationService` 的待结算表，Operation 保持 accepted，不会记录日志后丢失。
-    结算事件使用由 Operation ID 推导的稳定 Event ID（`eventhub.SettlementEventID`），
+    结算事件使用由 Operation ID 推导的稳定 Event ID（`app.SettlementEventID`），
     追加成功但投影失败后的重试会重新投影原事件而不重复追加；Lifecycle Commit 对已提交
     Operation 幂等。只有 `OperationService.advance` 写 Commit Receipt、只有
     `operationRejection` 构造拒绝事件，由 `TestAcceptedOperationsSettleThroughOneOwner`
@@ -1081,7 +1130,7 @@ Provider 配额耗尽与瞬时限流分开处理。OpenAI-compatible 的明确
 
 Runtime Event 是 Host Protocol，也是生命周期回放的权威记录。Terminal Envelope
 原子保存冻结 Measurement、Receipt、Session Delta 与 Projection Outbox。
-回执构建由 `internal/runtime/app/extension/turn_receipt.go` 中的私有 Recorder 负责，
+回执构建由 `internal/runtime/app/turn_receipt.go` 中的私有 Recorder 负责，
 由 `EngineAdapter` 收集执行事实并在终态冻结；`turn_receipt_terminal.go` 将 Trace 与
 Kernel Usage 绑定为计量快照，并校验回执 Outcome、实际变更与终态一致。
 生成的 `protocol.ExecutionReceiptData` 与其他终态材料一起提交。
@@ -1372,6 +1421,12 @@ Execution Receipt 会记录选择规模、显式命中、Token Projection、Cach
 Query/Candidate 截断。
 
 ## Subagent 协作架构
+
+工作区相关实现按生命周期分工：`subagent/git_worktree.go` 负责共享目录、只读与 Git
+隔离策略，以及 Worktree 创建、清理和 Git 元数据读取范围校验；
+`runtime/app/session_workspaces.go` 负责 Chat Session 与 Thread 的绑定、恢复和资源释放。
+`workspacemerge` 提供共享的基线快照与三方合并，`execsettle` 管理命令级隔离工作区。
+合并服务只依赖 `WorkspaceGate` 接口，由 `wire` 注入同一 Workspace Turn Gate。
 
 QCode 不维护通用后台 Task Queue、Worker Lease、Workflow DAG、Automation、
 Lane 或 Fleet。前台工作由 Runtime Turn 承载；多 Agent 协作通过 Subagent

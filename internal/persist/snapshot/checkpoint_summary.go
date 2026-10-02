@@ -4,17 +4,20 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-
-	"github.com/fwtllh-png/QCode/internal/persist/artifact"
 )
 
 // CheckpointSummaries reads counts and the latest checkpoint for the requested
 // sessions together, retaining the same metadata validation as ListCheckpoints.
-func (r *Repository) CheckpointSummaries(ctx context.Context, sessionIDs []string) (map[string]artifact.SessionCheckpointSummary, error) {
+type CheckpointSummary struct {
+	Count        int
+	ChangedFiles int
+}
+
+func (r *Repository) CheckpointSummaries(ctx context.Context, sessionIDs []string) (map[string]CheckpointSummary, error) {
 	if r.db == nil {
 		return nil, errors.New("snapshot database is required")
 	}
-	result := make(map[string]artifact.SessionCheckpointSummary, len(sessionIDs))
+	result := make(map[string]CheckpointSummary, len(sessionIDs))
 	if len(sessionIDs) == 0 {
 		return result, nil
 	}
@@ -50,7 +53,7 @@ func (r *Repository) CheckpointSummaries(ctx context.Context, sessionIDs []strin
 				ID: checkpoint.ID, Err: errors.New("checkpoint crosses Session identity"),
 			}
 		}
-		result[sessionID] = artifact.SessionCheckpointSummary{
+		result[sessionID] = CheckpointSummary{
 			Count: count, ChangedFiles: checkpoint.ChangedFiles,
 		}
 	}

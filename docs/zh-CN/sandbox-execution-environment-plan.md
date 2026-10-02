@@ -652,7 +652,7 @@ Workspace 共享进程 Gate 不再写入。
 
 工作：`internal/orchestration/execsettle` 为带有已存在写树的 `exec_command`
 准备独立 cwd；Git 工作区用 detached worktree + dirty/untracked Snapshot，
-非 Git 工作区用内容副本加私有 baseline。退出后 `chatmerge.PlanPaths` /
+非 Git 工作区用内容副本加私有 baseline。退出后 `workspacemerge.PlanPaths` /
 `ApplyPaths` 只结算声明树前缀，经 File Broker 与当前 Turn Journal 三方提交。
 用户并发修改不自动算 Agent 修改；重叠冲突拒绝且不覆盖父工作区。隔离 cwd
 写入 `isolated_cwd`；Seatbelt 不重映射路径。子 Agent 仍使用自己的 worktree，
@@ -661,7 +661,7 @@ Workspace 共享进程 Gate 不再写入。
 完成：动态目录写可结算；`user.txt` 上的并发用户编辑不会随 `generated/`
 树写一起落入 Journal。
 
-验证：`go test ./internal/orchestration/execsettle ./internal/orchestration/chatmerge
+验证：`go test ./internal/orchestration/execsettle ./internal/orchestration/workspacemerge
 ./internal/adapter/tool/shell ./internal/adapter/tool/guard`。
 
 ### P3 原 GOPROXY 认证协议（已撤销）

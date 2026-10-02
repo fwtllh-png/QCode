@@ -4,11 +4,30 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 
 	agentengine "github.com/fwtllh-png/QCode/internal/runtime/agent/engine"
 	"github.com/fwtllh-png/QCode/internal/runtime/agent/turnkernel"
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
 )
+
+// TurnService owns active Turn leases and execution goroutine lifetime. The
+// Runtime facade delegates Turn admission and control to this owner.
+type TurnService struct {
+	runtime  *Runtime
+	active   *ActiveTurnRegistry
+	workers  sync.WaitGroup
+	deferred deferredTerminalProjections
+}
+
+// trackWorker registers work outside Turn execution that Runtime shutdown
+// must wait for before closing the engine.
+func (s *TurnService) trackWorker() func() {
+	s.workers.Add(1)
+	return s.workers.Done
+}
+
+func (s *TurnService) waitWorkers() { s.workers.Wait() }
 
 type turnExecution func(context.Context, *protocol.StartTurnPayload, EngineSink) error
 

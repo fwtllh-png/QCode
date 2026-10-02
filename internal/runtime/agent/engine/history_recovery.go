@@ -9,6 +9,7 @@ import (
 	"github.com/fwtllh-png/QCode/internal/adapter/provider"
 	"github.com/fwtllh-png/QCode/internal/persist/workspacejournal"
 	agentcontext "github.com/fwtllh-png/QCode/internal/runtime/agent/context"
+	"github.com/fwtllh-png/QCode/internal/runtime/agent/contextview"
 	promptcontext "github.com/fwtllh-png/QCode/internal/runtime/agent/prompt"
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
 )
@@ -29,7 +30,7 @@ func (e *Engine) projectGateHistory(
 	if projectHistory != nil {
 		return agentcontext.ProjectHistory(history, projectHistory)
 	}
-	return agentcontext.ProjectContextViewFrom(
+	return contextview.ProjectContextViewFrom(
 		history, e.visibleTailStart(history),
 	)
 }

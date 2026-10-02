@@ -264,7 +264,7 @@ func TestC4TerminalCommitOwnershipBaseline(t *testing.T) {
 	applicationFile := parseProductionFile(
 		t,
 		root,
-		"internal/runtime/app/extension/engine_adapter.go",
+		"internal/runtime/app/engine_adapter.go",
 	)
 	commit := findFunction(applicationFile, "commitTerminal")
 	if functionCalls(commit, "Emit") {
@@ -327,7 +327,7 @@ func TestC5RestartProjectionOwnershipBaseline(t *testing.T) {
 	publisherFile := parseProductionFile(
 		t,
 		root,
-		"internal/runtime/app/eventhub/terminal.go",
+		"internal/runtime/app/terminal_publisher.go",
 	)
 	if findFunction(publisherFile, "Recover") == nil {
 		t.Fatal("Terminal Publisher has no terminal outbox recovery")
@@ -399,7 +399,7 @@ func TestC6SingleAuthorityOwnershipBaseline(t *testing.T) {
 	applicationFile := parseProductionFile(
 		t,
 		root,
-		"internal/runtime/app/extension/engine_adapter.go",
+		"internal/runtime/app/engine_adapter.go",
 	)
 	if functionCalls(findFunction(applicationFile, "commitTerminal"), "Emit") {
 		t.Fatal("non-transactional terminal emit fallback remains")
@@ -489,10 +489,10 @@ func c0ConvergenceDeviations() []convergenceDeviation {
 						"TurnCoordinatorRuntime",
 						"CoordinatorRuntime",
 					) ||
-					!(fileCalls(wire, "newDurableCoordinatorRuntime") ||
+					!(fileCalls(wire, "NewCoordinatorRuntime") ||
 						fileCalls(
 							contextPolicy,
-							"newDurableCoordinatorRuntime",
+							"NewCoordinatorRuntime",
 						))
 			},
 		},
@@ -629,7 +629,7 @@ func c0ConvergenceDeviations() []convergenceDeviation {
 				file := parseProductionFile(
 					t,
 					root,
-					"internal/runtime/app/extension/engine_adapter.go",
+					"internal/runtime/app/engine_adapter.go",
 				)
 				function := findFunction(file, "commitTerminal")
 				return functionCalls(function, "CommitTerminal") &&

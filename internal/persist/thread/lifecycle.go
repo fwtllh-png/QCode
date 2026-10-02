@@ -13,9 +13,23 @@ import (
 	"github.com/fwtllh-png/QCode/internal/observability/usage"
 	sessionstate "github.com/fwtllh-png/QCode/internal/persist/session"
 	"github.com/fwtllh-png/QCode/internal/persist/state"
-	"github.com/fwtllh-png/QCode/internal/runtime/app"
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
 )
+
+// Acceptance records whether an operation was newly persisted or already exists.
+type Acceptance struct {
+	OperationID protocol.OperationID
+	Duplicate   bool
+	Committed   bool
+}
+
+// CommitReceipt is the durable operations.response_json payload.
+type CommitReceipt struct {
+	OperationID  protocol.OperationID `json:"operation_id"`
+	Status       string               `json:"status"`
+	LastSequence protocol.Cursor      `json:"last_sequence"`
+	CompletedAt  time.Time            `json:"completed_at"`
+}
 
 type Lifecycle struct {
 	state         *state.Store
@@ -46,105 +60,26 @@ func NewWorkspaceLifecycle(
 	return lifecycle
 }
 
-func (l *Lifecycle) Recover(ctx context.Context) (app.RecoveryState, error) {
+// RecoveryEvents returns the retained events within the lifecycle workspace.
+func (l *Lifecycle) RecoveryEvents(ctx context.Context) ([]protocol.Event, error) {
 	if l.state == nil || l.db == nil {
-		return app.RecoveryState{}, errors.New("thread lifecycle state store is required")
+		return nil, errors.New("thread lifecycle state store is required")
 	}
-	events, err := l.recoveryEvents(ctx)
-	if err != nil {
-		return app.RecoveryState{}, fmt.Errorf("replay lifecycle events: %w", err)
+	if l.workspaceRoot == "" {
+		return l.state.Replay(ctx, 0)
 	}
-	recovery := app.RecoveryState{
-		Terminals:          make(map[protocol.TurnID]protocol.EventKind),
-		PendingApprovals:   make(map[string]app.PendingApproval),
-		PendingInputs:      make(map[string]app.PendingInput),
-		PendingQueuedTurns: make(map[string]protocol.QueuedTurn),
-		PendingOperations:  make(map[protocol.OperationID]app.PendingOperation),
-		ToolItems:          make(map[app.EventItemOwner]protocol.ItemID),
-	}
-	confirmed := make(map[protocol.OperationID]app.CommitReceipt)
-	for _, event := range events {
-		if err := l.Project(ctx, event); err != nil {
-			return app.RecoveryState{}, fmt.Errorf("recover event %d projection: %w", event.Sequence, err)
-		}
-		if err := app.ApplyTurnQueueEvent(recovery.PendingQueuedTurns, event); err != nil {
-			return app.RecoveryState{}, fmt.Errorf(
-				"recover event %d turn queue: %w",
-				event.Sequence,
-				err,
-			)
-		}
-		recovery.LastSequence = max(recovery.LastSequence, event.Sequence)
-		if protocol.IsTerminalEvent(event.Kind) {
-			if existing, exists := recovery.Terminals[event.TurnID]; exists {
-				return app.RecoveryState{}, fmt.Errorf(
-					"%w: turn %s has terminal events %s and %s",
-					ErrTerminal, event.TurnID, existing, event.Kind,
-				)
-			}
-			recovery.Terminals[event.TurnID] = event.Kind
-			for requestID, approval := range recovery.PendingApprovals {
-				if approval.TurnID == event.TurnID {
-					delete(recovery.PendingApprovals, requestID)
-				}
-			}
-			for requestID, input := range recovery.PendingInputs {
-				if input.TurnID == event.TurnID {
-					delete(recovery.PendingInputs, requestID)
-				}
-			}
-		}
-		switch data := event.Data.(type) {
-		case *protocol.ApprovalRequiredData:
-			recovery.PendingApprovals[data.RequestID] = app.PendingApproval{
-				RequestID: data.RequestID,
-				ThreadID:  event.ThreadID,
-				TurnID:    event.TurnID,
-				ItemID:    event.ItemID,
-				Data:      *data,
-			}
-		case *protocol.ApprovalResolvedData:
-			delete(recovery.PendingApprovals, data.RequestID)
-		case *protocol.InputRequiredData:
-			recovery.PendingInputs[data.RequestID] = app.PendingInput{
-				RequestID: data.RequestID,
-				ThreadID:  event.ThreadID,
-				TurnID:    event.TurnID,
-				ItemID:    event.ItemID,
-				Data:      *data,
-			}
-		case *protocol.InputResolvedData:
-			delete(recovery.PendingInputs, data.RequestID)
-		case *protocol.ToolResultData:
-			if data.CallID != "" && event.ItemID != "" {
-				recovery.ToolItems[app.EventItemOwner{
-					TurnID:  event.TurnID,
-					LocalID: data.CallID,
-				}] = event.ItemID
-			}
-		}
-		if confirmsOperation(event.Kind) {
-			confirmed[event.OperationID] = app.CommitReceipt{
-				OperationID:  event.OperationID,
-				Status:       "committed",
-				LastSequence: event.Sequence,
-				CompletedAt:  event.CreatedAt,
-			}
-		}
-	}
-	last, err := l.state.LastSequence(ctx)
-	if err != nil {
-		return app.RecoveryState{}, err
-	}
-	recovery.LastSequence = max(recovery.LastSequence, last)
-	for _, receipt := range confirmed {
-		if err := l.Commit(ctx, receipt); err != nil && !errors.Is(err, ErrNotFound) {
-			return app.RecoveryState{}, fmt.Errorf(
-				"recover operation %s commit receipt: %w", receipt.OperationID, err,
-			)
-		}
-	}
+	return l.state.ReplayWorkspace(ctx, 0, l.workspaceRoot)
+}
 
+// LastSequence preserves the process-wide event cursor across workspace recovery.
+func (l *Lifecycle) LastSequence(ctx context.Context) (protocol.Cursor, error) {
+	return l.state.LastSequence(ctx)
+}
+
+// PendingOperations returns accepted operations and committed starts whose active
+// turns have no terminal envelope. It does not reconstruct Runtime state.
+func (l *Lifecycle) PendingOperations(ctx context.Context) ([]OperationRecord, error) {
+	var operations []OperationRecord
 	pendingQuery := `
 		SELECT operation.id, operation.session_id,
 			COALESCE(operation.idempotency_key, ''), operation.request_json
@@ -162,11 +97,11 @@ func (l *Lifecycle) Recover(ctx context.Context) (app.RecoveryState, error) {
 	}
 	rows, err := l.db.QueryContext(ctx, pendingQuery, pendingArguments...)
 	if err != nil {
-		return app.RecoveryState{}, fmt.Errorf("read pending accepted operations: %w", err)
+		return nil, fmt.Errorf("read pending accepted operations: %w", err)
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var pending app.PendingOperation
+		var pending OperationRecord
 		var canonical string
 		if err := rows.Scan(
 			&pending.ID,
@@ -174,16 +109,16 @@ func (l *Lifecycle) Recover(ctx context.Context) (app.RecoveryState, error) {
 			&pending.IdempotencyKey,
 			&canonical,
 		); err != nil {
-			return app.RecoveryState{}, err
+			return nil, err
 		}
-		pending.Canonical = json.RawMessage(canonical)
-		recovery.PendingOperations[pending.ID] = pending
+		pending.Request = json.RawMessage(canonical)
+		operations = append(operations, pending)
 	}
 	if err := rows.Err(); err != nil {
-		return app.RecoveryState{}, err
+		return nil, err
 	}
 	if err := rows.Close(); err != nil {
-		return app.RecoveryState{}, err
+		return nil, err
 	}
 	interruptedQuery := `
 		SELECT operation.id, operation.session_id,
@@ -212,14 +147,14 @@ func (l *Lifecycle) Recover(ctx context.Context) (app.RecoveryState, error) {
 		interruptedArguments...,
 	)
 	if err != nil {
-		return app.RecoveryState{}, fmt.Errorf(
+		return nil, fmt.Errorf(
 			"read interrupted active turns: %w",
 			err,
 		)
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var pending app.PendingOperation
+		var pending OperationRecord
 		var canonical string
 		if err := rows.Scan(
 			&pending.ID,
@@ -227,24 +162,15 @@ func (l *Lifecycle) Recover(ctx context.Context) (app.RecoveryState, error) {
 			&pending.IdempotencyKey,
 			&canonical,
 		); err != nil {
-			return app.RecoveryState{}, err
+			return nil, err
 		}
-		pending.Canonical = json.RawMessage(canonical)
-		recovery.PendingOperations[pending.ID] = pending
+		pending.Request = json.RawMessage(canonical)
+		operations = append(operations, pending)
 	}
 	if err := rows.Err(); err != nil {
-		return app.RecoveryState{}, err
+		return nil, err
 	}
-	return recovery, nil
-}
-
-func (l *Lifecycle) recoveryEvents(
-	ctx context.Context,
-) ([]protocol.Event, error) {
-	if l.workspaceRoot == "" {
-		return l.state.Replay(ctx, 0)
-	}
-	return l.state.ReplayWorkspace(ctx, 0, l.workspaceRoot)
+	return operations, nil
 }
 
 func (l *Lifecycle) Accept(
@@ -252,11 +178,11 @@ func (l *Lifecycle) Accept(
 	operation protocol.Operation,
 	idempotencyKey string,
 	canonical json.RawMessage,
-) (app.Acceptance, error) {
+) (Acceptance, error) {
 	if l.db == nil {
-		return app.Acceptance{}, errors.New("thread lifecycle database is required")
+		return Acceptance{}, errors.New("thread lifecycle database is required")
 	}
-	var acceptance app.Acceptance
+	var acceptance Acceptance
 	err := withTx(ctx, l.db, func(tx *sql.Tx) error {
 		threadID, turnID, itemID := protocol.OperationReferences(operation)
 		var sessionID, sessionStatus, threadStatus string
@@ -290,7 +216,7 @@ func (l *Lifecycle) Accept(
 			if !bytes.Equal(existing.Request, canonical) {
 				return ErrOperationConflict
 			}
-			acceptance = app.Acceptance{
+			acceptance = Acceptance{
 				OperationID: existing.ID,
 				Duplicate:   true,
 				Committed:   existing.Status == OperationCommitted,
@@ -308,7 +234,7 @@ func (l *Lifecycle) Accept(
 				if !bytes.Equal(existing.Request, canonical) || existing.Kind != operation.Kind {
 					return ErrOperationConflict
 				}
-				acceptance = app.Acceptance{
+				acceptance = Acceptance{
 					OperationID: existing.ID,
 					Duplicate:   true,
 					Committed:   existing.Status == OperationCommitted,
@@ -345,19 +271,19 @@ func (l *Lifecycle) Accept(
 				return err
 			}
 		}
-		acceptance = app.Acceptance{OperationID: operation.ID}
+		acceptance = Acceptance{OperationID: operation.ID}
 		return nil
 	})
 	if errors.Is(err, ErrOperationConflict) {
-		return app.Acceptance{}, app.ErrOperationConflict
+		return Acceptance{}, ErrOperationConflict
 	}
 	if errors.Is(err, ErrActiveTurn) {
-		return app.Acceptance{}, ErrActiveTurn
+		return Acceptance{}, ErrActiveTurn
 	}
 	return acceptance, err
 }
 
-func (l *Lifecycle) Commit(ctx context.Context, receipt app.CommitReceipt) error {
+func (l *Lifecycle) Commit(ctx context.Context, receipt CommitReceipt) error {
 	if receipt.OperationID == "" {
 		return errors.New("commit receipt operation id is required")
 	}
@@ -734,19 +660,6 @@ func terminalStatus(event protocol.Event) TurnStatus {
 
 func recoverableTurnFault(fault *protocol.FaultMetadata) bool {
 	return protocol.FaultAllowsTurnRecovery(fault)
-}
-
-func confirmsOperation(kind protocol.EventKind) bool {
-	return protocol.IsTerminalEvent(kind) ||
-		kind == protocol.EventOperationRejected ||
-		kind == protocol.EventTurnSteered ||
-		kind == protocol.EventTurnQueued ||
-		kind == protocol.EventQueuedTurnUpdated ||
-		kind == protocol.EventQueuedTurnRemoved ||
-		kind == protocol.EventApprovalResolved ||
-		kind == protocol.EventThreadCompacted ||
-		kind == protocol.EventThreadForked ||
-		kind == protocol.EventTurnReverted
 }
 
 func withTx(ctx context.Context, db *sql.DB, fn func(*sql.Tx) error) (err error) {

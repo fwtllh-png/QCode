@@ -63,16 +63,10 @@ func loadAgentIntegrationRow(
 	return candidate, true, nil
 }
 
-type AgentIntegrationRecovery struct {
-	Candidate     subagent.IntegrationCandidate
-	AgentStatus   subagent.Status
-	AgentRevision uint64
-}
-
-func (s *Store) PlanAgentIntegrationRecovery(
+func (s *Store) ListAgentIntegrationRecoveries(
 	ctx context.Context,
 	workspaceRoot, sessionID string,
-) ([]AgentIntegrationRecovery, error) {
+) ([]subagent.IntegrationRecovery, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed {
@@ -92,7 +86,7 @@ func (s *Store) PlanAgentIntegrationRecovery(
 	}
 	defer rows.Close()
 	seen := make(map[string]struct{})
-	var out []AgentIntegrationRecovery
+	var out []subagent.IntegrationRecovery
 	for rows.Next() {
 		var status string
 		var revision uint64
@@ -108,7 +102,7 @@ func (s *Store) PlanAgentIntegrationRecovery(
 			continue
 		}
 		seen[candidate.AgentID] = struct{}{}
-		out = append(out, AgentIntegrationRecovery{
+		out = append(out, subagent.IntegrationRecovery{
 			Candidate: candidate, AgentStatus: subagent.Status(status),
 			AgentRevision: revision,
 		})

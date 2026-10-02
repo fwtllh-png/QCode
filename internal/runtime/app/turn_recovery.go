@@ -12,6 +12,10 @@ import (
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
 )
 
+// RecoveryService owns reconstruction of volatile indexes and replay of
+// accepted operations after durable resources are ready.
+type RecoveryService struct{ runtime *Runtime }
+
 func (r StartTurnHandler) validateStart(payload *protocol.StartTurnPayload) error {
 	if payload.Recovery == nil {
 		return nil

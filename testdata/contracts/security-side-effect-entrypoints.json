@@ -167,11 +167,11 @@
       "reason": "Runtime-owned worktree, lane, and durable orchestration state."
     },
     {
-      "path": "internal/orchestration/chatmerge/service.go",
+      "path": "internal/orchestration/workspacemerge/service.go",
       "categories": [
         "process"
       ],
-      "owner": "chat merge",
+      "owner": "workspace merge",
       "reason": "Runtime-owned read-only Git merge calculations; mutations use File and VCS Brokers."
     },
     {

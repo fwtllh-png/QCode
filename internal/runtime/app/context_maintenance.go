@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
-	appextension "github.com/fwtllh-png/QCode/internal/runtime/app/extension"
 	"strconv"
 
 	agentengine "github.com/fwtllh-png/QCode/internal/runtime/agent/engine"
@@ -71,7 +70,7 @@ func (s *runtimeSink) publishNarrativeMaintenance(
 			FallbackReason: err.Error(),
 		}
 	case result.Receipt != nil:
-		data = appextension.ProtocolCompactionData(result.Receipt)
+		data = ProtocolCompactionData(result.Receipt)
 	}
 	if result.Receipt != nil && result.Usage.Total() != 0 {
 		_ = s.runtime.publish(
@@ -91,7 +90,7 @@ func (s *runtimeSink) publishNarrativeMaintenance(
 				OutputTokens:    result.Usage.OutputTokens,
 				ReasoningTokens: result.Usage.ReasoningTokens,
 				CachedTokens:    result.Usage.CachedTokens,
-				CostMicrounits:  appextension.CostMicrounits(result.CostUSD),
+				CostMicrounits:  CostMicrounits(result.CostUSD),
 				CostKnown:       result.CostKnown,
 			},
 		)

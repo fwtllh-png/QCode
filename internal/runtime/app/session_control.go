@@ -9,9 +9,30 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
 )
+
+// SessionService owns Session lifecycle mutations and background title jobs.
+type SessionService struct {
+	runtime *Runtime
+	// mutationMu serializes Session mutations with admission-changing
+	// workspace operations; others take it only through lockMutations.
+	mutationMu   sync.Mutex
+	titleWorkers sync.WaitGroup
+	// titleMu is a leaf lock guarding titleJobs.
+	titleMu   sync.Mutex
+	titleJobs map[string]sessionTitleJob
+}
+
+// lockMutations excludes Session mutations until the returned func runs.
+func (s *SessionService) lockMutations() func() {
+	s.mutationMu.Lock()
+	return s.mutationMu.Unlock
+}
+
+func (s *SessionService) waitTitleWorkers() { s.titleWorkers.Wait() }
 
 const defaultSessionTitle = "New Chat"
 

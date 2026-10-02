@@ -7,9 +7,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	sessionhistory "github.com/fwtllh-png/QCode/internal/persist/history"
-
 	"github.com/fwtllh-png/QCode/internal/adapter/provider"
+	agentcontext "github.com/fwtllh-png/QCode/internal/runtime/agent/context"
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
 )
 
@@ -135,7 +134,7 @@ func TestContextEngineeringCE0LifecycleGolden(t *testing.T) {
 	}
 	actual := contextLifecycleGolden{SchemaVersion: 1}
 	for _, scenario := range scenarios {
-		reconstructed, err := sessionhistory.ReconstructThread(scenario.events, protocol.ThreadID(scenario.thread))
+		reconstructed, err := agentcontext.ReconstructThread(scenario.events, protocol.ThreadID(scenario.thread))
 		if err != nil {
 			t.Fatalf("%s: %v", scenario.name, err)
 		}
@@ -181,7 +180,7 @@ func TestContextEngineeringCE0LifecycleGolden(t *testing.T) {
 
 func encodeGoldenHistory(t *testing.T, messages []provider.Message) []protocol.CompactedMessage {
 	t.Helper()
-	encoded, err := sessionhistory.EncodeCompactedHistory(messages)
+	encoded, err := agentcontext.EncodeCompactedHistory(messages)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -6,7 +6,6 @@ import (
 	"strconv"
 	"sync"
 
-	"github.com/fwtllh-png/QCode/internal/runtime/app/eventhub"
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
 )
 
@@ -48,7 +47,7 @@ func (s *OperationService) advance(settlement *unsettledOperation) error {
 	operationID := settlement.operation.ID
 	if settlement.rejection != nil {
 		if err := sink.emitSettlement(
-			eventhub.SettlementEventID(operationID, "rejected"),
+			SettlementEventID(operationID, "rejected"),
 			operationRejection(settlement.rejection),
 		); err != nil {
 			return err
@@ -58,7 +57,7 @@ func (s *OperationService) advance(settlement *unsettledOperation) error {
 	for settlement.emitted < len(settlement.events) {
 		slot := "outcome/" + strconv.Itoa(settlement.emitted)
 		if err := sink.emitSettlement(
-			eventhub.SettlementEventID(operationID, slot),
+			SettlementEventID(operationID, slot),
 			settlement.events[settlement.emitted],
 		); err != nil {
 			return err

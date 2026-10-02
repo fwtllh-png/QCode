@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -23,7 +26,7 @@ import (
 func TestChatWorkspacesProvisionMergeAndRestore(t *testing.T) {
 	workspace := newGitWorkspace(t)
 	session := openChatWorkspaceSession(t, workspace)
-	manager := session.SessionWorkspaces()
+	manager := trackedChatWorkspaces(t, session)
 	if manager == nil {
 		t.Fatal("SessionWorkspaces is nil")
 	}
@@ -77,7 +80,7 @@ func TestChatWorkspacesProvisionMergeAndRestore(t *testing.T) {
 
 	closeSession(t, session)
 	restoredSession := openChatWorkspaceSession(t, workspace)
-	restored, err := restoredSession.SessionWorkspaces().Restore(
+	restored, err := trackedChatWorkspaces(t, restoredSession).Restore(
 		t.Context(), "session-chat-one", protocol.ThreadID("thread-chat-one"),
 	)
 	if err != nil {
@@ -91,7 +94,7 @@ func TestChatWorkspacesProvisionMergeAndRestore(t *testing.T) {
 func TestChatWorkspaceMergeBatchesLargeChangeSet(t *testing.T) {
 	workspace := newGitWorkspace(t)
 	session := openChatWorkspaceSession(t, workspace)
-	manager := session.SessionWorkspaces()
+	manager := trackedChatWorkspaces(t, session)
 	isolated, err := manager.Provision(
 		t.Context(), "session-chat-large", protocol.ThreadID("thread-chat-large"),
 	)
@@ -150,7 +153,7 @@ func TestChatWorkspaceMergeBatchesLargeChangeSet(t *testing.T) {
 func TestIsolatedChatSandboxCanReadWorktreeGitMetadata(t *testing.T) {
 	workspace := newGitWorkspace(t)
 	session := openChatWorkspaceSession(t, workspace)
-	isolated, err := session.SessionWorkspaces().Provision(
+	isolated, err := trackedChatWorkspaces(t, session).Provision(
 		t.Context(), "session-chat-git", protocol.ThreadID("thread-chat-git"),
 	)
 	if err != nil {
@@ -231,7 +234,7 @@ func TestIsolatedChatInteractionToolsPauseAndResume(t *testing.T) {
 	})
 	const sessionID = "session-chat-input"
 	const threadID = protocol.ThreadID("thread-chat-input")
-	isolated, err := session.SessionWorkspaces().Provision(
+	isolated, err := trackedChatWorkspaces(t, session).Provision(
 		t.Context(), sessionID, threadID,
 	)
 	if err != nil {
@@ -382,7 +385,7 @@ data: [DONE]
 func TestChatWorkspaceMergeRejectsParentDrift(t *testing.T) {
 	workspace := newGitWorkspace(t)
 	session := openChatWorkspaceSession(t, workspace)
-	manager := session.SessionWorkspaces()
+	manager := trackedChatWorkspaces(t, session)
 	isolated, err := manager.Provision(
 		t.Context(), "session-chat-conflict", protocol.ThreadID("thread-chat-conflict"),
 	)
@@ -417,7 +420,7 @@ func TestChatWorkspaceMergeRejectsParentDrift(t *testing.T) {
 func TestChatWorkspaceMergeCombinesNonOverlappingParentDrift(t *testing.T) {
 	workspace := newGitWorkspace(t)
 	session := openChatWorkspaceSession(t, workspace)
-	manager := session.SessionWorkspaces()
+	manager := trackedChatWorkspaces(t, session)
 	base := "first\nsecond\nthird\n"
 	if err := os.WriteFile(
 		filepath.Join(workspace, "README.md"), []byte(base), 0o600,
@@ -484,8 +487,8 @@ func TestChatWorkspaceMergeCombinesNonOverlappingParentDrift(t *testing.T) {
 
 func TestChatWorkspaceMergeApplyRejectsReadOnlyPosture(t *testing.T) {
 	workspace := newGitWorkspace(t)
-	session := openChatWorkspaceSession(t, workspace)
-	manager := session.SessionWorkspaces()
+	session := openChatWorkspaceSession(t, workspace, "never")
+	manager := trackedChatWorkspaces(t, session)
 	isolated, err := manager.Provision(
 		t.Context(), "session-chat-readonly", protocol.ThreadID("thread-chat-readonly"),
 	)
@@ -503,7 +506,6 @@ func TestChatWorkspaceMergeApplyRejectsReadOnlyPosture(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	session.chatWorkspaces.allowApply = false
 	if _, err := manager.ApplyMerge(
 		t.Context(), "session-chat-readonly",
 		protocol.ThreadID("thread-chat-readonly"), plan.ID,
@@ -529,7 +531,7 @@ func TestIsolatedChatTurnsStartConcurrently(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { closeSession(t, session) })
-	manager := session.SessionWorkspaces()
+	manager := trackedChatWorkspaces(t, session)
 	threads := []protocol.ThreadID{"thread-parallel-one", "thread-parallel-two"}
 	sessions := []string{"session-parallel-one", "session-parallel-two"}
 	for index := range threads {
@@ -587,12 +589,16 @@ func TestIsolatedChatTurnsStartConcurrently(t *testing.T) {
 	}
 }
 
-func openChatWorkspaceSession(t *testing.T, workspace string) *Session {
+func openChatWorkspaceSession(t *testing.T, workspace string, posture ...string) *Session {
 	t.Helper()
+	permission := "bypass"
+	if len(posture) != 0 {
+		permission = posture[0]
+	}
 	tools := true
 	session, err := NewExec(t.Context(), withNonDurableTestJournal(t, ExecOptions{
 		FixturePath: subagentFixture(t, "subagent"),
-		Permission:  "bypass",
+		Permission:  permission,
 		ConfigOverrides: config.Overrides{
 			Tools: &tools, Workspace: &workspace,
 		},
@@ -610,23 +616,53 @@ func openChatWorkspaceSession(t *testing.T, workspace string) *Session {
 	return session
 }
 
+// workspaceTracker records only successful interface calls for fixture cleanup.
+type workspaceTracker struct {
+	app.SessionWorkspaceManager
+	sessions map[string]protocol.ThreadID
+}
+
+func trackedChatWorkspaces(t *testing.T, session *Session) *workspaceTracker {
+	t.Helper()
+	if tracker, ok := session.chatWorkspaces.(*workspaceTracker); ok {
+		return tracker
+	}
+	if session.chatWorkspaces == nil {
+		t.Fatal("SessionWorkspaces is nil")
+	}
+	tracker := &workspaceTracker{
+		SessionWorkspaceManager: session.chatWorkspaces,
+		sessions:                make(map[string]protocol.ThreadID),
+	}
+	session.chatWorkspaces = tracker
+	return tracker
+}
+
+func (w *workspaceTracker) Provision(ctx context.Context, sessionID string, threadID protocol.ThreadID) (app.SessionWorkspace, error) {
+	value, err := w.SessionWorkspaceManager.Provision(ctx, sessionID, threadID)
+	if err == nil {
+		w.sessions[sessionID] = threadID
+	}
+	return value, err
+}
+
+func (w *workspaceTracker) Restore(ctx context.Context, sessionID string, threadID protocol.ThreadID) (app.SessionWorkspace, error) {
+	value, err := w.SessionWorkspaceManager.Restore(ctx, sessionID, threadID)
+	if err == nil {
+		w.sessions[sessionID] = threadID
+	}
+	return value, err
+}
+
 func discardChatWorkspaces(t *testing.T, session *Session) {
 	t.Helper()
-	manager := session.chatWorkspaces
-	if manager == nil {
+	manager, ok := session.chatWorkspaces.(*workspaceTracker)
+	if !ok {
 		return
 	}
-	manager.mu.Lock()
-	workspaces := make([]chatWorkspace, 0, len(manager.sessions))
-	for _, workspace := range manager.sessions {
-		workspaces = append(workspaces, workspace)
-	}
-	manager.mu.Unlock()
-	for _, workspace := range workspaces {
-		if err := manager.Discard(
-			context.Background(), workspace.sessionID, workspace.threadID,
-		); err != nil {
-			t.Errorf("discard Chat worktree %s: %v", workspace.sessionID, err)
+	for sessionID, threadID := range manager.sessions {
+		if err := manager.Discard(context.Background(), sessionID, threadID); err != nil {
+			t.Errorf("discard Chat worktree %s: %v", sessionID, err)
 		}
 	}
 }
@@ -651,4 +687,54 @@ func runChatGit(t *testing.T, directory string, arguments ...string) string {
 		t.Fatalf("git %s: %v: %s", strings.Join(arguments, " "), err, output)
 	}
 	return string(output)
+}
+
+// Workspace lifecycles live with their state owners; wire only constructs them.
+func TestWireOnlyConstructsWorkspaceServices(t *testing.T) {
+	paths, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fset := token.NewFileSet()
+	for _, path := range paths {
+		if strings.HasSuffix(path, "_test.go") {
+			continue
+		}
+		file, err := parser.ParseFile(fset, path, nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, decl := range file.Decls {
+			method, ok := decl.(*ast.FuncDecl)
+			if !ok || method.Recv == nil {
+				continue
+			}
+			switch method.Name.Name {
+			case "Provision", "Discard", "PlanMerge", "ApplyMerge":
+				t.Errorf("%s: wire owns workspace lifecycle method %s", fset.Position(method.Pos()), method.Name.Name)
+			case "Restore":
+				ast.Inspect(method.Type.Results, func(node ast.Node) bool {
+					if name, ok := node.(*ast.SelectorExpr); ok && name.Sel.Name == "SessionWorkspace" {
+						t.Errorf("%s: wire restores session workspaces", fset.Position(method.Pos()))
+					}
+					return true
+				})
+			}
+		}
+		ast.Inspect(file, func(node ast.Node) bool {
+			call, ok := node.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			method, ok := call.Fun.(*ast.SelectorExpr)
+			if !ok {
+				return true
+			}
+			switch method.Sel.Name {
+			case "AddWorktree", "RemoveWorktree", "PruneWorktrees":
+				t.Errorf("%s: wire drives worktree mutation %s", fset.Position(call.Pos()), method.Sel.Name)
+			}
+			return true
+		})
+	}
 }

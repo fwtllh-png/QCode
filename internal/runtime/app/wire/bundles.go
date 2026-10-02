@@ -19,6 +19,7 @@ import (
 	"github.com/fwtllh-png/QCode/internal/persist/workspacejournal"
 	"github.com/fwtllh-png/QCode/internal/platform/process"
 	"github.com/fwtllh-png/QCode/internal/runtime/app"
+	apppersistence "github.com/fwtllh-png/QCode/internal/runtime/app/persistence"
 	"github.com/fwtllh-png/QCode/internal/runtime/app/workspacequery"
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
 	securitypolicy "github.com/fwtllh-png/QCode/internal/security/policy"
@@ -53,9 +54,9 @@ type orchestrationBundle struct {
 	applyPlan        func(interacttool.Plan) error
 	children         *childrun.Runner
 	childTools       *childToolsets
-	chatWorkspaces   *chatWorkspaces
+	chatWorkspaces   app.SessionWorkspaceManager
 	subagents        *subagent.AgentControl
-	turnCoordinators *durableCoordinatorRuntime
+	turnCoordinators *apppersistence.CoordinatorRuntime
 }
 
 type persistenceBundle struct {

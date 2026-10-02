@@ -13,7 +13,7 @@ import (
 	"github.com/fwtllh-png/QCode/internal/adapter/model"
 	"github.com/fwtllh-png/QCode/internal/adapter/provider"
 	providerwire "github.com/fwtllh-png/QCode/internal/adapter/provider/wire"
-	sessionhistory "github.com/fwtllh-png/QCode/internal/persist/history"
+	agentcontext "github.com/fwtllh-png/QCode/internal/runtime/agent/context"
 	"github.com/fwtllh-png/QCode/internal/runtime/agent/contextview"
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
 )
@@ -351,7 +351,7 @@ func TestEncodeReasoningReplayByProtocol(t *testing.T) {
 				Data: &protocol.TurnCompletedData{Text: "done"},
 			},
 		}
-		reconstructed, err := sessionhistory.ReconstructThread(events, "thread-1")
+		reconstructed, err := agentcontext.ReconstructThread(events, "thread-1")
 		if err != nil {
 			t.Fatal(err)
 		}

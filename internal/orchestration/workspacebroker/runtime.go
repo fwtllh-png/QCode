@@ -7,7 +7,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/fwtllh-png/QCode/internal/persist/workspacejournal"
 	"github.com/fwtllh-png/QCode/internal/security/authority"
 	"github.com/fwtllh-png/QCode/internal/security/filebroker"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
@@ -230,13 +229,9 @@ func (r *Runtime) CommitFiles(
 	ctx context.Context,
 	toolName string,
 	plan filebroker.Plan,
-	journal *workspacejournal.Manager,
+	journal filebroker.Journal,
 ) (filebroker.Result, error) {
-	var transactionJournal filebroker.Journal
-	if journal != nil {
-		transactionJournal = journal
-	}
-	return r.Files.Commit(ctx, toolName, plan, transactionJournal)
+	return r.Files.Commit(ctx, toolName, plan, journal)
 }
 
 func New(

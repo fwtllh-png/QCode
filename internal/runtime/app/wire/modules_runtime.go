@@ -6,16 +6,15 @@ import (
 	"os"
 	"strings"
 
-	sessionhistory "github.com/fwtllh-png/QCode/internal/persist/history"
-	persiststate "github.com/fwtllh-png/QCode/internal/persist/state"
-
 	reverttool "github.com/fwtllh-png/QCode/internal/adapter/tool/revert"
 	"github.com/fwtllh-png/QCode/internal/observability/verify"
 	"github.com/fwtllh-png/QCode/internal/orchestration/subagent"
+	"github.com/fwtllh-png/QCode/internal/persist/contextstate"
+	persiststate "github.com/fwtllh-png/QCode/internal/persist/state"
+	agentcontext "github.com/fwtllh-png/QCode/internal/runtime/agent/context"
 	agentengine "github.com/fwtllh-png/QCode/internal/runtime/agent/engine"
 	promptcontext "github.com/fwtllh-png/QCode/internal/runtime/agent/prompt"
 	"github.com/fwtllh-png/QCode/internal/runtime/app"
-	apppersistence "github.com/fwtllh-png/QCode/internal/runtime/app/persistence"
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
 	"github.com/fwtllh-png/QCode/internal/security/policy"
 )
@@ -207,7 +206,7 @@ func (agentModule) Build(ctx context.Context, state *buildState) error {
 		InputHost: session.inputHost},
 	}
 	if store := state.options.PersistentStore; store != nil {
-		seedOptions.TurnContexts = apppersistence.NewContextRebaseRepository(store)
+		seedOptions.TurnContexts = contextstate.NewRepository(store)
 		seedOptions.SessionForTurn = func(
 			ctx context.Context,
 			turnID string,
@@ -289,7 +288,7 @@ func (agentModule) Build(ctx context.Context, state *buildState) error {
 				ctx context.Context,
 				threadID protocol.ThreadID,
 			) (*protocol.ThreadCompactedData, error) {
-				return sessionhistory.LatestThreadHistorySeed(ctx, store, threadID)
+				return agentcontext.LatestThreadHistorySeed(ctx, store, threadID)
 			},
 		)
 		threadManager.SetSequenceReader(

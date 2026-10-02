@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 
-	"github.com/fwtllh-png/QCode/internal/runtime/app/eventhub"
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
 )
 
@@ -19,7 +18,7 @@ type runtimeSink struct {
 
 func (s *runtimeSink) Emit(data protocol.EventData) error {
 	if message, ok := data.(*protocol.CommentaryCompletedData); ok {
-		return s.EmitStable(eventhub.CommentaryEventID(message.MessageID), message)
+		return s.EmitStable(CommentaryEventID(message.MessageID), message)
 	}
 	switch payload := s.operation.Payload.(type) {
 	case *protocol.StartTurnPayload:
@@ -38,7 +37,7 @@ func (s *runtimeSink) Emit(data protocol.EventData) error {
 			steered.QueueID = payload.QueueID
 		}
 	}
-	if s.deferTerminal && protocol.IsTerminalEvent(eventhub.EventKind(data)) {
+	if s.deferTerminal && protocol.IsTerminalEvent(EventKind(data)) {
 		if s.terminal == nil {
 			s.terminal = data
 		}

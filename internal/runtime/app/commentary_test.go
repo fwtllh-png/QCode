@@ -5,7 +5,6 @@ import (
 	"testing"
 
 	"github.com/fwtllh-png/QCode/internal/runtime/agent/turnkernel"
-	"github.com/fwtllh-png/QCode/internal/runtime/app/eventhub"
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
 )
 
@@ -47,13 +46,13 @@ func TestCommentaryTerminalOutboxRecoversAndDeduplicatesLiveMessage(t *testing.T
 					t.Fatal(err)
 				}
 			}
-			terminal, err := eventhub.DecodeTerminalOutboxEntry(envelope.Outbox[1])
+			terminal, err := DecodeTerminalOutboxEntry(envelope.Outbox[1])
 			if err != nil {
 				t.Fatal(err)
 			}
-			committed, err := runtime.terminal.Commit(t.Context(), eventhub.TerminalRequest{
+			committed, err := runtime.terminal.Commit(t.Context(), TerminalRequest{
 				Operation: operation,
-				Material: eventhub.TerminalMaterial{
+				Material: TerminalMaterial{
 					FrozenState: envelope.FrozenState, DomainFacts: envelope.DomainFacts,
 					Measurement: envelope.Measurement, Receipt: envelope.Receipt, Terminal: terminal,
 				},
@@ -81,7 +80,7 @@ func TestCommentaryTerminalOutboxRecoversAndDeduplicatesLiveMessage(t *testing.T
 			for _, event := range projected {
 				if event.Kind == protocol.EventCommentaryCompleted {
 					count++
-					if event.ID != eventhub.CommentaryEventID(data.MessageID) {
+					if event.ID != CommentaryEventID(data.MessageID) {
 						t.Fatal("terminal publication changed message identity")
 					}
 				}

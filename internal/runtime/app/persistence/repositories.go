@@ -1,4 +1,4 @@
-// Package persistence owns durable Runtime repositories.
+// Package persistence adapts durable stores to Runtime and orchestration ports.
 package persistence
 
 import (
@@ -10,20 +10,20 @@ import (
 	"path/filepath"
 	"strings"
 
-	threadstate "github.com/fwtllh-png/QCode/internal/persist/thread"
 	tracestate "github.com/fwtllh-png/QCode/internal/observability/trace"
 	usagestate "github.com/fwtllh-png/QCode/internal/observability/usage"
 	"github.com/fwtllh-png/QCode/internal/persist/agentpreset"
 	sessionstate "github.com/fwtllh-png/QCode/internal/persist/session"
 	snapshotstate "github.com/fwtllh-png/QCode/internal/persist/snapshot"
 	"github.com/fwtllh-png/QCode/internal/persist/state"
+	threadstate "github.com/fwtllh-png/QCode/internal/persist/thread"
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
 )
 
 type PersistentRepositories struct {
 	Sessions  *sessionstate.Repository
 	Threads   *threadstate.Repository
-	Lifecycle *threadstate.Lifecycle
+	Lifecycle *Lifecycle
 	Snapshots *snapshotstate.Repository
 	Usage     *usagestate.Repository
 	Trace     *tracestate.Repository
@@ -36,9 +36,9 @@ func NewPersistentRepositories(
 	if store == nil {
 		return PersistentRepositories{}, errors.New("persistent state store is required")
 	}
-	lifecycle := threadstate.NewLifecycle(store)
+	lifecycle := NewLifecycle(store)
 	if len(workspaceRoot) != 0 {
-		lifecycle = threadstate.NewWorkspaceLifecycle(store, workspaceRoot[0])
+		lifecycle = NewWorkspaceLifecycle(store, workspaceRoot[0])
 	}
 	return PersistentRepositories{
 		Sessions:  sessionstate.NewSQLiteRepository(store.SQLite()).WithMaintenance(store.Maintain),

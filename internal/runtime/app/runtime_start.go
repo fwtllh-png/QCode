@@ -8,7 +8,6 @@ import (
 
 	"github.com/fwtllh-png/QCode/internal/observability/telemetry"
 	"github.com/fwtllh-png/QCode/internal/runtime/agent/turnkernel"
-	"github.com/fwtllh-png/QCode/internal/runtime/app/eventhub"
 )
 
 func NewRuntime(options Options) *Runtime {
@@ -95,7 +94,7 @@ func prepareRuntime(
 	}
 	installRuntimeServices(runtime, options.OperationBuffer)
 	runtime.hub = newEventHub(runtimeContext, runtime)
-	runtime.terminal = eventhub.NewTerminalPublisher(runtime)
+	runtime.terminal = NewTerminalPublisher(runtime)
 	if recovery != nil {
 		runtime.RecoveryService.restore(*recovery)
 	}

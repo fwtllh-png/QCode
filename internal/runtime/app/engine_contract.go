@@ -1,66 +1,50 @@
 package app
 
 import (
-	agentengine "github.com/fwtllh-png/QCode/internal/runtime/agent/engine"
-	appextension "github.com/fwtllh-png/QCode/internal/runtime/app/extension"
+	"context"
+
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
 )
 
-type EngineSink = appextension.EngineSink
-type TerminalCommitSink = appextension.TerminalCommitSink
-type Engine = appextension.Engine
-type NoopEngine = appextension.NoopEngine
-type EngineAdapter = appextension.EngineAdapter
-type PendingApproval = appextension.PendingApproval
-type PendingInput = appextension.PendingInput
-
-type PendingSource = appextension.PendingSource
-type TurnPhase = appextension.TurnPhase
-type PendingDisposition = appextension.PendingDisposition
-type PendingItem = appextension.PendingItem
-
-const (
-	SourceSteer    = appextension.SourceSteer
-	SourceMailbox  = appextension.SourceMailbox
-	SourceApproval = appextension.SourceApproval
-	SourceInput    = appextension.SourceInput
-
-	PhaseIdle             = appextension.PhaseIdle
-	PhaseRunning          = appextension.PhaseRunning
-	PhaseAwaitingApproval = appextension.PhaseAwaitingApproval
-	PhaseAwaitingInput    = appextension.PhaseAwaitingInput
-
-	DispositionInjectCurrent = appextension.DispositionInjectCurrent
-	DispositionResumePaused  = appextension.DispositionResumePaused
-	DispositionStartNewTurn  = appextension.DispositionStartNewTurn
-	DispositionBuffer        = appextension.DispositionBuffer
-	DispositionReject        = appextension.DispositionReject
-)
-
-var ErrOperationUnsupported = appextension.ErrOperationUnsupported
-
-func RoutePending(
-	phase TurnPhase,
-	item PendingItem,
-) PendingDisposition {
-	return appextension.RoutePending(phase, item)
+type EngineSink interface {
+	Emit(protocol.EventData) error
 }
 
-func ExplainPending(
-	phase TurnPhase,
-	item PendingItem,
-	disposition PendingDisposition,
-) string {
-	return appextension.ExplainPending(phase, item, disposition)
+type TerminalCommitSink interface {
+	CommitTerminal(TerminalMaterial) error
 }
 
-func AdaptEngine(value *agentengine.Engine) *EngineAdapter {
-	return appextension.AdaptEngine(value)
+type Engine interface {
+	StartTurn(context.Context, *protocol.StartTurnPayload, EngineSink) error
+	CancelTurn(context.Context, *protocol.CancelTurnPayload, EngineSink) error
+	SteerTurn(context.Context, *protocol.SteerTurnPayload, EngineSink) error
+	DecideApproval(
+		context.Context,
+		*protocol.ApprovalDecisionPayload,
+		EngineSink,
+	) error
+	ReplyInput(context.Context, *protocol.InputReplyPayload, EngineSink) error
+	CompactThread(
+		context.Context,
+		*protocol.CompactThreadPayload,
+		EngineSink,
+	) error
+	ForkThread(context.Context, *protocol.ForkThreadPayload, EngineSink) error
+	RevertTurn(context.Context, *protocol.RevertTurnPayload, EngineSink) error
 }
 
-func AdaptEngineWithWorkspaceIdentity(
-	value *agentengine.Engine,
-	identity protocol.WorkspaceIdentity,
-) *EngineAdapter {
-	return appextension.AdaptEngineWithWorkspaceIdentity(value, identity)
+type PendingApproval struct {
+	RequestID string
+	ThreadID  protocol.ThreadID
+	TurnID    protocol.TurnID
+	ItemID    protocol.ItemID
+	Data      protocol.ApprovalRequiredData
+}
+
+type PendingInput struct {
+	RequestID string
+	ThreadID  protocol.ThreadID
+	TurnID    protocol.TurnID
+	ItemID    protocol.ItemID
+	Data      protocol.InputRequiredData
 }

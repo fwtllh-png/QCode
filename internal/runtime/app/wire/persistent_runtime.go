@@ -1,4 +1,3 @@
-// Package persistence composes durable Runtime repositories and lifecycle.
 package wire
 
 import (
@@ -6,12 +5,12 @@ import (
 	"fmt"
 	"strings"
 
-	apppersistence "github.com/fwtllh-png/QCode/internal/runtime/app/persistence"
-
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
 	tracestate "github.com/fwtllh-png/QCode/internal/observability/trace"
+	"github.com/fwtllh-png/QCode/internal/persist/contextstate"
 	"github.com/fwtllh-png/QCode/internal/persist/state"
 	"github.com/fwtllh-png/QCode/internal/runtime/app"
+	apppersistence "github.com/fwtllh-png/QCode/internal/runtime/app/persistence"
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
 )
 
@@ -51,7 +50,7 @@ func PreparePersistentRuntime(
 		return nil, fmt.Errorf("open agent presets: %w", err)
 	}
 	terminalStore := state.NewWorkspaceTerminalStore(options.Store.SQLite(), options.WorkspaceRoot)
-	contextRebases := apppersistence.NewContextRebaseRepository(options.Store)
+	contextRebases := contextstate.NewRepository(options.Store)
 	options.Observability.TraceQuery = tracestate.NewQueryService(
 		repositories.Sessions,
 		repositories.Trace,
@@ -124,7 +123,7 @@ func ConfigurePersistentSubagents(
 			parentThreadID,
 		)
 	})
-	return attach(state.NewAgentGraph(
+	return attach(apppersistence.NewAgentGraph(
 		store, workspaceRoot, sessionID, runtime,
 	))
 }

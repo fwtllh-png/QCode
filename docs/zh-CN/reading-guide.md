@@ -38,7 +38,7 @@ Runtime；Web、主 Agent 和 Subagent 共享同一组执行与安全语义。
 | Turn | Kernel Command | `turnkernel.TurnCoordinator` | Domain Fact + State Digest |
 | Context | Session Delta/Rebase | `agent/context` + Application Persistence | Context Manifest/CAS |
 | Side Effect | Kernel Effect | Provider/Tool/Journal Executor | Effect Result Command |
-| Terminal | Frozen Terminal Material | `eventhub.TerminalPublisher` | Terminal Envelope + Outbox |
+| Terminal | Frozen Terminal Material | `app.TerminalPublisher` | Terminal Envelope + Outbox |
 
 如果同一事实在两处都可写，通常就是架构问题。Host、Web Store、Trace 和 Metrics
 都是 Projection 或 Evidence，不是这些链的替代 Authority。
@@ -81,7 +81,7 @@ Child 的实际执行仍是普通 Runtime Turn，不建立后台 WorkGraph 镜�
 | Adapter | `internal/adapter` | Provider、Tool、MCP、Skill |
 | Security | `internal/security` | Policy、Permission、Constitution、Credential、Sandbox |
 | Environment | `internal/common/environment`、`internal/adapter/envprep` | 前者为仅依赖标准库的声明、校验与结构化事实；后者捕获来源、编译声明、物化目录并生成沙箱配置 |
-| Orchestration | `internal/orchestration` | Subagent、Admission/Budget、Worktree、Chat Merge、Exec Settle |
+| Orchestration | `internal/orchestration` | Subagent、Admission/Budget、Worktree、Workspace Merge、Exec Settle |
 | Persistence | `internal/persist` | SQLite、CAS、Event、Session、Snapshot、Journal |
 | Observability | `internal/observability` | Usage、Trace、Diagnostics、Verification |
 | Platform | `internal/platform` | Process、PTY、Repository Walk、OS 差异 |
@@ -244,7 +244,7 @@ Runtime.SubmitWithKey
    - Thread/Turn Reservation；
    - Control Binding；
    - Token-fenced Release。
-6. `internal/runtime/app/extension/engine_adapter.go`
+6. `internal/runtime/app/engine_adapter.go`
    - Application Port 到 Agent Engine 的适配；
    - Editor Context 解析；
    - 同包 `turn_receipt.go`、`turn_receipt_terminal.go` 中的私有回执构建与终态校验；
@@ -308,7 +308,7 @@ Commit？
 2. `command.go`：所有可接受输入；
 3. `reducer.go`：命令分派；
 4. `reducer_sampling.go`、`reducer_tool.go`、`reducer_interaction.go`、
-   `reducer_context.go`、`reducer_verification.go`、`reducer_effect.go`、
+   `reducer_continuation.go`、`reducer_verification.go`、`reducer_effect.go`、
    `reducer_terminal.go`：各 Command Family 的纯转换；
 5. `invariants.go`：每次转换后必须成立的约束；
 6. `coordinator.go`：`Reducer.Apply` 的唯一生产调用方；
@@ -338,6 +338,7 @@ Command
 
 - `model_handler.go`：`modelStep`、Prompt Projection、Provider Effect、Usage；
 - `tool_handler.go`：Tool Proposal、Replay Plan、Batch Execution、Result Feed；
+- `tool_scheduler.go`：Scope 私有的工具并发准入，资源冲突仍由 Guard Claims 串行化；
 - `completion_declaration.go`：结构化完成声明；
 - `progress.go`：进展签名与 No-progress；
 - `verify.go`：Verification Gate；
@@ -381,11 +382,12 @@ Workspace Reconciliation 仍由 Context Package 定义。
 
 继续阅读：
 
-- `store_store.go`：`MessageLedger` 和不可变 Message Snapshot；
+- `message_ledger.go`：`MessageLedger` 和不可变 Message Snapshot；
 - `store_world.go`：World Full/Patch Projection；
 - `store_window.go`：Observed Prefill 与 Pending Delta；
-- `workingset_workingset.go`：来源合并、衰减和 Critical Path；
-- `evidence_evidence.go`：Read、Change、Verification、Diagnostic、Handle；
+- `working_set.go`：来源合并、衰减和 Critical Path；
+- `evidence.go`：Read、Change、Verification、Diagnostic、Handle；
+- `history_boundary.go` / `history.go`：Turn 边界、工具调用配对与可安全切分的位置；
 - `continuity.go`：已确认终答与工具位点的 mandatory 胶囊；
 - `compact_failures.go`：有界失败账本；
 - `plan.go`：结构化 Plan。
@@ -400,7 +402,7 @@ Compaction 不是“让模型总结聊天记录”。阅读顺序：
 4. `compact_truth.go`：结构化 Truth Capsule；
 5. `compact_narrative.go`：非权威 Narrative Artifact；
 6. `narrative_service.go`：独立 Summary Route；
-7. `narrative_rebase.go`：Context Rebase Envelope。
+7. `session_context.go`：Context Rebase Envelope。
 
 Truth Capsule 来自当前 Owner Snapshot，不从旧摘要递归生成。Narrative 可以失败或被
 丢弃，不能证明 Verification、Permission 或 Side Effect。
@@ -410,14 +412,26 @@ Truth Capsule 来自当前 Owner Snapshot，不从旧摘要递归生成。Narrat
 - `session_delta.go`：一次终态后的逻辑 Context + Accounting Delta；
 - `session_context.go`：Checkpoint Snapshot、Digest、Workspace Binding；
 - `session_manifest.go`：History Base/Tail 与 Owner Base/Delta CAS Ref；
-- `runtime/app/persistence/context_rebase.go`：Durable Rebase Commit；
+- `persist/contextstate/context_rebase.go`：Durable Rebase Commit；
 - `engine/session_delta.go`：Terminal Commit 成功后的幂等 Apply；
 - `engine/checkpoint_context.go`：Export、Restore、Fork。
 
 Context Restore 会重新捕获 Workspace Binding，并失效不匹配的文件事实；它不会重放
 工具、回滚文件或减少 Usage。
 
-### 7.4 Prompt
+### 7.4 模型可见视图
+
+`internal/runtime/agent/contextview` 决定本次采样保留哪些消息：
+
+- `view.go`：可见尾部、容量裁剪、World 历史基线与当前 Turn 前缀的保留；
+- `stateless_projection.go`：完整历史模式下的 Provider 消息投影；
+- `token_economics.go`：基于实际容量、显式预算与已提交用量的输入分配；
+- `prefix_manifest.go`：请求身份、缓存前缀与容量归因。
+
+视图算法复用 `context` 的消息与历史边界规则，不回写 Durable History。
+`engine/context_view.go` 保存当前折叠状态并组织调用，`prompt` 负责输入内容的组装和呈现。
+
+### 7.5 Prompt
 
 `internal/runtime/agent/prompt` 只做 Projection：
 
@@ -438,7 +452,8 @@ Runtime 校验的 Workspace 内容。
 关键测试：
 
 ```bash
-go test ./internal/runtime/agent/context ./internal/runtime/agent/prompt
+go test ./internal/runtime/agent/context ./internal/runtime/agent/contextview ./internal/runtime/agent/prompt
+go test ./internal/runtime/agent -run '^TestAgentPackageImportDirection$'
 go test -run 'Test(ContextManifest|WorkspaceReconciliation|RetentionRemainsBounded)' \
   ./internal/runtime/agent/context
 ```
@@ -556,7 +571,7 @@ Model Tool Call
 - `internal/security/{artifactbroker,filebroker,processbroker,vcsbroker}`：各类副作用的受控执行；
 - `internal/security/egress`：网络授权、代理与 Session 通道；
 - `internal/security/credential`：凭据引用、轮换恢复及系统 Keyring；
-- `internal/orchestration/workspacebroker`：组合 File/VCS Broker 与 Journal；
+- `internal/orchestration/workspacebroker`：组合 File/VCS Broker，通过 `filebroker.Journal` 接口接入事务日志；
 - `internal/security/architecture_test.go`：无允许清单的导入方向检查；
 - [Sandbox 执行环境重构方案](./sandbox-execution-environment-plan.md)：把现行过滤模型
   换成环境契约的实现合同，含与 Authority / Control Matrix 的编译表；
@@ -616,7 +631,7 @@ Resource Claim？
 
 ### 10.1 Terminal Commit
 
-从 `internal/runtime/app/eventhub/terminal.go` 的 `TerminalPublisher.Commit` 开始。
+从 `internal/runtime/app/terminal_publisher.go` 的 `TerminalPublisher.Commit` 开始。
 它接收：
 
 - Frozen Kernel State；
@@ -644,27 +659,43 @@ Terminal Envelope
 
 继续阅读：
 
-- `internal/runtime/app/terminal_runtime.go`：TerminalRuntime Port；
-- `internal/runtime/app/extension/terminal_measurement.go`：冻结 Usage/Latency；
-- `internal/runtime/app/extension/tool_execution_receipt.go`：工具分类统计；
+- `internal/runtime/app/event_terminal.go`：终态事件投影；
+- `internal/runtime/app/turn_receipt_terminal.go`：冻结 Usage/Latency；
+- `internal/runtime/app/tool_execution_receipt.go`：工具分类统计；
 - `internal/persist/state/turnstate/store.go`：SQLite 原子实现；
 - `internal/persist/state/cas`：`Release` 保持零引用对象；`CollectUnreferenced`
   只按引用计数回收，状态存储 Open 与 Context Rebase / 撤回后调用；
-- `internal/runtime/app/persistence/repositories.go`：Durable Repository 装配。
+- `internal/persist/contextstate/context_rebase.go`：Rebase 与 Current Context 的 SQL/CAS 事务；
+- `internal/persist/contextstate/turn_withdrawal.go`：Turn Baseline 与撤回标记；
+- `internal/runtime/app/persistence/repositories.go`：持久化端口适配与仓储组合。
 
 ### 10.2 Runtime Recovery
+
+先区分存储事实和恢复决策：`internal/persist/thread/lifecycle.go` 保存 Operation
+Accept/Commit、事务投影和恢复查询；`internal/runtime/app/persistence/lifecycle.go`
+把事件与记录还原为 Runtime 等待状态及队列。Subagent 的恢复规则见
+`internal/orchestration/subagent/recovery.go`，Graph 绑定与事件发布见
+`internal/runtime/app/persistence/agentgraph.go`，事实查询仍在 `internal/persist/state`。
+
+历史呈现、导出与 Checkpoint/Plan 应用操作分别见 `internal/runtime/app/history_service.go`
+和 `internal/runtime/app/artifact_checkpoint.go`、`artifact_plan.go`。Plan 执行准备见
+`artifact_plan_execution.go`，Turn 恢复与证据渲染见 `artifact_recovery.go`、
+`artifact_recovery_evidence.go`；`artifact_service.go` 负责事件驱动的 Artifact 持久化。
+这些文件保留在同一个 App 包。模型历史重建及 Compact 编解码见
+`internal/runtime/agent/context/history_reconstruct.go` 与 `history_codec.go`；
+`internal/persist/history` 仅保留搜索索引契约。
 
 阅读：
 
 1. `runtime_start.go`：Prepared Runtime 与 `Runtime.Start`；
-2. `eventhub.TerminalPublisher.Recover`：Terminal Outbox；单个 Turn 投影失败交给
+2. `app.TerminalPublisher.Recover`：Terminal Outbox；单个 Turn 投影失败交给
    `terminal_projection.go` 的延迟表，不阻断启动；
 3. `turn_recovery.go`：Recovery Source 校验；Turn 级事件经
    `event_index_turn_sequence` 回放，不扫描整段 Event Log；`recoverPendingTurns`
    恢复 Approval/Input，并让每个 accepted Operation 进入分发队列结算：Fact 链可还原的
    StartTurn 接续执行，不可还原的经 `quarantineTurn` 隔离，其余类型以可重试拒绝结算；
 4. `startup_terminal.go`：启动期失败的终态收敛；
-5. `wire/turn_coordinator.go`：Durable Coordinator、Turn Lease 和 Fact Restore；
+5. `persistence/coordinator.go`：Durable Coordinator、Turn Lease 和 Fact Restore；
 6. `turnkernel.RestoreTurnCoordinator` / `ValidateDomainFacts`：校验 Sequence/Digest、
    Requeue Running Effect；
 7. `operation_settlement.go`：待结算表与分发循环上的后台重试。
@@ -680,6 +711,7 @@ Checkpoint Restore 是 Context 恢复；Pending Turn Recovery 是执行生命周
 go test -run 'TestC5Runtime|TestPersistentRuntime' ./internal/runtime/app ./internal/runtime/app/wire
 go test -run 'TestCommitReceiptIOError|TestRejectionProjectionFailure|TestStartupDefers|TestRestartSettles|TestRestartQuarantines|TestAcceptedOperationsSettle' ./internal/runtime/app
 go test -run 'TestPersistentStartupQuarantines' ./internal/runtime/app/wire
+go test -run 'TestC1DurableCoordinator|TestDurableCoordinator' ./internal/runtime/app/persistence
 go test -run 'TestPhase4R2TerminalEnvelope' ./internal/runtime/agent/turnkernel
 go test ./internal/persist/...
 ```
@@ -704,14 +736,19 @@ go test ./internal/persist/...
 - `runtime/app/thread_manager.go`：查找父线程并提供 `ContextSource`，由 `wire` 绑定；
 - `subagent/context_fork.go`：Context Mode、权限、脱敏、裁剪与 Task Capsule；
 - `subagent/graph.go`：Agent 生命周期与结果事实；
-- `subagent/worktree.go`：隔离工作区；
+- `subagent/worktree.go`：Worktree 契约、分配记录与清理所有权；
+- `subagent/git_worktree.go`：工作区策略、受控 Git Worktree 创建/清理与元数据路径校验；
+- `runtime/app/session_workspaces.go`：Chat Session/Thread 绑定、隔离工作区恢复与资源释放；
+- `runtime/app/wire/chatworktree.go`：构造会话工作区服务并注入依赖；
+- `runtime/app/wire/childtools.go`：构造与缓存子工作区的工具、Sandbox 和 Journal；
 - `orchestration/childrun/runner.go`：真实 Child Turn 的提交、驻留、租约与终态结算，
   只经 `Host`/`Threads`/`ToolPlanes` 窄接口连接 Session Runtime；它不做预算记账，
   终态回执交给 Manager 结算。
 
 Child Authority 是父级 Authority 与 Role Policy 的交集。默认 Token Budget 按父级剩余
-容量和并发槽位派生；嵌套 Child 只能继续收窄。写入型并发 Child 使用 Worktree，合并由
-`orchestration/chatmerge.Service` 处理。带写树的 `exec_command` 使用
+容量和并发槽位派生；嵌套 Child 只能继续收窄。写入型并发 Child 使用 Worktree，
+`integrate_agent` 经 Guard 提交合并。Chat 工作区与隔离命令共享
+`orchestration/workspacemerge.Service` 的基线和三方合并能力。带写树的 `exec_command` 使用
 `orchestration/execsettle` 做命令级隔离工作区，结算仍走同一套 Broker / Journal。
 
 ### 11.2 为什么没有后台编排平面
@@ -723,9 +760,10 @@ Child Authority 是父级 Authority 与 Role Policy 的交集。默认 Token Bud
 关键测试：
 
 ```bash
-go test ./internal/orchestration/subagent ./internal/orchestration/chatmerge
+go test ./internal/orchestration/subagent ./internal/orchestration/workspacemerge
 go test ./internal/orchestration/execsettle ./internal/orchestration/childrun
-go test -run 'TestChildAgent' ./internal/runtime/app/wire
+go test -run 'TestIsolatedSessionWorkspaces' ./internal/runtime/app
+go test -run 'Test(ChildAgent|ChatWorkspace|WireOnlyConstructsWorkspaceServices)' ./internal/runtime/app/wire
 ```
 
 读完应能回答：为什么 Child Agent 不需要后台 Task 或 WorkGraph 镜像？
@@ -816,7 +854,7 @@ npm --prefix web test
 
 按顺序阅读：
 
-- `internal/runtime/app/extension/turn_receipt.go`、`turn_receipt_terminal.go`：私有的执行回执构建、计量冻结与终态校验；
+- `internal/runtime/app/turn_receipt.go`、`turn_receipt_terminal.go`：私有的执行回执构建、计量冻结与终态校验；
 - `internal/observability/usage`：Sample/Turn/Session 聚合；
 - `internal/observability/trace`：Span 与 Frozen Latency；
 - `internal/observability/verify`：编辑后诊断、验证证据与结论；`diagnostics.go` 负责诊断命令执行和输出解析，`receipt_runner.go` 负责证据归约；
@@ -837,7 +875,7 @@ Interaction、Provider Call 和 Tool Execution。
 验证：
 
 ```bash
-go test ./internal/observability/... ./internal/runtime/app/extension
+go test ./internal/observability/... ./internal/runtime/app
 go test -run TestSystemDiagnosticsReportsAuthoritativeRuntimeHealth \
   ./internal/host
 ```
@@ -918,8 +956,8 @@ Chat Merge。检查 Agent Path、Trace、Usage 和 Permission Digest 是否保�
 | 改 Provider | `adapter/provider` | Assembly、Usage、Retry、Capability |
 | 新 Tool | `adapter/tool` | Catalog、Guard、Receipt、Sandbox |
 | 改权限 | `security`、`tool/guard` | Allow/Deny/Approval/Cleanup/Race |
-| 改终态 | `app/eventhub/terminal.go` | Turnstate Transaction、Outbox Recovery |
-| 改 Session | `runtime/app/service_facade.go` | Lifecycle Store、Web Query |
+| 改终态 | `app/terminal_publisher.go` | Turnstate Transaction、Outbox Recovery |
+| 改 Session | `runtime/app/session_control.go` | Lifecycle Store、Web Query |
 | 改 Subagent | `orchestration/subagent`、`orchestration/childrun` | Child Runner、Budget、Worktree、Merge |
 | 改 Web API | `host` | Contract JSON、Generated TS、Client |
 | 改 Web 展示 | `web/src/runtime/client.ts`、`ui/App.tsx` | Hydration、Cursor、Projection Test |

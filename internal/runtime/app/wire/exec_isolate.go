@@ -31,7 +31,7 @@ func buildExecIsolator(
 		Parent:     state.orchestration.parentFiles,
 		Journal:    state.security.journal,
 		Gate:       gate,
-		Brokers:    state.orchestration.chatTrees.brokers,
+		Brokers:    state.orchestration.workspaceBroker,
 		AllowApply: allowApply,
 		NewBackend: newPlatformBackend,
 	})

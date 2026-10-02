@@ -7,10 +7,6 @@ import (
 	"fmt"
 	"sync"
 
-	appextension "github.com/fwtllh-png/QCode/internal/runtime/app/extension"
-
-	sessionhistory "github.com/fwtllh-png/QCode/internal/persist/history"
-
 	"github.com/fwtllh-png/QCode/internal/adapter/provider"
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
 	"github.com/fwtllh-png/QCode/internal/adapter/tool/interact"
@@ -472,10 +468,10 @@ func (m *ThreadManager) CompactThread(
 	receipt := result.Receipt
 	summary := "context already within budget; no messages compacted"
 	if receipt != nil {
-		summary = appextension.FormatCompactionSummary(receipt)
+		summary = FormatCompactionSummary(receipt)
 	}
 	history := engine.History()
-	encoded, err := sessionhistory.EncodeCompactedHistory(history)
+	encoded, err := agentcontext.EncodeCompactedHistory(history)
 	if err != nil {
 		return err
 	}
@@ -494,7 +490,7 @@ func (m *ThreadManager) CompactThread(
 		PreviousWindowID:   window.previous,
 		WindowID:           window.Current,
 	}
-	appextension.ApplyThreadCompactionTruth(data, receipt)
+	ApplyThreadCompactionTruth(data, receipt)
 	return sink.Emit(data)
 }
 
@@ -534,7 +530,7 @@ func (m *ThreadManager) ForkThread(
 			return fmt.Errorf("fork flush sequence: %w", err)
 		}
 	}
-	history, err := sessionhistory.EncodeCompactedHistory(engine.History())
+	history, err := agentcontext.EncodeCompactedHistory(engine.History())
 	if err != nil {
 		return err
 	}
@@ -986,7 +982,7 @@ func (m *ThreadManager) applyRestoredWindow(
 	adapter *EngineAdapter,
 	data *protocol.ThreadCompactedData,
 ) error {
-	messages, err := sessionhistory.DecodeCompactedHistory(data.ReplacementHistory)
+	messages, err := agentcontext.DecodeCompactedHistory(data.ReplacementHistory)
 	if err != nil {
 		return err
 	}

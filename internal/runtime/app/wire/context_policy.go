@@ -15,11 +15,12 @@ import (
 	agentengine "github.com/fwtllh-png/QCode/internal/runtime/agent/engine"
 	promptcontext "github.com/fwtllh-png/QCode/internal/runtime/agent/prompt"
 	"github.com/fwtllh-png/QCode/internal/runtime/agent/turnkernel"
+	apppersistence "github.com/fwtllh-png/QCode/internal/runtime/app/persistence"
 	"github.com/fwtllh-png/QCode/internal/security/policy"
 )
 
 type contextRuntimeBinding struct {
-	durable     *durableCoordinatorRuntime
+	durable     *apppersistence.CoordinatorRuntime
 	coordinator turnkernel.CoordinatorRuntime
 }
 
@@ -86,10 +87,10 @@ func buildContextRuntime(
 			coordinator: turnkernel.NewEphemeralCoordinatorRuntime(),
 		}, nil
 	}
-	durable, err := newDurableCoordinatorRuntime(
+	durable, err := apppersistence.NewCoordinatorRuntime(
 		turnstate.NewSQLiteRepository(store.SQLite()),
 		sessionID,
-		defaultTurnCoordinatorLease,
+		0,
 	)
 	if err != nil {
 		return contextRuntimeBinding{}, err

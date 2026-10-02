@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fwtllh-png/QCode/internal/persist/artifact"
+	"github.com/fwtllh-png/QCode/internal/persist/snapshot"
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
 )
 
@@ -42,11 +42,11 @@ func (*batchCheckpointStore) CountCheckpoints(context.Context, string) (int, err
 	panic("per-session checkpoint read")
 }
 
-func (s *batchCheckpointStore) CheckpointSummaries(_ context.Context, ids []string) (map[string]artifact.SessionCheckpointSummary, error) {
+func (s *batchCheckpointStore) CheckpointSummaries(_ context.Context, ids []string) (map[string]snapshot.CheckpointSummary, error) {
 	s.reads++
-	result := make(map[string]artifact.SessionCheckpointSummary, len(ids))
+	result := make(map[string]snapshot.CheckpointSummary, len(ids))
 	for i, id := range ids {
-		result[id] = artifact.SessionCheckpointSummary{Count: i + 1, ChangedFiles: i + 2}
+		result[id] = snapshot.CheckpointSummary{Count: i + 1, ChangedFiles: i + 2}
 	}
 	return result, nil
 }

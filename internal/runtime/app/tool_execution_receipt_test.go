@@ -6,8 +6,6 @@ import (
 	"testing"
 	"time"
 
-	appextension "github.com/fwtllh-png/QCode/internal/runtime/app/extension"
-
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
@@ -63,7 +61,7 @@ func TestToolExecutionReceiptProjectsIntoDurableToolResult(t *testing.T) {
 		TerminalStatus: tool.OutcomeRejected,
 		TerminalOwner:  tool.TerminalOwnerGuard,
 	}
-	projected := appextension.ProjectToolExecutionReceipt(source)
+	projected := ProjectToolExecutionReceipt(source)
 	source.Attempts[0].ReadRoots[0] = "/tampered"
 	source.Attempts[0].Denial.Resource = "/tampered"
 	source.Attempts[0].Policy.Layer = "tampered"
@@ -126,7 +124,7 @@ func TestToolExecutionReceiptProjectsPolicyDenial(t *testing.T) {
 		TerminalStatus: tool.OutcomeRejected,
 		TerminalOwner:  tool.TerminalOwnerGuard,
 	}
-	projected := appextension.ProjectToolExecutionReceipt(source)
+	projected := ProjectToolExecutionReceipt(source)
 	source.PolicyDenial.Code = "tampered"
 	if projected.PolicyDenial == nil || *projected.PolicyDenial != (protocol.ToolPolicyDecision{
 		Action: "deny", Layer: "hard_constraint", Code: "control_plane_protected",

@@ -323,6 +323,7 @@ turn-kernel-convergence-baseline:
 		./internal/runtime/agent/turnkernel \
 		./internal/runtime/agent/engine \
 		./internal/runtime/app \
+		./internal/runtime/app/persistence \
 		./internal/runtime/app/wire \
 		./internal/persist/state/sqlite \
 		./internal/persist/state/turnstate \

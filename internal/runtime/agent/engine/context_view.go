@@ -3,6 +3,7 @@ package engine
 import (
 	"github.com/fwtllh-png/QCode/internal/adapter/provider"
 	agentcontext "github.com/fwtllh-png/QCode/internal/runtime/agent/context"
+	"github.com/fwtllh-png/QCode/internal/runtime/agent/contextview"
 	promptcontext "github.com/fwtllh-png/QCode/internal/runtime/agent/prompt"
 )
 
@@ -17,11 +18,11 @@ type viewFoldState struct {
 
 func (e *Engine) visibleTailStart(history []provider.Message) int {
 	turns := e.recentTailTurns()
-	start := agentcontext.VisibleTailStart(
+	start := contextview.VisibleTailStart(
 		history, turns, e.viewFold.start,
 	)
 	budget, limited := e.rawTailTokenBudget(history)
-	return agentcontext.FillVisibleTailStart(
+	return contextview.FillVisibleTailStart(
 		history, turns, start, budget, limited, e.estimateTokens,
 	)
 }
@@ -31,7 +32,7 @@ func (e *Engine) contextViewProject(
 ) agentcontext.HistoryProjector {
 	return func(history []provider.Message) []provider.Message {
 		return agentcontext.ProjectHistory(
-			agentcontext.ProjectContextViewFrom(
+			contextview.ProjectContextViewFrom(
 				history, e.visibleTailStart(history),
 			),
 			next,
@@ -46,7 +47,7 @@ func (e *Engine) foldOldestVisibleTail(
 	if e.viewFold.folded {
 		return false
 	}
-	start, ok := agentcontext.OldestVisibleTailFold(
+	start, ok := contextview.OldestVisibleTailFold(
 		history, e.recentTailTurns(), e.viewFold.start, allowCurrentTurn,
 	)
 	if !ok {
