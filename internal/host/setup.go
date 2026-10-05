@@ -563,10 +563,53 @@ func loadWebSetupSelection(dataDir, workspaceID string) (webSetupSelection, bool
 			resolved.Credential = &value
 		}
 		if !reflect.DeepEqual(resolved, connection) {
-			return webSetupSelection{}, false, errors.New("Web setup selection is not canonical")
+			return webSetupSelection{}, false, fmt.Errorf(
+				"Web setup selection connection %q is not canonical: %s",
+				connection.ID,
+				webSetupConnectionDifference(connection, resolved),
+			)
 		}
 	}
 	return selection, true, nil
+}
+
+// webSetupConnectionDifference 命名第一条与当前派生规则不一致的字段。
+// persisted 是磁盘上的记录，canonical 是按当前规则重建的结果；凭据引用
+// 不进入错误文本，避免把密钥库路径带进日志。
+func webSetupConnectionDifference(
+	persisted, canonical webSetupConnection,
+) string {
+	stringFields := []struct {
+		name           string
+		persistedValue string
+		canonicalValue string
+	}{
+		{"id", persisted.ID, canonical.ID},
+		{"provider", persisted.Provider, canonical.Provider},
+		{"model", persisted.Model, canonical.Model},
+		{"base_url", persisted.BaseURL, canonical.BaseURL},
+		{"protocol", persisted.Protocol, canonical.Protocol},
+		{"metadata_provenance", string(persisted.MetadataProvenance),
+			string(canonical.MetadataProvenance)},
+	}
+	for _, field := range stringFields {
+		if field.persistedValue != field.canonicalValue {
+			return fmt.Sprintf(
+				"%s is %q, canonical %q",
+				field.name, field.persistedValue, field.canonicalValue,
+			)
+		}
+	}
+	if !reflect.DeepEqual(persisted.Metadata, canonical.Metadata) {
+		return "model_metadata differs from the current derivation"
+	}
+	if !reflect.DeepEqual(persisted.Models, canonical.Models) {
+		return "models differ from the current derivation"
+	}
+	if !reflect.DeepEqual(persisted.Credential, canonical.Credential) {
+		return "credential differs from the current derivation"
+	}
+	return "no field difference found"
 }
 
 // decodeWebSetupSelection 严格解码当前版本的连接集。

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -127,6 +128,45 @@ func TestWebSetupRejectsNonCanonicalConnections(t *testing.T) {
 			}
 			assertWebSetupRejectedWithoutRewrite(t, data)
 		})
+	}
+}
+
+func TestWebSetupNonCanonicalErrorNamesConnectionAndField(t *testing.T) {
+	valid, _, err := resolveWebSetup(SetupRequest{
+		Model: "vendor/model-v1", APIKey: "secret-value",
+		BaseURL: "https://models.example.com/v1", Protocol: "openai_chat",
+		ModelMetadata: testSetupMetadata("vendor/model-v1"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	connection := cloneWebSetupConnection(valid)
+	connection.ID, connection.Provider = "openai", "openai"
+	expect := []string{
+		`connection "openai" is not canonical`,
+		`id is "openai"`,
+		fmt.Sprintf("canonical %q", valid.Provider),
+	}
+	dataDir := t.TempDir()
+	path := setupSelectionPath(dataDir, "workspace")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(wrapConnection(connection))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = loadWebSetupSelection(dataDir, "workspace")
+	if err == nil {
+		t.Fatal("non-canonical selection was accepted")
+	}
+	for _, fragment := range expect {
+		if !strings.Contains(err.Error(), fragment) {
+			t.Fatalf("error %q does not contain %q", err, fragment)
+		}
 	}
 }
 
