@@ -138,3 +138,12 @@ export function compactSelectWidth(value: string): CSSProperties {
   const characters = Math.max(3, Math.min(18, [...value].length));
   return {width: `calc(${characters}ch + 24px)`};
 }
+
+export function compactCatalogSelectWidth(labels: string[]): CSSProperties {
+  const longest = labels.reduce(
+    (length, label) => Math.max(length, [...label].length),
+    0
+  );
+  const characters = Math.max(6, Math.min(32, longest));
+  return {width: `calc(${characters}ch + 24px)`, maxWidth: "none"};
+}

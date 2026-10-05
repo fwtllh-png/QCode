@@ -76,6 +76,7 @@ import {RuntimeClient, type RuntimeSnapshot} from "../runtime/client";
 import {CapybaraMark} from "./brand/CapybaraMark";
 import {QCodeWordmark} from "./brand/QCodeWordmark";
 import {
+  compactCatalogSelectWidth,
   compactSelectWidth,
   MessageActions,
   type ContextAttribution,
@@ -3911,15 +3912,14 @@ function CompactCatalogSelect({
   disabled?: boolean;
   onChange: (value: string) => void;
 }) {
+  const selectedLabel = options.find((option) => option.value === value)?.label ?? value;
   return (
-    <label className="compactSelect" title={`${label}: ${value}`}>
+    <label className="compactSelect" title={`${label}: ${selectedLabel}`}>
       <span className="srOnly">{label}</span>
       <select
         aria-label={label}
         value={value}
-        style={compactSelectWidth(
-          options.find((option) => option.value === value)?.label ?? value
-        )}
+        style={compactCatalogSelectWidth(options.map((option) => option.label))}
         disabled={disabled}
         onChange={(event) => onChange(event.target.value)}
       >
