@@ -99,6 +99,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func presentFailure(_ message: String) {
+        // 失败时先清掉自己拉起的 Runtime：boot_failed 的进程不退出，
+        // 会一直占住端口和状态目录，让“重试”永远命中同一个坏状态。
+        guard let session else {
+            showFailureAlert(message)
+            return
+        }
+        session.stopOwned { [weak self] in
+            DispatchQueue.main.async {
+                self?.showFailureAlert(message)
+            }
+        }
+    }
+
+    private func showFailureAlert(_ message: String) {
         let alert = NSAlert()
         alert.alertStyle = .critical
         alert.messageText = "QCode Runtime 不可用"
@@ -115,6 +129,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let window {
             alert.beginSheetModal(for: window) { handler($0) }
         } else {
+            // 无窗口阶段必须显式激活并居中，否则 runModal 面板可能完全不呈现。
+            NSApp.activate(ignoringOtherApps: true)
+            alert.window.center()
             handler(alert.runModal())
         }
     }

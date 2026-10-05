@@ -59,6 +59,9 @@ final class SupervisorSession {
     private var probeGeneration = 0
     private var sawReadyLine = false
     private var readyLaunchURL: URL?
+    private var intentionalStop = false
+    // 仅用于失败弹窗的 stderr 尾部快照；只保留最近日志，避免无界保存。
+    private var stderrTail: [String] = []
 
     /// Supervisor 就绪（ready 或 setup_required 都会打开页面）。
     var onReady: ((Endpoints) -> Void)?
@@ -275,6 +278,15 @@ final class SupervisorSession {
             }
             if let text = String(data: chunk, encoding: .utf8) {
                 FileHandle.standardError.write(Data("[qcode] \(text)\n".utf8))
+                let lines = text.split(separator: "\n", omittingEmptySubsequences: true)
+                    .map(String.init)
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, !lines.isEmpty else { return }
+                    self.stderrTail.append(contentsOf: lines)
+                    if self.stderrTail.count > 40 {
+                        self.stderrTail.removeFirst(self.stderrTail.count - 40)
+                    }
+                }
             }
         }
     }
@@ -367,6 +379,8 @@ final class SupervisorSession {
                     }
                 case "draining":
                     self.fail("qcode Runtime 正在关闭中，请稍后重试。")
+                case "boot_failed":
+                    self.fail(self.bootFailureMessage(base: base))
                 default:
                     self.fail("qcode Runtime 返回了未知状态：\(status ?? "nil")")
                 }
@@ -388,12 +402,27 @@ final class SupervisorSession {
         onFailure?(message)
     }
 
+    private func bootFailureMessage(base: URL) -> String {
+        var message = "qcode Runtime 启动失败（boot_failed，\(base)）。"
+        if stderrTail.isEmpty {
+            message += "\nRuntime 未输出错误日志。"
+        } else {
+            message += "\n最近日志：\n" + stderrTail.suffix(6).joined(separator: "\n")
+        }
+        return message
+    }
+
     // MARK: - 进程退出处理
 
     private func handleTermination(status: Int32) {
         let hadEndpoints = endpoints != nil
         process = nil
         endpoints = nil
+        if intentionalStop {
+            intentionalStop = false
+            Self.log("runtime stopped intentionally (status \(status))")
+            return
+        }
         if terminating || !spawnOwned {
             return
         }
@@ -423,6 +452,32 @@ final class SupervisorSession {
         Self.log("shutdown: SIGINT runtime pid \(pid)")
         kill(pid, SIGINT)
         pollProcessExit(pid, deadline: Date().addingTimeInterval(35), completion: completion)
+    }
+
+    /// 失败后的主动清理：给自己拉起的 Runtime 发 SIGINT，短时间内未退出则
+    /// SIGKILL，避免 boot_failed 的进程占住端口/状态目录，导致重试永远失败。
+    func stopOwned(completion: @escaping () -> Void) {
+        precondition(Thread.isMainThread)
+        guard let process, process.isRunning else {
+            completion()
+            return
+        }
+        intentionalStop = true
+        let pid = process.processIdentifier
+        Self.log("stop-owned: SIGINT runtime pid \(pid)")
+        kill(pid, SIGINT)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+            guard let self else {
+                completion()
+                return
+            }
+            let alive = kill(pid, 0) == 0 || errno == EPERM
+            if alive {
+                Self.log("stop-owned: SIGKILL runtime pid \(pid)")
+                kill(pid, SIGKILL)
+            }
+            completion()
+        }
     }
 
     private func pollProcessExit(_ pid: pid_t, deadline: Date, completion: @escaping () -> Void) {
