@@ -192,6 +192,15 @@ func (r *SessionService) SessionStatus(
 	ctx context.Context,
 	sessionID string,
 ) (protocol.SessionSummary, error) {
+	summary, err := r.session(ctx, sessionID)
+	if err != nil {
+		return protocol.SessionSummary{}, err
+	}
+	return r.projectSessionActivity(ctx, summary)
+}
+
+// session reads ownership and lifecycle metadata without sidebar projections.
+func (r *SessionService) session(ctx context.Context, sessionID string) (protocol.SessionSummary, error) {
 	if r.runtime.sessionLifecycle == nil {
 		return protocol.SessionSummary{}, runtimeProblem(protocol.CodeUnavailable, "session lifecycle is unavailable", nil)
 	}
@@ -199,15 +208,21 @@ func (r *SessionService) SessionStatus(
 	if err != nil {
 		return protocol.SessionSummary{}, err
 	}
-	if r.runtime.workspaceRoot != "" &&
-		!sameWorkspaceRoot(r.runtime.workspaceRoot, summary.WorkspaceRoot) {
-		return protocol.SessionSummary{}, runtimeProblem(
+	if err := validateSessionWorkspace(r.runtime.workspaceRoot, summary); err != nil {
+		return protocol.SessionSummary{}, err
+	}
+	return summary, nil
+}
+
+func validateSessionWorkspace(workspaceRoot string, summary protocol.SessionSummary) error {
+	if workspaceRoot != "" && !sameWorkspaceRoot(workspaceRoot, summary.WorkspaceRoot) {
+		return runtimeProblem(
 			protocol.CodeConflict,
 			"session does not belong to this Runtime workspace",
 			nil,
 		)
 	}
-	return r.projectSessionActivity(ctx, summary)
+	return nil
 }
 
 func (r *SessionService) projectSessionActivity(
@@ -219,36 +234,6 @@ func (r *SessionService) projectSessionActivity(
 		return protocol.SessionSummary{}, err
 	}
 	return summaries[0], nil
-}
-
-func (r *SessionService) projectSessionLiveActivity(
-	summary protocol.SessionSummary,
-	threadIDs []protocol.ThreadID,
-) protocol.SessionSummary {
-	threads := make(map[protocol.ThreadID]struct{}, len(threadIDs))
-	for _, threadID := range threadIDs {
-		threads[threadID] = struct{}{}
-	}
-	active := false
-	for threadID := range threads {
-		if _, ok := r.runtime.active.LookupThread(threadID); ok {
-			active = true
-			break
-		}
-	}
-	pendingOperation := r.runtime.OperationService.hasPendingSession(summary.SessionID)
-	pendingApprovals, pendingInputs := r.runtime.EventService.pendingCounts(threadIDs)
-	summary.PendingApprovals = pendingApprovals
-	summary.PendingInputs = pendingInputs
-	switch {
-	case pendingApprovals > 0:
-		summary.Status = protocol.SessionStatusAwaitingApproval
-	case pendingInputs > 0:
-		summary.Status = protocol.SessionStatusAwaitingInput
-	case active, pendingOperation:
-		summary.Status = protocol.SessionStatusRunning
-	}
-	return summary
 }
 
 func ensureSessionQuiescent(

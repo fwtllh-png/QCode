@@ -3,7 +3,6 @@ package wire
 import (
 	"log/slog"
 	"os"
-	"sync"
 
 	mcpruntime "github.com/fwtllh-png/QCode/internal/adapter/mcp"
 	"github.com/fwtllh-png/QCode/internal/adapter/memory"
@@ -89,6 +88,4 @@ type runtimeBundle struct {
 
 type resourceBundle struct {
 	resources *ResourceStack
-	closeOnce sync.Once
-	closeErr  error
 }

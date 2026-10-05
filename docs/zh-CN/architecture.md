@@ -135,6 +135,12 @@ SQLite 基础；Platform 拥有 Process、Sandbox 与 Repository Index；Orchest
 与 Exec Settle 构造。
 Provider 显式输出 Provider/Model Catalog，Security 显式输出 Permission Store 与
 Guard Factory。
+Provider Module 将默认和附加连接一次组装为已验证的 Catalog，共用一个 Resolver；
+每条连接只解析一次，再从该连接已验证的模型描述派生 Route。能力观测按
+`(provider, model)` 应用一次，act、用途 slot、Engine 可选路由与展示目录复用结果。
+默认模型在附加模型列表中重名时，以启动时选定的模型描述为准；普通 slot 单独保留
+配置来源，模型元数据来源不变。Fixture 可为未注册的用途模型合成元数据，但这些
+仅供用途使用的模型不会因此进入可选目录。
 
 Agent Module 只计算一次 Runtime Core Seed（Provider、Context、Tool、Security 与
 Lifecycle Options）。Concrete `runtimeCoreBuilder` 从该 Seed 构造 Main Engine 和
@@ -266,7 +272,15 @@ Owner Lease 的元数据、路径规范化和文件锁由 `internal/host/owner_l
 构造与关闭共享 `wire.ResourceStack`。Session 只注册一次资源关闭函数；部分构造
 失败回滚与正常关闭都按注册逆序关闭同一 Stack。每项资源最多关闭一次，单项关闭失败
 不会跳过后续资源，调用方会收到带资源标识的聚合错误。因此 Runtime 等后段构造失败
-也不会泄漏已创建资源。
+也不会泄漏已创建资源。Session 直接委托该 Stack 关闭，不再维护另一份关闭状态；
+并发调用方可以取消等待，已开始的清理继续执行。关闭完成后，重复调用始终返回同一
+结果，包括调用方的 Context 已取消时。
+
+每个隔离子工具集也拥有自己的 ResourceStack，构造失败、重复构造的回收及正常释放
+共用同一份资源清单。关闭顺序为进程、Job Log、Workspace Journal、Tool Registry、
+Sandbox；父级共享 Content Store 和 Sandbox 不归子工具集关闭。子构造失败及 Session
+关闭汇总清理错误；`ToolPlanes.Release` 保留无返回值契约，不把清理错误改写为子 Turn
+的业务结果。
 
 ## Runtime 所有权图
 
@@ -327,6 +341,29 @@ Approval/Input、Turn Queue、Tool Item 与待恢复操作。Subagent 的重启�
 `orchestration/subagent/recovery.go`，`persist/state` 查询节点、Turn 和 Integration 事实，
 `app/persistence` 绑定 Graph 并发布恢复事件。Persist 可以使用 Protocol、Context 和
 TurnKernel 的存储契约，不依赖 App 应用服务或 Agent Engine 实现。
+
+Operation 接受结果携带所属 SessionID：持久模式由接受事务返回，内存模式按
+Thread 归属解析。Runtime 在接受请求时即保留该归属，直到提交结算完成，
+使 Session 删除保护覆盖尚未分发以及已处理但提交仍在重试的操作。
+持久模式只在内存保留 Pending Operation，提交后释放请求数据；幂等判断由
+持久层的 Operation ID 与 Idempotency Key 完成，重启恢复也不重建本地请求缓存。
+只有未配置 Lifecycle 的内存模式维护 `committed` 与 `acceptedKeys` 去重表。
+Delete/Discard 在回收草稿前检查 Session Revision，陈旧请求返回
+`stale_session_revision` 冲突及期望、实际版本，存储层删除事务仍保留版本校验。
+
+Turn 恢复证据的完整 JSON 共用 `TurnRecoveryEvidenceLimit`（12 KiB）预算，
+包括 WorkItem 的已读路径、已改路径和运行中命令引用。超限时裁剪列表并记录
+`omitted_reads`、`omitted_edits`、`omitted_sessions`，保留源 Turn 指针并优先
+保留中断结论；没有剩余导航条目时用 `turn_history` 指示回读原始历史。
+过大的可选执行回执也可省略，避免连同恢复入口一起丢失。
+
+Checkpoint 读取一次返回元数据、Profile、历史事件投影及可选 ContextSnapshot。
+精确 Checkpoint 只加载一次 Manifest，并统一校验 Context Digest、Epoch、Workspace
+Digest 与 Profile；Restore/Fork 直接使用该快照，历史事件投影继续用于发布
+ReplacementHistory。保存精确 Checkpoint 也直接读取 ContextSnapshot，不再单独
+读取和编码 History。只含历史的 Checkpoint 保留原有恢复路径，持久格式不变。
+终态 Checkpoint 从同一次 Turn 事件回放中取得终态与执行回执，继续查询 fork 来源，
+保持回执 Cursor、文件变更统计及父 Checkpoint 关系。
 
 `app` 根包保留应用服务，各 Service 的状态与方法按职责放在同包文件中；
 `runtime_services.go` 只初始化内部服务。Artifact 的 Checkpoint、Plan 执行和 Turn
@@ -497,12 +534,13 @@ Trace 按已加载 Turn 维护查询集合，终态到达时只更新受影响�
 Runtime 已验证并实际传给模型的图片输入会编码进 `turn.started`，使用户消息图片能够从
 持久化 Event 恢复；Presentation Snapshot 预算覆盖一个完整的最大图片输入。
 
-Workspace Runtime 固定 Provider Connection、Endpoint、Credential Reference 与 Egress
-边界，Session Profile 则独立持久化 Model ID。Engine 只允许在同一 Provider
-Connection 内从当前 Ready Route 派生新的 Model Route，并在 Turn 开始时冻结到
-`TurnSpec`；它不能借模型切换改变 Endpoint 或 Credential。Web Model Catalog 将内置
-目录与当前 Workspace 已持久化 Session Profile 中的模型合并，因此用户输入的新 Model
-ID 在刷新、重启和其他 Session 中仍可选择。Active Turn 期间拒绝 Profile 修改。
+Workspace Runtime 固定已配置连接的 Endpoint、Protocol、Credential Reference 与
+Egress 边界，Session Profile 独立持久化 Provider 与 Model ID。Engine 在已注册的
+Ready Route 之间切换，并在 Turn 开始时冻结到 `TurnSpec`；跨连接选择使用目标连接
+自身的端点和凭证，不能由 Profile 任意指定。Web Model Catalog 与 Engine 使用同一份
+已验证路由；启用热切换时默认模型也必须进入可选集合，保证切换到附加连接后仍可切回。
+没有附加模型或连接时保持 `fixed`。未知模型须先提交显式元数据，Active Turn 期间
+拒绝 Profile 修改。
 Connection 设置通过 Host 控制面切换 Provider：先拒绝新的 Runtime 操作并确认全部
 Workspace 空闲，再构造新 Runtime、事务化迁移 Session Route，最后替换旧 Runtime；
 任一步失败都会保留或恢复原连接。
@@ -612,6 +650,9 @@ Control State。Cancel、Steer、Approval、Input 统一进入 `ControlPort`；�
 4. Coordinator 请求 Provider Sample Effect；`DurableEffectDispatcher` 在 Engine
    调用 Provider 前持久化 `EffectStarted`。
 5. 模型 Text、Usage 与 Tool Proposal 通过 `ModelSampleResultReceived` 一次返回。
+   增量 `ModelSampleProgressRecorded` 同步借用调用方的 Assembly，Reducer 在验证
+   进度只增不退后深复制接管；提交返回后调用方可继续修改。公开 Assembly 读取仍返回
+   独立副本，持久化提交成功后权威状态才可见。
 6. Reducer 持久化 Sample Result，并在 Executor 投影前将 Tool Proposal 转换为 Tool Effect。
 7. Tool Executor 进入 Registry 和 Guard；Guard 评估 Mode、Posture、Permission、
    Constitution、Approval 与 Sandbox。
@@ -778,8 +819,10 @@ Responses 的模型始终使用完整 HTTP/SSE 请求，不发送 `previous_resp
 `internal/adapter/provider/modelcatalog` 负责实际的模型发现和能力探测请求。
 能力观测的 SQL 读写归 `internal/persist/modelcapability`，复用
 `internal/persist/state/sqlite` 的 `provider_capabilities` 表；观测按连接身份、
-模型 Wire ID 和能力隔离。`runtime/app/wire` 构造 Repository，并将读取的观测应用到
-各用途路由。
+模型 Wire ID 和能力隔离。`runtime/app/wire` 构造 Repository，将观测应用到全部已注册
+模型及 fixture 用途模型，再生成用途路由、可选路由和目录，避免切换模型后丢失能力收紧。
+默认只收紧能力；显式启用 `TrustProbe` 后，正向观测才可扩展能力。用途所需能力在
+应用观测后校验，能力不足时拒绝启动。
 
 Turn 开始时冻结 `ContextCapacity`：模型 Context Window 扣除模型能力、Operator
 Ceiling 和 Turn/Session Budget 共同确定的 Output Reserve 后，得到硬输入容量。
@@ -801,6 +844,9 @@ Provider Throughput 是第三条独立容量平面：`execution.tokens_per_minut
 未知则跳过 Token Admission，不按模型名称发明 TPM。超过已知 Burst 或等待将超过
 预算时，先对可见 Tail 做一次因果组折叠再重新准入；仍超则拒绝或等待，不会静默
 重探，也不会改写 Durable History。
+折叠后重新投影、规范化并计量完整输入，吞吐准入、预算检查、Provider 请求和
+Sample Context 使用同一份准备结果；前缀身份从最终消息与实际输出保留生成。
+折叠或输入重建的计量错误会中止本次采样，不继续准入或发送未规范化的请求。
 
 Tool Result 在执行边界按硬输入容量、并行 Batch 大小与 ResultStore Capacity 取得
 本次 Token Budget；完整原文保存在 Durable Content Store，模型只接收带稳定
@@ -898,6 +944,10 @@ Event Log 与 SQLite 投影之间的一致性以事件日志为准：启动时�
 结果保留预留状态，交由下一次对账裁决，不会写入重复记录；此前的干净失败则允许
 重试诚实地补写日志。
 
+事件载荷的类型由 `protocol.KindOf` 统一读取，App 不再维护重复的类型映射。
+发布回调使用已构造事件的 `Kind` 查询 Event Traits，决定是否投影持久生命周期。
+未知事件保留原声明类型，沿用未知类型持久保留、不推断终态的协议语义。
+
 非持久流事件只在 SQLite 更新单行 `event_watermark`，不写 JSONL 或逐事件预留。
 重启仍保留全局序号高水位，已占用序号及水位以下的空洞不能分配给新事件。
 流事件重试返回序号冲突，由 Hub 重新分配；持久事件继续使用预留、
@@ -957,7 +1007,19 @@ Web 将搜索词、筛选结果与会话列表分开保存，后台活动刷新�
 侧栏列表先按既有排序选出候选页，再按页批量读取最新 Turn、事件水位与用量汇总。
 Runtime 批量读取线程归属、检查点数量及最新检查点摘要、Turn 撤回状态；搜索复用
 同一份线程归属。SQLite 查询次数不随页内会话数增长，检查点元数据仍执行完整校验；
-未提供批量能力的存储实现沿用单会话读取。Web 活动事件仅刷新其事件流绑定的
+未提供批量能力的存储实现沿用单会话读取。内存活动投影按页分别读取 Operation、
+Active Turn 和交互状态，每个 owner 只加锁一次，仅保留候选会话的 ID 和计数，
+不复制请求正文或事件载荷。审批、输入、运行中的状态优先级保持不变；这些快照仅在
+当前请求中使用，各 owner 的锁独立释放，不替代执行准入锁或持久层事务。
+
+Session 归属校验只读取生命周期元数据。Profile、Preset、会话激活和历史查询不再
+附带侧栏统计；历史 Snapshot 直接使用同一读取栅栏中的 Session 归属和事件水位。
+Checkpoint、Plan、Turn Recovery 和 Git 仍读取线程、撤回状态及实时活动作为执行
+前提，但不查询侧栏检查点统计。同一次操作复用已校验的 Session 和 Profile，隔离
+工作区先恢复再应用 Profile；Profile 写入继续在 Active Turn 锁内重读权威版本，
+并由存储执行版本比较写入，不跨请求缓存。
+
+Web 活动事件仅刷新其事件流绑定的
 Workspace，保留其他 Workspace 的列表和筛选结果。请求期间的新事件合并为一次
 后续刷新，不用定时阈值，也不反复取消进行中的查询。
 
@@ -1121,6 +1183,9 @@ Provider 配额耗尽与瞬时限流分开处理。OpenAI-compatible 的明确
 空响应仍允许 1 次，429 走独立等待预算。没有 `Retry-After` / Route Cooldown 的
 429 在 `rate_limit_retry_limit=0` 时继承 `provider_retry_limit`，避免本地短退避
 空转。每次请求都有 started 和闭合事件，回执仅按 started 计数。
+Transport 打开失败与流消费失败共用上下文恢复、重试决策、吞吐检查、共享 Lease
+释放、重试事件、等待和预算更新流程。Steering、部分输出与 Usage、续传及取消返回
+仍按 Transport 边界处理，重试事件成功提交后才等待，等待成功后才更新本地重试预算。
 
 模型侧不再提供 quality 工具、专项环境探针或“修改文件后才允许重试”的额外门禁。
 命令统一经过 exec_command/write_stdin 的 Guard、审批和 Sandbox；退出码来自真实

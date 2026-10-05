@@ -69,6 +69,15 @@ type EventData interface {
 	validate() error
 }
 
+// KindOf returns the payload's event kind without validating its contents.
+// A nil EventData interface has no kind; unknown events retain their declared kind.
+func KindOf(data EventData) EventKind {
+	if data == nil {
+		return ""
+	}
+	return data.eventKind()
+}
+
 // EventSessionID returns the session identity declared by event payloads that
 // are not emitted on a session-owned thread.
 func EventSessionID(data EventData) string {

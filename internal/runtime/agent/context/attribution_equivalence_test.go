@@ -4,7 +4,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"math"
+	"reflect"
 	"testing"
 
 	"github.com/fwtllh-png/QCode/internal/adapter/provider"
@@ -143,6 +145,79 @@ func TestMeasureDetailedMatchesLegacyCallStructure(t *testing.T) {
 			t.Fatalf("item %d tokens = %d, want %d",
 				index, got.ItemTokens[index], perMessage(item.Message))
 		}
+	}
+}
+
+type mutatingImageEstimator struct {
+	Estimator
+	visited  []string
+	retained [][]byte
+	failure  error
+}
+
+func (e *mutatingImageEstimator) EstimateImage(attachment provider.Attachment) (uint64, error) {
+	e.visited = append(e.visited, attachment.Name)
+	e.retained = append(e.retained, attachment.Data)
+	attachment.Data[0] = 'X'
+	return 7, e.failure
+}
+
+func TestMeasureDetailedIsolatesImageEstimatorData(t *testing.T) {
+	image := func(role provider.Role, name string) provider.Message {
+		return provider.Message{Role: role, Blocks: []provider.ContentBlock{{
+			Type: provider.ContentImage, Attachment: &provider.Attachment{
+				Name: name, MediaType: "image/png", Data: []byte("image"),
+			},
+		}}}
+	}
+	result := toolResultContextMessage("call", 1)
+	result.Blocks[0].ToolResult.Admission = &provider.AdmissionReceipt{
+		OriginalTokens: 80, RetainedTokens: 12, Truncated: true,
+	}
+	for _, fail := range []bool{false, true} {
+		name := "success"
+		if fail {
+			name = "error"
+		}
+		t.Run(name, func(t *testing.T) {
+			snapshot := NewMessageLedger(LedgerInput{
+				Stable:       []provider.Message{image(provider.RoleSystem, "stable")},
+				History:      []provider.Message{image(provider.RoleUser, "history"), result},
+				Dynamic:      []provider.Message{image(provider.RoleSystem, "dynamic")},
+				Continuation: []provider.Message{image(provider.RoleAssistant, "continuation")},
+			}).Snapshot()
+			before := snapshot.Messages()
+			digest, err := snapshot.Digest()
+			if err != nil {
+				t.Fatal(err)
+			}
+			estimate := &mutatingImageEstimator{Estimator: EstimatorFunc(nonAdditiveEstimator)}
+			if fail {
+				estimate.failure = errors.New("image estimation failed")
+			}
+			measured, err := snapshot.MeasureDetailed("reason", "effort", estimate)
+			if !errors.Is(err, estimate.failure) {
+				t.Fatalf("measurement error=%v, want %v", err, estimate.failure)
+			}
+			wantOrder := []string{"stable", "history", "dynamic", "continuation"}
+			if fail {
+				wantOrder = wantOrder[:1]
+			} else if measured.Data.ImageTokens != 28 || measured.Data.AdmissionItems != 1 ||
+				measured.Data.AdmissionSpilledItems != 1 || measured.Data.AdmissionOriginalTokens != 80 ||
+				measured.Data.AdmissionRetainedTokens != 12 || measured.Data.ContextDigest != digest {
+				t.Fatalf("image/admission attribution changed: %+v", measured.Data)
+			}
+			if !reflect.DeepEqual(estimate.visited, wantOrder) {
+				t.Fatalf("image callback order=%v, want %v", estimate.visited, wantOrder)
+			}
+			for _, retained := range estimate.retained {
+				retained[1] = 'Y'
+			}
+			afterDigest, err := snapshot.Digest()
+			if err != nil || afterDigest != digest || !reflect.DeepEqual(snapshot.Messages(), before) {
+				t.Fatal("image estimator changed snapshot content or identity")
+			}
+		})
 	}
 }
 

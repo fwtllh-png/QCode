@@ -22,12 +22,16 @@ func (r *SessionService) SessionToolCatalog(
 	if err != nil {
 		return protocol.SessionToolCatalog{}, err
 	}
+	return r.sessionToolCatalog(profile.Profile)
+}
+
+func (r *SessionService) sessionToolCatalog(profile protocol.SessionProfile) (protocol.SessionToolCatalog, error) {
 	snapshot, err := r.runtime.toolCatalog.Snapshot()
 	if err != nil {
 		return protocol.SessionToolCatalog{}, fmt.Errorf("snapshot tool catalog: %w", err)
 	}
-	enabled := make(map[string]bool, len(profile.Profile.EnabledToolIDs))
-	for _, id := range profile.Profile.EnabledToolIDs {
+	enabled := make(map[string]bool, len(profile.EnabledToolIDs))
+	for _, id := range profile.EnabledToolIDs {
 		enabled[id] = true
 	}
 	allEnabled := len(enabled) == 0
@@ -65,7 +69,7 @@ func (r *SessionService) SessionToolCatalog(
 			Guarded: true,
 		})
 	}
-	for _, id := range profile.Profile.EnabledToolIDs {
+	for _, id := range profile.EnabledToolIDs {
 		if seen[id] {
 			continue
 		}
@@ -161,9 +165,17 @@ func (r *SessionService) SessionProfile(
 		return protocol.SessionProfileSnapshot{}, runtimeProblem(protocol.CodeUnavailable, "session profiles are unavailable", nil)
 	}
 	if r.runtime.workspaceRoot != "" {
-		if _, err := r.SessionStatus(ctx, sessionID); err != nil {
+		if _, err := r.session(ctx, sessionID); err != nil {
 			return protocol.SessionProfileSnapshot{}, err
 		}
+	}
+	return r.sessionProfile(ctx, sessionID)
+}
+
+// sessionProfile requires ownership to have been checked by the caller.
+func (r *SessionService) sessionProfile(ctx context.Context, sessionID string) (protocol.SessionProfileSnapshot, error) {
+	if r.runtime.profiles == nil {
+		return protocol.SessionProfileSnapshot{}, runtimeProblem(protocol.CodeUnavailable, "session profiles are unavailable", nil)
 	}
 	profile, err := r.runtime.profiles.EnsureProfile(ctx, sessionID, r.runtime.defaultProfile)
 	if err != nil {
@@ -228,10 +240,29 @@ func (r *SessionService) RestoreSessionProfile(
 	sessionID string,
 	threadID protocol.ThreadID,
 ) (protocol.SessionProfileSnapshot, error) {
-	snapshot, err := r.sessionProfileForRestore(ctx, sessionID, threadID)
+	if r.runtime.sessionLifecycle != nil {
+		current, err := r.session(ctx, sessionID)
+		if err != nil {
+			return protocol.SessionProfileSnapshot{}, err
+		}
+		return r.restoreSessionProfile(ctx, current, threadID)
+	}
+	snapshot, err := r.SessionProfile(ctx, sessionID)
 	if err != nil {
 		return protocol.SessionProfileSnapshot{}, err
 	}
+	return r.applySessionProfile(threadID, snapshot)
+}
+
+func (r *SessionService) restoreSessionProfile(ctx context.Context, current protocol.SessionSummary, threadID protocol.ThreadID) (protocol.SessionProfileSnapshot, error) {
+	snapshot, err := r.sessionProfileForRestore(ctx, current, threadID)
+	if err != nil {
+		return protocol.SessionProfileSnapshot{}, err
+	}
+	return r.applySessionProfile(threadID, snapshot)
+}
+
+func (r *SessionService) applySessionProfile(threadID protocol.ThreadID, snapshot protocol.SessionProfileSnapshot) (protocol.SessionProfileSnapshot, error) {
 	controller, ok := r.runtime.engine.(SessionProfileEngine)
 	if !ok {
 		return protocol.SessionProfileSnapshot{}, runtimeProblem(protocol.CodeUnavailable, "session profile updates are unsupported by this engine", nil)
@@ -273,7 +304,7 @@ func (r *SessionService) UpdateSessionProfile(
 		return protocol.SessionProfileUpdateResult{}, runtimeProblem(protocol.CodeUnavailable, "session profiles are unavailable", nil)
 	}
 	if r.runtime.workspaceRoot != "" {
-		if _, err := r.SessionStatus(ctx, sessionID); err != nil {
+		if _, err := r.session(ctx, sessionID); err != nil {
 			return protocol.SessionProfileUpdateResult{}, err
 		}
 		owner, err := r.runtime.sessionLifecycle.SessionForThread(ctx, threadID)
@@ -288,6 +319,12 @@ func (r *SessionService) UpdateSessionProfile(
 			)
 		}
 	}
+	return r.updateSessionProfile(ctx, sessionID, threadID, expectedRevision, patch)
+}
+
+// updateSessionProfile requires Session/Thread ownership checked by the caller;
+// the authoritative profile is still read under the active-turn lock below.
+func (r *SessionService) updateSessionProfile(ctx context.Context, sessionID string, threadID protocol.ThreadID, expectedRevision uint64, patch protocol.SessionProfilePatch) (protocol.SessionProfileUpdateResult, error) {
 	controller, ok := r.runtime.engine.(SessionProfileEngine)
 	if !ok {
 		return protocol.SessionProfileUpdateResult{}, runtimeProblem(protocol.CodeUnavailable, "session profile updates are unsupported by this engine", nil)

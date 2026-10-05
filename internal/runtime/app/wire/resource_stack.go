@@ -94,6 +94,15 @@ func (s *ResourceStack) Close(ctx context.Context) error {
 		s.done = make(chan struct{})
 	}
 	if s.closed {
+		// A completed close always returns its cached result, even when this
+		// caller's context is already canceled. Only an in-flight wait cancels.
+		select {
+		case <-s.done:
+			err := s.err
+			s.mu.Unlock()
+			return err
+		default:
+		}
 		done := s.done
 		s.mu.Unlock()
 		select {

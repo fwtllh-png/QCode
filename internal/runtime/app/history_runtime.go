@@ -22,6 +22,11 @@ func (r *Runtime) HistoryThreadIDs(
 	ctx context.Context,
 	sessionID string,
 ) ([]protocol.ThreadID, error) {
+	if r.workspaceRoot != "" {
+		if _, err := r.SessionService.session(ctx, sessionID); err != nil {
+			return nil, err
+		}
+	}
 	return r.sessionLifecycle.ThreadIDs(ctx, sessionID)
 }
 

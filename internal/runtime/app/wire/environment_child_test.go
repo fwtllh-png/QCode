@@ -1,6 +1,7 @@
 package wire
 
 import (
+	"context"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -42,7 +43,7 @@ func TestChildEnvironmentInheritsSnapshotAndRebindsPrivateCache(t *testing.T) {
 		"", 0, stateRoot, childSkillPaths(t, options.WorkspaceRoot))
 	toolsets.environment = defaults
 	toolsets.bindParentSandbox(parent)
-	t.Cleanup(toolsets.closeAll)
+	t.Cleanup(func() { _ = toolsets.closeAll(context.Background()) })
 	seenCaches := make(map[string]bool)
 	for range 2 {
 		child, err := toolsets.open(t.TempDir(), false)

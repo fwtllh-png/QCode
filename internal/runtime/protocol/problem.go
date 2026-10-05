@@ -27,6 +27,7 @@ const (
 	ProblemReasonSessionBusy          = "session_busy"
 	ProblemReasonStaleRecoverySource  = "stale_recovery_source"
 	ProblemReasonStaleProfileRevision = "stale_profile_revision"
+	ProblemReasonStaleSessionRevision = "stale_session_revision"
 	ProblemReasonUnsupported          = "unsupported"
 	ProblemReasonWrongSession         = "wrong_session"
 	ProblemReasonProviderThroughput   = "provider_throughput"

@@ -62,7 +62,8 @@ func (s MessageSnapshot) Normalize(
 	for _, source := range s.items {
 		item := source
 		item.Message = CloneMessage(source.Message)
-		item.Message.Blocks = nil
+		blocks := item.Message.Blocks
+		item.Message.Blocks = blocks[:0]
 		changed := false
 		hasRetainedToolCall := messageHasRetainedToolCall(
 			source.Message,
@@ -73,8 +74,7 @@ func (s MessageSnapshot) Normalize(
 			capabilities,
 			validPairs,
 		)
-		for _, sourceBlock := range source.Message.Blocks {
-			block := CloneBlocks([]provider.ContentBlock{sourceBlock})[0]
+		for _, block := range blocks {
 			if block.ToolCall != nil {
 				if _, ok := validPairs[block.ToolCall.ID]; !ok {
 					receipt.DroppedOrphans++
@@ -107,6 +107,7 @@ func (s MessageSnapshot) Normalize(
 			}
 			item.Message.Blocks = append(item.Message.Blocks, block)
 		}
+		clear(blocks[len(item.Message.Blocks):])
 		if len(item.Message.Blocks) == 0 {
 			continue
 		}
@@ -114,9 +115,11 @@ func (s MessageSnapshot) Normalize(
 			item.Message.Provenance.Replay = nil
 		}
 		normalized.items = append(normalized.items, item)
+		// Both indexes belong to this immutable snapshot; accessors copy
+		// nested content before exposing it to callers.
 		normalized.partitions[item.Kind] = append(
 			normalized.partitions[item.Kind],
-			CloneMessage(item.Message),
+			item.Message,
 		)
 	}
 	receipt.ModelVisibleOrphans = visibleOrphanCount(normalized.items)

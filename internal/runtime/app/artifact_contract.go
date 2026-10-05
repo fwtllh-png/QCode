@@ -20,12 +20,7 @@ type SessionArtifactStore interface {
 	GetCheckpoint(
 		context.Context,
 		string,
-	) (
-		protocol.SessionCheckpoint,
-		[]protocol.CompactedMessage,
-		protocol.SessionProfile,
-		error,
-	)
+	) (snapshot.CheckpointState, error)
 	ListCheckpoints(
 		context.Context,
 		string,
@@ -54,19 +49,9 @@ type ContextSessionArtifactStore interface {
 	SaveContextCheckpoint(
 		context.Context,
 		protocol.SessionCheckpoint,
-		[]protocol.CompactedMessage,
 		agentcontext.ContextSnapshot,
 		protocol.SessionProfile,
 	) (protocol.SessionCheckpoint, error)
-	GetContextCheckpoint(
-		context.Context,
-		string,
-	) (
-		protocol.SessionCheckpoint,
-		agentcontext.ContextSnapshot,
-		protocol.SessionProfile,
-		error,
-	)
 }
 
 type CheckpointEngine interface {

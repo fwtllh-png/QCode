@@ -29,12 +29,16 @@ func (providerModule) Build(ctx context.Context, state *buildState) error {
 	if err := prepareExecLogger(options, execution, session); err != nil {
 		return err
 	}
-	routes, err := buildRouteSet(ctx, state)
+	resolved, err := buildRuntimeRoutes(ctx, state)
 	if err != nil {
 		return err
 	}
+	routes, selectableRoutes := resolved.routes, resolved.selectable
 	egressGate := egress.NewStaticGate()
 	grantRouteHosts(egressGate, routes)
+	for _, route := range selectableRoutes {
+		egressGate.AllowURL(route.Endpoint())
+	}
 	client := configureProviderClient(
 		execution,
 		egressGate,
@@ -47,32 +51,9 @@ func (providerModule) Build(ctx context.Context, state *buildState) error {
 		return err
 	}
 	capabilities := selectedModelCapabilities(routes.Act())
-	// 热切换取决于是否注册了可选路由：默认连接上的附加模型，或默认
-	// 连接之外的附加连接。单一模型连接保持 fixed。
-	allowModelSelection := len(options.ModelMetadata.AdditionalDescriptors) != 0 ||
-		len(options.ExtraConnections) != 0
-	if allowModelSelection {
+	capabilities.SelectionMode = "fixed"
+	if len(selectableRoutes) != 0 {
 		capabilities.SelectionMode = "hot"
-	} else {
-		capabilities.SelectionMode = "fixed"
-	}
-	selectableRoutes, err := runtimeSelectableRoutes(
-		routes.Act(),
-		options.ModelMetadata.AdditionalDescriptors,
-	)
-	if err != nil {
-		return fmt.Errorf("selectable model routes: %w", err)
-	}
-	extraRoutes, err := extraConnectionRoutes(options.ExtraConnections)
-	if err != nil {
-		return fmt.Errorf("extra connections: %w", err)
-	}
-	for key, route := range extraRoutes {
-		if _, exists := selectableRoutes[key]; exists {
-			continue
-		}
-		selectableRoutes[key] = route
-		egressGate.AllowURL(route.Endpoint())
 	}
 	providerCatalog, modelCatalog := runtimeModelCatalog(
 		routes.Act(),
@@ -150,15 +131,15 @@ func prepareExecLogger(
 	return nil
 }
 
-func buildRouteSet(
+func buildRuntimeRoutes(
 	ctx context.Context,
 	state *buildState,
-) (model.RouteSet, error) {
+) (runtimeRoutes, error) {
 	options := &state.options
 	execution := &state.config.execution
 	wireProtocol, err := parseProtocol(execution.Protocol)
 	if err != nil {
-		return model.RouteSet{}, err
+		return runtimeRoutes{}, err
 	}
 	var routeModel *model.Model
 	if state.session.fixture != nil {
@@ -169,7 +150,7 @@ func buildRouteSet(
 			options.ModelMetadata,
 		)
 		if err != nil {
-			return model.RouteSet{}, fmt.Errorf("model metadata: %w", err)
+			return runtimeRoutes{}, fmt.Errorf("model metadata: %w", err)
 		}
 	}
 	credential := model.CredentialRef{
@@ -179,7 +160,7 @@ func buildRouteSet(
 	if state.session.fixture != nil {
 		credential = model.CredentialRef{}
 	}
-	routes, err := resolveRouteSet(routeSetOptions{
+	routes, err := resolveRuntimeRoutes(ctx, routeSetOptions{
 		Act: execRouteOptions{
 			ProviderID: execution.Provider, ModelID: execution.Model,
 			BaseURL: options.BaseURL, Protocol: wireProtocol,
@@ -190,18 +171,9 @@ func buildRouteSet(
 		Extras:     options.ExtraConnections,
 		Slots:      state.config.snapshot.Config.Route.Slots,
 		Lock:       state.config.snapshot.Config.Route.Lock,
-	})
+	}, options.PersistentStore, options.TrustProbe)
 	if err != nil {
-		return model.RouteSet{}, fmt.Errorf("exec route: %w", err)
-	}
-	routes, err = overlayProbeCapabilities(
-		ctx,
-		routes,
-		options.PersistentStore,
-		options.TrustProbe,
-	)
-	if err != nil {
-		return model.RouteSet{}, fmt.Errorf("capability probe overlay: %w", err)
+		return runtimeRoutes{}, fmt.Errorf("exec route: %w", err)
 	}
 	return routes, nil
 }

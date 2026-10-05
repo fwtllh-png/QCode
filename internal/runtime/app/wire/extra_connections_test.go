@@ -9,7 +9,7 @@ import (
 func customConnectionModel(id string) *model.Model {
 	return &model.Model{
 		ID: id, CanonicalID: id, WireID: id,
-		Limits:      model.Limits{ContextTokens: 65_536, MaxOutputTokens: 8_192},
+		Limits:       model.Limits{ContextTokens: 65_536, MaxOutputTokens: 8_192},
 		Capabilities: model.Capabilities{Streaming: true, ToolCalls: true},
 	}
 }
@@ -17,7 +17,7 @@ func customConnectionModel(id string) *model.Model {
 func TestExtraConnectionRoutesResolveBaselineAndAdditionalModels(t *testing.T) {
 	baseline := customConnectionModel("vendor/model-x")
 	additional := customConnectionModel("vendor/model-y")
-	routes, err := extraConnectionRoutes([]ExtraConnectionSpec{
+	routes, err := resolveRuntimeRoutes(t.Context(), routeSetOptions{Act: bundledAct(), Extras: []ExtraConnectionSpec{
 		{
 			ProviderID: "openai-compatible:abc123",
 			BaseURL:    "https://models.example.com/v1",
@@ -35,11 +35,11 @@ func TestExtraConnectionRoutesResolveBaselineAndAdditionalModels(t *testing.T) {
 			Credential: model.CredentialRef{Kind: "keyring", Name: "web/test/second"},
 			Model:      customConnectionModel("second-model"),
 		},
-	})
+	}}, nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	custom, ok := routes[model.RouteKey("openai-compatible:abc123", "vendor/model-x")]
+	custom, ok := routes.selectable[model.RouteKey("openai-compatible:abc123", "vendor/model-x")]
 	if !ok {
 		t.Fatal("custom connection baseline route missing")
 	}
@@ -48,14 +48,14 @@ func TestExtraConnectionRoutesResolveBaselineAndAdditionalModels(t *testing.T) {
 		custom.Model().Limits.ContextTokens != 65_536 {
 		t.Fatalf("custom route = %+v", custom)
 	}
-	extra, ok := routes[model.RouteKey("openai-compatible:abc123", "vendor/model-y")]
+	extra, ok := routes.selectable[model.RouteKey("openai-compatible:abc123", "vendor/model-y")]
 	if !ok {
 		t.Fatal("custom connection additional model route missing")
 	}
 	if extra.Credential().Name != "web/test/custom" {
 		t.Fatalf("additional route credential = %+v", extra.Credential())
 	}
-	second, ok := routes[model.RouteKey("openai-compatible:def456", "second-model")]
+	second, ok := routes.selectable[model.RouteKey("openai-compatible:def456", "second-model")]
 	if !ok {
 		t.Fatal("second connection route missing")
 	}
@@ -66,18 +66,18 @@ func TestExtraConnectionRoutesResolveBaselineAndAdditionalModels(t *testing.T) {
 }
 
 func TestExtraConnectionRoutesRejectsMissingBaseURLOrMetadata(t *testing.T) {
-	if _, err := extraConnectionRoutes([]ExtraConnectionSpec{{
+	if _, err := resolveRuntimeRoutes(t.Context(), routeSetOptions{Act: bundledAct(), Extras: []ExtraConnectionSpec{{
 		ProviderID: "openai-compatible:none",
 		BaseURL:    "https://models.example.com/v1",
 		Protocol:   model.ProtocolOpenAIChat,
-	}}); err == nil {
+	}}}, nil, false); err == nil {
 		t.Fatal("custom extra connection without metadata was accepted")
 	}
-	if _, err := extraConnectionRoutes([]ExtraConnectionSpec{{
+	if _, err := resolveRuntimeRoutes(t.Context(), routeSetOptions{Act: bundledAct(), Extras: []ExtraConnectionSpec{{
 		ProviderID: "openai-compatible:none",
 		Protocol:   model.ProtocolOpenAIChat,
 		Model:      customConnectionModel("vendor/model-x"),
-	}}); err == nil {
+	}}}, nil, false); err == nil {
 		t.Fatal("extra connection without a base URL was accepted")
 	}
 }

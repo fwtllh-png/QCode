@@ -8,31 +8,25 @@ import (
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
 )
 
-func testConnectionRoute(t *testing.T, baseline string) model.ReadyRoute {
+func testConnectionRoutes(t *testing.T, baseline string, additional map[string]model.Model) runtimeRoutes {
 	t.Helper()
 	descriptor := testCustomModel(baseline)
-	route, err := resolveExecRoute(execRouteOptions{
+	routes, err := resolveRuntimeRoutes(t.Context(), routeSetOptions{Act: execRouteOptions{
 		ProviderID: "openai-compatible:abc123", ModelID: baseline,
 		BaseURL:  "https://models.example.com/v1",
 		Protocol: model.ProtocolOpenAIChat, Model: &descriptor,
 		Credential: model.CredentialRef{Kind: "keyring", Name: "web/test/custom"},
-	})
+	}, Additional: additional}, nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return route
+	return routes
 }
 
 func TestRuntimeModelCatalogListsOnlyConfiguredConnections(t *testing.T) {
-	selected := testConnectionRoute(t, "model-a")
 	additional := testCustomModel("model-b")
-	selectable, err := runtimeSelectableRoutes(
-		selected,
-		map[string]model.Model{additional.ID: additional},
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	routes := testConnectionRoutes(t, "model-a", map[string]model.Model{additional.ID: additional})
+	selected, selectable := routes.routes.Act(), routes.selectable
 	capabilities := selectedModelCapabilities(selected)
 	providers, models := runtimeModelCatalog(selected, capabilities, selectable)
 
@@ -56,15 +50,9 @@ func TestRuntimeModelCatalogListsOnlyConfiguredConnections(t *testing.T) {
 }
 
 func TestRuntimeModelsShareSelectableConnection(t *testing.T) {
-	selected := testConnectionRoute(t, "model-a")
 	additional := testCustomModel("model-b")
-	selectable, err := runtimeSelectableRoutes(
-		selected,
-		map[string]model.Model{additional.ID: additional},
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	routes := testConnectionRoutes(t, "model-a", map[string]model.Model{additional.ID: additional})
+	selected, selectable := routes.routes.Act(), routes.selectable
 	capabilities := selectedModelCapabilities(selected)
 	_, catalog := runtimeModelCatalog(selected, capabilities, selectable)
 	profiles, mutable := runtimeProfileModels(catalog, selected.ProviderID(), capabilities)
@@ -128,12 +116,9 @@ func TestRuntimeProfileProviderMutableOnlyWithSelectableConnections(t *testing.T
 	}
 }
 
-func TestRuntimeSelectableRoutesKeepsCustomRouteFixed(t *testing.T) {
-	selected := testConnectionRoute(t, "future-model")
-	selectable, err := runtimeSelectableRoutes(selected, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+func TestRuntimeRoutesKeepCustomRouteFixed(t *testing.T) {
+	routes := testConnectionRoutes(t, "future-model", nil)
+	selected, selectable := routes.routes.Act(), routes.selectable
 	capabilities := selectedModelCapabilities(selected)
 	capabilities.SelectionMode = "fixed"
 	_, models := runtimeModelCatalog(
@@ -157,16 +142,10 @@ func TestRuntimeSelectableRoutesKeepsCustomRouteFixed(t *testing.T) {
 	}
 }
 
-func TestRuntimeSelectableRoutesAddsCustomModelsWithoutReplacingBaseline(t *testing.T) {
-	selected := testConnectionRoute(t, "model-a")
+func TestRuntimeRoutesAddCustomModelsWithoutReplacingBaseline(t *testing.T) {
 	additional := testCustomModel("model-b")
-	selectable, err := runtimeSelectableRoutes(
-		selected,
-		map[string]model.Model{additional.ID: additional},
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	routes := testConnectionRoutes(t, "model-a", map[string]model.Model{additional.ID: additional})
+	selected, selectable := routes.routes.Act(), routes.selectable
 	capabilities := selectedModelCapabilities(selected)
 	capabilities.SelectionMode = "hot"
 	_, models := runtimeModelCatalog(selected, capabilities, selectable)

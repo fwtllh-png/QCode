@@ -46,13 +46,13 @@ type indexedRuntime struct {
 
 func (r indexedRuntime) HistoryEventReader() HistoryBackwardReader { return r.reader }
 func (r indexedRuntime) HistoryWorkspaceRoot() string              { return "/workspace" }
-func (r indexedRuntime) SessionStatus(_ context.Context, sessionID string) (protocol.SessionSummary, error) {
+func (r indexedRuntime) HistoryThreadIDs(_ context.Context, sessionID string) ([]protocol.ThreadID, error) {
 	if sessionID != r.fence.Session.SessionID {
-		return protocol.SessionSummary{}, historyProblem(protocol.CodeInvalidArgument, "foreign session")
+		return nil, historyProblem(protocol.CodeInvalidArgument, "foreign session")
 	}
-	return r.fence.Session, nil
-}
-func (r indexedRuntime) HistoryThreadIDs(context.Context, string) ([]protocol.ThreadID, error) {
+	if err := validateSessionWorkspace(r.HistoryWorkspaceRoot(), r.fence.Session); err != nil {
+		return nil, err
+	}
 	return r.fence.ThreadIDs, nil
 }
 func (r indexedRuntime) HistoryReadFence(context.Context, string) (protocol.SessionReadFence, error) {
@@ -70,7 +70,7 @@ func TestIndexedHistoryKeepsAuthorizationFenceAndPageOrder(t *testing.T) {
 		})
 	}
 	service := newHistoryService(indexedRuntime{reader: reader, fence: protocol.SessionReadFence{
-		Session:   protocol.SessionSummary{SessionID: "session", ThreadID: "thread", Revision: 7},
+		Session:   protocol.SessionSummary{SessionID: "session", ThreadID: "thread", Revision: 7, WorkspaceRoot: "/workspace"},
 		ThreadIDs: []protocol.ThreadID{"thread"}, ThroughSequence: 4,
 	}})
 	page, err := service.History(t.Context(), SessionHistoryQuery{SessionID: "session", Before: 5, Limit: 2})

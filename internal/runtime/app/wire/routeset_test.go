@@ -280,3 +280,8 @@ model = "summarizer"
 		t.Fatalf("receipt mode = %q", receipt.Mode)
 	}
 }
+
+func resolveRouteSet(options routeSetOptions) (model.RouteSet, error) {
+	routes, err := resolveRuntimeRoutes(context.Background(), options, nil, false)
+	return routes.routes, err
+}

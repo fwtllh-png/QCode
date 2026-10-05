@@ -133,6 +133,19 @@ func (r *ActiveTurnRegistry) Snapshot() ActiveTurnSnapshot {
 	defer r.mu.Unlock()
 	return ActiveTurnSnapshot{Turns: len(r.byTurn)}
 }
+
+func (r *ActiveTurnRegistry) activeThreads(wanted map[protocol.ThreadID]struct{}) []protocol.ThreadID {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	threads := make([]protocol.ThreadID, 0, min(len(wanted), len(r.byThread)))
+	for thread := range wanted {
+		if _, ok := r.byThread[thread]; ok {
+			threads = append(threads, thread)
+		}
+	}
+	return threads
+}
+
 func (r *ActiveTurnRegistry) CancelAll() {
 	r.mu.Lock()
 	defer r.mu.Unlock()

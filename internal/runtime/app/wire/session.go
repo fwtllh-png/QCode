@@ -37,12 +37,7 @@ func (s *Session) RegisterResource(
 }
 
 func (s *Session) Close(ctx context.Context) error {
-	s.closeOnce.Do(func() {
-		if s.resources != nil {
-			s.closeErr = s.resources.Close(ctx)
-		}
-	})
-	return s.closeErr
+	return s.resources.Close(ctx)
 }
 
 // ProviderID and ModelID report the immutable route selected while the
@@ -232,9 +227,9 @@ func (s *Session) registerResourceClosers() error {
 			}
 			return nil
 		}},
-		{name: "child-toolsets", close: func(context.Context) error {
+		{name: "child-toolsets", close: func(ctx context.Context) error {
 			if s.childTools != nil {
-				s.childTools.closeAll()
+				return s.childTools.closeAll(ctx)
 			}
 			return nil
 		}},

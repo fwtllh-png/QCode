@@ -19,6 +19,7 @@ import (
 // Acceptance records whether an operation was newly persisted or already exists.
 type Acceptance struct {
 	OperationID protocol.OperationID
+	SessionID   string
 	Duplicate   bool
 	Committed   bool
 }
@@ -218,6 +219,7 @@ func (l *Lifecycle) Accept(
 			}
 			acceptance = Acceptance{
 				OperationID: existing.ID,
+				SessionID:   existing.SessionID,
 				Duplicate:   true,
 				Committed:   existing.Status == OperationCommitted,
 			}
@@ -236,6 +238,7 @@ func (l *Lifecycle) Accept(
 				}
 				acceptance = Acceptance{
 					OperationID: existing.ID,
+					SessionID:   existing.SessionID,
 					Duplicate:   true,
 					Committed:   existing.Status == OperationCommitted,
 				}
@@ -271,7 +274,7 @@ func (l *Lifecycle) Accept(
 				return err
 			}
 		}
-		acceptance = Acceptance{OperationID: operation.ID}
+		acceptance = Acceptance{OperationID: operation.ID, SessionID: sessionID}
 		return nil
 	})
 	if errors.Is(err, ErrOperationConflict) {

@@ -99,7 +99,7 @@ func (p *TerminalPublisher) Commit(ctx context.Context, request TerminalRequest)
 	}
 	outbox = append(outbox,
 		entry("receipt", protocol.EventExecutionReceipt, receiptPayload),
-		entry("terminal", EventKind(material.Terminal), terminalPayload),
+		entry("terminal", protocol.KindOf(material.Terminal), terminalPayload),
 	)
 	decision := *material.FrozenState.Terminal
 	envelope := turnkernel.TerminalEnvelope{

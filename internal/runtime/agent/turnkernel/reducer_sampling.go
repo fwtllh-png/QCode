@@ -144,6 +144,8 @@ func applyModelSampleProgress(
 	if err := command.Assembly.ValidateExtension(sample.Assembly); err != nil {
 		return illegal(current, command, err.Error())
 	}
+	// Progress commands borrow their input only until Apply returns.
+	// Authoritative state must own a copy before the provider resumes mutation.
 	sample.Assembly = providerassembly.CloneResponseAssembly(
 		&command.Assembly,
 	)

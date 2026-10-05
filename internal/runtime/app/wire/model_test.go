@@ -1,6 +1,7 @@
 package wire
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -228,4 +229,10 @@ func operatorModel(id string, contextTokens, outputTokens uint64) *model.Model {
 		Pricing:    model.Pricing{Provenance: model.ProvenanceOperatorConfig},
 		Provenance: model.ProvenanceOperatorConfig,
 	}
+}
+
+// Single-route tests use the same connection construction as production.
+func resolveExecRoute(options execRouteOptions) (model.ReadyRoute, error) {
+	routes, err := resolveRuntimeRoutes(context.Background(), routeSetOptions{Act: options}, nil, false)
+	return routes.routes.Act(), err
 }

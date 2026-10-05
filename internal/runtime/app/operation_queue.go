@@ -22,6 +22,12 @@ func (s *OperationService) SubmitWithKey(
 		s.runtime.metrics.Error()
 		return protocol.NewProblem(protocol.CodeInvalidArgument, err.Error(), false, err)
 	}
+	var sessionID string
+	var sessionErr error
+	if s.runtime.lifecycle == nil && s.runtime.sessionLifecycle != nil {
+		threadID, _, _ := protocol.OperationReferences(operation)
+		sessionID, sessionErr = s.runtime.sessionLifecycle.SessionForThread(ctx, threadID)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if !s.accepting {
@@ -38,7 +44,13 @@ func (s *OperationService) SubmitWithKey(
 		s.runtime.metrics.Error()
 		return ErrQueueFull
 	}
-	acceptance, err := s.accept(ctx, operation, idempotencyKey, canonical)
+	// Resolve memory-mode ownership outside the admission lock, but preserve
+	// admission failures before reporting an ownership lookup failure.
+	if sessionErr != nil {
+		s.runtime.metrics.Error()
+		return sessionErr
+	}
+	acceptance, err := s.accept(ctx, operation, idempotencyKey, canonical, sessionID)
 	if err != nil {
 		s.runtime.metrics.Error()
 		return err
@@ -76,6 +88,7 @@ func (s *OperationService) accept(
 	operation protocol.Operation,
 	idempotencyKey string,
 	canonical []byte,
+	sessionID string,
 ) (Acceptance, error) {
 	if s.runtime.lifecycle != nil {
 		acceptance, err := s.runtime.lifecycle.Accept(
@@ -89,13 +102,10 @@ func (s *OperationService) accept(
 		}
 		if !acceptance.Duplicate {
 			pending := PendingOperation{
-				ID: operation.ID, IdempotencyKey: idempotencyKey,
+				ID: operation.ID, SessionID: acceptance.SessionID, IdempotencyKey: idempotencyKey,
 				Canonical: append([]byte(nil), canonical...),
 			}
 			s.accepted[operation.ID] = pending
-			if idempotencyKey != "" {
-				s.acceptedKeys[idempotencyKey] = operation.ID
-			}
 		}
 		return acceptance, nil
 	}
@@ -103,14 +113,14 @@ func (s *OperationService) accept(
 		if string(existing.Canonical) != string(canonical) {
 			return Acceptance{}, ErrOperationConflict
 		}
-		return Acceptance{OperationID: operation.ID, Duplicate: true}, nil
+		return Acceptance{OperationID: operation.ID, SessionID: existing.SessionID, Duplicate: true}, nil
 	}
 	if existing, exists := s.committed[operation.ID]; exists {
 		if string(existing.Canonical) != string(canonical) {
 			return Acceptance{}, ErrOperationConflict
 		}
 		return Acceptance{
-			OperationID: operation.ID, Duplicate: true, Committed: true,
+			OperationID: operation.ID, SessionID: existing.SessionID, Duplicate: true, Committed: true,
 		}, nil
 	}
 	if idempotencyKey != "" {
@@ -123,24 +133,24 @@ func (s *OperationService) accept(
 				return Acceptance{}, ErrOperationConflict
 			}
 			return Acceptance{
-				OperationID: existingID, Duplicate: true, Committed: !pending,
+				OperationID: existingID, SessionID: existing.SessionID, Duplicate: true, Committed: !pending,
 			}, nil
 		}
 	}
 	pending := PendingOperation{
-		ID: operation.ID, IdempotencyKey: idempotencyKey,
+		ID: operation.ID, SessionID: sessionID, IdempotencyKey: idempotencyKey,
 		Canonical: append([]byte(nil), canonical...),
 	}
 	s.accepted[operation.ID] = pending
 	if idempotencyKey != "" {
 		s.acceptedKeys[idempotencyKey] = operation.ID
 	}
-	return Acceptance{OperationID: operation.ID}, nil
+	return Acceptance{OperationID: operation.ID, SessionID: sessionID}, nil
 }
 
 func (s *OperationService) commitLocal(operationID protocol.OperationID) {
 	s.mu.Lock()
-	if pending, exists := s.accepted[operationID]; exists {
+	if pending, exists := s.accepted[operationID]; exists && s.runtime.lifecycle == nil {
 		s.committed[operationID] = pending
 	}
 	delete(s.accepted, operationID)

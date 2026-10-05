@@ -54,19 +54,12 @@ type SessionWorkspaceManager interface {
 
 func (r *SessionService) sessionProfileForRestore(
 	ctx context.Context,
-	sessionID string,
+	current protocol.SessionSummary,
 	threadID protocol.ThreadID,
 ) (protocol.SessionProfileSnapshot, error) {
-	if r.runtime.sessionLifecycle == nil {
-		return r.SessionProfile(ctx, sessionID)
-	}
-	current, err := r.SessionStatus(ctx, sessionID)
-	if err != nil {
-		return protocol.SessionProfileSnapshot{}, err
-	}
 	if current.ThreadID != threadID ||
 		current.Isolation != SessionIsolationWorktree {
-		return r.SessionProfile(ctx, sessionID)
+		return r.sessionProfile(ctx, current.SessionID)
 	}
 	if r.runtime.sessionWorkspaces == nil {
 		return protocol.SessionProfileSnapshot{}, runtimeProblem(protocol.CodeUnavailable,
@@ -76,5 +69,5 @@ func (r *SessionService) sessionProfileForRestore(
 		current.SessionID, current.ThreadID); err != nil {
 		return protocol.SessionProfileSnapshot{}, err
 	}
-	return r.SessionProfile(ctx, sessionID)
+	return r.sessionProfile(ctx, current.SessionID)
 }

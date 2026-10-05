@@ -131,3 +131,20 @@ func TestResourceStackConcurrentCloseRunsEachCloserOnce(t *testing.T) {
 		t.Fatalf("close count = %d, want 1", closed.Load())
 	}
 }
+
+func TestResourceStackCompletedCloseWinsOverCanceledContext(t *testing.T) {
+	for _, failure := range []error{nil, errors.New("close failed")} {
+		stack := NewResourceStack()
+		if err := stack.Add("resource", func(context.Context) error { return failure }); err != nil {
+			t.Fatal(err)
+		}
+		result := stack.Close(t.Context())
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		for range 32 {
+			if err := stack.Close(ctx); err != result {
+				t.Fatalf("completed Close = %v, want cached %v", err, result)
+			}
+		}
+	}
+}

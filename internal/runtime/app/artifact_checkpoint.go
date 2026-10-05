@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/fwtllh-png/QCode/internal/adapter/provider"
 	"github.com/fwtllh-png/QCode/internal/persist/workspacejournal"
 	agentcontext "github.com/fwtllh-png/QCode/internal/runtime/agent/context"
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
@@ -25,7 +26,7 @@ func (r *ArtifactService) Checkpoints(
 	if limit > 1000 {
 		return protocol.CheckpointList{}, runtimeProblem(protocol.CodeInvalidArgument, "Checkpoint limit exceeds 1000", nil)
 	}
-	current, err := r.runtime.SessionStatus(ctx, sessionID)
+	current, err := r.runtime.SessionService.sessionState(ctx, sessionID)
 	if err != nil {
 		return protocol.CheckpointList{}, err
 	}
@@ -33,7 +34,7 @@ func (r *ArtifactService) Checkpoints(
 	if err != nil {
 		return protocol.CheckpointList{}, err
 	}
-	profile, err := r.runtime.SessionProfile(ctx, sessionID)
+	profile, err := r.runtime.SessionService.sessionProfile(ctx, sessionID)
 	if err != nil {
 		return protocol.CheckpointList{}, err
 	}
@@ -61,17 +62,18 @@ func (r *ArtifactService) Checkpoint(
 	if r.runtime.sessionArtifacts == nil {
 		return protocol.SessionCheckpoint{}, runtimeProblem(protocol.CodeUnavailable, "Session Checkpoints are unavailable", nil)
 	}
-	current, err := r.runtime.SessionStatus(ctx, sessionID)
+	current, err := r.runtime.SessionService.sessionState(ctx, sessionID)
 	if err != nil {
 		return protocol.SessionCheckpoint{}, err
 	}
-	checkpoint, _, _, err := r.runtime.sessionArtifacts.GetCheckpoint(
+	loaded, err := r.runtime.sessionArtifacts.GetCheckpoint(
 		ctx,
 		checkpointID,
 	)
 	if err != nil {
 		return protocol.SessionCheckpoint{}, err
 	}
+	checkpoint := loaded.Checkpoint
 	if checkpoint.SessionID != sessionID {
 		return protocol.SessionCheckpoint{}, runtimeProblem(protocol.CodeInvalidArgument, "Checkpoint does not belong to the Session", nil)
 	}
@@ -79,7 +81,7 @@ func (r *ArtifactService) Checkpoint(
 		checkpoint.CanRestore, checkpoint.CanFork = false, false
 		return checkpoint, nil
 	}
-	profile, err := r.runtime.SessionProfile(ctx, sessionID)
+	profile, err := r.runtime.SessionService.sessionProfile(ctx, sessionID)
 	if err != nil {
 		return protocol.SessionCheckpoint{}, err
 	}
@@ -118,16 +120,9 @@ func (r *ArtifactService) RestoreCheckpoint(
 			checkpointID,
 		)
 	}
-	decoded, err := agentcontext.DecodeCompactedHistory(history)
-	if err != nil {
-		return protocol.CheckpointRestoreResult{}, err
-	}
-	previous, err := manager.History(current.ThreadID)
-	if err != nil {
-		return protocol.CheckpointRestoreResult{}, err
-	}
 	var (
 		reconciliation  agentcontext.ReconciliationReceipt
+		previous        []provider.Message
 		previousContext *agentcontext.ContextSnapshot
 	)
 	if contextSnapshot != nil {
@@ -151,6 +146,14 @@ func (r *ArtifactService) RestoreCheckpoint(
 			*contextSnapshot,
 		)
 	} else {
+		decoded, decodeErr := agentcontext.DecodeCompactedHistory(history)
+		if decodeErr != nil {
+			return protocol.CheckpointRestoreResult{}, decodeErr
+		}
+		previous, err = manager.History(current.ThreadID)
+		if err != nil {
+			return protocol.CheckpointRestoreResult{}, err
+		}
 		err = manager.RestoreCheckpoint(current.ThreadID, decoded)
 	}
 	if err != nil {
@@ -336,10 +339,6 @@ func (r *ArtifactService) ForkCheckpoint(
 			checkpointID,
 		)
 	}
-	decoded, err := agentcontext.DecodeCompactedHistory(history)
-	if err != nil {
-		return protocol.CheckpointForkResult{}, err
-	}
 	newThreadID, err := protocol.NewThreadID()
 	if err != nil {
 		return protocol.CheckpointForkResult{}, err
@@ -417,6 +416,10 @@ func (r *ArtifactService) ForkCheckpoint(
 			committedContext = &forked
 		}
 	} else {
+		decoded, decodeErr := agentcontext.DecodeCompactedHistory(history)
+		if decodeErr != nil {
+			return protocol.CheckpointForkResult{}, decodeErr
+		}
 		err = manager.ForkCheckpoint(
 			checkpoint.ThreadID,
 			newThreadID,
@@ -508,18 +511,18 @@ func (r *ArtifactService) checkpointState(
 		return protocol.SessionSummary{}, protocol.SessionCheckpoint{}, nil, nil,
 			runtimeProblem(protocol.CodeUnavailable, "Session Checkpoints are unavailable", nil)
 	}
-	current, err := r.runtime.SessionStatus(ctx, sessionID)
+	current, err := r.runtime.SessionService.sessionState(ctx, sessionID)
 	if err != nil {
 		return protocol.SessionSummary{}, protocol.SessionCheckpoint{}, nil, nil, err
 	}
 	if err := ensureSessionQuiescent(current, action); err != nil {
 		return protocol.SessionSummary{}, protocol.SessionCheckpoint{}, nil, nil, err
 	}
-	checkpoint, history, checkpointProfile, err :=
-		r.runtime.sessionArtifacts.GetCheckpoint(ctx, checkpointID)
+	loaded, err := r.runtime.sessionArtifacts.GetCheckpoint(ctx, checkpointID)
 	if err != nil {
 		return protocol.SessionSummary{}, protocol.SessionCheckpoint{}, nil, nil, err
 	}
+	checkpoint := loaded.Checkpoint
 	if checkpoint.SessionID != sessionID {
 		return protocol.SessionSummary{}, protocol.SessionCheckpoint{}, nil, nil,
 			resourceProblem(
@@ -533,12 +536,12 @@ func (r *ArtifactService) checkpointState(
 	if err := r.requireRetainedSource(ctx, checkpoint.ThreadID, checkpoint.TurnID); err != nil {
 		return protocol.SessionSummary{}, protocol.SessionCheckpoint{}, nil, nil, err
 	}
-	currentProfile, err := r.runtime.SessionProfile(ctx, sessionID)
+	currentProfile, err := r.runtime.SessionService.sessionProfile(ctx, sessionID)
 	if err != nil {
 		return protocol.SessionSummary{}, protocol.SessionCheckpoint{}, nil, nil, err
 	}
 	if currentProfile.Profile.Revision != checkpoint.ProfileRevision ||
-		checkpointProfile.Revision != checkpoint.ProfileRevision {
+		loaded.Profile.Revision != checkpoint.ProfileRevision {
 		return protocol.SessionSummary{}, protocol.SessionCheckpoint{}, nil, nil,
 			revisionProblem(
 				"Checkpoint Profile Revision is stale",
@@ -547,27 +550,11 @@ func (r *ArtifactService) checkpointState(
 				currentProfile.Profile.Revision,
 			)
 	}
-	var contextSnapshot *agentcontext.ContextSnapshot
-	if checkpoint.ContextDigest != "" {
-		store, ok := r.runtime.sessionArtifacts.(ContextSessionArtifactStore)
-		if !ok {
-			return protocol.SessionSummary{}, protocol.SessionCheckpoint{}, nil, nil,
-				errors.New("context checkpoint store is unavailable")
-		}
-		contextCheckpoint, snapshot, storedProfile, contextErr :=
-			store.GetContextCheckpoint(ctx, checkpointID)
-		if contextErr != nil {
-			return protocol.SessionSummary{}, protocol.SessionCheckpoint{}, nil, nil,
-				contextErr
-		}
-		if contextCheckpoint.ID != checkpoint.ID ||
-			storedProfile.Revision != checkpointProfile.Revision {
-			return protocol.SessionSummary{}, protocol.SessionCheckpoint{}, nil, nil,
-				errors.New("context checkpoint lookup is inconsistent")
-		}
-		contextSnapshot = &snapshot
+	if (checkpoint.ContextDigest != "") != (loaded.Context != nil) {
+		return protocol.SessionSummary{}, protocol.SessionCheckpoint{}, nil, nil,
+			errors.New("context checkpoint lookup is inconsistent")
 	}
-	return current, checkpoint, history, contextSnapshot, nil
+	return current, checkpoint, loaded.History, loaded.Context, nil
 }
 
 func (r *ArtifactService) persistTerminalCheckpoint(
@@ -575,22 +562,37 @@ func (r *ArtifactService) persistTerminalCheckpoint(
 	event protocol.Event,
 	status protocol.CheckpointStatus,
 	summary string,
+	turnEvents []protocol.Event,
 ) {
 	manager, ok := r.runtime.engine.(CheckpointEngine)
 	if !ok {
 		return
 	}
-	history, err := manager.History(event.ThreadID)
-	if err != nil || len(history) == 0 {
+	var encoded []protocol.CompactedMessage
+	var contextSnapshot *agentcontext.ContextSnapshot
+	if contextManager, ok := manager.(ContextCheckpointEngine); ok {
+		value, err := contextManager.ContextSnapshot(event.ThreadID)
 		if err != nil {
-			r.LogArtifactError("read Checkpoint history", event, err)
+			r.LogArtifactError("snapshot Checkpoint context", event, err)
+			return
 		}
-		return
-	}
-	encoded, err := agentcontext.EncodeCompactedHistory(history)
-	if err != nil {
-		r.LogArtifactError("encode Checkpoint history", event, err)
-		return
+		if len(value.History) == 0 {
+			return
+		}
+		contextSnapshot = &value
+	} else {
+		history, err := manager.History(event.ThreadID)
+		if err != nil || len(history) == 0 {
+			if err != nil {
+				r.LogArtifactError("read Checkpoint history", event, err)
+			}
+			return
+		}
+		encoded, err = agentcontext.EncodeCompactedHistory(history)
+		if err != nil {
+			r.LogArtifactError("encode Checkpoint history", event, err)
+			return
+		}
 	}
 	sessionID, err := r.runtime.sessionLifecycle.SessionForThread(ctx, event.ThreadID)
 	if err != nil {
@@ -606,6 +608,7 @@ func (r *ArtifactService) persistTerminalCheckpoint(
 		ctx,
 		event.ThreadID,
 		event.TurnID,
+		turnEvents,
 	)
 	summary = boundedArtifactText(strings.TrimSpace(summary), 2048)
 	if summary == "" {
@@ -637,14 +640,7 @@ func (r *ArtifactService) persistTerminalCheckpoint(
 		CreatedAt:           event.CreatedAt,
 	}
 	var saved protocol.SessionCheckpoint
-	if contextManager, ok := manager.(ContextCheckpointEngine); ok {
-		contextSnapshot, snapshotErr := contextManager.ContextSnapshot(
-			event.ThreadID,
-		)
-		if snapshotErr != nil {
-			r.LogArtifactError("snapshot Checkpoint context", event, snapshotErr)
-			return
-		}
+	if contextSnapshot != nil {
 		store, supported := r.runtime.sessionArtifacts.(ContextSessionArtifactStore)
 		if !supported {
 			r.LogArtifactError(
@@ -660,8 +656,7 @@ func (r *ArtifactService) persistTerminalCheckpoint(
 		saved, err = store.SaveContextCheckpoint(
 			ctx,
 			checkpoint,
-			encoded,
-			contextSnapshot,
+			*contextSnapshot,
 			profile,
 		)
 	} else {
@@ -695,10 +690,14 @@ func (r *ArtifactService) checkpointEffects(
 	ctx context.Context,
 	threadID protocol.ThreadID,
 	turnID protocol.TurnID,
+	events []protocol.Event,
 ) (int, bool, string, string, *protocol.ReceiptReference) {
-	events, err := r.replayArtifactTurn(ctx, turnID)
-	if err != nil {
-		return 0, true, "Side-effect receipt could not be read", "", nil
+	if events == nil {
+		var err error
+		events, err = r.replayArtifactTurn(ctx, turnID)
+		if err != nil {
+			return 0, true, "Side-effect receipt could not be read", "", nil
+		}
 	}
 	forks, err := r.replayArtifactKind(ctx, protocol.EventCheckpointForked)
 	if err != nil {

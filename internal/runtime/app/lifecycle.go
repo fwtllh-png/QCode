@@ -30,6 +30,7 @@ var (
 // operations are deliberately not dispatched to Engine.
 type Acceptance struct {
 	OperationID protocol.OperationID
+	SessionID   string
 	Duplicate   bool
 	Committed   bool
 }

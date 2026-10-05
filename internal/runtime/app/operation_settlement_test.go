@@ -21,6 +21,7 @@ const settlementRetry = 5 * time.Millisecond
 // a commit receipt IO error, or a projection failure for one event kind after
 // the event was already appended to the log.
 type faultyLifecycle struct {
+	sessionID     string
 	commitBroken  atomic.Bool
 	projectBroken atomic.Bool
 	projectKind   protocol.EventKind
@@ -30,13 +31,13 @@ func (*faultyLifecycle) Recover(context.Context) (RecoveryState, error) {
 	return RecoveryState{}, nil
 }
 
-func (*faultyLifecycle) Accept(
+func (l *faultyLifecycle) Accept(
 	_ context.Context,
 	operation protocol.Operation,
 	_ string,
 	_ json.RawMessage,
 ) (Acceptance, error) {
-	return Acceptance{OperationID: operation.ID}, nil
+	return Acceptance{OperationID: operation.ID, SessionID: l.sessionID}, nil
 }
 
 func (l *faultyLifecycle) Project(_ context.Context, event protocol.Event) error {
@@ -132,6 +133,62 @@ func TestCommitReceiptIOErrorIsSettledWithoutNewTraffic(t *testing.T) {
 	})
 	if got := len(rejectionsFor(t, events, operation.ID)); got != 1 {
 		t.Fatalf("commit retry re-emitted the rejection: %d events", got)
+	}
+}
+
+func TestDiscardSessionRejectsOperationAwaitingCommit(t *testing.T) {
+	operation := cancelInactiveTurn(t, "discard")
+	threadID, _, _ := protocol.OperationReferences(operation)
+	store := &memorySessionLifecycleStore{summary: protocol.SessionSummary{
+		Version: protocol.SessionLifecycleVersion, Revision: 1,
+		SessionID: "session-settle", ThreadID: threadID,
+		Title: "Settlement", Status: protocol.SessionStatusCompleted,
+		Isolation: "shared", WorkspaceRoot: "/workspace",
+		ExecutionTarget: "local", WorkspaceLabel: "workspace",
+		CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	}}
+	lifecycle := &faultyLifecycle{sessionID: store.summary.SessionID}
+	lifecycle.commitBroken.Store(true)
+	events := NewMemoryEventStore(32)
+	runtime, err := newRuntimeWithRecovery(t.Context(), Options{
+		Engine: &testEngine{}, EventStore: events,
+		ContentStore: NewMemoryContentStore(),
+		TerminalStore: &c5AtomicTerminalStore{
+			MemoryTerminalEnvelopeStore: turnkernel.NewMemoryTerminalEnvelopeStore(nil, nil),
+		},
+		Lifecycle: lifecycle, SessionLifecycle: store, SettlementRetry: settlementRetry,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		lifecycle.commitBroken.Store(false)
+		closeRuntime(t, runtime)
+	})
+	if err := runtime.Submit(t.Context(), operation); err != nil {
+		t.Fatal(err)
+	}
+	waitForCondition(t, func() bool {
+		return len(rejectionsFor(t, events, operation.ID)) == 1
+	})
+	if _, active := runtime.active.LookupThread(threadID); active {
+		t.Fatal("active Turn would mask the pending-operation guard")
+	}
+	if runtime.Snapshot(t.Context()).PendingOperations != 1 {
+		t.Fatal("unsettled operation was not retained")
+	}
+	if _, err := runtime.DiscardSession(t.Context(), store.summary.SessionID, store.summary.Revision); !protocol.IsCode(err, protocol.CodeConflict) || store.deleted {
+		t.Fatalf("discard of unsettled operation = %v, deleted=%t", err, store.deleted)
+	}
+	lifecycle.commitBroken.Store(false)
+	waitForCondition(t, func() bool {
+		return runtime.Snapshot(t.Context()).PendingOperations == 0
+	})
+	if _, err := runtime.DiscardSession(t.Context(), store.summary.SessionID, store.summary.Revision); err != nil {
+		t.Fatal(err)
+	}
+	if !store.discarded {
+		t.Fatal("settled session was not discarded")
 	}
 }
 

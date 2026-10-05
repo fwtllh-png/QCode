@@ -121,7 +121,7 @@ func (r *ArtifactService) PreparePlanExecution(
 	sessionID, planID string,
 	transition protocol.PlanTransition,
 ) (PlanExecutionPreparation, error) {
-	current, err := r.runtime.SessionStatus(ctx, sessionID)
+	current, err := r.runtime.SessionService.sessionState(ctx, sessionID)
 	if err != nil {
 		return PlanExecutionPreparation{}, err
 	}
@@ -150,7 +150,7 @@ func (r *ArtifactService) PreparePlanExecution(
 	if err := r.ensurePlanExecutionReady(ctx, current, artifact); err != nil {
 		return PlanExecutionPreparation{}, err
 	}
-	profile, err := r.runtime.SessionProfile(ctx, sessionID)
+	profile, err := r.runtime.SessionService.sessionProfile(ctx, sessionID)
 	if err != nil {
 		return PlanExecutionPreparation{}, err
 	}
@@ -249,7 +249,7 @@ func (r *ArtifactService) PreparePlanExecutionTo(
 			sourceProfile.Profile.Revision,
 		)
 	}
-	target, err := r.runtime.SessionStatus(ctx, targetSessionID)
+	target, err := r.runtime.SessionService.sessionState(ctx, targetSessionID)
 	if err != nil {
 		return PlanExecutionPreparation{}, err
 	}
@@ -266,9 +266,12 @@ func (r *ArtifactService) PreparePlanExecutionTo(
 			planID,
 		)
 	}
-	targetProfile, err := r.runtime.SessionProfile(ctx, targetSessionID)
-	if err != nil {
-		return PlanExecutionPreparation{}, err
+	targetProfile := sourceProfile
+	if targetSessionID != sourceSessionID {
+		targetProfile, err = r.runtime.SessionService.sessionProfile(ctx, targetSessionID)
+		if err != nil {
+			return PlanExecutionPreparation{}, err
+		}
 	}
 	if !samePlanTargetProfile(sourceProfile.Profile, targetProfile.Profile) {
 		return PlanExecutionPreparation{}, resourceProblem(

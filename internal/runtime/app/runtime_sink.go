@@ -37,7 +37,7 @@ func (s *runtimeSink) Emit(data protocol.EventData) error {
 			steered.QueueID = payload.QueueID
 		}
 	}
-	if s.deferTerminal && protocol.IsTerminalEvent(EventKind(data)) {
+	if s.deferTerminal && protocol.IsTerminalEvent(protocol.KindOf(data)) {
 		if s.terminal == nil {
 			s.terminal = data
 		}

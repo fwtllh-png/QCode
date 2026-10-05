@@ -22,8 +22,8 @@ type historyRuntime interface {
 		protocol.Cursor,
 		int,
 	) ([]protocol.Event, bool, error)
-	SessionStatus(context.Context, string) (protocol.SessionSummary, error)
 	HistoryWorkspaceRoot() string
+	// HistoryThreadIDs checks Session ownership before returning its threads.
 	HistoryThreadIDs(
 		context.Context,
 		string,
@@ -179,11 +179,12 @@ func (s *HistoryService) buildSnapshot(
 	if err != nil {
 		return SessionPresentationSnapshot{}, protocol.SessionSummary{}, err
 	}
-	if s.runtime.HistoryWorkspaceRoot() != "" {
-		if _, err := s.runtime.SessionStatus(ctx, sessionID); err != nil {
-			return SessionPresentationSnapshot{},
-				protocol.SessionSummary{}, err
-		}
+	if fence.Session.SessionID != sessionID {
+		return SessionPresentationSnapshot{}, protocol.SessionSummary{},
+			historyProblem(protocol.CodeInvalidArgument, "history fence does not belong to the Session")
+	}
+	if err := validateSessionWorkspace(s.runtime.HistoryWorkspaceRoot(), fence.Session); err != nil {
+		return SessionPresentationSnapshot{}, protocol.SessionSummary{}, err
 	}
 	threadIDs := make(map[protocol.ThreadID]struct{}, len(fence.ThreadIDs))
 	for _, threadID := range fence.ThreadIDs {
@@ -322,11 +323,6 @@ func (s *HistoryService) sessionThreadSet(
 			protocol.CodeInvalidArgument,
 			"session id is required",
 		)
-	}
-	if s.runtime.HistoryWorkspaceRoot() != "" {
-		if _, err := s.runtime.SessionStatus(ctx, sessionID); err != nil {
-			return nil, err
-		}
 	}
 	threadIDs, err := s.runtime.HistoryThreadIDs(ctx, sessionID)
 	if err != nil {

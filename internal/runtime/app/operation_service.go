@@ -11,6 +11,8 @@ import (
 // OperationService owns operation admission, idempotency, queueing, and
 // lifecycle commit state. Runtime exposes its methods as a compatibility
 // facade, but does not synchronize or mutate these fields directly.
+// acceptedKeys and committed provide local deduplication only without a
+// durable lifecycle.
 type OperationService struct {
 	runtime *Runtime
 
@@ -48,6 +50,18 @@ func (s *OperationService) hasPendingSession(sessionID string) bool {
 	return false
 }
 
+func (s *OperationService) pendingSessions(wanted map[string]struct{}) map[string]struct{} {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sessions := make(map[string]struct{})
+	for _, operation := range s.accepted {
+		if _, ok := wanted[operation.SessionID]; ok {
+			sessions[operation.SessionID] = struct{}{}
+		}
+	}
+	return sessions
+}
+
 func (s *OperationService) hasWorkspaceOperation() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -81,7 +95,7 @@ func (s *OperationService) restore(pending map[protocol.OperationID]PendingOpera
 	defer s.mu.Unlock()
 	for operationID, operation := range pending {
 		s.accepted[operationID] = operation
-		if operation.IdempotencyKey != "" {
+		if s.runtime.lifecycle == nil && operation.IdempotencyKey != "" {
 			s.acceptedKeys[operation.IdempotencyKey] = operationID
 		}
 	}

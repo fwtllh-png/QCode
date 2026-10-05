@@ -153,7 +153,7 @@ func (r *EventService) publishProjected(
 			)
 		}
 	}
-	kind := EventKind(data)
+	kind := protocol.KindOf(data)
 	terminal := protocol.IsTerminalEvent(kind)
 	r.mu.Lock()
 	itemID = r.eventOwnedItemID(turnID, data, itemID)
@@ -176,7 +176,7 @@ func (r *EventService) publishProjected(
 		// persisted kinds only. Skipping the call keeps a delta at one
 		// reservation transaction instead of adding a threads.updated_at
 		// commit per delta; persisted events still refresh updated_at.
-		if r.runtime.lifecycle != nil && eventlog.ShouldPersist(kind) {
+		if r.runtime.lifecycle != nil && eventlog.ShouldPersist(event.Kind) {
 			projectionErr = r.runtime.lifecycle.Project(context.Background(), event)
 		}
 		if projectionErr == nil {

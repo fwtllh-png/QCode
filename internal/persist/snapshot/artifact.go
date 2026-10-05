@@ -22,6 +22,15 @@ const (
 	KindSessionPlan       = "session-plan"
 )
 
+// CheckpointState is loaded and validated as one unit. For exact checkpoints,
+// History is the event projection of Context.History, not a second stored copy.
+type CheckpointState struct {
+	Checkpoint protocol.SessionCheckpoint
+	History    []protocol.CompactedMessage
+	Context    *agentcontext.ContextSnapshot
+	Profile    protocol.SessionProfile
+}
+
 type checkpointContent struct {
 	History         []protocol.CompactedMessage   `json:"history,omitempty"`
 	ContextManifest *agentcontext.ContextManifest `json:"context_manifest,omitempty"`
@@ -67,7 +76,6 @@ func (r *Repository) SaveCheckpoint(
 func (r *Repository) SaveContextCheckpoint(
 	ctx context.Context,
 	checkpoint protocol.SessionCheckpoint,
-	history []protocol.CompactedMessage,
 	contextSnapshot agentcontext.ContextSnapshot,
 	profile protocol.SessionProfile,
 ) (protocol.SessionCheckpoint, error) {
@@ -77,7 +85,7 @@ func (r *Repository) SaveContextCheckpoint(
 	return r.saveCheckpoint(
 		ctx,
 		checkpoint,
-		history,
+		nil,
 		profile,
 		&contextSnapshot,
 	)
@@ -103,7 +111,7 @@ func (r *Repository) saveCheckpoint(
 	}
 	if checkpoint.SessionID != sessionID ||
 		checkpoint.ProfileRevision != profile.Revision ||
-		len(history) == 0 {
+		len(history) == 0 && (contextSnapshot == nil || len(contextSnapshot.History) == 0) {
 		return protocol.SessionCheckpoint{},
 			errors.New("checkpoint state identity is inconsistent")
 	}
@@ -194,116 +202,61 @@ func (r *Repository) saveCheckpoint(
 func (r *Repository) GetCheckpoint(
 	ctx context.Context,
 	id string,
-) (
-	protocol.SessionCheckpoint,
-	[]protocol.CompactedMessage,
-	protocol.SessionProfile,
-	error,
-) {
+) (CheckpointState, error) {
 	value, err := r.Get(ctx, id)
 	if err != nil {
-		return protocol.SessionCheckpoint{}, nil, protocol.SessionProfile{}, err
+		return CheckpointState{}, err
 	}
 	if value.Kind != KindSessionCheckpoint {
-		return protocol.SessionCheckpoint{}, nil, protocol.SessionProfile{},
-			ErrNotFound
+		return CheckpointState{}, ErrNotFound
 	}
 	checkpoint, err := decodeCheckpointSummary(value)
 	if err != nil {
-		return protocol.SessionCheckpoint{}, nil, protocol.SessionProfile{}, err
+		return CheckpointState{}, err
 	}
 	var content checkpointContent
 	if err := decodeCheckpointContent(value.Content, &content); err != nil {
-		return protocol.SessionCheckpoint{}, nil, protocol.SessionProfile{},
-			&IntegrityError{ID: id, Err: err}
+		return CheckpointState{}, &IntegrityError{ID: id, Err: err}
 	}
 	if content.Profile.Revision != checkpoint.ProfileRevision ||
 		len(content.History) == 0 && content.ContextManifest == nil {
-		return protocol.SessionCheckpoint{}, nil, protocol.SessionProfile{},
-			&IntegrityError{
-				ID:  id,
-				Err: errors.New("checkpoint content identity is inconsistent"),
-			}
+		return CheckpointState{}, &IntegrityError{
+			ID:  id,
+			Err: errors.New("checkpoint content identity is inconsistent"),
+		}
 	}
 	if err := content.Profile.Validate(); err != nil {
-		return protocol.SessionCheckpoint{}, nil, protocol.SessionProfile{},
-			&IntegrityError{ID: id, Err: err}
+		return CheckpointState{}, &IntegrityError{ID: id, Err: err}
 	}
-	if len(content.History) == 0 && content.ContextManifest != nil {
-		snapshot, loadErr := agentcontext.LoadContextManifest(
+	loaded := CheckpointState{Checkpoint: checkpoint, Profile: content.Profile}
+	if content.ContextManifest != nil {
+		contextSnapshot, loadErr := agentcontext.LoadContextManifest(
 			ctx,
 			r.content,
 			*content.ContextManifest,
 		)
 		if loadErr != nil {
-			return protocol.SessionCheckpoint{}, nil, protocol.SessionProfile{},
-				&IntegrityError{ID: id, Err: loadErr}
+			return CheckpointState{}, &IntegrityError{ID: id, Err: loadErr}
 		}
-		content.History, err = encodeContextHistory(snapshot.History)
-		if err != nil {
-			return protocol.SessionCheckpoint{}, nil, protocol.SessionProfile{},
-				&IntegrityError{ID: id, Err: err}
-		}
-	}
-	return checkpoint,
-		append([]protocol.CompactedMessage(nil), content.History...),
-		content.Profile,
-		nil
-}
-
-func (r *Repository) GetContextCheckpoint(
-	ctx context.Context,
-	id string,
-) (
-	protocol.SessionCheckpoint,
-	agentcontext.ContextSnapshot,
-	protocol.SessionProfile,
-	error,
-) {
-	value, err := r.Get(ctx, id)
-	if err != nil {
-		return protocol.SessionCheckpoint{}, agentcontext.ContextSnapshot{},
-			protocol.SessionProfile{}, err
-	}
-	if value.Kind != KindSessionCheckpoint {
-		return protocol.SessionCheckpoint{}, agentcontext.ContextSnapshot{},
-			protocol.SessionProfile{}, ErrNotFound
-	}
-	checkpoint, err := decodeCheckpointSummary(value)
-	if err != nil {
-		return protocol.SessionCheckpoint{}, agentcontext.ContextSnapshot{},
-			protocol.SessionProfile{}, err
-	}
-	var content checkpointContent
-	if err := decodeCheckpointContent(value.Content, &content); err != nil {
-		return protocol.SessionCheckpoint{}, agentcontext.ContextSnapshot{},
-			protocol.SessionProfile{}, &IntegrityError{ID: id, Err: err}
-	}
-	if content.ContextManifest == nil {
-		return protocol.SessionCheckpoint{}, agentcontext.ContextSnapshot{},
-			protocol.SessionProfile{}, &IntegrityError{
-				ID: id, Err: errors.New("checkpoint has no context snapshot"),
-			}
-	}
-	contextSnapshot, err := agentcontext.LoadContextManifest(
-		ctx,
-		r.content,
-		*content.ContextManifest,
-	)
-	if err != nil {
-		return protocol.SessionCheckpoint{}, agentcontext.ContextSnapshot{},
-			protocol.SessionProfile{}, &IntegrityError{ID: id, Err: err}
-	}
-	if contextSnapshot.Digest != checkpoint.ContextDigest ||
-		contextSnapshot.Epoch != checkpoint.StateEpoch ||
-		contextSnapshot.Workspace.SparseDigest != checkpoint.WorkspaceDigest ||
-		content.Profile.Revision != checkpoint.ProfileRevision {
-		return protocol.SessionCheckpoint{}, agentcontext.ContextSnapshot{},
-			protocol.SessionProfile{}, &IntegrityError{
+		if contextSnapshot.Digest != checkpoint.ContextDigest ||
+			contextSnapshot.Epoch != checkpoint.StateEpoch ||
+			contextSnapshot.Workspace.SparseDigest != checkpoint.WorkspaceDigest {
+			return CheckpointState{}, &IntegrityError{
 				ID: id, Err: errors.New("checkpoint context identity is inconsistent"),
 			}
+		}
+		loaded.Context = &contextSnapshot
+		content.History, err = encodeContextHistory(contextSnapshot.History)
+		if err != nil {
+			return CheckpointState{}, &IntegrityError{ID: id, Err: err}
+		}
+	} else if checkpoint.ContextDigest != "" {
+		return CheckpointState{}, &IntegrityError{
+			ID: id, Err: errors.New("checkpoint has no context snapshot"),
+		}
 	}
-	return checkpoint, contextSnapshot, content.Profile, nil
+	loaded.History = append([]protocol.CompactedMessage(nil), content.History...)
+	return loaded, nil
 }
 
 func encodeContextHistory(

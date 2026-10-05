@@ -17,7 +17,7 @@ type throughputGovernor interface {
 	ReserveThroughput(model.ReadyRoute, uint64)
 }
 
-type throughputShrink func() (uint64, bool)
+type throughputShrink func() (uint64, bool, error)
 
 func (e *Engine) admitProviderThroughput(
 	ctx context.Context,
@@ -35,7 +35,11 @@ func (e *Engine) admitProviderThroughput(
 	)
 	if shrink != nil &&
 		throughputShouldShrink(decision, e.options.RateLimitMaxWait, waited) {
-		if next, folded := shrink(); folded {
+		next, folded, err := shrink()
+		if err != nil {
+			return err
+		}
+		if folded {
 			required = next
 			decision = governor.DecideThroughput(
 				route, required, e.options.TokensPerMinute,
@@ -92,7 +96,11 @@ func (e *Engine) abortOversizedRateLimitRetry(
 		return nil
 	}
 	if shrink != nil {
-		if next, folded := shrink(); folded {
+		next, folded, err := shrink()
+		if err != nil {
+			return err
+		}
+		if folded {
 			required = next
 			if !e.throughputRefuses(route, required) {
 				return nil
@@ -141,23 +149,26 @@ func (e *Engine) foldWorkingSetForThroughput(
 	outputReserve uint64,
 	phase string,
 	send func(State, Event) error,
-) (uint64, bool) {
+) (uint64, bool, error) {
 	if history == nil {
-		return 0, false
+		return 0, false, nil
 	}
 	before := e.projectGateHistory(*history, projectHistory)
 	beforeWindow, err := e.measureTokenWindow(
 		input.WithHistory(before), outputReserve, 0,
 	)
-	if err != nil || !e.foldOldestVisibleTail(*history, true) {
-		return 0, false
+	if err != nil {
+		return 0, false, err
+	}
+	if !e.foldOldestVisibleTail(*history, true) {
+		return 0, false, nil
 	}
 	after := e.projectGateHistory(*history, projectHistory)
 	afterWindow, err := e.measureTokenWindow(
 		input.WithHistory(after), outputReserve, 0,
 	)
 	if err != nil {
-		return 0, false
+		return 0, false, err
 	}
 	receipt := viewFoldReceipt(
 		phase, before, after, beforeWindow, afterWindow,
@@ -166,7 +177,7 @@ func (e *Engine) foldWorkingSetForThroughput(
 	if send != nil {
 		_ = send(Compacting, Event{Compaction: receipt})
 	}
-	return afterWindow.accounting.FullActiveTokens + outputReserve, true
+	return afterWindow.accounting.FullActiveTokens + outputReserve, true, nil
 }
 
 func throughputRefusal(

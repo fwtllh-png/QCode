@@ -88,6 +88,13 @@ func (r ReadyRoute) WithModelID(id string) ReadyRoute {
 func (r ReadyRoute) Model() Model           { return r.model }
 func (r ReadyRoute) Provenance() Provenance { return r.provenance }
 
+// WithProvenance records why a route was selected without changing its
+// connection identity or model metadata provenance.
+func (r ReadyRoute) WithProvenance(provenance Provenance) ReadyRoute {
+	r.provenance = provenance
+	return r
+}
+
 func (r ReadyRoute) Identity() (RouteIdentity, error) {
 	if err := r.Validate(); err != nil {
 		return RouteIdentity{}, err

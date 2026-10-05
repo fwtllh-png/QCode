@@ -575,7 +575,7 @@ func TestDiscardSessionRevertsOwnedWorkspaceDraft(t *testing.T) {
 	threads := NewThreadManager(nil)
 	threads.SetHostJournal(journal)
 	store := &memorySessionLifecycleStore{summary: protocol.SessionSummary{
-		Version: protocol.SessionLifecycleVersion, Revision: 1,
+		Version: protocol.SessionLifecycleVersion, Revision: 2,
 		SessionID: "session-draft", ThreadID: "thread-draft",
 		Title: "Draft", Status: protocol.SessionStatusCompleted,
 		Isolation: "shared", WorkspaceRoot: root,
@@ -588,6 +588,26 @@ func TestDiscardSessionRevertsOwnedWorkspaceDraft(t *testing.T) {
 		SessionLifecycle: store,
 	})
 	t.Cleanup(func() { closeRuntime(t, runtime) })
+	for _, discard := range []bool{false, true} {
+		_, err := runtime.SessionService.deleteSession(
+			t.Context(), store.summary.SessionID, 1, discard,
+		)
+		data, readErr := os.ReadFile(path)
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		if store.deleted || !journal.HasDraft("turn-draft") || string(data) != "draft\n" {
+			t.Fatalf("stale deletion (discard=%t) changed draft or session: deleted=%t, draft=%t, file=%q",
+				discard, store.deleted, journal.HasDraft("turn-draft"), data)
+		}
+		var problem *protocol.Problem
+		if !errors.As(err, &problem) || problem.Code != protocol.CodeConflict ||
+			problem.Details == nil || problem.Details.ResourceID != store.summary.SessionID ||
+			problem.Details.Reason != protocol.ProblemReasonStaleSessionRevision ||
+			problem.Details.ExpectedRevision != 1 || problem.Details.ActualRevision != 2 {
+			t.Fatalf("stale deletion (discard=%t) error = %+v", discard, err)
+		}
+	}
 	if _, err := runtime.DiscardSession(
 		t.Context(),
 		store.summary.SessionID,
@@ -604,6 +624,64 @@ func TestDiscardSessionRevertsOwnedWorkspaceDraft(t *testing.T) {
 	}
 	if string(data) != "before\n" {
 		t.Fatalf("reverted draft = %q", data)
+	}
+}
+
+func TestDiscardSessionRejectsAcceptedOperationBeforeDispatch(t *testing.T) {
+	for _, tc := range []struct {
+		durable, submitForSession bool
+	}{{false, true}, {false, false}, {true, true}, {true, false}} {
+		t.Run(fmt.Sprintf("durable=%t/submit_for_session=%t", tc.durable, tc.submitForSession), func(t *testing.T) {
+			store := &memorySessionLifecycleStore{summary: protocol.SessionSummary{
+				Version: protocol.SessionLifecycleVersion, Revision: 1,
+				SessionID: "session-pending", ThreadID: "thread-pending",
+				Title: "Pending", Status: protocol.SessionStatusIdle,
+				Isolation: "shared", WorkspaceRoot: "/workspace",
+				ExecutionTarget: "local", WorkspaceLabel: "workspace",
+				CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+			}, threadIDs: []protocol.ThreadID{"thread-pending", "thread-child"}}
+			options := Options{SessionLifecycle: store}
+			if tc.durable {
+				options.Lifecycle = &faultyLifecycle{sessionID: store.summary.SessionID}
+			}
+			runtime, err := PrepareRuntime(t.Context(), options)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { closeRuntime(t, runtime) })
+			// Admit the operation without dispatching it, so no active lease can
+			// mask the accepted-operation guard.
+			runtime.OperationService.open()
+			if tc.submitForSession {
+				identity, err := protocol.NewWorkspaceIdentity("file:///workspace", "/workspace", "")
+				if err != nil {
+					t.Fatal(err)
+				}
+				_, err = runtime.SubmitForSession(t.Context(), SubmitSessionOperation{
+					SessionID: store.summary.SessionID, Kind: protocol.OperationStartTurn,
+					Payload: &protocol.StartTurnPayload{Prompt: "queued"}, WorkspaceIdentity: &identity,
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				operation, err := protocol.NewOperation(&protocol.StartTurnPayload{
+					ThreadID: "thread-child", TurnID: "turn-child", ItemID: "item-child", Prompt: "queued",
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := runtime.Submit(t.Context(), operation); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if runtime.Snapshot(t.Context()).PendingOperations != 1 {
+				t.Fatal("operation was not accepted")
+			}
+			if _, err := runtime.DiscardSession(t.Context(), store.summary.SessionID, store.summary.Revision); !protocol.IsCode(err, protocol.CodeConflict) || store.deleted {
+				t.Fatalf("discard of accepted operation = %v, deleted=%t", err, store.deleted)
+			}
+		})
 	}
 }
 

@@ -6,16 +6,18 @@ import (
 	"time"
 
 	"github.com/fwtllh-png/QCode/internal/adapter/provider"
+	"github.com/fwtllh-png/QCode/internal/persist/snapshot"
 	agentcontext "github.com/fwtllh-png/QCode/internal/runtime/agent/context"
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
 )
 
 type memoryArtifactStore struct {
-	checkpoint protocol.SessionCheckpoint
-	history    []protocol.CompactedMessage
-	profile    protocol.SessionProfile
-	plan       protocol.SessionPlanArtifact
-	context    agentcontext.ContextSnapshot
+	checkpointReads int
+	checkpoint      protocol.SessionCheckpoint
+	history         []protocol.CompactedMessage
+	profile         protocol.SessionProfile
+	plan            protocol.SessionPlanArtifact
+	context         agentcontext.ContextSnapshot
 }
 
 func (s *memoryArtifactStore) SaveCheckpoint(
@@ -30,38 +32,27 @@ func (s *memoryArtifactStore) SaveCheckpoint(
 func (s *memoryArtifactStore) GetCheckpoint(
 	context.Context,
 	string,
-) (
-	protocol.SessionCheckpoint,
-	[]protocol.CompactedMessage,
-	protocol.SessionProfile,
-	error,
-) {
-	return s.checkpoint,
-		append([]protocol.CompactedMessage(nil), s.history...),
-		s.profile,
-		nil
+) (snapshot.CheckpointState, error) {
+	s.checkpointReads++
+	loaded := snapshot.CheckpointState{
+		Checkpoint: s.checkpoint,
+		History:    append([]protocol.CompactedMessage(nil), s.history...),
+		Profile:    s.profile,
+	}
+	if s.checkpoint.ContextDigest != "" {
+		value := agentcontext.CloneContextSnapshot(s.context)
+		loaded.Context = &value
+	}
+	return loaded, nil
 }
 
 func (s *memoryArtifactStore) SaveContextCheckpoint(
 	context.Context,
 	protocol.SessionCheckpoint,
-	[]protocol.CompactedMessage,
 	agentcontext.ContextSnapshot,
 	protocol.SessionProfile,
 ) (protocol.SessionCheckpoint, error) {
 	return protocol.SessionCheckpoint{}, errors.New("unexpected Context Checkpoint save")
-}
-
-func (s *memoryArtifactStore) GetContextCheckpoint(
-	context.Context,
-	string,
-) (
-	protocol.SessionCheckpoint,
-	agentcontext.ContextSnapshot,
-	protocol.SessionProfile,
-	error,
-) {
-	return s.checkpoint, agentcontext.CloneContextSnapshot(s.context), s.profile, nil
 }
 
 func (s *memoryArtifactStore) ListCheckpoints(
@@ -104,6 +95,8 @@ func (s *memoryArtifactStore) LatestPlan(
 type artifactTestEngine struct {
 	profileTestEngine
 	history      []provider.Message
+	historyReads int
+	contextReads int
 	restores     int
 	restoreErrAt int
 	restoreErr   error
@@ -130,6 +123,7 @@ func (s artifactFailingEventStore) Append(
 func (e *artifactTestEngine) History(
 	protocol.ThreadID,
 ) ([]provider.Message, error) {
+	e.historyReads++
 	return append([]provider.Message(nil), e.history...), nil
 }
 
@@ -165,6 +159,7 @@ func (e *artifactTestEngine) Release(threadID protocol.ThreadID) {
 func (e *artifactTestEngine) ContextSnapshot(
 	threadID protocol.ThreadID,
 ) (agentcontext.ContextSnapshot, error) {
+	e.contextReads++
 	snapshot, ok := e.contexts[threadID]
 	if !ok {
 		return agentcontext.ContextSnapshot{}, errors.New("context snapshot is unavailable")

@@ -22,7 +22,7 @@ func (r *ArtifactService) PrepareTurnRecovery(
 		return TurnRecoveryPreparation{},
 			runtimeProblem(protocol.CodeInvalidArgument, err.Error(), err)
 	}
-	current, err := r.runtime.SessionStatus(ctx, request.SessionID)
+	current, err := r.runtime.SessionService.sessionState(ctx, request.SessionID)
 	if err != nil {
 		return TurnRecoveryPreparation{}, err
 	}
@@ -44,9 +44,9 @@ func (r *ArtifactService) PrepareTurnRecovery(
 	}
 	var recoveredProfile *protocol.SessionProfile
 	if r.runtime.SessionProfilesAvailable() {
-		snapshot, err := r.runtime.RestoreSessionProfile(
+		snapshot, err := r.runtime.SessionService.restoreSessionProfile(
 			ctx,
-			request.SessionID,
+			current,
 			current.ThreadID,
 		)
 		if err != nil {

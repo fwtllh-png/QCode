@@ -2,6 +2,7 @@ package agentcontext
 
 import (
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -190,6 +191,74 @@ func TestNormalizeDropsReasoningAfterOrphanToolCallIsRemoved(t *testing.T) {
 			receipt,
 			normalized.Messages(),
 		)
+	}
+}
+
+func TestNormalizeIsolatesSourceAndAccessorContent(t *testing.T) {
+	for _, removeOrphan := range []bool{false, true} {
+		name := "unchanged"
+		if removeOrphan {
+			name = "filtered"
+		}
+		t.Run(name, func(t *testing.T) {
+			message := provider.Message{
+				Role: provider.RoleAssistant,
+				Blocks: []provider.ContentBlock{
+					{Type: provider.ContentText, Text: "before image"},
+					{Type: provider.ContentImage, Attachment: &provider.Attachment{
+						Name: "screen.png", MediaType: "image/png", Data: []byte("image"),
+					}},
+					{Type: provider.ContentText, Text: "after image"},
+				},
+			}
+			if removeOrphan {
+				message.Blocks = append([]provider.ContentBlock{{
+					Type:     provider.ContentToolCall,
+					ToolCall: &provider.ToolCall{ID: "orphan", Name: "fixture", Arguments: `{}`},
+				}}, message.Blocks...)
+			}
+			message.Provenance = &provider.AssistantProvenance{
+				Adapter: model.AdapterOpenAICompatible, Provider: "provider", Model: "model",
+				Replay: &provider.ReplayState{
+					Version: provider.ReplayVersion, ContentDigest: provider.MessageContentDigest(message),
+					Data: json.RawMessage(`{"state":"replay"}`),
+				},
+			}
+			source := NewMessageLedger(LedgerInput{History: []provider.Message{message}}).Snapshot()
+			before := source.Messages()
+			normalized, receipt, err := source.Normalize(model.Capabilities{ImageInput: true, ToolCalls: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := normalized.Messages()
+			if len(want) != 1 || len(want[0].Blocks) != 3 ||
+				want[0].Blocks[0].Text != "before image" || want[0].Blocks[2].Text != "after image" {
+				t.Fatalf("normalized block order changed: %+v", want)
+			}
+			if (want[0].Provenance.Replay == nil) != removeOrphan ||
+				(receipt.DroppedOrphans == 1) != removeOrphan {
+				t.Fatalf("replay/receipt mismatch: message=%+v receipt=%+v", want[0], receipt)
+			}
+			for _, accessor := range []struct {
+				name string
+				read func() []provider.Message
+			}{
+				{"messages", normalized.Messages},
+				{"partition", func() []provider.Message { return normalized.Partition(KindHistory) }},
+				{"items", func() []provider.Message { return []provider.Message{normalized.Items()[0].Message} }},
+			} {
+				copy := accessor.read()
+				copy[0].Blocks[0].Text = "changed"
+				copy[0].Blocks[1].Attachment.Data[0] = 'X'
+				copy[0].Provenance.Model = "changed"
+				if copy[0].Provenance.Replay != nil {
+					copy[0].Provenance.Replay.Data[0] = '['
+				}
+				if !reflect.DeepEqual(normalized.Messages(), want) || !reflect.DeepEqual(source.Messages(), before) {
+					t.Fatalf("%s mutation or normalization changed snapshot content", accessor.name)
+				}
+			}
+		})
 	}
 }
 

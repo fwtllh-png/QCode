@@ -80,18 +80,36 @@ func TestStreamingNoiseSkipsLifecycleProjection(t *testing.T) {
 		&protocol.OutputDeltaData{Text: "chunk"},
 		&protocol.ReasoningDeltaData{Text: "thinking"},
 		&protocol.OutputDraftData{Text: "draft", SampleID: "sample-guard"},
+		&protocol.OutputDiscardedData{SampleID: "sample-guard", Reason: "narration"},
 	} {
 		if err := publish(noise); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := publish(&protocol.CommentaryCompletedData{
-		MessageID: "message-lifecycle-guard",
-		SampleID:  "sample-lifecycle-guard",
-		Text:      "kept",
-		CallIDs:   []string{"call-lifecycle-guard"},
-	}); err != nil {
-		t.Fatal(err)
+	for _, retained := range []struct {
+		kind protocol.EventKind
+		data protocol.EventData
+	}{
+		{protocol.EventCommentaryCompleted, &protocol.CommentaryCompletedData{
+			MessageID: "message-lifecycle-guard",
+			SampleID:  "sample-lifecycle-guard",
+			Text:      "kept",
+			CallIDs:   []string{"call-lifecycle-guard"},
+		}},
+		{protocol.EventProviderAttempt, &protocol.ProviderAttemptData{
+			SampleID: "sample-lifecycle-guard", Attempt: 1, Status: protocol.ProviderAttemptStarted,
+		}},
+		{protocol.EventToolCatalogChanged, &protocol.ToolCatalogChangedData{
+			CatalogID: "catalog-lifecycle-guard", Generation: 1, Digest: "catalog-digest",
+		}},
+		{"future.audit", &protocol.UnknownEventData{Kind: "future.audit", Raw: json.RawMessage(`{"safe":true}`)}},
+	} {
+		if err := publish(retained.data); err != nil {
+			t.Fatal(err)
+		}
+		if !lifecycle.projected(retained.kind) {
+			t.Errorf("%s must project lifecycle", retained.kind)
+		}
 	}
 	if lifecycle.projected(protocol.EventOutputDelta) {
 		t.Fatal("output.delta must not project lifecycle")
@@ -102,7 +120,7 @@ func TestStreamingNoiseSkipsLifecycleProjection(t *testing.T) {
 	if lifecycle.projected(protocol.EventOutputDraft) {
 		t.Fatal("output.draft must not project lifecycle")
 	}
-	if !lifecycle.projected(protocol.EventCommentaryCompleted) {
-		t.Fatal("commentary.completed must project lifecycle")
+	if lifecycle.projected(protocol.EventOutputDiscarded) {
+		t.Fatal("output.discarded must not project lifecycle")
 	}
 }

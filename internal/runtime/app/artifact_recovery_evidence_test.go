@@ -114,3 +114,99 @@ func TestRecoveryEvidenceIsCanonicalAndBounded(t *testing.T) {
 		t.Fatalf("recovery evidence = %+v", capsule)
 	}
 }
+
+func TestRecoveryEvidenceBoundsWorkItemWithoutLosingConclusion(t *testing.T) {
+	for _, kind := range []string{"reads", "edits", "sessions"} {
+		for _, count := range []int{1, 128} {
+			t.Run(fmt.Sprintf("%s/%d", kind, count), func(t *testing.T) {
+				tools := make([]RecoveryToolEvidence, count)
+				for i := range tools {
+					path := fmt.Sprintf("%03d/%s", i, strings.Repeat("路径\"\\", TurnRecoveryEvidenceLimit/(count*4)))
+					tools[i] = RecoveryToolEvidence{Tool: "file_read", Path: path}
+					switch kind {
+					case "edits":
+						tools[i] = RecoveryToolEvidence{Tool: "file_edit", Changes: []protocol.FileChange{{Path: path}}}
+					case "sessions":
+						tools[i] = RecoveryToolEvidence{Tool: "exec_command", Path: path, Reason: "running"}
+					}
+				}
+				before, err := json.Marshal(tools)
+				if err != nil {
+					t.Fatal(err)
+				}
+				rendered := RenderRecoveryEvidence("turn-source", protocol.TurnIntentWorkspaceChange,
+					"interrupted", tools, nil, "保留这条结论")
+				if rendered == "" || len(rendered) > TurnRecoveryEvidenceLimit {
+					t.Fatalf("rendered recovery evidence bytes = %d", len(rendered))
+				}
+				var capsule RecoveryEvidenceCapsule
+				if err := json.Unmarshal([]byte(rendered), &capsule); err != nil {
+					t.Fatal(err)
+				}
+				if capsule.SourceTurnID != "turn-source" || capsule.Terminal != "interrupted" ||
+					capsule.Intent != protocol.TurnIntentWorkspaceChange || capsule.Version != 3 ||
+					capsule.PartialOutput != "保留这条结论" || capsule.WorkItem == nil {
+					t.Fatalf("recovery lost source or conclusion: %+v", capsule)
+				}
+				// Inspect the wire format so omitted counts remain explicit to the model.
+				var wire struct {
+					WorkItem map[string]json.RawMessage `json:"work_item"`
+				}
+				if err := json.Unmarshal([]byte(rendered), &wire); err != nil {
+					t.Fatal(err)
+				}
+				var omitted int
+				if err := json.Unmarshal(wire.WorkItem["omitted_"+kind], &omitted); err != nil {
+					t.Fatalf("missing omitted count: %v", err)
+				}
+				retained := len(capsule.WorkItem.KnownReads) + len(capsule.WorkItem.KnownEdits) + len(capsule.WorkItem.OpenSessions)
+				if omitted == 0 || omitted+retained != count || (retained == 0 && capsule.WorkItem.RequiredAction != "turn_history") {
+					t.Fatalf("work item = %+v, omitted=%d", capsule.WorkItem, omitted)
+				}
+				after, err := json.Marshal(tools)
+				if err != nil || string(after) != string(before) {
+					t.Fatal("rendering mutated input evidence")
+				}
+			})
+		}
+	}
+}
+
+func TestRecoveryEvidenceBoundsOversizedReceipt(t *testing.T) {
+	for _, section := range []string{"workspace", "verification"} {
+		t.Run(section, func(t *testing.T) {
+			receipt := &protocol.ExecutionReceiptData{
+				ReadPaths: []string{"source.go"},
+				Changes:   []protocol.ReceiptChange{{Path: "target.go"}},
+			}
+			large := strings.Repeat("长内容", TurnRecoveryEvidenceLimit)
+			if section == "workspace" {
+				receipt.WorkspaceOutcome = &protocol.ReceiptWorkspaceOutcome{Status: "changed", Note: large}
+			} else {
+				receipt.Verification.Tests = large
+			}
+			before, err := json.Marshal(receipt)
+			if err != nil {
+				t.Fatal(err)
+			}
+			rendered := RenderRecoveryEvidence("turn-source", protocol.TurnIntentWorkspaceChange,
+				"interrupted", nil, receipt, "partial conclusion")
+			if rendered == "" || len(rendered) > TurnRecoveryEvidenceLimit {
+				t.Fatalf("rendered recovery evidence bytes = %d", len(rendered))
+			}
+			var capsule RecoveryEvidenceCapsule
+			if err := json.Unmarshal([]byte(rendered), &capsule); err != nil {
+				t.Fatal(err)
+			}
+			if capsule.SourceTurnID != "turn-source" || capsule.PartialOutput != "partial conclusion" ||
+				capsule.WorkItem == nil || capsule.WorkItem.OmittedReads != 1 ||
+				capsule.WorkItem.OmittedEdits != 1 || capsule.WorkItem.RequiredAction != "turn_history" {
+				t.Fatalf("recovery lost source or conclusion: %+v", capsule)
+			}
+			after, err := json.Marshal(receipt)
+			if err != nil || string(after) != string(before) {
+				t.Fatal("rendering mutated input receipt")
+			}
+		})
+	}
+}

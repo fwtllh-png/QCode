@@ -82,7 +82,7 @@ func (r *Runtime) executeGit(ctx context.Context, request GitRequest, switchTarg
 
 	profile := r.defaultProfile
 	if request.SessionID != "" {
-		session, err := r.SessionStatus(ctx, request.SessionID)
+		session, err := r.SessionService.sessionState(ctx, request.SessionID)
 		if err != nil {
 			return result, err
 		}
@@ -92,7 +92,7 @@ func (r *Runtime) executeGit(ctx context.Context, request GitRequest, switchTarg
 		if session.Status != "idle" && session.Status != "completed" && session.Status != "failed" {
 			return result, sessionBusyProblem("resume or resolve the Session before changing Git state", session)
 		}
-		snapshot, err := r.SessionProfile(ctx, request.SessionID)
+		snapshot, err := r.SessionService.sessionProfile(ctx, request.SessionID)
 		if err != nil {
 			return result, err
 		}

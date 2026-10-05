@@ -39,6 +39,15 @@ func finishOnlyReasoningEffort(
 	return ""
 }
 
+// preparedModelInput keeps the normalized messages and their admission
+// accounting together. A visible-tail fold replaces this value as a whole.
+type preparedModelInput struct {
+	snapshot        agentcontext.MessageSnapshot
+	measurement     agentcontext.Measurement
+	window          agentcontext.WindowProjection
+	maxOutputTokens uint64
+}
+
 func (e *Engine) modelStep(
 	ctx context.Context,
 	history *[]provider.Message,
@@ -270,55 +279,85 @@ func (e *Engine) modelStep(
 			)
 			nativeSearch = false
 		}
-		snapshot = project()
-		snapshot, normalization, normalizationErr := snapshot.Normalize(
-			route.Model().Capabilities,
-		)
-		if normalizationErr != nil {
-			return nil, nil, totalUsage, lastEstimate,
-				fmt.Errorf("normalize context projection: %w", normalizationErr)
+		prepareInput := func() (preparedModelInput, error) {
+			normalized, normalization, err := project().Normalize(route.Model().Capabilities)
+			if err != nil {
+				return preparedModelInput{}, fmt.Errorf("normalize context projection: %w", err)
+			}
+			measurement, err := normalized.MeasureDetailed(
+				sampleReason, reasoningEffort, e.options.TokenEstimator,
+			)
+			if err != nil {
+				return preparedModelInput{}, err
+			}
+			attribution := &measurement.Data
+			attribution.WorldRevision = worldProjection.Baseline.Revision
+			attribution.WorldDigest = worldProjection.Baseline.Digest
+			attribution.WorldMode = string(worldProjection.Mode)
+			attribution.WorldChangedSections = len(worldProjection.Changed)
+			contextview.ApplyEconomicAttribution(attribution, admission)
+			attribution.PairingCalls = normalization.ToolCalls
+			attribution.PairingResults = normalization.ToolResults
+			attribution.PairingPairs = normalization.PairedCalls
+			attribution.PairingDroppedOrphans = normalization.DroppedOrphans
+			attribution.PairingVisibleOrphans = normalization.ModelVisibleOrphans
+			attribution.ProjectedImages = normalization.ProjectedImages
+			attribution.DroppedReasoning = normalization.DroppedReasoning
+			window := e.prepareTokenWindow(attribution, 0)
+			attribution.EconomicRequestedTokens = window.FullActiveTokens
+			outputReserve, err := e.checkBudget(
+				window.FullActiveTokens, turnUsage, totalUsage, maxOutputTokens,
+			)
+			if err != nil {
+				return preparedModelInput{}, err
+			}
+			window = e.prepareTokenWindow(attribution, outputReserve)
+			return preparedModelInput{
+				snapshot: normalized, measurement: measurement,
+				window: window, maxOutputTokens: outputReserve,
+			}, nil
 		}
-		requestTools = snapshot.Definitions()
-		e.recordSampledTools(scope, catalog, requestTools)
-		measurement, attributionErr := snapshot.MeasureDetailed(
-			sampleReason, reasoningEffort, e.options.TokenEstimator,
-		)
-		if attributionErr != nil {
-			return nil, nil, totalUsage, lastEstimate, attributionErr
-		}
-		attribution := measurement.Data
-		attribution.WorldRevision = worldProjection.Baseline.Revision
-		attribution.WorldDigest = worldProjection.Baseline.Digest
-		attribution.WorldMode = string(worldProjection.Mode)
-		attribution.WorldChangedSections = len(worldProjection.Changed)
-		contextview.ApplyEconomicAttribution(&attribution, admission)
-		attribution.PairingCalls = normalization.ToolCalls
-		attribution.PairingResults = normalization.ToolResults
-		attribution.PairingPairs = normalization.PairedCalls
-		attribution.PairingDroppedOrphans = normalization.DroppedOrphans
-		attribution.PairingVisibleOrphans = normalization.ModelVisibleOrphans
-		attribution.ProjectedImages = normalization.ProjectedImages
-		attribution.DroppedReasoning = normalization.DroppedReasoning
-		e.recordToolSurfaceBudget(scope, attribution, admission)
-		lastEstimate = attribution.EstimatedTokens
-		windowProjection := e.prepareTokenWindow(&attribution, 0)
-		attribution.EconomicRequestedTokens =
-			windowProjection.FullActiveTokens
-		maxOutputTokens, err = e.checkBudget(
-			windowProjection.FullActiveTokens,
-			turnUsage,
-			totalUsage,
-			maxOutputTokens,
-		)
+		prepared, err := prepareInput()
 		if err != nil {
 			return nil, nil, totalUsage, lastEstimate, err
 		}
+		lastEstimate = prepared.measurement.Data.EstimatedTokens
+		shrinkThroughput := func() (uint64, bool, error) {
+			_, folded, err := e.foldWorkingSetForThroughput(
+				history, projectHistory, prepared.snapshot, prepared.maxOutputTokens,
+				phase, gateSend,
+			)
+			if err != nil || !folded {
+				return 0, false, err
+			}
+			next, err := prepareInput()
+			if err != nil {
+				return 0, false, err
+			}
+			prepared = next
+			lastEstimate = prepared.measurement.Data.EstimatedTokens
+			return prepared.window.FullActiveTokens + prepared.maxOutputTokens, true, nil
+		}
+		if err := e.admitProviderThroughput(
+			ctx,
+			route,
+			prepared.window.FullActiveTokens+prepared.maxOutputTokens,
+			&rateLimitWaited,
+			shrinkThroughput,
+		); err != nil {
+			return nil, nil, totalUsage, lastEstimate, err
+		}
+		snapshot = prepared.snapshot
+		attribution := prepared.measurement.Data
+		windowProjection := prepared.window
+		maxOutputTokens = prepared.maxOutputTokens
+		requestTools = snapshot.Definitions()
 		routeDigest, propertyDigest := contextview.PrefixRequestIdentity(
 			route, maxOutputTokens, reasoningEffort, nativeSearch,
 		)
 		prefixManifest, prefixErr := contextview.BuildPrefixManifestFromMeasurement(
 			snapshot,
-			measurement,
+			prepared.measurement,
 			routeDigest,
 			propertyDigest,
 		)
@@ -331,29 +370,6 @@ func (e *Engine) modelStep(
 		contextview.ApplyPrefixAttribution(
 			&attribution, previousPrefix, prefixManifest,
 		)
-		windowProjection = e.prepareTokenWindow(
-			&attribution,
-			maxOutputTokens,
-		)
-		shrinkThroughput := func() (uint64, bool) {
-			next, ok := e.foldWorkingSetForThroughput(
-				history, projectHistory, snapshot, maxOutputTokens,
-				phase, gateSend,
-			)
-			if ok {
-				snapshot = project()
-			}
-			return next, ok
-		}
-		if err := e.admitProviderThroughput(
-			ctx,
-			route,
-			windowProjection.FullActiveTokens+maxOutputTokens,
-			&rateLimitWaited,
-			shrinkThroughput,
-		); err != nil {
-			return nil, nil, totalUsage, lastEstimate, err
-		}
 		messages := snapshot.Messages()
 		if beginAttempt != nil {
 			if err := beginAttempt(); err != nil {
@@ -372,6 +388,15 @@ func (e *Engine) modelStep(
 			sampleLease.Release()
 			return nil, nil, totalUsage, lastEstimate, err
 		}
+		if maxOutputTokens != windowProjection.OutputReserve {
+			_, prefixManifest.PropertyDigest = contextview.PrefixRequestIdentity(
+				route, maxOutputTokens, reasoningEffort, nativeSearch,
+			)
+			contextview.ApplyPrefixAttribution(&attribution, previousPrefix, prefixManifest)
+			windowProjection = e.prepareTokenWindow(&attribution, maxOutputTokens)
+		}
+		e.recordSampledTools(scope, catalog, requestTools)
+		e.recordToolSurfaceBudget(scope, attribution, admission)
 		providerAttempt++
 		attemptStarted := time.Now()
 		if err := send(CallingModel, Event{
@@ -494,6 +519,7 @@ func (e *Engine) modelStep(
 				},
 			},
 		)
+		blocks, meaningful := transport.Blocks, transport.Meaningful
 		if err != nil && !transport.Opened {
 			if sendErr := send(CallingModel, Event{ModelExecution: &ModelExecution{
 				Kind: "provider_attempt", SampleID: sampleID, Attempt: providerAttempt,
@@ -517,199 +543,132 @@ func (e *Engine) modelStep(
 				attempt = -1
 				continue
 			}
-			contextChanged, recoveryErr := e.recoverContextOverflow(
-				err,
-				false,
-				history,
-				snapshot,
-				maxOutputTokens,
-				send,
-			)
-			if recoveryErr != nil {
-				sampleLease.Release()
-				return nil, nil, totalUsage, lastEstimate, recoveryErr
+		} else {
+			e.prefixMu.Lock()
+			e.prefixManifest = prefixManifest
+			e.prefixMu.Unlock()
+			consumed := transport.ConsumeResult
+			calls := consumed.Calls
+			replay := consumed.Replay
+			totalUsage.Add(consumed.Usage)
+			attemptStatus := protocol.ProviderAttemptFailed
+			if err == nil {
+				attemptStatus = protocol.ProviderAttemptCompleted
+			} else {
+				var incomplete *providerassembly.IncompleteOutputError
+				if errors.As(err, &incomplete) {
+					attemptStatus = protocol.ProviderAttemptIncomplete
+				}
 			}
-			retry, retryable := e.providerRetry(
-				err,
-				false,
-				providerRetries,
-				contextChanged,
-				rateLimitBudget{
-					retries:  rateLimitRetries,
-					waited:   rateLimitWaited,
-					cooldown: e.routeCooldown(route),
-				},
-				sampleID,
-			)
-			if retryable && ctx.Err() == nil {
-				if abort := e.abortOversizedRateLimitRetry(
-					ctx,
-					route,
-					windowProjection.FullActiveTokens+maxOutputTokens,
-					retry,
-					shrinkThroughput,
-				); abort != nil {
-					sampleLease.Release()
-					return nil, nil, totalUsage, lastEstimate, abort
+			attemptExecution := &ModelExecution{
+				Kind: "provider_attempt", SampleID: sampleID,
+				Attempt: providerAttempt, Status: attemptStatus,
+				ProjectedInputTokens: windowProjection.FullActiveTokens,
+				StartedAt:            attemptStarted,
+				FinishedAt:           time.Now(),
+			}
+			if len(assembly.Segments) != 0 {
+				segment := assembly.Segments[len(assembly.Segments)-1]
+				attemptExecution.Transport = segment.Transport
+				attemptExecution.StopReason = segment.StopReason
+			}
+			if attemptStatus == protocol.ProviderAttemptCompleted &&
+				attemptExecution.StopReason == "" {
+				attemptExecution.StopReason = provider.StopReasonEndTurn
+			}
+			if sendErr := send(CallingModel, Event{ModelExecution: attemptExecution}); sendErr != nil {
+				sampleLease.Release()
+				return nil, nil, totalUsage, lastEstimate, sendErr
+			}
+			pending := e.drainPending()
+			if ctx.Err() == nil && len(pending) != 0 {
+				if pendingInputInjected != nil {
+					*pendingInputInjected = true
 				}
-				if retry.Failure.Code == provider.FailureRateLimit {
-					sampleLease.NoteRateLimit(retry.EffectiveDelay)
-				} else {
-					sampleLease.Release()
+				pendingBlocks := providerassembly.AppendBlocks(
+					continuedBlocks,
+					blocks,
+				)
+				if len(continuedBlocks) != 0 {
+					replay = nil
 				}
-				if sendErr := send(CallingModel, Event{
-					ProviderRetry: &retry,
-					ModelExecution: e.providerAttemptRetry(
-						sampleID, providerAttempt, attemptStarted,
-						windowProjection.FullActiveTokens, assembly,
-						rateLimitRetries, rateLimitWaited,
-					),
-				}); sendErr != nil {
-					sampleLease.Release()
-					return nil, nil, totalUsage, lastEstimate, sendErr
+				if len(pendingBlocks) != 0 {
+					*history = append(*history, provider.ProducedAssistant(
+						route, pendingBlocks, e.turn, replay,
+					))
 				}
-				if waitErr := waitRetryDelay(
-					ctx,
-					retry.EffectiveDelay,
-				); waitErr != nil {
-					return nil, nil, totalUsage, lastEstimate, waitErr
+				e.appendPendingInputs(history, pending)
+				continuationMessages = nil
+				continuedBlocks = nil
+				continuations = 0
+				sampleLease.Succeeded()
+				if finishTransport != nil {
+					if err := finishTransport(); err != nil {
+						return nil, nil, totalUsage, lastEstimate, err
+					}
 				}
-				if retry.Failure.Code == provider.FailureRateLimit {
-					rateLimitRetries, rateLimitWaited = e.recordRateLimitWait(
-						rateLimitRetries, rateLimitWaited, retry.EffectiveDelay,
-					)
-				} else {
-					providerRetries++
-				}
+				attempt = -1
 				continue
 			}
-			e.finishFailedSample(sampleLease, err, false)
-			return nil, nil, totalUsage, lastEstimate,
-				exhaustedSampleRetry(err, false)
-		}
-		e.prefixMu.Lock()
-		e.prefixManifest = prefixManifest
-		e.prefixMu.Unlock()
-		consumed := transport.ConsumeResult
-		blocks, calls := consumed.Blocks, consumed.Calls
-		usage, meaningful := consumed.Usage, consumed.Meaningful
-		replay := consumed.Replay
-		totalUsage.Add(usage)
-		attemptStatus := protocol.ProviderAttemptFailed
-		if err == nil {
-			attemptStatus = protocol.ProviderAttemptCompleted
-		} else {
 			var incomplete *providerassembly.IncompleteOutputError
-			if errors.As(err, &incomplete) {
-				attemptStatus = protocol.ProviderAttemptIncomplete
-			}
-		}
-		attemptExecution := &ModelExecution{
-			Kind: "provider_attempt", SampleID: sampleID,
-			Attempt: providerAttempt, Status: attemptStatus,
-			ProjectedInputTokens: windowProjection.FullActiveTokens,
-			StartedAt:            attemptStarted,
-			FinishedAt:           time.Now(),
-		}
-		if len(assembly.Segments) != 0 {
-			segment := assembly.Segments[len(assembly.Segments)-1]
-			attemptExecution.Transport = segment.Transport
-			attemptExecution.StopReason = segment.StopReason
-		}
-		if attemptStatus == protocol.ProviderAttemptCompleted &&
-			attemptExecution.StopReason == "" {
-			attemptExecution.StopReason = provider.StopReasonEndTurn
-		}
-		if sendErr := send(CallingModel, Event{ModelExecution: attemptExecution}); sendErr != nil {
-			sampleLease.Release()
-			return nil, nil, totalUsage, lastEstimate, sendErr
-		}
-		pending := e.drainPending()
-		if ctx.Err() == nil && len(pending) != 0 {
-			if pendingInputInjected != nil {
-				*pendingInputInjected = true
-			}
-			pendingBlocks := providerassembly.AppendBlocks(
-				continuedBlocks,
-				blocks,
-			)
-			if len(continuedBlocks) != 0 {
-				replay = nil
-			}
-			if len(pendingBlocks) != 0 {
-				*history = append(*history, provider.ProducedAssistant(
-					route, pendingBlocks, e.turn, replay,
-				))
-			}
-			e.appendPendingInputs(history, pending)
-			continuationMessages = nil
-			continuedBlocks = nil
-			continuations = 0
-			sampleLease.Succeeded()
-			if finishTransport != nil {
-				if err := finishTransport(); err != nil {
-					return nil, nil, totalUsage, lastEstimate, err
+			if errors.As(err, &incomplete) && ctx.Err() == nil {
+				if continued != nil {
+					*continued = true
 				}
-			}
-			attempt = -1
-			continue
-		}
-		var incomplete *providerassembly.IncompleteOutputError
-		if errors.As(err, &incomplete) && ctx.Err() == nil {
-			if continued != nil {
-				*continued = true
-			}
-			continuedBlocks = providerassembly.AppendBlocks(
-				continuedBlocks,
-				blocks,
-			)
-			if len(blocks) != 0 {
+				continuedBlocks = providerassembly.AppendBlocks(
+					continuedBlocks,
+					blocks,
+				)
+				if len(blocks) != 0 {
+					continuationMessages = append(
+						continuationMessages,
+						provider.ProducedAssistant(
+							route, cloneBlocks(blocks), e.turn, nil,
+						),
+					)
+				}
 				continuationMessages = append(
 					continuationMessages,
-					provider.ProducedAssistant(
-						route, cloneBlocks(blocks), e.turn, nil,
+					promptcontext.IncompleteOutputFeedback(
+						incomplete.Reason,
+						incomplete.ToolFragments,
+						e.turn,
 					),
 				)
-			}
-			continuationMessages = append(
-				continuationMessages,
-				promptcontext.IncompleteOutputFeedback(
-					incomplete.Reason,
-					incomplete.ToolFragments,
-					e.turn,
-				),
-			)
-			sampleLease.Succeeded()
-			if finishTransport != nil {
-				if err := finishTransport(); err != nil {
-					return nil, nil, totalUsage, lastEstimate, err
+				sampleLease.Succeeded()
+				if finishTransport != nil {
+					if err := finishTransport(); err != nil {
+						return nil, nil, totalUsage, lastEstimate, err
+					}
 				}
+				continuations++
+				attempt = -1
+				continue
 			}
-			continuations++
-			attempt = -1
-			continue
+			if err == nil {
+				if len(continuedBlocks) != 0 {
+					replay = nil
+				}
+				completeBlocks := providerassembly.AppendBlocks(
+					continuedBlocks,
+					blocks,
+				)
+				if continued != nil {
+					// Length and provider stop_reason are the continuation
+					// evidence. A finished end_turn that happens to end with
+					// ":" is a complete draft, not an unfinished sample.
+					*continued = assembly.CurrentStopReason().Incomplete()
+				}
+				if capturedReplay != nil {
+					*capturedReplay = replay
+				}
+				bindToolCalls(calls, catalog, advertised)
+				sampleLease.Succeeded()
+				return completeBlocks, calls, totalUsage, lastEstimate, nil
+			}
 		}
-		if err == nil {
-			if len(continuedBlocks) != 0 {
-				replay = nil
-			}
-			completeBlocks := providerassembly.AppendBlocks(
-				continuedBlocks,
-				blocks,
-			)
-			if continued != nil {
-				// Length and provider stop_reason are the continuation
-				// evidence. A finished end_turn that happens to end with
-				// ":" is a complete draft, not an unfinished sample.
-				*continued = assembly.CurrentStopReason().Incomplete()
-			}
-			if capturedReplay != nil {
-				*capturedReplay = replay
-			}
-			bindToolCalls(calls, catalog, advertised)
-			sampleLease.Succeeded()
-			return completeBlocks, calls, totalUsage, lastEstimate, nil
-		}
+		// Both transport-open and stream-consumption failures share this retry
+		// transition after their output and lifecycle handling has completed.
 		contextChanged, recoveryErr := e.recoverContextOverflow(
 			err,
 			meaningful,
@@ -735,7 +694,9 @@ func (e *Engine) modelStep(
 			sampleID,
 		)
 		if !retryable || ctx.Err() != nil {
-			if ctx.Err() != nil {
+			// An opened stream returns its captured output with the context
+			// error; a failed open retains the provider failure classification.
+			if transport.Opened && ctx.Err() != nil {
 				sampleLease.Release()
 				return blocks, nil, totalUsage, lastEstimate, ctx.Err()
 			}
@@ -776,21 +737,12 @@ func (e *Engine) modelStep(
 			return nil, nil, totalUsage, lastEstimate, waitErr
 		}
 		if retry.Failure.Code == provider.FailureRateLimit {
-			rateLimitRetries, rateLimitWaited = e.recordRateLimitWait(
-				rateLimitRetries, rateLimitWaited, retry.EffectiveDelay,
-			)
+			rateLimitRetries++
+			rateLimitWaited += retry.EffectiveDelay
 		} else {
 			providerRetries++
 		}
 	}
-}
-
-func (e *Engine) recordRateLimitWait(
-	retries uint32,
-	waited time.Duration,
-	delay time.Duration,
-) (uint32, time.Duration) {
-	return retries + 1, waited + delay
 }
 
 func (e *Engine) finishFailedSample(

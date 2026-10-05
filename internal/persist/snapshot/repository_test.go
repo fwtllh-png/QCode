@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -40,9 +41,6 @@ func TestSnapshotRoundTripVerifiesSchemaAndHash(t *testing.T) {
 func TestContextCheckpointRoundTripBindsEpochAndWorkspace(t *testing.T) {
 	repository, _, _ := testRepository(t)
 	profile := artifactProfile()
-	history := []protocol.CompactedMessage{{
-		Role: "user", Content: json.RawMessage(`["implement parser"]`), Turn: 1,
-	}}
 	window, err := agentcontext.NewWindowLedger("window-1", 1)
 	if err != nil {
 		t.Fatal(err)
@@ -84,26 +82,65 @@ func TestContextCheckpointRoundTripBindsEpochAndWorkspace(t *testing.T) {
 	if _, err := repository.SaveContextCheckpoint(
 		t.Context(),
 		checkpoint,
-		history,
 		contextSnapshot,
 		profile,
 	); err != nil {
 		t.Fatal(err)
 	}
-	recovered, gotContext, gotProfile, err :=
-		repository.GetContextCheckpoint(t.Context(), checkpoint.ID)
+	loaded, err := repository.GetCheckpoint(t.Context(), checkpoint.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if recovered.ContextDigest != contextSnapshot.Digest ||
-		gotContext.Digest != contextSnapshot.Digest ||
-		gotProfile.Revision != profile.Revision {
-		t.Fatalf(
-			"checkpoint=%+v context=%+v profile=%+v",
-			recovered,
-			gotContext,
-			gotProfile,
-		)
+	if loaded.Checkpoint.ContextDigest != contextSnapshot.Digest || loaded.Context == nil ||
+		loaded.Context.Digest != contextSnapshot.Digest || len(loaded.History) != 1 ||
+		loaded.Profile.Revision != profile.Revision {
+		t.Fatalf("loaded checkpoint = %+v", loaded)
+	}
+	stored, err := repository.Get(t.Context(), checkpoint.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for index, tc := range []struct {
+		name   string
+		mutate func(*checkpointMetadata, *checkpointContent)
+	}{
+		{"context_digest", func(m *checkpointMetadata, _ *checkpointContent) { m.ContextDigest = strings.Repeat("0", 64) }},
+		{"epoch", func(m *checkpointMetadata, _ *checkpointContent) { m.StateEpoch++ }},
+		{"workspace", func(m *checkpointMetadata, _ *checkpointContent) { m.WorkspaceDigest = strings.Repeat("0", 64) }},
+		{"profile_revision", func(_ *checkpointMetadata, c *checkpointContent) { c.Profile.Revision++ }},
+		{"invalid_profile", func(_ *checkpointMetadata, c *checkpointContent) { c.Profile.Model = "" }},
+		{"missing_context", func(_ *checkpointMetadata, c *checkpointContent) {
+			c.ContextManifest, c.History = nil, loaded.History
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var metadata checkpointMetadata
+			if err := decodeStrict(stored.Metadata, &metadata); err != nil {
+				t.Fatal(err)
+			}
+			var content checkpointContent
+			if err := decodeCheckpointContent(stored.Content, &content); err != nil {
+				t.Fatal(err)
+			}
+			tc.mutate(&metadata, &content)
+			corrupt := stored
+			corrupt.ID += "-" + tc.name
+			corrupt.Cursor += protocol.Cursor(index + 1)
+			corrupt.Metadata, err = json.Marshal(metadata)
+			if err != nil {
+				t.Fatal(err)
+			}
+			corrupt.Content, err = encodeCheckpointContent(content)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := repository.Save(t.Context(), corrupt); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := repository.GetCheckpoint(t.Context(), corrupt.ID); !errors.Is(err, ErrIntegrity) {
+				t.Fatalf("inconsistent checkpoint error = %v", err)
+			}
+		})
 	}
 }
 
@@ -147,15 +184,15 @@ func TestSessionCheckpointAndPlanArtifactsAreImmutableAndVerified(t *testing.T) 
 	if err != nil || count != 2 {
 		t.Fatalf("checkpoint count = %d, error = %v", count, err)
 	}
-	recovered, gotHistory, gotProfile, err := repository.GetCheckpoint(
+	loaded, err := repository.GetCheckpoint(
 		t.Context(), first.ID,
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if recovered.ID != first.ID || len(gotHistory) != 1 ||
-		gotProfile.Revision != profile.Revision {
-		t.Fatalf("recovered checkpoint = %+v, history=%+v", recovered, gotHistory)
+	if loaded.Checkpoint.ID != first.ID || len(loaded.History) != 1 || loaded.Context != nil ||
+		loaded.Profile.Revision != profile.Revision {
+		t.Fatalf("loaded checkpoint = %+v", loaded)
 	}
 
 	document := json.RawMessage(`{"version":1,"revision":1,"steps":[{"id":"implement","title":"Update parser","status":"pending"}]}`)

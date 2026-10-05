@@ -81,6 +81,34 @@ func (r *EventService) pendingCounts(threadIDs []protocol.ThreadID) (approvals, 
 	return approvals, inputs
 }
 
+type pendingInteractionCounts struct {
+	approvals int
+	inputs    int
+}
+
+func (r *EventService) pendingCountsByThread(wanted map[protocol.ThreadID]struct{}) map[protocol.ThreadID]pendingInteractionCounts {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	counts := make(map[protocol.ThreadID]pendingInteractionCounts)
+	for _, approval := range r.approvals {
+		if _, ok := wanted[approval.ThreadID]; !ok {
+			continue
+		}
+		value := counts[approval.ThreadID]
+		value.approvals++
+		counts[approval.ThreadID] = value
+	}
+	for _, input := range r.inputs {
+		if _, ok := wanted[input.ThreadID]; !ok {
+			continue
+		}
+		value := counts[input.ThreadID]
+		value.inputs++
+		counts[input.ThreadID] = value
+	}
+	return counts
+}
+
 // forgetThreadInteractions drops unresolved approvals and inputs of deleted
 // Threads; no terminal event will ever clear them.
 func (r *EventService) forgetThreadInteractions(threadIDs []protocol.ThreadID) {

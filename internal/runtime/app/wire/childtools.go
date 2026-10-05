@@ -29,6 +29,7 @@ import (
 // childToolset roots one child's registry, sandbox and journal at its worktree;
 // reusing the parent's registry would redirect child writes into the parent.
 type childToolset struct {
+	resources        *ResourceStack
 	preparationFacts []environment.Fact
 	registry         *tool.Registry
 	backend          sandbox.Backend
@@ -42,20 +43,48 @@ type childToolset struct {
 	skillCatalog     *skill.Catalog
 }
 
-func (t *childToolset) close() {
+func (t *childToolset) close(ctx context.Context) error {
 	if t == nil {
-		return
+		return nil
 	}
-	if t.processes != nil {
-		t.processes.CloseAll()
+	return t.resources.Close(ctx)
+}
+
+func (t *childToolset) registerResourceClosers() error {
+	// Read fields at close time so partial construction and normal shutdown
+	// share this dependency order. The parent's content store is borrowed.
+	resources := []closeResource{
+		{name: "sandbox", close: func(context.Context) error {
+			return sandbox.CloseBackend(t.backend)
+		}},
+		{name: "registry", close: func(context.Context) error {
+			return t.registry.Close()
+		}},
+		{name: "workspace-journal", close: func(ctx context.Context) error {
+			if t.journal == nil {
+				return nil
+			}
+			return t.journal.Close(ctx)
+		}},
+		{name: "job-logs", close: func(context.Context) error {
+			if t.jobLogs == nil {
+				return nil
+			}
+			return t.jobLogs.Close()
+		}},
+		{name: "processes", close: func(context.Context) error {
+			if t.processes == nil {
+				return nil
+			}
+			return errors.Join(t.processes.CloseAllWithError(), t.processes.JournalError())
+		}},
 	}
-	if t.jobLogs != nil {
-		_ = t.jobLogs.Close()
+	for _, resource := range resources {
+		if err := t.resources.Add(resource.name, resource.close); err != nil {
+			return err
+		}
 	}
-	if t.journal != nil {
-		_ = t.journal.Close(context.Background())
-	}
-	_ = errors.Join(t.registry.Close(), sandbox.CloseBackend(t.backend))
+	return nil
 }
 
 // childToolsets builds and owns one toolset per isolated child root.
@@ -142,7 +171,7 @@ func newChildToolsets(
 func (c *childToolsets) open(
 	root string,
 	interactive bool,
-) (*childToolset, error) {
+) (result *childToolset, resultErr error) {
 	c.mu.Lock()
 	if existing, ok := c.built[root]; ok {
 		if (existing.inputHost != nil) != interactive {
@@ -198,41 +227,52 @@ func (c *childToolsets) open(
 	if err != nil {
 		return nil, fmt.Errorf("child environment: %w", err)
 	}
+	toolset := &childToolset{resources: NewResourceStack()}
+	if err := toolset.registerResourceClosers(); err != nil {
+		return nil, err
+	}
+	retained := false
+	defer func() {
+		if !retained {
+			resultErr = errors.Join(resultErr, toolset.close(context.Background()))
+			if resultErr != nil {
+				result = nil
+			}
+		}
+	}()
 	backend, err := newPlatformBackend(options)
+	toolset.backend = backend
 	if err != nil {
 		return nil, fmt.Errorf("child sandbox: %w", err)
 	}
 	if opener, ok := egress.LookupProcessSessionOpener(parentSandbox); ok {
 		composed, composeErr := egress.NewSessionBackend(backend, opener)
 		if composeErr != nil {
-			_ = sandbox.CloseBackend(backend)
 			return nil, fmt.Errorf("child sandbox: %w", composeErr)
 		}
 		backend = composed
+		toolset.backend = composed
 	}
 	// Child process journals stay isolated from the parent and sibling roots.
 	processes := process.NewSessionManager(0)
-	var jobs *joblog.Store
+	toolset.processes = processes
 	if stateLayout.Root != "" {
 		processes.SetJournalPath(filepath.Join(stateLayout.Control, "jobs", "journal.jsonl"))
 		if err := processes.LoadStaleJournal(); err != nil {
-			processes.CloseAll()
-			_ = sandbox.CloseBackend(backend)
 			return nil, fmt.Errorf("load child process journal: %w", err)
 		}
 		if archive, archiveErr := joblog.New(
 			filepath.Join(stateLayout.Control, "jobs", "logs"),
 		); archiveErr == nil {
-			jobs = archive
+			toolset.jobLogs = archive
 			processes.SetArchive(archive)
 		}
 	}
 	registry, handles, err := builtin.NewWithDependencies(
 		root, backend, c.content, processes, c.web,
 	)
+	toolset.registry = registry
 	if err != nil {
-		processes.CloseAll()
-		_ = sandbox.CloseBackend(backend)
 		return nil, fmt.Errorf("child tools: %w", err)
 	}
 	var inputHost *interacttool.Host
@@ -243,26 +283,22 @@ func (c *childToolsets) open(
 			Vision: vision, OnPlan: onPlan, Workspace: root,
 		})
 		if registerErr != nil {
-			if jobs != nil {
-				_ = jobs.Close()
-			}
-			processes.CloseAll()
-			_ = sandbox.CloseBackend(backend)
 			return nil, fmt.Errorf("child interact tools: %w", registerErr)
 		}
 	}
 	journal, err := c.openJournal(root, stateLayout)
+	toolset.journal = journal
 	if err != nil {
-		processes.CloseAll()
-		_ = sandbox.CloseBackend(backend)
 		return nil, err
+	}
+	if c.journals.Durable && c.journals.RecoverOnStart {
+		if _, err := journal.Recover(context.Background()); err != nil {
+			return nil, fmt.Errorf("recover interrupted child turns: %w", err)
+		}
 	}
 	runner := &verify.ReceiptRunner{Root: root, Command: c.verify.Command}
 	files, err := filetool.NewWithBackend(root, backend)
 	if err != nil {
-		_ = journal.Close(context.Background())
-		processes.CloseAll()
-		_ = sandbox.CloseBackend(backend)
 		return nil, fmt.Errorf("child integration files: %w", err)
 	}
 	if agents != nil {
@@ -271,19 +307,12 @@ func (c *childToolsets) open(
 			Files: files, OnRelease: agentRelease,
 			Sandbox: backend, Verify: runner, Workspace: root, SessionID: agentSession,
 		}); err != nil {
-			_ = journal.Close(context.Background())
-			processes.CloseAll()
-			_ = sandbox.CloseBackend(backend)
 			return nil, fmt.Errorf("child agent tools: %w", err)
 		}
 	}
-	toolset := &childToolset{
-		preparationFacts: preparationFacts,
-		registry:         registry, backend: backend, processes: processes, journal: journal,
-		jobLogs: jobs, inputHost: inputHost,
-		diagnostics: verify.NewDiagnosticCommandRunner(root, backend, c.diagnosticCommands),
-		verify:      runner, files: files,
-	}
+	toolset.preparationFacts, toolset.inputHost = preparationFacts, inputHost
+	toolset.diagnostics = verify.NewDiagnosticCommandRunner(root, backend, c.diagnosticCommands)
+	toolset.verify, toolset.files = runner, files
 	// Keep the owner's enablement and lock policy, but discover only this
 	// child's workspace and execution HOME alongside configured/user skills.
 	policy, _ := sandbox.BackendPolicy(backend)
@@ -292,14 +321,12 @@ func (c *childToolsets) open(
 		paths: c.skillPaths, workspace: root, sandboxHome: policy.PrivateTemp,
 		output: &capabilities,
 	}).Contribute(context.Background(), registry); err != nil {
-		toolset.close()
 		return nil, fmt.Errorf("child skills: %w", err)
 	}
 	toolset.skillCatalog = capabilities.skillCatalog
 	c.mu.Lock()
 	if existing := c.built[root]; existing != nil {
 		c.mu.Unlock()
-		toolset.close()
 		if (existing.inputHost != nil) != interactive {
 			return nil, errors.New("child toolset interaction mode changed")
 		}
@@ -307,6 +334,7 @@ func (c *childToolsets) open(
 	}
 	c.built[root] = toolset
 	c.mu.Unlock()
+	retained = true
 	return toolset, nil
 }
 
@@ -335,12 +363,6 @@ func (c *childToolsets) openJournal(
 	if err != nil {
 		return nil, fmt.Errorf("child journal: %w", err)
 	}
-	if c.journals.RecoverOnStart {
-		if _, err := journal.Recover(context.Background()); err != nil {
-			_ = journal.Close(context.Background())
-			return nil, fmt.Errorf("recover interrupted child turns: %w", err)
-		}
-	}
 	return journal, nil
 }
 
@@ -350,18 +372,21 @@ func (c *childToolsets) Release(root string) {
 	toolset := c.built[root]
 	delete(c.built, root)
 	c.mu.Unlock()
-	toolset.close()
+	// ToolPlanes.Release has no error result; construction and Session.Close
+	// report cleanup failures without changing an already-settled child turn.
+	_ = toolset.close(context.Background())
 }
 
-func (c *childToolsets) closeAll() {
+func (c *childToolsets) closeAll(ctx context.Context) error {
 	c.mu.Lock()
-	toolsets := make([]*childToolset, 0, len(c.built))
-	for _, toolset := range c.built {
-		toolsets = append(toolsets, toolset)
-	}
+	toolsets := c.built
 	c.built = make(map[string]*childToolset)
 	c.mu.Unlock()
-	for _, toolset := range toolsets {
-		toolset.close()
+	var closeErrors []error
+	for root, toolset := range toolsets {
+		if err := toolset.close(ctx); err != nil {
+			closeErrors = append(closeErrors, fmt.Errorf("close child toolset %q: %w", root, err))
+		}
 	}
+	return errors.Join(closeErrors...)
 }

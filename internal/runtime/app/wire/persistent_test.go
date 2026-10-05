@@ -344,6 +344,13 @@ func TestPersistentRuntimeRestartIsIdempotentAndKeepsOneTerminal(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitForTerminal(t, events, operation.ID)
+	for _, id := range []protocol.OperationID{operation.ID, operation.ID + "-retry"} {
+		duplicate := operation
+		duplicate.ID = id
+		if err := runtime.SubmitWithKey(t.Context(), duplicate, "request-1"); err != nil {
+			t.Fatal(err)
+		}
+	}
 	closePersistentRuntime(t, runtime)
 
 	reopened, err := state.Open(t.Context(), state.Options{DataDir: root})
@@ -357,8 +364,12 @@ func TestPersistentRuntimeRestartIsIdempotentAndKeepsOneTerminal(t *testing.T) {
 		t.Fatal(err)
 	}
 	before := recovered.Snapshot(t.Context())
-	if err := recovered.SubmitWithKey(t.Context(), operation, "request-1"); err != nil {
-		t.Fatal(err)
+	for _, id := range []protocol.OperationID{operation.ID, operation.ID + "-retry"} {
+		duplicate := operation
+		duplicate.ID = id
+		if err := recovered.SubmitWithKey(t.Context(), duplicate, "request-1"); err != nil {
+			t.Fatal(err)
+		}
 	}
 	after := recovered.Snapshot(t.Context())
 	if after.LastSequence != before.LastSequence || after.OperationsProcessed != 0 {
@@ -375,8 +386,11 @@ func TestPersistentRuntimeRestartIsIdempotentAndKeepsOneTerminal(t *testing.T) {
 	conflict.Payload = &protocol.StartTurnPayload{
 		ThreadID: "thread-1", TurnID: "turn-1", ItemID: "item-1", Prompt: "different",
 	}
-	if err := recovered.SubmitWithKey(t.Context(), conflict, "request-1"); !errors.Is(err, app.ErrOperationConflict) {
-		t.Fatalf("conflicting operation error = %v, want ErrOperationConflict", err)
+	for _, id := range []protocol.OperationID{operation.ID, operation.ID + "-conflict"} {
+		conflict.ID = id
+		if err := recovered.SubmitWithKey(t.Context(), conflict, "request-1"); !errors.Is(err, app.ErrOperationConflict) {
+			t.Fatalf("conflicting operation error = %v, want ErrOperationConflict", err)
+		}
 	}
 	replayed, err := reopened.Replay(t.Context(), 0)
 	if err != nil {

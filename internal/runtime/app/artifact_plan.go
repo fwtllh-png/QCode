@@ -17,7 +17,7 @@ func (r *ArtifactService) SessionPlan(
 	if r.runtime.sessionArtifacts == nil {
 		return protocol.SessionPlanSnapshot{}, runtimeProblem(protocol.CodeUnavailable, "Session Plan Artifacts are unavailable", nil)
 	}
-	current, err := r.runtime.SessionStatus(ctx, sessionID)
+	current, err := r.runtime.SessionService.sessionState(ctx, sessionID)
 	if err != nil {
 		return protocol.SessionPlanSnapshot{}, err
 	}
@@ -41,7 +41,7 @@ func (r *ArtifactService) SessionPlan(
 			err,
 		)
 	}
-	profile, err := r.runtime.SessionProfile(ctx, sessionID)
+	profile, err := r.runtime.SessionService.sessionProfile(ctx, sessionID)
 	if err != nil {
 		return protocol.SessionPlanSnapshot{}, err
 	}

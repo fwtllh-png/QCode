@@ -39,10 +39,13 @@ type RecoveryOutcome struct {
 }
 
 type RecoveryWorkItemCapsule struct {
-	KnownReads     []string `json:"known_reads,omitempty"`
-	KnownEdits     []string `json:"known_edits,omitempty"`
-	OpenSessions   []string `json:"open_sessions,omitempty"`
-	RequiredAction string   `json:"required_action,omitempty"`
+	KnownReads      []string `json:"known_reads,omitempty"`
+	KnownEdits      []string `json:"known_edits,omitempty"`
+	OpenSessions    []string `json:"open_sessions,omitempty"`
+	OmittedReads    int      `json:"omitted_reads,omitempty"`
+	OmittedEdits    int      `json:"omitted_edits,omitempty"`
+	OmittedSessions int      `json:"omitted_sessions,omitempty"`
+	RequiredAction  string   `json:"required_action,omitempty"`
 }
 
 type recoveryReceiptEvidence struct {
@@ -202,6 +205,19 @@ func RenderRecoveryEvidence(
 		case capsule.Receipt != nil && len(capsule.Receipt.Changes) != 0:
 			capsule.Receipt.Changes =
 				capsule.Receipt.Changes[:len(capsule.Receipt.Changes)-1]
+		case capsule.WorkItem != nil && len(capsule.WorkItem.KnownReads) != 0:
+			capsule.WorkItem.KnownReads = capsule.WorkItem.KnownReads[:len(capsule.WorkItem.KnownReads)-1]
+			capsule.WorkItem.OmittedReads++
+		case capsule.WorkItem != nil && len(capsule.WorkItem.KnownEdits) != 0:
+			capsule.WorkItem.KnownEdits = capsule.WorkItem.KnownEdits[:len(capsule.WorkItem.KnownEdits)-1]
+			capsule.WorkItem.OmittedEdits++
+		case capsule.WorkItem != nil && len(capsule.WorkItem.OpenSessions) != 0:
+			capsule.WorkItem.OpenSessions = capsule.WorkItem.OpenSessions[:len(capsule.WorkItem.OpenSessions)-1]
+			capsule.WorkItem.OmittedSessions++
+		case capsule.Receipt != nil:
+			// Workspace and verification details can also exceed the budget;
+			// their full receipt remains available in the source Turn history.
+			capsule.Receipt = nil
 		case capsule.PartialOutput != "":
 			// The interrupted conclusion is the last evidence to drop: the
 			// tool ledger above is recoverable from the event log, the
@@ -209,6 +225,10 @@ func RenderRecoveryEvidence(
 			capsule.PartialOutput = ""
 		default:
 			return ""
+		}
+		if work := capsule.WorkItem; work != nil &&
+			len(work.KnownReads) == 0 && len(work.KnownEdits) == 0 && len(work.OpenSessions) == 0 {
+			work.RequiredAction = "turn_history"
 		}
 	}
 }

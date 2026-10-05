@@ -47,10 +47,25 @@ func TestRejectedStartTurnReleasesThreadForRetry(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := lifecycle.Accept(
+		accepted, err := lifecycle.Accept(
 			t.Context(), operation, operationID, canonical,
-		); err != nil {
+		)
+		if err != nil {
 			t.Fatal(err)
+		}
+		if accepted.OperationID != operation.ID || accepted.SessionID != "session" || accepted.Duplicate {
+			t.Fatalf("acceptance = %+v", accepted)
+		}
+		for _, duplicateID := range []protocol.OperationID{operation.ID, operation.ID + "-retry"} {
+			duplicate := operation
+			duplicate.ID = duplicateID
+			accepted, err := lifecycle.Accept(t.Context(), duplicate, operationID, canonical)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if accepted.OperationID != operation.ID || accepted.SessionID != "session" || !accepted.Duplicate {
+				t.Fatalf("duplicate acceptance = %+v", accepted)
+			}
 		}
 		return operation
 	}

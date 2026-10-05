@@ -675,8 +675,8 @@ func TestAdvertisedKindsAreDecodableAndDistinct(t *testing.T) {
 		if err != nil {
 			t.Fatalf("advertised event kind %q is not decodable: %v", kind, err)
 		}
-		if value.eventKind() != kind {
-			t.Fatalf("event kind %q resolves to data %q", kind, value.eventKind())
+		if got := KindOf(value); got != kind {
+			t.Fatalf("event kind %q resolves to data %q", kind, got)
 		}
 		name := fmt.Sprintf("%T", value)
 		if previous, duplicate := eventTypes[name]; duplicate {
@@ -815,6 +815,9 @@ func TestEventCodecPreservesSameVersionUnknownKind(t *testing.T) {
 	if !ok || unknown.Kind != "future.capability" ||
 		string(unknown.Raw) != `{"safe":true,"count":2}` {
 		t.Fatalf("unknown event = %#v", event)
+	}
+	if kind := KindOf(event.Data); kind != event.Kind || IsTerminalEvent(kind) {
+		t.Fatalf("unknown event kind = %q, terminal = %t", kind, IsTerminalEvent(kind))
 	}
 	encoded, err := json.Marshal(event)
 	if err != nil {

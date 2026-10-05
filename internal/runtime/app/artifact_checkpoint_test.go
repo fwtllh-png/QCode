@@ -2,6 +2,7 @@ package app
 
 import (
 	"errors"
+	"reflect"
 	"testing"
 	"time"
 
@@ -80,6 +81,9 @@ func TestExactContextRestoreAndForkPersistCurrentBaselines(t *testing.T) {
 		current.current["thread-profile"].Snapshot.Digest != checkpointContext.Digest {
 		t.Fatalf("restore=%+v current=%+v", restored, current.current)
 	}
+	if artifacts.checkpointReads != 1 || engine.historyReads != 0 {
+		t.Errorf("exact restore reads: checkpoint=%d history=%d", artifacts.checkpointReads, engine.historyReads)
+	}
 	forked, err := runtime.ForkCheckpoint(
 		t.Context(),
 		"session-profile",
@@ -96,6 +100,9 @@ func TestExactContextRestoreAndForkPersistCurrentBaselines(t *testing.T) {
 		commit.Snapshot.Digest != checkpointContext.Digest {
 		t.Fatalf("fork=%+v commit=%+v", forked, commit)
 	}
+	if artifacts.checkpointReads != 2 || engine.historyReads != 0 {
+		t.Errorf("exact restore and fork reads: checkpoint=%d history=%d", artifacts.checkpointReads, engine.historyReads)
+	}
 	events, _, err := runtime.ReplayEvents(t.Context(), 0, 100)
 	if err != nil {
 		t.Fatal(err)
@@ -104,12 +111,18 @@ func TestExactContextRestoreAndForkPersistCurrentBaselines(t *testing.T) {
 	for _, event := range events {
 		switch data := event.Data.(type) {
 		case *protocol.CheckpointRestoredData:
+			if !reflect.DeepEqual(data.ReplacementHistory, encoded) {
+				t.Fatalf("restore replacement history = %+v", data.ReplacementHistory)
+			}
 			saved := current.current["thread-profile"]
 			restoreReferenced = data.ContextCommitID == saved.ID &&
 				data.ContextDigest == saved.Snapshot.Digest &&
 				data.ContextRevision == saved.Snapshot.Revision &&
 				data.StateEpoch == saved.Snapshot.Epoch
 		case *protocol.CheckpointForkedData:
+			if !reflect.DeepEqual(data.ReplacementHistory, encoded) {
+				t.Fatalf("fork replacement history = %+v", data.ReplacementHistory)
+			}
 			forkReferenced = data.ContextCommitID == commit.ID &&
 				data.ContextDigest == commit.Snapshot.Digest &&
 				data.ContextRevision == commit.Snapshot.Revision &&

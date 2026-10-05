@@ -1,7 +1,6 @@
 package wire
 
 import (
-	"fmt"
 	"sort"
 
 	"github.com/fwtllh-png/QCode/internal/adapter/model"
@@ -98,27 +97,6 @@ func catalogModelCapabilities(descriptor model.Model) protocol.ModelCapabilities
 		result.DefaultReasoningEffort = capabilities.DefaultReasoningEffort
 	}
 	return result
-}
-
-func runtimeSelectableRoutes(
-	selected model.ReadyRoute,
-	additional map[string]model.Model,
-) (map[string]model.ReadyRoute, error) {
-	result := make(map[string]model.ReadyRoute)
-	if len(additional) != 0 {
-		result[model.RouteKey(selected.ProviderID(), selected.Model().ID)] = selected
-	}
-	for id, descriptor := range additional {
-		if err := validateResolvedModelMetadata(descriptor); err != nil {
-			return nil, fmt.Errorf("additional model %q: %w", id, err)
-		}
-		if descriptor.ID != id {
-			return nil, fmt.Errorf("additional model %q has mismatched id %q", id, descriptor.ID)
-		}
-		result[model.RouteKey(selected.ProviderID(), id)] =
-			selected.WithModel(descriptor)
-	}
-	return result, nil
 }
 
 func runtimeProfileModels(

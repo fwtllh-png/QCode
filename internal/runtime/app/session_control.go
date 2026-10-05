@@ -302,7 +302,7 @@ func (r *SessionService) ActivateSession(
 			nil,
 		)
 	}
-	summary, err := r.SessionStatus(ctx, request.SessionID)
+	summary, err := r.session(ctx, request.SessionID)
 	if err != nil {
 		return SessionBinding{}, err
 	}
@@ -357,11 +357,11 @@ func (r *SessionService) ActivateSession(
 		return SessionBinding{}, err
 	}
 	if r.SessionProfilesAvailable() {
-		if _, err := r.RestoreSessionProfile(
-			ctx,
-			request.SessionID,
-			threadID,
-		); err != nil {
+		profile, err := r.sessionProfile(ctx, request.SessionID)
+		if err != nil {
+			return SessionBinding{}, err
+		}
+		if _, err := r.applySessionProfile(threadID, profile); err != nil {
 			return SessionBinding{}, err
 		}
 	}
@@ -401,7 +401,7 @@ func (r *OperationService) SubmitForSession(
 			nil,
 		)
 	}
-	summary, err := r.runtime.SessionStatus(ctx, request.SessionID)
+	summary, err := r.runtime.SessionService.session(ctx, request.SessionID)
 	if err != nil {
 		return OperationReceipt{}, err
 	}
@@ -789,6 +789,18 @@ func (r *SessionService) deleteSession(
 	current, err := r.SessionStatus(ctx, sessionID)
 	if err != nil {
 		return protocol.SessionDeleteResult{}, err
+	}
+	// Reject stale requests before reclaiming drafts or changing worktrees.
+	// The store still performs its transactional revision check at deletion.
+	if current.Revision != expectedRevision {
+		return protocol.SessionDeleteResult{}, protocol.NewProblemWithDetails(
+			protocol.CodeConflict, "session lifecycle revision conflict", true,
+			protocol.ProblemDetails{
+				Reason:     protocol.ProblemReasonStaleSessionRevision,
+				ResourceID: sessionID, ExpectedRevision: expectedRevision,
+				ActualRevision: current.Revision,
+			}, nil,
+		)
 	}
 	threadIDs, err := r.runtime.sessionLifecycle.ThreadIDs(ctx, sessionID)
 	if err != nil {

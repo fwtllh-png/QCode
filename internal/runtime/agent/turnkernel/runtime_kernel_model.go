@@ -208,6 +208,9 @@ func (s *RuntimeKernel) SampleAssembly(
 	)
 }
 
+// RecordModelSampleProgress borrows assembly for the synchronous submission.
+// The caller may mutate it after this method returns; the reducer owns the
+// defensive copy retained by authoritative state.
 func (s *RuntimeKernel) RecordModelSampleProgress(
 	sampleID string,
 	assembly *providerassembly.ResponseAssembly,
@@ -228,7 +231,7 @@ func (s *RuntimeKernel) RecordModelSampleProgress(
 		EffectID: effect.ID,
 		SampleID: sampleID,
 		Attempt:  effect.Attempt,
-		Assembly: *providerassembly.CloneResponseAssembly(assembly),
+		Assembly: *assembly,
 	}
 	return s.applyAuthoritativeLocked(command)
 }

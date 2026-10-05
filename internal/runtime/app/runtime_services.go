@@ -26,13 +26,15 @@ func installRuntimeServices(runtime *Runtime, operationBuffer int) {
 	runtime.SessionService = &SessionService{runtime: runtime}
 	runtime.AgentPresetService = &AgentPresetService{runtime: runtime}
 	runtime.OperationService = &OperationService{
-		runtime:      runtime,
-		operations:   make(chan acceptedOperation, operationBuffer),
-		accepted:     make(map[protocol.OperationID]PendingOperation),
-		acceptedKeys: make(map[string]protocol.OperationID),
-		committed:    make(map[protocol.OperationID]PendingOperation),
-		withdrawing:  make(map[protocol.ThreadID]bool),
-		settlements:  operationSettlements{wake: make(chan struct{}, 1)},
+		runtime:     runtime,
+		operations:  make(chan acceptedOperation, operationBuffer),
+		accepted:    make(map[protocol.OperationID]PendingOperation),
+		withdrawing: make(map[protocol.ThreadID]bool),
+		settlements: operationSettlements{wake: make(chan struct{}, 1)},
+	}
+	if runtime.lifecycle == nil {
+		runtime.OperationService.acceptedKeys = make(map[string]protocol.OperationID)
+		runtime.OperationService.committed = make(map[protocol.OperationID]PendingOperation)
 	}
 	runtime.RecoveryService = &RecoveryService{runtime: runtime}
 	runtime.HistoryService = newHistoryService(runtime)

@@ -32,6 +32,14 @@ func (r *ArtifactService) PersistSessionArtifact(
 	ctx context.Context,
 	event protocol.Event,
 ) {
+	r.persistSessionArtifact(ctx, event, nil)
+}
+
+func (r *ArtifactService) persistSessionArtifact(
+	ctx context.Context,
+	event protocol.Event,
+	turnEvents []protocol.Event,
+) {
 	if r.runtime.sessionArtifacts == nil || r.runtime.sessionLifecycle == nil || r.runtime.profiles == nil {
 		return
 	}
@@ -83,6 +91,7 @@ func (r *ArtifactService) PersistSessionArtifact(
 			event,
 			protocol.CheckpointCompleted,
 			data.Text,
+			turnEvents,
 		)
 	case *protocol.TurnCanceledData:
 		if protocol.NormalizeCancelReason(data.Reason) !=
@@ -94,6 +103,7 @@ func (r *ArtifactService) PersistSessionArtifact(
 			event,
 			protocol.CheckpointInterrupted,
 			"Interrupted by the user; safe paired history was retained",
+			turnEvents,
 		)
 	}
 }
@@ -119,7 +129,7 @@ func (r *ArtifactService) PersistTerminalArtifactForTurn(
 		event := events[index]
 		if event.ThreadID == threadID && event.TurnID == turnID &&
 			protocol.IsTerminalEvent(event.Kind) {
-			r.PersistSessionArtifact(ctx, event)
+			r.persistSessionArtifact(ctx, event, events)
 			return
 		}
 	}

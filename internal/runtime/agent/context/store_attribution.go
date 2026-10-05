@@ -128,8 +128,8 @@ func (s MessageSnapshot) MeasureDetailed(
 	if result.ContinuationTokens, err = countMessages(continuation, estimate); err != nil {
 		return Measurement{}, err
 	}
-	for _, message := range s.Messages() {
-		for _, block := range message.Blocks {
+	for _, item := range s.items {
+		for _, block := range item.Message.Blocks {
 			if block.ToolResult != nil &&
 				block.ToolResult.Admission != nil {
 				receipt := block.ToolResult.Admission
@@ -147,7 +147,11 @@ func (s MessageSnapshot) MeasureDetailed(
 			if !ok {
 				continue
 			}
-			tokens, estimateErr := imageEstimator.EstimateImage(*block.Attachment)
+			// Only the injected callback needs an isolated copy; the receipt
+			// scan above reads the immutable snapshot directly.
+			attachment := *block.Attachment
+			attachment.Data = append([]byte(nil), attachment.Data...)
+			tokens, estimateErr := imageEstimator.EstimateImage(attachment)
 			if estimateErr != nil {
 				return Measurement{}, estimateErr
 			}
