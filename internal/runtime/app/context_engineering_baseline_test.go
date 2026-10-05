@@ -168,7 +168,7 @@ func TestContextEngineeringCE0LifecycleGolden(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	goldenPath := filepath.Join("testdata", "context_engineering_ce0.golden.json")
+	goldenPath := filepath.Join("testdata", "context_lifecycle.golden.json")
 	golden, err := os.ReadFile(goldenPath)
 	if err != nil {
 		t.Fatalf("read lifecycle golden: %v\n\ngot:\n%s", err, encoded)
