@@ -574,6 +574,16 @@ func (m *workspaceRuntimeManager) replaceSelectionStaged(
 	m.reference = reference
 	m.active = prepared
 	m.mu.Unlock()
+	for _, id := range ids {
+		rebindUnavailableSessionProfiles(
+			ctx,
+			repositories,
+			stderr,
+			prepared[id].dependencies.WorkspaceRoot,
+			selection,
+			prepared[id],
+		)
+	}
 	for _, runtime := range prepared {
 		runtime.credentials.commitOrReport(stderr)
 	}
@@ -615,6 +625,51 @@ func (m *workspaceRuntimeManager) RegisterInitial(
 	m.active[identity.RootID] = runtime
 	delete(m.problems, identity.RootID)
 	m.roots = prependUniqueRoot(m.roots, identity.RuntimePath)
+}
+
+// rebindUnavailableSessionProfiles repairs durable sessions whose route the
+// freshly prepared Runtime cannot serve, for example after a connection
+// identity change. Still-valid per-session choices are preserved and repair
+// failures are reported without failing the Workspace load.
+func rebindUnavailableSessionProfiles(
+	ctx context.Context,
+	repositories apppersistence.PersistentRepositories,
+	stderr io.Writer,
+	root string,
+	selection webSetupSelection,
+	runtime *preparedWebRuntime,
+) {
+	if len(selection.Connections) == 0 || runtime == nil || repositories.Sessions == nil {
+		return
+	}
+	available := func(provider, model string) bool {
+		for _, connection := range selection.Connections {
+			if provider != connection.ID {
+				continue
+			}
+			if model == connection.Model {
+				return true
+			}
+			for _, registered := range connection.Models {
+				if model == registered.ID {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	if err := repositories.Sessions.RebindUnavailableWorkspaceProfiles(
+		ctx,
+		[]string{root},
+		runtime.application.DefaultProfile(),
+		available,
+	); err != nil {
+		fmt.Fprintf(
+			stderr,
+			"qcode: repair session profile routes for %s: %v\n",
+			root, err,
+		)
+	}
 }
 
 func (m *workspaceRuntimeManager) Persist() error {
@@ -791,6 +846,7 @@ func (m *workspaceRuntimeManager) Add(
 			}
 			return WorkspaceDescriptor{}, loadErr
 		}
+		rebindUnavailableSessionProfiles(ctx, repositories, stderr, root, selection, prepared)
 		return m.descriptor(ctx, identity, prepared), nil
 	}
 }

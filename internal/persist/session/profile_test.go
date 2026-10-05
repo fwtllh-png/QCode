@@ -142,6 +142,81 @@ func TestRebindWorkspaceProfilesUpdatesOnlySelectedWorkspaces(t *testing.T) {
 	}
 }
 
+func TestRebindUnavailableWorkspaceProfilesRepairsOnlyStaleRoutes(t *testing.T) {
+	store, err := sqlitestate.Open(t.Context(), filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	repository := session.NewSQLiteRepository(store)
+	workspaceRoot := t.TempDir()
+	if err := repository.EnsureSeed(t.Context(), "stale", workspaceRoot); err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.EnsureSeed(t.Context(), "current", workspaceRoot); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.DB().ExecContext(
+		t.Context(),
+		`UPDATE sessions SET metadata_json = ? WHERE id IN (?, ?)`,
+		[]byte(`{}`),
+		"stale",
+		"current",
+	); err != nil {
+		t.Fatal(err)
+	}
+	defaults := persistedProfile()
+	if _, err := repository.EnsureProfile(t.Context(), "current", defaults); err != nil {
+		t.Fatal(err)
+	}
+	stale := defaults
+	stale.Provider = "openai-compatible:old"
+	stale.Model = "old-model"
+	encoded, err := json.Marshal(map[string]any{"profile": stale})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.DB().ExecContext(
+		t.Context(),
+		`UPDATE sessions SET metadata_json = ? WHERE id = ?`,
+		[]byte(encoded),
+		"stale",
+	); err != nil {
+		t.Fatal(err)
+	}
+	next := defaults
+	next.Provider = "openai-compatible:new"
+	next.Model = "new-model"
+	available := func(provider, model string) bool {
+		return provider == "fixture" && model == "fixture-model"
+	}
+	if err := repository.RebindUnavailableWorkspaceProfiles(
+		t.Context(),
+		[]string{workspaceRoot},
+		next,
+		available,
+	); err != nil {
+		t.Fatal(err)
+	}
+	repaired, err := repository.Profile(t.Context(), "stale", next)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repaired.Provider != next.Provider || repaired.Model != next.Model ||
+		repaired.ReasoningEffort != next.ReasoningEffort ||
+		repaired.Revision != stale.Revision+1 {
+		t.Fatalf("repaired profile = %+v", repaired)
+	}
+	kept, err := repository.Profile(t.Context(), "current", defaults)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if kept.Provider != defaults.Provider || kept.Model != defaults.Model ||
+		kept.Revision != defaults.Revision {
+		t.Fatalf("still-valid profile = %+v", kept)
+	}
+}
+
 func TestEnsureProfileMigratesOnlyUntouchedLegacyStepDefaults(t *testing.T) {
 	store, err := sqlitestate.Open(t.Context(), filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {

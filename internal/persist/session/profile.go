@@ -277,6 +277,39 @@ func (r *Repository) RebindWorkspaceProfiles(
 	workspaceRoots []string,
 	defaults protocol.SessionProfile,
 ) error {
+	return r.rebindWorkspaceProfiles(ctx, workspaceRoots, defaults,
+		func(protocol.SessionProfile) bool { return true },
+	)
+}
+
+// RouteAvailability reports whether a durable session route can still be
+// served by the Runtime being activated.
+type RouteAvailability func(provider, model string) bool
+
+// RebindUnavailableWorkspaceProfiles repairs only sessions whose stored route
+// the activated Runtime cannot serve; still-valid per-session choices stay.
+func (r *Repository) RebindUnavailableWorkspaceProfiles(
+	ctx context.Context,
+	workspaceRoots []string,
+	defaults protocol.SessionProfile,
+	available RouteAvailability,
+) error {
+	if available == nil {
+		return errors.New("route availability is required")
+	}
+	return r.rebindWorkspaceProfiles(ctx, workspaceRoots, defaults,
+		func(current protocol.SessionProfile) bool {
+			return !available(current.Provider, current.Model)
+		},
+	)
+}
+
+func (r *Repository) rebindWorkspaceProfiles(
+	ctx context.Context,
+	workspaceRoots []string,
+	defaults protocol.SessionProfile,
+	shouldRebind func(protocol.SessionProfile) bool,
+) error {
 	if r.db == nil {
 		return errors.New("session repository database is required")
 	}
@@ -340,6 +373,9 @@ func (r *Repository) RebindWorkspaceProfiles(
 			current, err := profileFromMetadata(record.metadata, defaults)
 			if err != nil {
 				return err
+			}
+			if !shouldRebind(current) {
+				continue
 			}
 			provider := defaults.Provider
 			model := defaults.Model
