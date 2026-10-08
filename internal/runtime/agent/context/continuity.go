@@ -95,10 +95,6 @@ func UniqueTurns(turns []uint64) []uint64 {
 	return result
 }
 
-func FormatContinuityHint(input ContinuityInput) string {
-	return FormatContinuityHintBudgeted(input, 0)
-}
-
 func FormatContinuityHintBudgeted(input ContinuityInput, budget int) string {
 	sites := append([]string(nil), input.Sites...)
 	omitted := 0
@@ -154,22 +150,18 @@ func formatContinuityHint(input ContinuityInput, omitted int) string {
 		}
 	}
 	parts = append(parts,
-		"Do not call "+TurnHistoryToolName+" or search the repository to restore this analysis. Read only uncovered windows needed for the current request.",
+		"Use the supplied conclusion and sites. Recover missing conversation definitions or read uncovered windows only when needed for the current request.",
 	)
 	if next != "" {
 		parts = append(parts, "Next open work: "+next+".")
 	}
 	if input.PreferredTurn > 0 {
 		parts = append(parts, fmt.Sprintf(
-			"If a listed site is insufficient, call %s with preferred_turn=%d; the first page ends with that turn's findings index.",
+			"If a listed site is insufficient, call %s with turn=%d; the first page ends with that turn's findings index.",
 			TurnHistoryToolName, input.PreferredTurn,
 		))
 	}
 	return strings.Join(parts, " ")
-}
-
-func ContinuityRetrievalEntity(input ContinuityInput) (TruthEntity, bool) {
-	return ContinuityRetrievalEntityBudgeted(input, 0)
 }
 
 func ContinuityRetrievalEntityBudgeted(

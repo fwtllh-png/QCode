@@ -10,6 +10,7 @@ import (
 )
 
 var requiredJourneys = []string{
+	"context_continuity",
 	"cross_file_edit",
 	"test_selection",
 	"crash_recovery",

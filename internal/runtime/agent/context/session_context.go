@@ -1,6 +1,7 @@
 package agentcontext
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -282,6 +283,7 @@ func packedReference(git, ref string) string {
 }
 
 type ContextSnapshot struct {
+	Conversation    *ConversationState `json:"conversation,omitempty"`
 	Version         int                `json:"version"`
 	Epoch           uint64             `json:"epoch"`
 	Revision        uint64             `json:"revision"`
@@ -302,6 +304,7 @@ type ContextSnapshot struct {
 }
 
 func CloneContextSnapshot(snapshot ContextSnapshot) ContextSnapshot {
+	snapshot.Conversation = CloneConversation(snapshot.Conversation)
 	snapshot.History = CloneMessages(snapshot.History)
 	snapshot.MessageTurns = append([]uint64(nil), snapshot.MessageTurns...)
 	snapshot.HistoryTurns = cloneHistoryTurns(snapshot.HistoryTurns)
@@ -382,6 +385,12 @@ func (s ContextSnapshot) Validate() error {
 	if err := s.Compaction.Validate(); err != nil {
 		return err
 	}
+	if err := s.Conversation.Validate(); err != nil {
+		return err
+	}
+	if err := s.Conversation.ValidatePlan(s.Plan); err != nil {
+		return err
+	}
 	if err := ValidateTurnCheckpoints(s.TurnCheckpoints); err != nil {
 		return err
 	}
@@ -425,7 +434,12 @@ type ReconciliationReceipt struct {
 	Stale        int  `json:"stale"`
 }
 
+type NarrativeContextStore interface {
+	CommitCurrentContext(context.Context, CurrentContextCommit) error
+}
+
 type CurrentContextCommit struct {
+	BaseRevision   *uint64           `json:"base_revision,omitempty"`
 	ID             string            `json:"id"`
 	ThreadID       protocol.ThreadID `json:"thread_id"`
 	TurnID         protocol.TurnID   `json:"turn_id"`
@@ -440,6 +454,9 @@ type CurrentContextCommit struct {
 func (c CurrentContextCommit) Validate() error {
 	if strings.TrimSpace(c.ID) == "" || c.ThreadID == "" || c.TurnID == "" {
 		return errors.New("current context commit identity is incomplete")
+	}
+	if c.BaseRevision != nil && c.Snapshot.Revision != *c.BaseRevision+1 {
+		return errors.New("current context base revision is invalid")
 	}
 	if err := c.Snapshot.Validate(); err != nil {
 		return err

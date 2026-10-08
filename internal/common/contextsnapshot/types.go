@@ -42,6 +42,21 @@ type Evidence struct {
 	Handle  string `json:"handle"`
 }
 
+// Reference carries a selected source range independently of optional recent
+// transcript turns. Digests and offsets refer to the original source; Redacted
+// marks text transformed by the existing delegation redactor.
+type Reference struct {
+	SourceID      string   `json:"source_id"`
+	SourceThread  string   `json:"source_thread"`
+	SourceTurn    string   `json:"source_turn"`
+	ContentDigest string   `json:"content_digest"`
+	ItemIDs       []string `json:"item_ids,omitempty"`
+	Start         int      `json:"start"`
+	End           int      `json:"end"`
+	Text          string   `json:"text"`
+	Redacted      bool     `json:"redacted,omitempty"`
+}
+
 type Snapshot struct {
 	SourceThread    string         `json:"source_thread"`
 	SourceTurn      string         `json:"source_turn"`
@@ -52,4 +67,5 @@ type Snapshot struct {
 	RelevantFiles   []RelevantFile `json:"relevant_files,omitempty"`
 	Evidence        []Evidence     `json:"evidence,omitempty"`
 	WorkspaceRules  []string       `json:"workspace_rules,omitempty"`
+	References      []Reference    `json:"references,omitempty"`
 }

@@ -146,7 +146,10 @@ func (e *executor) Descriptor() tool.Descriptor {
 	case "update_plan", "submit_plan":
 		description := "Replace the structured working plan projected through ContextLedger. " +
 			"Call this before starting a planned step and immediately after its " +
-			"evidence is complete; do not defer status updates until Turn completion."
+			"evidence is complete; do not defer status updates until Turn completion. " +
+			"Reuse returned step IDs when changing status, title or order; omit ID only for a new step. " +
+			"context_selection binds report group/item IDs to the current user request; it may be supplied without steps to change focus without creating a plan. " +
+			"Do not guess ambiguous ordinals or replace sources without a user correction."
 		if e.name == "submit_plan" {
 			description = "Submit a structured, user-reviewable implementation plan. " +
 				"Use purpose=deliverable when the user only requested a plan for later " +
@@ -165,7 +168,8 @@ func (e *executor) Descriptor() tool.Descriptor {
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"version": map[string]any{"type": "integer", "enum": []any{float64(1)}},
+					"context_selection": contextSelectionSchema(),
+					"version":           map[string]any{"type": "integer", "enum": []any{float64(1)}},
 					"purpose": map[string]any{
 						"type": "string", "enum": planPurposes(e.name),
 						"description": "execution (default) tracks current work; submit_plan also accepts deliverable for a future plan artifact.",
@@ -176,8 +180,9 @@ func (e *executor) Descriptor() tool.Descriptor {
 						"items": map[string]any{
 							"type": "object",
 							"properties": map[string]any{
-								"id":    map[string]any{"type": "string"},
-								"title": map[string]any{"type": "string", "minLength": float64(1)},
+								"id":                 map[string]any{"type": "string", "description": "Stable step identity; reuse on updates and reorder. Generated for new steps if omitted."},
+								"reference_item_ids": map[string]any{"type": "array", "uniqueItems": true, "items": map[string]any{"type": "string"}},
+								"title":              map[string]any{"type": "string", "minLength": float64(1)},
 								"status": map[string]any{
 									"type": "string",
 									"enum": []string{StepPending, StepInProgress, StepDone},
@@ -212,7 +217,7 @@ func (e *executor) Descriptor() tool.Descriptor {
 					"risks_and_unknowns":   map[string]any{"type": "string"},
 					"handoff_packet":       map[string]any{"type": "string"},
 				},
-				"required":             []string{"steps"},
+				"anyOf":                planInputAlternatives(e.name),
 				"additionalProperties": false,
 			},
 		}
@@ -274,9 +279,9 @@ func (e *executor) run(ctx context.Context, input operationInput) (tool.Result, 
 	case "request_user_input":
 		return e.tools.requestInput(ctx, input)
 	case "update_plan":
-		return e.tools.updatePlan(input, false)
+		return e.tools.updatePlan(ctx, input, false)
 	case "submit_plan":
-		return e.tools.updatePlan(input, true)
+		return e.tools.updatePlan(ctx, input, true)
 	case "project_map":
 		return e.tools.projectMap(ctx, input)
 	case "image_analyze":
@@ -334,8 +339,25 @@ func normalizeInputOptions(values []string) ([]string, error) {
 	return out, nil
 }
 
-func (t *Tools) updatePlan(input operationInput, submitted bool) (tool.Result, error) {
+func (t *Tools) updatePlan(ctx context.Context, input operationInput, submitted bool) (tool.Result, error) {
 	plan := input.SubmittedPlan
+	onPlan := t.onPlan
+	if runtime, ok := planRuntimeFrom(ctx); ok {
+		onPlan = runtime.Apply
+	}
+	if plan.ContextSelection != nil && (submitted || plan.Purpose == protocol.PlanPurposeDeliverable) {
+		return tool.Result{}, errors.New("context_selection is only accepted by update_plan")
+	}
+	if plan.ContextSelection != nil && plan.Steps == nil {
+		if onPlan == nil {
+			return tool.Result{}, errors.New("conversation selection runtime is unavailable")
+		}
+		if err := onPlan(Plan{ContextSelection: plan.ContextSelection}); err != nil {
+			return tool.Result{}, err
+		}
+		content, err := json.Marshal(map[string]any{"context_selection": plan.ContextSelection})
+		return tool.Result{Content: string(content), Metadata: map[string]any{"plan_delta": false, "context_selection": true}}, err
+	}
 	if err := plan.NormalizeAndValidate(); err != nil {
 		return tool.Result{}, err
 	}
@@ -343,7 +365,7 @@ func (t *Tools) updatePlan(input operationInput, submitted bool) (tool.Result, e
 		return tool.Result{}, errors.New("update_plan only accepts execution plans; use submit_plan for deliverables")
 	}
 	next := plan.executionPlan()
-	if !submitted && t.samePlanProgress(next) {
+	if !submitted && plan.ContextSelection == nil && t.samePlanProgress(ctx, next) {
 		return unchangedPlanResult(), nil
 	}
 	var err error
@@ -354,7 +376,7 @@ func (t *Tools) updatePlan(input operationInput, submitted bool) (tool.Result, e
 		}
 	}
 	if plan.Purpose == protocol.PlanPurposeExecution {
-		if err := t.applyPlan(next); err != nil {
+		if err := t.applyPlan(ctx, next); err != nil {
 			return tool.Result{}, err
 		}
 	}
@@ -379,24 +401,38 @@ func planPurposes(name string) []string {
 	return []string{string(protocol.PlanPurposeExecution)}
 }
 
-func (t *Tools) applyPlan(plan Plan) error {
-	t.planMu.Lock()
-	t.plan = plan
-	t.planMu.Unlock()
+func (t *Tools) applyPlan(ctx context.Context, plan Plan) error {
+	if runtime, ok := planRuntimeFrom(ctx); ok {
+		if runtime.Apply == nil {
+			return errors.New("plan runtime is unavailable")
+		}
+		return runtime.Apply(plan)
+	}
 	if t.onPlan != nil {
 		if err := t.onPlan(plan); err != nil {
 			return err
 		}
 	}
+	t.planMu.Lock()
+	t.plan = plan
+	t.planMu.Unlock()
 	return nil
 }
 
-func (t *Tools) samePlanProgress(plan Plan) bool {
+func (t *Tools) samePlanProgress(ctx context.Context, plan Plan) bool {
 	t.planMu.Lock()
 	current := t.plan
 	t.planMu.Unlock()
+	if runtime, ok := planRuntimeFrom(ctx); ok {
+		current.Steps = nil
+		if runtime.CurrentSteps != nil {
+			current.Steps = runtime.CurrentSteps()
+		}
+	}
 	return len(current.Steps) > 0 &&
-		slices.Equal(current.Steps, plan.Steps)
+		slices.EqualFunc(current.Steps, plan.Steps, func(a, b PlanStep) bool {
+			return (a.ID == b.ID || b.ID == "") && a.Title == b.Title && a.Status == b.Status && slices.Equal(a.ReferenceItemIDs, b.ReferenceItemIDs)
+		})
 }
 
 const requiredActionFinishOrDeclareIncomplete = "finish_open_plan_steps_or_declare_incomplete"

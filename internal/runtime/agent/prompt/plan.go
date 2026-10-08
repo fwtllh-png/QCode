@@ -29,6 +29,12 @@ func FormatPlan(plan agentcontext.Plan) string {
 	writePlanField(&b, "handoff_packet", plan.HandoffPacket)
 	for index, step := range plan.Steps {
 		fmt.Fprintf(&b, "%d. %s", index+1, step.Title)
+		if step.ID != "" {
+			fmt.Fprintf(&b, " [id=%s]", step.ID)
+		}
+		if len(step.ReferenceItemIDs) != 0 {
+			fmt.Fprintf(&b, " [references=%s]", strings.Join(step.ReferenceItemIDs, ","))
+		}
 		// A pending step needs no marker: it is the default, and marking every
 		// line would cost bytes to say nothing.
 		if step.Status != "" && step.Status != agentcontext.StepPending {

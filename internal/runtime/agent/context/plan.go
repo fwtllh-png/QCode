@@ -12,8 +12,10 @@ const (
 )
 
 type PlanStep struct {
-	Title  string `json:"title"`
-	Status string `json:"status,omitempty"`
+	ID               string   `json:"id,omitempty"`
+	ReferenceItemIDs []string `json:"reference_item_ids,omitempty"`
+	Title            string   `json:"title"`
+	Status           string   `json:"status,omitempty"`
 }
 
 func (s *PlanStep) UnmarshalJSON(data []byte) error {
@@ -27,8 +29,10 @@ func (s *PlanStep) UnmarshalJSON(data []byte) error {
 		return nil
 	}
 	var object struct {
-		Title  string `json:"title"`
-		Status string `json:"status"`
+		ID               string   `json:"id"`
+		ReferenceItemIDs []string `json:"reference_item_ids"`
+		Title            string   `json:"title"`
+		Status           string   `json:"status"`
 	}
 	if err := json.Unmarshal(data, &object); err != nil {
 		return err
@@ -39,7 +43,7 @@ func (s *PlanStep) UnmarshalJSON(data []byte) error {
 	default:
 		status = StepPending
 	}
-	*s = PlanStep{Title: object.Title, Status: status}
+	*s = PlanStep{ID: object.ID, ReferenceItemIDs: append([]string(nil), object.ReferenceItemIDs...), Title: object.Title, Status: status}
 	return nil
 }
 
@@ -63,6 +67,9 @@ type Plan struct {
 func (p Plan) Clone() Plan {
 	clone := p
 	clone.Steps = append([]PlanStep(nil), p.Steps...)
+	for i := range clone.Steps {
+		clone.Steps[i].ReferenceItemIDs = append([]string(nil), p.Steps[i].ReferenceItemIDs...)
+	}
 	clone.SourcesUsed = append([]string(nil), p.SourcesUsed...)
 	clone.CriticalFiles = append([]string(nil), p.CriticalFiles...)
 	clone.Constraints = append([]string(nil), p.Constraints...)
@@ -74,7 +81,7 @@ func (p Plan) Clone() Plan {
 func (p Plan) ProgressSignature() string {
 	parts := make([]string, 0, len(p.Steps))
 	for _, step := range p.Steps {
-		parts = append(parts, step.Title+"\x00"+step.Status)
+		parts = append(parts, step.ID+"\x00"+step.Title+"\x00"+step.Status+"\x00"+strings.Join(step.ReferenceItemIDs, "\x00"))
 	}
 	return strings.Join(parts, "\n")
 }

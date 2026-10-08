@@ -270,13 +270,6 @@ func parseWorldMessage(
 	return marker, message.Text(), true
 }
 
-// WorldMessageID returns the validated section identity carried by an
-// internally generated World message without exposing its metadata payload.
-func WorldMessageID(message provider.Message) (string, bool) {
-	marker, _, ok := parseWorldMessage(message)
-	return marker.ID, ok
-}
-
 func worldBaselineDigest(value WorldBaseline) string {
 	entries := append([]WorldEntry(nil), value.Entries...)
 	sort.Slice(entries, func(i, j int) bool { return entries[i].ID < entries[j].ID })

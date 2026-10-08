@@ -19,9 +19,10 @@ import (
 )
 
 type Compaction struct {
-	Count  int                `json:"count"`
-	State  *CompactionState   `json:"state,omitempty"`
-	Digest *NarrativeArtifact `json:"digest,omitempty"`
+	Count             int                `json:"count"`
+	State             *CompactionState   `json:"state,omitempty"`
+	Digest            *NarrativeArtifact `json:"digest,omitempty"`
+	NarrativeAttempts []string           `json:"narrative_attempts,omitempty"`
 }
 
 type CompactionState struct {
@@ -157,7 +158,7 @@ func digestText(value string) string {
 }
 
 func CloneCompaction(value Compaction) Compaction {
-	cloned := Compaction{Count: value.Count}
+	cloned := Compaction{Count: value.Count, NarrativeAttempts: append([]string(nil), value.NarrativeAttempts...)}
 	if value.Digest != nil {
 		cloned.Digest = cloneNarrativeArtifact(value.Digest)
 	}
@@ -187,10 +188,7 @@ func CloneCompaction(value Compaction) Compaction {
 	}
 	if value.State.NarrativeInput != nil {
 		input := *value.State.NarrativeInput
-		input.Excerpts = append(
-			[]NarrativeExcerpt(nil),
-			value.State.NarrativeInput.Excerpts...,
-		)
+		input.Excerpts = cloneNarrativeExcerpts(value.State.NarrativeInput.Excerpts)
 		input.RequiredKinds = append(
 			[]string(nil),
 			value.State.NarrativeInput.RequiredKinds...,
@@ -209,6 +207,10 @@ func cloneNarrativeArtifact(value *NarrativeArtifact) *NarrativeArtifact {
 		return nil
 	}
 	cloned := *value
+	cloned.Coverage = append([]NarrativeCoverage(nil), value.Coverage...)
+	for i := range cloned.Coverage {
+		cloned.Coverage[i].Source.Parents = append([]ReferenceItem(nil), value.Coverage[i].Source.Parents...)
+	}
 	cloned.Body.Items = append([]NarrativeItem(nil), value.Body.Items...)
 	for index := range cloned.Body.Items {
 		cloned.Body.Items[index].SourceMessageIDs = append(
@@ -220,22 +222,24 @@ func cloneNarrativeArtifact(value *NarrativeArtifact) *NarrativeArtifact {
 }
 
 type SessionState struct {
-	Epoch           uint64            `json:"epoch,omitempty"`
-	Turn            uint64            `json:"turn,omitempty"`
-	HistoryTurns    map[string]uint64 `json:"history_turns,omitempty"`
-	WorkingSet      WorkingSetDelta   `json:"working_set"`
-	Evidence        EvidenceDelta     `json:"evidence"`
-	Failures        FailureDelta      `json:"failures"`
-	Compaction      Compaction        `json:"compaction"`
-	Plan            *Plan             `json:"plan,omitempty"`
-	World           WorldBaseline     `json:"world,omitempty"`
-	Workspace       WorkspaceBinding  `json:"workspace,omitempty"`
-	Window          WindowLedger      `json:"window"`
-	TurnCheckpoints []TurnCheckpoint  `json:"turn_checkpoints,omitempty"`
-	Manifest        ManifestLimits    `json:"manifest_limits,omitempty"`
+	Conversation    *ConversationState `json:"conversation,omitempty"`
+	Epoch           uint64             `json:"epoch,omitempty"`
+	Turn            uint64             `json:"turn,omitempty"`
+	HistoryTurns    map[string]uint64  `json:"history_turns,omitempty"`
+	WorkingSet      WorkingSetDelta    `json:"working_set"`
+	Evidence        EvidenceDelta      `json:"evidence"`
+	Failures        FailureDelta       `json:"failures"`
+	Compaction      Compaction         `json:"compaction"`
+	Plan            *Plan              `json:"plan,omitempty"`
+	World           WorldBaseline      `json:"world,omitempty"`
+	Workspace       WorkspaceBinding   `json:"workspace,omitempty"`
+	Window          WindowLedger       `json:"window"`
+	TurnCheckpoints []TurnCheckpoint   `json:"turn_checkpoints,omitempty"`
+	Manifest        ManifestLimits     `json:"manifest_limits,omitempty"`
 }
 
 type SessionDelta struct {
+	Conversation    *ConversationState `json:"conversation,omitempty"`
 	Version         int                `json:"version,omitempty"`
 	Epoch           uint64             `json:"epoch,omitempty"`
 	TurnID          string             `json:"turn_id"`
@@ -309,6 +313,12 @@ func PrepareSessionRestore(
 	appliedDigest string,
 	bootstrap bool,
 ) (SessionRestore, error) {
+	if err := delta.Conversation.Validate(); err != nil {
+		return SessionRestore{}, err
+	}
+	if err := delta.Conversation.ValidatePlan(delta.Plan); err != nil {
+		return SessionRestore{}, err
+	}
 	key := delta.ReplayKey()
 	if appliedDigest != "" {
 		if appliedDigest != delta.Digest {
@@ -377,6 +387,7 @@ func PrepareSessionRestore(
 			Plan: plan, World: CloneWorldBaseline(delta.World),
 			Workspace: delta.Workspace, Window: window,
 			TurnCheckpoints: CloneTurnCheckpoints(delta.TurnCheckpoints),
+			Conversation:    CloneConversation(delta.Conversation),
 			Manifest:        delta.ManifestLimits,
 		},
 		Accounting: accounting,
@@ -435,6 +446,7 @@ func (d SessionDelta) ContextSnapshot() (ContextSnapshot, error) {
 		Failures: d.Failures, Compaction: d.Compaction,
 		Plan: d.Plan, World: d.World, Workspace: d.Workspace,
 		Window: d.Window, TurnCheckpoints: CloneTurnCheckpoints(d.TurnCheckpoints),
+		Conversation: CloneConversation(d.Conversation),
 	}
 	if err := snapshot.Seal(); err != nil {
 		return ContextSnapshot{}, err
@@ -479,6 +491,7 @@ func NewSessionDelta(
 		Workspace:       snapshot.Workspace,
 		Window:          CloneWindowLedger(snapshot.Window),
 		TurnCheckpoints: CloneTurnCheckpoints(snapshot.TurnCheckpoints),
+		Conversation:    CloneConversation(snapshot.Conversation),
 	}
 	if len(limits) != 0 {
 		delta.ManifestLimits = limits[0]

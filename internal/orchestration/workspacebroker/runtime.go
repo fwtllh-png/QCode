@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/fwtllh-png/QCode/internal/platform/process"
 	"github.com/fwtllh-png/QCode/internal/security/authority"
 	"github.com/fwtllh-png/QCode/internal/security/filebroker"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
@@ -33,6 +34,32 @@ func (r *Runtime) ReadVCS(
 	arguments ...string,
 ) (string, error) {
 	return r.VCS.Read(ctx, dir, arguments...)
+}
+
+func (r *Runtime) ReadVCSResult(ctx context.Context, dir string, arguments ...string) (process.Result, error) {
+	return r.VCS.ReadResult(ctx, dir, arguments...)
+}
+
+// InitContentBaseline creates a private Git baseline without sharing the
+// parent's object store. Each mutation uses its own VCS Broker lease.
+func (r *Runtime) InitContentBaseline(ctx context.Context, dir string) error {
+	broker, err := vcsbroker.New(dir, r.authority, r.leaseTTL, nil)
+	if err != nil {
+		return err
+	}
+	for _, mutation := range []vcsbroker.Mutation{
+		{Kind: vcsbroker.RepositoryInit, Dir: dir, Args: []string{"init", "--quiet"}},
+		{Kind: vcsbroker.SnapshotIndex, Dir: dir, Args: []string{"add", "-A", "--force", "--", ".", ":(exclude).qcode"}},
+		{Kind: vcsbroker.Commit, Dir: dir, Args: []string{
+			"-c", "user.name=QCode", "-c", "user.email=qcode@localhost",
+			"commit", "--allow-empty", "--no-gpg-sign", "-m", "qcode chat baseline",
+		}},
+	} {
+		if _, err := broker.Mutate(ctx, mutation); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (r *Runtime) mutateVCS(
@@ -238,6 +265,7 @@ func New(
 	workspace string,
 	manager *authority.LeaseAuthority,
 	leaseTTL time.Duration,
+	backend sandbox.Backend,
 ) (*Runtime, error) {
 	root, err := sandbox.NewWorkspace(workspace)
 	if err != nil {
@@ -247,7 +275,7 @@ func New(
 	if err != nil {
 		return nil, err
 	}
-	vcs, err := vcsbroker.New(workspace, manager, leaseTTL)
+	vcs, err := vcsbroker.New(workspace, manager, leaseTTL, backend)
 	if err != nil {
 		return nil, err
 	}

@@ -7,8 +7,8 @@ import (
 
 // MandatorySessionState keeps only ledger facts the next sample must still
 // see after the projector clips older turns: goal, open todos, pending input,
-// unverified or stale changes, confirmed continuity, omitted-turn retrieval,
-// and resume. Compact is not required to preserve them.
+// unverified or stale changes, confirmed continuity, and resume. Compact is not
+// required to preserve them.
 func MandatorySessionState(capsule TruthCapsule) TruthCapsule {
 	result := capsule
 	entities := make([]TruthEntity, 0, len(capsule.Entities))
@@ -46,9 +46,6 @@ func RenderSessionState(capsule TruthCapsule, budget int) (StructuredRender, err
 		header += hint + "\n"
 	}
 	if hint := SessionStateResumeHint(capsule); hint != "" {
-		header += hint + "\n"
-	}
-	if hint := SessionStateRetrievalHint(capsule); hint != "" {
 		header += hint + "\n"
 	}
 	truthBlock := TruthMarkerStart + "\n" + string(encoded) + "\n" + TruthMarkerEnd + "\n"

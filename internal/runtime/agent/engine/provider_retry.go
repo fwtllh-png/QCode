@@ -96,6 +96,10 @@ func exhaustedProviderRetry(err error) error {
 	}
 	if problem, ok := errors.AsType[*protocol.Problem](err); ok &&
 		!problem.Retryable {
+		recoveryAction := "correct the provider request or configuration, then retry from the durable checkpoint"
+		if failure.Code == provider.FailureMalformedResponse {
+			recoveryAction = "retry the turn to generate a fresh model response from the durable checkpoint"
+		}
 		problem.Fault = &protocol.FaultMetadata{
 			Origin:         protocol.FaultOriginProvider,
 			Stage:          protocol.FaultStageModelSample,
@@ -103,7 +107,7 @@ func exhaustedProviderRetry(err error) error {
 			SideEffects:    protocol.SideEffectUnchanged,
 			RetryOwner:     protocol.FaultRetryOwnerHost,
 			ResumeHint:     protocol.FaultResumeRetryTurn,
-			RecoveryAction: "correct the provider request or configuration, then retry from the durable checkpoint",
+			RecoveryAction: recoveryAction,
 		}
 		return err
 	}
@@ -147,24 +151,25 @@ func (e *Engine) recoverContextOverflow(
 	input agentcontext.MessageSnapshot,
 	outputReserve uint64,
 	send func(State, Event) error,
+	projectHistory agentcontext.HistoryProjector,
 ) (bool, error) {
-	if meaningful ||
+	if meaningful || e.viewFold.folded ||
 		providerwire.ClassifyFailure(err, meaningful).Code !=
 			provider.FailureContextWindowExceeded {
 		return false, nil
 	}
-	before := e.projectGateHistory(*history, e.contextViewProject(nil))
+	before := e.projectGateHistory(*history, projectHistory)
 	beforeWindow, measureErr := e.measureTokenWindow(
 		input.WithHistory(before), outputReserve, 0,
 	)
-	if measureErr != nil || !e.foldOldestVisibleTail(*history, true) {
+	if measureErr != nil {
 		return false, nil
 	}
-	after := e.projectGateHistory(*history, e.contextViewProject(nil))
-	afterWindow, measureErr := e.measureTokenWindow(
-		input.WithHistory(after), outputReserve, 0,
+	after, afterWindow, folded, measureErr := e.foldForNetReduction(
+		*history, input, outputReserve, 0, agentcontext.OmittedProviderOverflow,
+		projectHistory, before, beforeWindow,
 	)
-	if measureErr != nil || agentcontext.HistoryBytes(after) >= agentcontext.HistoryBytes(before) {
+	if measureErr != nil || !folded {
 		return false, nil
 	}
 	receipt := viewFoldReceipt(

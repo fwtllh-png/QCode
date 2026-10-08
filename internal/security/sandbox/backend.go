@@ -17,17 +17,18 @@ import (
 	"sync"
 	"time"
 
+	"github.com/fwtllh-png/QCode/internal/common/workspacewrite"
+
 	securitymodel "github.com/fwtllh-png/QCode/internal/security/model"
 	securitypaths "github.com/fwtllh-png/QCode/internal/security/pathpolicy"
 )
 
 const ErrUnavailableCode = "sandbox_unavailable"
 
-// MaxExactWorkspaceWritePaths bounds one explicitly approved sandbox policy.
-// Exact write files, files settled under write trees, argument expansion,
-// tool schema validation, and backend policy generation share this value so
-// an approved call cannot fail at a later boundary.
-const MaxExactWorkspaceWritePaths = 512
+// MaxExactWorkspaceWritePaths is the exec_command write_paths input-schema
+// limit. It bounds declared grants (files or directory roots) and expanded
+// globs, not the number of existing or changed files inside a directory grant.
+const MaxExactWorkspaceWritePaths = workspacewrite.MaxDeclaredPaths
 
 type Capability struct {
 	Platform  string                 `json:"platform"`

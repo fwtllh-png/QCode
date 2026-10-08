@@ -379,7 +379,7 @@ func (t *mutationTool) run(
 	if err != nil {
 		return tool.Result{}, tool.WithRecoveryHint(err, tool.RecoveryHint{
 			ErrorCategory:  "git_operation_failed",
-			RequiredAction: t.kind,
+			RequiredAction: "git_status",
 			RetryOriginal:  false,
 		})
 	}

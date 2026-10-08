@@ -167,22 +167,6 @@
       "reason": "Runtime-owned worktree, lane, and durable orchestration state."
     },
     {
-      "path": "internal/orchestration/workspacemerge/service.go",
-      "categories": [
-        "process"
-      ],
-      "owner": "workspace merge",
-      "reason": "Runtime-owned read-only Git merge calculations; mutations use File and VCS Brokers."
-    },
-    {
-      "path": "internal/orchestration/execsettle/service.go",
-      "categories": [
-        "process"
-      ],
-      "owner": "exec settlement",
-      "reason": "Settles toolchain installation state through the platform process runner."
-    },
-    {
       "path": "internal/persist",
       "prefix": true,
       "categories": [

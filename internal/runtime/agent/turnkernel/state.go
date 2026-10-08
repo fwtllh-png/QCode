@@ -36,6 +36,7 @@ func (p Phase) Terminal() bool {
 type VerificationStatus string
 
 const (
+	VerificationNotRequired  VerificationStatus = "not_required"
 	VerificationNotEvaluated VerificationStatus = "not_evaluated"
 	VerificationPassed       VerificationStatus = "passed"
 	VerificationFailed       VerificationStatus = "failed"
@@ -114,12 +115,13 @@ const (
 type VerificationAction string
 
 const (
-	VerificationActionPassed   VerificationAction = "passed"
-	VerificationActionRepair   VerificationAction = "repair"
-	VerificationActionReported VerificationAction = "reported"
-	VerificationActionBlocked  VerificationAction = "blocked"
-	VerificationActionFailed   VerificationAction = "failed"
-	VerificationActionReverted VerificationAction = "reverted"
+	VerificationActionNotRequired VerificationAction = "not_required"
+	VerificationActionPassed      VerificationAction = "passed"
+	VerificationActionRepair      VerificationAction = "repair"
+	VerificationActionReported    VerificationAction = "reported"
+	VerificationActionBlocked     VerificationAction = "blocked"
+	VerificationActionFailed      VerificationAction = "failed"
+	VerificationActionReverted    VerificationAction = "reverted"
 )
 
 type RepairBudget struct {
@@ -264,7 +266,16 @@ type InputState struct {
 	CallID string `json:"call_id,omitempty"`
 }
 
+// WorkspaceState records effective changes relative to the turn baseline.
+// MutationRevision still records every mutation for evidence invalidation.
+type WorkspaceState struct {
+	Mutation uint64           `json:"mutation_revision"`
+	Changes  []ObservedChange `json:"changes,omitempty"`
+}
+
 type CompletionDecision struct {
+	NoChangeReason    string   `json:"no_change_reason,omitempty"`
+	NoChangeEvidence  []string `json:"no_change_evidence,omitempty"`
 	Accepted          bool     `json:"accepted"`
 	Summary           string   `json:"summary,omitempty"`
 	Reason            string   `json:"reason,omitempty"`
@@ -364,6 +375,7 @@ type State struct {
 	ClosedCalls           map[string]ToolResultState  `json:"closed_calls"`
 	PendingApprovals      map[string]ApprovalState    `json:"pending_approvals"`
 	PendingInput          *InputState                 `json:"pending_input,omitempty"`
+	Workspace             *WorkspaceState             `json:"workspace,omitempty"`
 	Changes               []ObservedChange            `json:"changes,omitempty"`
 	Completion            *CompletionDecision         `json:"completion,omitempty"`
 	Continuation          *ContinuationCursor         `json:"continuation,omitempty"`

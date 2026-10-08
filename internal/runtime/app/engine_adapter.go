@@ -18,6 +18,7 @@ import (
 	agentcontext "github.com/fwtllh-png/QCode/internal/runtime/agent/context"
 	agentengine "github.com/fwtllh-png/QCode/internal/runtime/agent/engine"
 	promptcontext "github.com/fwtllh-png/QCode/internal/runtime/agent/prompt"
+	"github.com/fwtllh-png/QCode/internal/runtime/agent/turnkernel"
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
 	"github.com/fwtllh-png/QCode/internal/security/policy"
 )
@@ -443,6 +444,8 @@ func (a *EngineAdapter) StartTurn(
 					rejection, _ := event.Result.Metadata["completion_declaration_rejection"].(string)
 					completion = &protocol.CompletionDeclaration{
 						Status: declaration.Status, Summary: declaration.Summary,
+						NoChangeReason:      declaration.NoChangeReason,
+						NoChangeEvidence:    append([]string(nil), declaration.NoChangeEvidence...),
 						OutputMode:          declaration.OutputMode,
 						ChangedPaths:        append([]string(nil), declaration.ChangedPaths...),
 						VerificationCallIDs: append([]string(nil), declaration.VerificationCallIDs...),
@@ -634,6 +637,13 @@ func (a *EngineAdapter) commitTerminal(
 		return err
 	}
 	recorder.freeze(a.engine, &measurement)
+	if completed && frozen.State.Intent == protocol.TurnIntentWorkspaceChange &&
+		((frozen.State.Workspace != nil && len(frozen.State.Workspace.Changes) == 0) || frozen.State.Journal == turnkernel.JournalRolledBack) {
+		recorder.setOutcome(protocol.TurnOutcomeUnchanged)
+		if value, ok := terminal.(*protocol.TurnCompletedData); ok {
+			value.Outcome = protocol.TurnOutcomeUnchanged
+		}
+	}
 	receipt, err := a.buildReceipt(recorder, completed)
 	if err != nil {
 		return err
@@ -758,6 +768,9 @@ func (a *EngineAdapter) CompactThread(
 	if err != nil {
 		return err
 	}
+	if err := emitNarrativeUsage(sink, result); err != nil {
+		return err
+	}
 	receipt := result.Receipt
 	summary := "context already within budget; no messages compacted"
 	if receipt != nil {
@@ -820,37 +833,42 @@ func ProtocolCompactionData(
 			receipt.Phase,
 			agentengine.CompactionPhasePreSampling,
 		),
-		Summary:               FormatCompactionSummary(receipt),
-		RemovedMessages:       receipt.RemovedMessages,
-		OriginalBytes:         receipt.OriginalBytes,
-		RetainedBytes:         receipt.RetainedBytes,
-		Sections:              append([]string(nil), receipt.Sections...),
-		SummaryTruncated:      receipt.SummaryTruncated,
-		RemovedTurns:          append([]uint64(nil), receipt.RemovedTurns...),
-		PrunedToolResults:     receipt.PrunedToolResults,
-		PrunedBytes:           receipt.PrunedBytes,
-		TruthGeneration:       receipt.TruthGeneration,
-		TruthEntities:         receipt.TruthEntities,
-		CriticalFacts:         receipt.CriticalFacts,
-		CompatibilityHash:     receipt.CompatibilityHash,
-		CompatibilityMatched:  receipt.CompatibilityMatched,
-		AuthorityDigest:       receipt.AuthorityDigest,
-		AuthorityEquivalent:   receipt.AuthorityEquivalent,
-		ModelDownshifted:      receipt.ModelDownshifted,
-		DownshiftPolicy:       receipt.DownshiftPolicy,
-		NarrativeIncluded:     receipt.NarrativeIncluded,
-		NarrativeBytes:        receipt.NarrativeBytes,
-		NarrativeInputTokens:  receipt.NarrativeInputTokens,
-		NarrativeOutputTokens: receipt.NarrativeOutputTokens,
-		NarrativeProvider:     receipt.NarrativeProvider,
-		NarrativeModel:        receipt.NarrativeModel,
-		NarrativeMetadata:     receipt.NarrativeMetadata,
-		FallbackReason:        receipt.FallbackReason,
-		CapsuleBytes:          receipt.CapsuleBytes,
-		MandatoryBytes:        receipt.MandatoryBytes,
-		MandatoryEntities:     receipt.MandatoryEntities,
-		OmissionCount:         receipt.OmissionCount,
-		Retention:             protocolRetention(receipt.Retention),
+		Summary:                   FormatCompactionSummary(receipt),
+		RemovedMessages:           receipt.RemovedMessages,
+		OriginalBytes:             receipt.OriginalBytes,
+		RetainedBytes:             receipt.RetainedBytes,
+		Sections:                  append([]string(nil), receipt.Sections...),
+		SummaryTruncated:          receipt.SummaryTruncated,
+		RemovedTurns:              append([]uint64(nil), receipt.RemovedTurns...),
+		PrunedToolResults:         receipt.PrunedToolResults,
+		PrunedBytes:               receipt.PrunedBytes,
+		TruthGeneration:           receipt.TruthGeneration,
+		TruthEntities:             receipt.TruthEntities,
+		CriticalFacts:             receipt.CriticalFacts,
+		CompatibilityHash:         receipt.CompatibilityHash,
+		CompatibilityMatched:      receipt.CompatibilityMatched,
+		AuthorityDigest:           receipt.AuthorityDigest,
+		AuthorityEquivalent:       receipt.AuthorityEquivalent,
+		ModelDownshifted:          receipt.ModelDownshifted,
+		DownshiftPolicy:           receipt.DownshiftPolicy,
+		NarrativeIncluded:         receipt.NarrativeIncluded,
+		NarrativeBytes:            receipt.NarrativeBytes,
+		NarrativeInputTokens:      receipt.NarrativeInputTokens,
+		NarrativeOutputTokens:     receipt.NarrativeOutputTokens,
+		NarrativeProvider:         receipt.NarrativeProvider,
+		NarrativeModel:            receipt.NarrativeModel,
+		NarrativeMetadata:         receipt.NarrativeMetadata,
+		NarrativeDurationMS:       receipt.NarrativeDurationMS,
+		NarrativeBackground:       receipt.NarrativeBackground,
+		NarrativeForegroundWaitMS: receipt.NarrativeForegroundWaitMS,
+		NarrativeCostMicrounits:   receipt.NarrativeCostMicrounits,
+		NarrativeCostKnown:        receipt.NarrativeCostKnown,
+		FallbackReason:            receipt.FallbackReason,
+		CapsuleBytes:              receipt.CapsuleBytes,
+		MandatoryBytes:            receipt.MandatoryBytes,
+		MandatoryEntities:         receipt.MandatoryEntities,
+		OmissionCount:             receipt.OmissionCount,
+		Retention:                 protocolRetention(receipt.Retention),
 	}
 }
 
@@ -868,6 +886,12 @@ func protocolRetention(
 }
 
 func FormatCompactionSummary(receipt *agentengine.CompactionReceipt) string {
+	if receipt.Mode == "post_turn" && receipt.Status == "started" {
+		return "preparing optional background narrative"
+	}
+	if receipt.Mode == "post_turn" && receipt.Status == "prepared" {
+		return "narrative candidate prepared; awaiting a safe installation boundary"
+	}
 	if receipt.Status == "completed" && receipt.NarrativeIncluded {
 		return "semantic narrative committed for the compacted context"
 	}
@@ -994,6 +1018,7 @@ func providerAttemptData(event agentengine.Event) *protocol.ProviderAttemptData 
 		return nil
 	}
 	data := &protocol.ProviderAttemptData{
+		ContextProjection: event.ContextProjection, Context: event.InputContext,
 		SampleID: execution.SampleID, Attempt: execution.Attempt,
 		Status: execution.Status, Reason: execution.Reason,
 		ProjectedInputTokens: execution.ProjectedInputTokens,

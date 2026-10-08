@@ -2,6 +2,7 @@ package agentcontext
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -21,7 +22,7 @@ func TestNarrativeArtifactIsSourceBoundAndNonAuthoritative(t *testing.T) {
 		"sha256:authority",
 		"sha256:route",
 		removed,
-		DefaultNarrativeLimits(),
+		NarrativeLimits{},
 		now,
 		time.Hour,
 	)
@@ -56,7 +57,7 @@ func TestNarrativeArtifactIsSourceBoundAndNonAuthoritative(t *testing.T) {
 	artifact, err := ValidateNarrativeJSON(
 		raw,
 		input,
-		DefaultNarrativeLimits(),
+		NarrativeLimits{},
 		2,
 		now,
 	)
@@ -79,7 +80,7 @@ func TestNarrativeValidatorRejectsUnknownSourceAndFields(t *testing.T) {
 		"sha256:authority",
 		"sha256:route",
 		[]provider.Message{messageAt(provider.RoleUser, "constraint", 1)},
-		DefaultNarrativeLimits(),
+		NarrativeLimits{},
 		now,
 		time.Hour,
 	)
@@ -102,7 +103,7 @@ func TestNarrativeValidatorRejectsUnknownSourceAndFields(t *testing.T) {
 			if _, err := ValidateNarrativeJSON(
 				[]byte(raw),
 				input,
-				DefaultNarrativeLimits(),
+				NarrativeLimits{},
 				2,
 				now,
 			); err == nil {
@@ -163,7 +164,7 @@ func TestNarrativeInputIncludesPairedToolResults(t *testing.T) {
 				Turn: 1,
 			},
 		},
-		DefaultNarrativeLimits(),
+		NarrativeLimits{},
 		now,
 		time.Hour,
 		[]string{
@@ -189,7 +190,7 @@ func TestNarrativeInputIncludesPairedToolResults(t *testing.T) {
 	raw, err := json.Marshal(map[string]any{
 		"technical_concepts": []any{},
 		"files_and_code": []map[string]any{{
-			"text": "parser.go defines Parse.", "source_message_ids": []string{source},
+			"text": "parser.go defines Parse.", "source_message_ids": []string{source, input.Excerpts[0].MessageID},
 		}},
 		"errors_and_fixes": []any{},
 		"pending_jobs":     []any{},
@@ -209,7 +210,7 @@ func TestNarrativeInputIncludesPairedToolResults(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err = ValidateNarrativeJSON(
-		raw, input, DefaultNarrativeLimits(), 2, now,
+		raw, input, NarrativeLimits{}, 2, now,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -228,13 +229,13 @@ func TestNarrativeInputIncludesPairedToolResults(t *testing.T) {
 		"unresolved":         []any{},
 	})
 	if _, err := ValidateNarrativeJSON(
-		missing, input, DefaultNarrativeLimits(), 2, now,
+		missing, input, NarrativeLimits{}, 2, now,
 	); err == nil {
 		t.Fatal("tool-heavy narrative accepted without continuation context")
 	}
 }
 
-func TestNarrativeInputBudgetCoversCanonicalArtifact(t *testing.T) {
+func TestNarrativeInputRetainsAllSourcesForLaterBudgetPartition(t *testing.T) {
 	now := time.Now().UTC()
 	var removed []provider.Message
 	for index := 0; index < 20; index++ {
@@ -243,7 +244,7 @@ func TestNarrativeInputBudgetCoversCanonicalArtifact(t *testing.T) {
 			messageAt(provider.RoleUser, "short preference", uint64(index+1)),
 		)
 	}
-	limits := DefaultNarrativeLimits()
+	limits := NarrativeLimits{}
 	limits.MaxInputBytes = 900
 	input, err := BuildNarrativeInput(
 		"thread-1",
@@ -262,9 +263,7 @@ func TestNarrativeInputBudgetCoversCanonicalArtifact(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(raw) > limits.MaxInputBytes ||
-		len(input.Excerpts) == 0 ||
-		len(input.Excerpts) == len(removed) {
+	if len(raw) <= limits.MaxInputBytes || len(input.Excerpts) != len(removed) {
 		t.Fatalf(
 			"artifact bytes=%d excerpts=%d",
 			len(raw),
@@ -283,7 +282,7 @@ func TestNarrativeJSONValidatesAgainstBuiltInput(t *testing.T) {
 		[]provider.Message{
 			messageAt(provider.RoleUser, "continue", 1),
 		},
-		DefaultNarrativeLimits(),
+		NarrativeLimits{},
 		now,
 		time.Hour,
 	)
@@ -301,46 +300,32 @@ func TestNarrativeJSONValidatesAgainstBuiltInput(t *testing.T) {
 		1,
 	)
 	if _, err := ValidateNarrativeJSON(
-		[]byte(raw), input, DefaultNarrativeLimits(), 2, now,
+		[]byte(raw), input, NarrativeLimits{}, 2, now,
 	); err != nil {
 		t.Fatal(err)
 	}
 }
 
-func TestRebindNarrativeInputCarriesVerifiedExcerptsToLatestWindow(t *testing.T) {
+func TestNarrativeZeroLimitsKeepMoreThanFormerItemAndByteCaps(t *testing.T) {
 	now := time.Now().UTC()
-	input, err := BuildNarrativeInput(
-		"thread-1",
-		"window-1",
-		"sha256:authority",
-		"sha256:route",
-		[]provider.Message{
-			messageAt(provider.RoleUser, "retain this decision", 1),
-		},
-		DefaultNarrativeLimits(),
-		now,
-		time.Hour,
-	)
+	input, err := BuildNarrativeInput("thread", "window", "authority", "route", []provider.Message{messageAt(provider.RoleUser, "完整来源", 1)}, NarrativeLimits{}, now, time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
-	rebased, err := RebindNarrativeInput(
-		input,
-		"window-2",
-		input.AuthorityDigest,
-		input.RouteDigest,
-		DefaultNarrativeLimits(),
-		now.Add(time.Minute),
-		time.Hour,
-	)
-	if err != nil {
-		t.Fatal(err)
+	var items []map[string]any
+	for i := 0; i < 40; i++ {
+		items = append(items, map[string]any{"text": fmt.Sprint(i) + strings.Repeat("长定义", 200), "source_message_ids": []string{input.Excerpts[0].MessageID}})
 	}
-	if rebased.SourceWindowID != "window-2" ||
-		len(rebased.Excerpts) != 1 ||
-		rebased.Excerpts[0] != input.Excerpts[0] ||
-		rebased.Digest == input.Digest {
-		t.Fatalf("rebased input = %+v", rebased)
+	output := map[string]any{"technical_concepts": []any{}, "files_and_code": []any{}, "errors_and_fixes": []any{}, "pending_jobs": []any{}, "current_work": []any{}, "next_steps": []any{}, "critical_context": []any{}, "decisions": []any{}, "rationale": []any{}, "unresolved": []any{}, "preferences": items}
+	raw, _ := json.Marshal(output)
+	artifact, err := ValidateNarrativeJSON(raw, input, NarrativeLimits{}, 2, now)
+	if err != nil || len(artifact.Body.Items) != 40 {
+		t.Fatalf("zero reintroduced a hidden limit: items=%d err=%v", len(artifact.Body.Items), err)
+	}
+	for _, limits := range []NarrativeLimits{{MaxItems: 32}, {ItemMaxBytes: 512}} {
+		if _, err := ValidateNarrativeJSON(raw, input, limits, 2, now); err == nil {
+			t.Fatal("explicit ceiling ignored")
+		}
 	}
 }
 

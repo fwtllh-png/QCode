@@ -25,15 +25,3 @@ func (e *Engine) sessionStateBudget() int {
 	}
 	return e.summaryBudget()
 }
-
-func (e *Engine) narrativePartition() string {
-	digest := e.context.Compaction().Digest
-	if digest == nil {
-		return ""
-	}
-	text, err := agentcontext.RenderNarrativeDigest(*digest, e.summaryBudget())
-	if err != nil {
-		return ""
-	}
-	return text
-}

@@ -40,6 +40,8 @@
 6. [CONTRIBUTING.md](../../CONTRIBUTING.md)
 7. [安全策略模型收敛方案](./security-policy-refactor-plan.md)
 8. [执行环境通用化优化方案（P1–P4 已实施）](./environment-language-neutral-plan.md)
+9. [上下文连续性与压缩优化方案（P0–P3 已实施）](./context-continuity-optimization-plan.md)
+10. [上下文连续性契约与阶段回归](./context-continuity-contract.md)
 
 ## 文档事实来源
 

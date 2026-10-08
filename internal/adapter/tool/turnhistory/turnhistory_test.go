@@ -46,9 +46,8 @@ func TestAssemblePageUTF8AndFindingsBudget(t *testing.T) {
 		{name: "tail sub-rune", transcript: "甲乙丙", limit: 1},
 		{name: "head with index", transcript: "甲乙丙", index: "sites", from: "head", limit: 11, want: "甲\n\nsites\n"},
 		{name: "tail with index", transcript: "甲乙丙", index: "sites", limit: 11, want: "丙\n\nsites\n"},
-		{name: "oversized index head", transcript: "甲乙丙", index: "sites", from: "head", limit: 1, want: "\n\nsites\n"},
-		// Preserve the existing tail behavior when the index exhausts the body budget.
-		{name: "oversized index tail", transcript: "甲乙丙", index: "sites", limit: 1, want: "甲乙丙\n\nsites\n"},
+		{name: "oversized index head", transcript: "甲乙丙", index: "sites", from: "head", limit: 1, want: "\n"},
+		{name: "oversized index tail", transcript: "甲乙丙", index: "sites", limit: 1, want: "\n"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			got, truncated, original := assemblePage(test.transcript, test.index, test.from, test.limit)
@@ -56,7 +55,7 @@ func TestAssemblePageUTF8AndFindingsBudget(t *testing.T) {
 			if test.index != "" {
 				wantOriginal += len(test.index) + 3
 			}
-			if got != test.want || !utf8.ValidString(got) || !truncated || original != wantOriginal {
+			if got != test.want || len(got) > test.limit || !utf8.ValidString(got) || !truncated || original != wantOriginal {
 				t.Fatalf("page = %q, truncated=%v, original=%d; want %q, true, %d", got, truncated, original, test.want, wantOriginal)
 			}
 		})

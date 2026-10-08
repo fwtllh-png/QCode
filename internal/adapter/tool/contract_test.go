@@ -125,6 +125,29 @@ func TestExternalRequestedEffectsDoNotOverrideTrustedBinding(t *testing.T) {
 	}
 }
 
+func TestIsolatedWriteBindingRequiresDeclaredStrongProcess(t *testing.T) {
+	binding := bindingFixture(CapabilityProcess)
+	binding.ResourceResolver.PathsField = "write_paths"
+	binding.Required.ProcessTree = securitymodel.ProcessTreeGroupKill
+	binding.IsolatesWriteTrees = true
+	if err := binding.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	for name, change := range map[string]func(*TrustedBinding){
+		"read capability": func(b *TrustedBinding) { b.Capability = CapabilityRead },
+		"no sandbox":      func(b *TrustedBinding) { b.SandboxRequirement = SandboxNone },
+		"no write paths":  func(b *TrustedBinding) { b.ResourceResolver.PathsField = "" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			invalid := binding
+			change(&invalid)
+			if err := invalid.Validate(); err == nil {
+				t.Fatal("invalid isolated write contract accepted")
+			}
+		})
+	}
+}
+
 func TestRegistryRejectsLegacyExternalSourceRegistration(t *testing.T) {
 	registry := NewRegistry(nil, nil)
 	executor := contractExecutor{

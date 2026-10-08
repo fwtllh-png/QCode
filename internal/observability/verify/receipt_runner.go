@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strings"
 )
 
 // ReceiptRunner consumes already executed evidence. It never starts a process.
@@ -18,6 +19,11 @@ func (r *ReceiptRunner) Verify(_ context.Context, request Request) (Receipt, err
 	case ScopeDiagnostics, ScopeRepository, ScopeAffected, ScopeCommands:
 	default:
 		return Receipt{}, fmt.Errorf("unknown verify scope %q", request.Scope)
+	}
+	if request.RequireConfiguredCommand && strings.TrimSpace(r.Command) == "" {
+		return Receipt{Scope: request.Scope, Status: StatusUnavailable,
+			UncoveredPaths: append([]string(nil), request.Paths...),
+			Message:        "hard verification requires execution.verify.command to define the acceptance check; configure a reproducible project check or use soft mode"}, nil
 	}
 	if r.Root != "" {
 		request.Paths = relativePaths(r.Root, request.Paths)

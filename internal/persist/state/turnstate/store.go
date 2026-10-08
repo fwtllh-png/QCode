@@ -666,8 +666,26 @@ func (s *Store) LatestSessionDelta(
 	ctx context.Context,
 	threadID protocol.ThreadID,
 ) (json.RawMessage, error) {
+	return latestSessionDelta(ctx, s.database.DB().QueryRowContext, threadID)
+}
+
+// LatestSessionDeltaTx shares the recovery query while participating in the
+// caller's context revision comparison and commit transaction.
+func (s *Store) LatestSessionDeltaTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	threadID protocol.ThreadID,
+) (json.RawMessage, error) {
+	return latestSessionDelta(ctx, tx.QueryRowContext, threadID)
+}
+
+func latestSessionDelta(
+	ctx context.Context,
+	queryRow func(context.Context, string, ...any) *sql.Row,
+	threadID protocol.ThreadID,
+) (json.RawMessage, error) {
 	var delta string
-	err := s.database.DB().QueryRowContext(
+	err := queryRow(
 		ctx,
 		`SELECT json_extract(envelope_json, '$.session_delta')
 		 FROM turn_terminal_envelopes

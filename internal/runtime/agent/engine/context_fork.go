@@ -10,6 +10,7 @@ import (
 	"github.com/fwtllh-png/QCode/internal/adapter/provider"
 	"github.com/fwtllh-png/QCode/internal/common/contextsnapshot"
 	agentcontext "github.com/fwtllh-png/QCode/internal/runtime/agent/context"
+	"github.com/fwtllh-png/QCode/internal/runtime/agent/contextview"
 	promptcontext "github.com/fwtllh-png/QCode/internal/runtime/agent/prompt"
 )
 
@@ -85,6 +86,9 @@ func (e *Engine) ParentContextSnapshot(
 			spec.Identity.TurnID,
 		)
 	}
+	if spec.Identity.ThreadID != "" && ref.ThreadID != spec.Identity.ThreadID {
+		return contextsnapshot.Snapshot{}, fmt.Errorf("parent context thread does not match active thread")
+	}
 	contextSnapshot := e.ContextSnapshot()
 	history := contextSnapshot.Partition(agentcontext.KindHistory)
 	usedTokens := e.EstimateMessageTokens(contextSnapshot.Messages())
@@ -120,6 +124,23 @@ func (e *Engine) ParentContextSnapshot(
 		WorkspaceRules:  workspaceRules,
 	}
 	snapshot.ParentGoal = parentGoal(snapshot.Messages, snapshot.UserRequest)
+	conversation := e.contextAuthority().Conversation()
+	if conversation != nil {
+		// Delegate only bound definitions and open-plan references, never the
+		// entire unbound report directory.
+		if conversation.Selection == nil {
+			conversation.Selection = &agentcontext.ConversationSelection{}
+		}
+		for _, excerpt := range contextview.SelectConversation(conversation, e.currentPlan(), nil) {
+			for _, r := range excerpt.Coverage.Ranges {
+				snapshot.References = append(snapshot.References, contextsnapshot.Reference{
+					SourceID: excerpt.Source.ID, SourceThread: excerpt.Source.ThreadID, SourceTurn: excerpt.Source.TurnID,
+					ContentDigest: excerpt.Source.ContentDigest, ItemIDs: append([]string(nil), excerpt.Coverage.ItemIDs...),
+					Start: r.Start, End: r.End, Text: excerpt.Source.Text[r.Start:r.End],
+				})
+			}
+		}
+	}
 	for _, entry := range e.WorkingSetEntries(turn, 32) {
 		file := contextsnapshot.RelevantFile{
 			Path: entry.Path, Critical: entry.Critical,

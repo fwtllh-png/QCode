@@ -189,7 +189,7 @@ func NewWithAuthority(
 	webOpts ...webtool.Options,
 ) (*tool.Registry, *handletool.Store, error) {
 	runtime, err := NewWorkspaceBroker(
-		root, leaseAuthority, leaseTTL,
+		root, leaseAuthority, leaseTTL, backend,
 	)
 	if err != nil {
 		return nil, nil, err

@@ -61,7 +61,7 @@ func (e *Engine) runCompactGate(
 	overHard := window.hardLimit != 0 && window.total > window.hardLimit
 	operatorCeiling := window.compactLimit != 0 &&
 		window.compactLimit < window.hardLimit &&
-		window.active >= window.compactLimit
+		window.active > window.compactLimit
 	if phase == CompactionPhasePostTurn {
 		e.resetViewFold()
 		projected = e.projectGateHistory(*history, projectHistory)
@@ -106,20 +106,33 @@ func (e *Engine) runCompactGate(
 		}
 		return window, err
 	}
-	if (overHard || operatorCeiling) && e.foldOldestVisibleTail(*history, allowCurrentTurn) {
+	for overHard || operatorCeiling {
+		reason := agentcontext.OmittedCapacity
+		if !overHard && economicInput != 0 && window.active > economicInput {
+			reason = agentcontext.OmittedEconomicBudget
+		} else if !overHard {
+			reason = agentcontext.OmittedOperatorCeiling
+		}
 		before := projected
 		beforeWindow := window
-		projected = e.projectGateHistory(*history, projectHistory)
-		input = baseInput.WithHistory(projected)
-		window, err = e.measureTokenWindow(input, outputReserve, economicInput)
+		var folded bool
+		projected, window, folded, err = e.foldForNetReduction(
+			*history, baseInput, outputReserve, economicInput,
+			reason, projectHistory, before, beforeWindow,
+		)
 		if err != nil {
 			return tokenWindow{}, err
+		}
+		if !folded {
+			break
 		}
 		receipt := viewFoldReceipt(phase, before, projected, beforeWindow, window)
 		if err := send(Compacting, Event{Compaction: receipt}); err != nil {
 			return tokenWindow{}, err
 		}
 		overHard = window.hardLimit != 0 && window.total > window.hardLimit
+		operatorCeiling = window.compactLimit != 0 &&
+			window.compactLimit < window.hardLimit && window.active > window.compactLimit
 	}
 	if err == nil && overHard {
 		return e.relieveCurrentTurnPressure(
@@ -128,6 +141,34 @@ func (e *Engine) runCompactGate(
 		)
 	}
 	return window, err
+}
+
+// A newly required omission hint may cost more than one short closed turn.
+// Probe successive safe boundaries until the whole request shrinks. Failed
+// probes are rolled back; the finite source boundaries bound this search.
+func (e *Engine) foldForNetReduction(
+	history []provider.Message,
+	base agentcontext.MessageSnapshot,
+	outputReserve, economicInput uint64,
+	reason agentcontext.OmissionReason,
+	projectHistory agentcontext.HistoryProjector,
+	before []provider.Message,
+	beforeWindow tokenWindow,
+) ([]provider.Message, tokenWindow, bool, error) {
+	previousFold := e.viewFold
+	for e.foldOldestVisibleTail(history, reason) {
+		after := e.projectGateHistory(history, projectHistory)
+		window, err := e.measureTokenWindow(base.WithHistory(after), outputReserve, economicInput)
+		if err != nil {
+			e.viewFold = previousFold
+			return before, beforeWindow, false, err
+		}
+		if window.total < beforeWindow.total {
+			return after, window, true, nil
+		}
+	}
+	e.viewFold = previousFold
+	return before, beforeWindow, false, nil
 }
 
 func (e *Engine) runTerminalCompactGate(
@@ -158,7 +199,11 @@ func (e *Engine) measureTokenWindow(
 	outputReserve uint64,
 	economicInput uint64,
 ) (tokenWindow, error) {
-	measured, err := input.Measure("", "", e.options.TokenEstimator)
+	normalized, _, err := input.Normalize(e.activeRoute().Model().Capabilities)
+	if err != nil {
+		return tokenWindow{}, err
+	}
+	measured, err := normalized.Measure("", "", e.options.TokenEstimator)
 	if err != nil {
 		return tokenWindow{}, err
 	}
@@ -253,17 +298,6 @@ func (e *Engine) Compact() *CompactionReceipt {
 	return e.compact()
 }
 
-// CompactForced summarizes older turns even below the automatic token limit.
-// Used by explicit thread.compact operations.
-func (e *Engine) CompactForced() *CompactionReceipt {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	e.resetViewFold()
-	receipt := e.compactHistory(&e.history, true)
-	e.reconcileWorldBaseline(e.history)
-	return receipt
-}
-
 // CompactForcedDurable applies a forced history replacement. Semantic
 // narrative is post-turn only and does not block this operation.
 func (e *Engine) CompactForcedDurable(
@@ -272,9 +306,6 @@ func (e *Engine) CompactForcedDurable(
 	turnID protocol.TurnID,
 	focus string,
 ) (NarrativeGenerationResult, error) {
-	// Settle any pending post-turn narrative first so its digest cannot
-	// overwrite the compaction's own replacement window.
-	e.joinPendingNarrative()
 	e.mu.Lock()
 	e.resetViewFold()
 	source := cloneMessages(e.history)
@@ -295,10 +326,6 @@ func (e *Engine) CompactForcedDurable(
 	if result.Receipt != nil {
 		receipt.Status = result.Receipt.Status
 		receipt.Mode = "post_turn"
-		receipt.SourceWindowID = result.Receipt.SourceWindowID
-		receipt.TargetWindowID = result.Receipt.TargetWindowID
-		receipt.AuthorityDigest = result.Receipt.AuthorityDigest
-		receipt.AuthorityEquivalent = result.Receipt.AuthorityEquivalent
 		receipt.NarrativeIncluded = result.Receipt.NarrativeIncluded
 		receipt.NarrativeBytes = result.Receipt.NarrativeBytes
 		receipt.NarrativeInputTokens = result.Receipt.NarrativeInputTokens
@@ -497,11 +524,9 @@ func (e *Engine) History() []provider.Message {
 
 // ReplaceHistory installs a compacted replacement window as the model-visible history.
 func (e *Engine) ReplaceHistory(messages []provider.Message) {
-	// Settle any pending post-turn narrative first so its digest lands
-	// before the replacement window rather than racing it.
-	e.joinPendingNarrative()
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	e.invalidatePendingNarrative()
 	e.resetViewFold()
 	e.history = cloneMessages(messages)
 	agentcontext.ReconcileHistoryTurns(&e.historyTurns, e.history, "", 0)

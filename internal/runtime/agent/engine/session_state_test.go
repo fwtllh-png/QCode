@@ -17,6 +17,7 @@ func TestSessionStatePartitionSurvivesProjectedTailWithoutCompact(t *testing.T) 
 		textStream("one"), textStream("two"), textStream("three"),
 	}}
 	engine := newEngine(t, runtime, tool.NewRegistry(nil, nil))
+	engine.options.Context.RecentTailTurns = 2
 	engine.options.Workspace = t.TempDir()
 	engine.turn = 1
 	engine.context.Evidence().BeginTurn(1)
@@ -64,7 +65,8 @@ func TestSessionStatePartitionSurvivesProjectedTailWithoutCompact(t *testing.T) 
 	}
 }
 
-func TestOmittedTurnHintSurvivesOldSessionWithoutGuessingP2s(t *testing.T) {
+// P5 defaults preserve old-session source text whenever capacity permits.
+func TestContextContinuityP5DefaultRetainsOldSessionDefinitions(t *testing.T) {
 	runtime := &scriptedProvider{streams: []provider.Stream{
 		textStream("Turn 1 conclusions listed five P2s: missing overflow test."),
 		textStream("still working"),
@@ -79,26 +81,21 @@ func TestOmittedTurnHintSurvivesOldSessionWithoutGuessingP2s(t *testing.T) {
 	}
 	last := runtime.requests[len(runtime.requests)-1].Messages
 	joined := joinMessageText(last)
-	if !strings.Contains(joined, "turn_history") ||
-		!strings.Contains(joined, "turn=1") ||
-		!strings.Contains(joined, "Do not search the repository") {
-		t.Fatalf("omitted-turn hint missing: %s", joined)
-	}
-	if strings.Contains(joined, "missing overflow test") {
-		t.Fatalf("sample invented or leaked turn-1 P2 text: %s", joined)
+	if !strings.Contains(joined, "missing overflow test") || strings.Contains(joined, "[context_selection]") {
+		t.Fatalf("default lost the definition or advertised unnecessary recovery: %s", joined)
 	}
 	var sawTurnOne bool
-	for _, checkpoint := range engine.closedTurnCheckpointMessages() {
+	for _, checkpoint := range engine.checkpointMessagesForTest() {
 		text := checkpoint.Text()
 		if strings.Contains(text, "missing overflow test") {
-			t.Fatalf("backfill invented P2 text: %s", text)
+			t.Fatalf("old checkpoint baseline changed: findings entered visible text; evaluate source attribution before promoting: %s", text)
 		}
 		if checkpoint.Turn == 1 && strings.Contains(text, turnhistory.Name) {
 			sawTurnOne = true
 		}
 	}
 	if !sawTurnOne {
-		t.Fatalf("closed turn 1 was not backfilled: %+v", engine.closedTurnCheckpointMessages())
+		t.Fatalf("closed turn 1 was not backfilled: %+v", engine.checkpointMessagesForTest())
 	}
 }
 
@@ -126,7 +123,7 @@ func TestSessionStateCarriesConfirmedContinuityIntoNextTurn(t *testing.T) {
 	joined := joinMessageText(runtime.requests[1].Messages)
 	if !strings.Contains(joined, "hasGlobalLock must be held across the lease") ||
 		!strings.Contains(joined, "eds_metaserver.cc:88 hasGlobalLock") ||
-		!strings.Contains(joined, "Do not call turn_history or search the repository") {
+		!strings.Contains(joined, "Recover missing conversation definitions") {
 		t.Fatalf("next turn lost continuity: %s", joined)
 	}
 }

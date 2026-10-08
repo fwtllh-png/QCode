@@ -7,9 +7,11 @@ import (
 	"strings"
 
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
+	"github.com/google/uuid"
 )
 
 type SubmittedPlanStep struct {
+	ReferenceItemIDs []string `json:"reference_item_ids,omitempty"`
 	ID               string   `json:"id,omitempty"`
 	Title            string   `json:"title"`
 	Status           string   `json:"status,omitempty"`
@@ -26,6 +28,7 @@ type PlanFileBaseline struct {
 }
 
 type SubmittedPlan struct {
+	ContextSelection    *ContextSelection    `json:"context_selection,omitempty"`
 	Version             int                  `json:"version"`
 	Purpose             protocol.PlanPurpose `json:"purpose,omitempty"`
 	Revision            uint64               `json:"revision,omitempty"`
@@ -77,7 +80,7 @@ func (p *SubmittedPlan) NormalizeAndValidate() error {
 			return errors.New("plan steps must have a title")
 		}
 		if step.ID == "" {
-			step.ID = fmt.Sprintf("step-%d", index+1)
+			step.ID = "step:" + uuid.NewString()
 		}
 		if strings.ContainsAny(step.ID, " \t\r\n\x00") {
 			return fmt.Errorf("plan step id %q is invalid", step.ID)
@@ -112,11 +115,12 @@ func (p SubmittedPlan) executionPlan() Plan {
 	steps := make([]PlanStep, len(p.Steps))
 	for index, step := range p.Steps {
 		steps[index] = PlanStep{
+			ID: step.ID, ReferenceItemIDs: append([]string(nil), step.ReferenceItemIDs...),
 			Title: step.Title, Status: step.Status,
 		}
 	}
 	return Plan{
-		Title: p.Title, Steps: steps, Objective: p.Objective,
+		Title: p.Title, Steps: steps, Objective: p.Objective, ContextSelection: p.ContextSelection,
 		ContextSummary:      p.ContextSummary,
 		SourcesUsed:         append([]string(nil), p.SourcesUsed...),
 		CriticalFiles:       append([]string(nil), p.CriticalFiles...),

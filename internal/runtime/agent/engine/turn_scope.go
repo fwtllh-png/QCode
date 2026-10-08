@@ -37,32 +37,33 @@ type Scope struct {
 
 type scopeState struct {
 	// Frozen at scope creation; safe for concurrent tool callbacks to read.
-	turnArchive          turnArchiveSnapshot
-	samples              uint32
-	toolSamples          map[uint32]toolSpend
-	approvalEmit         func(Event) error
-	kernel               *turnkernel.RuntimeKernel
-	recorder             *trace.Recorder
-	toolSpans            map[string]uint64
-	scheduler            *toolScheduler
-	diff                 *turnkernel.TurnDiffTracker
-	contextSeen          []promptcontext.Receipt
-	selections           []promptcontext.Selection
-	catalog              tool.CatalogSnapshot
-	catalogProjected     tool.CatalogSnapshot
-	sampledCatalog       tool.CatalogSnapshot
-	sampledTools         map[string]bool
-	contextLedger        *agentcontext.MessageLedger
-	mcpProjected         bool
-	diagnostics          []verify.DiagnosticReceipt
-	verification         []verify.Evidence
-	pendingVerification  map[string]verify.Evidence
-	rollback             []string
-	budgetStage          uint8
-	toolSurfaceMaxBytes  int
-	toolSurfaceItemBytes int
-	mailbox              *turnkernel.Mailbox[PendingInput]
-	requests             *turnkernel.RequestLedger
+	turnArchive           turnArchiveSnapshot
+	samples               uint32
+	toolSamples           map[uint32]toolSpend
+	approvalEmit          func(Event) error
+	kernel                *turnkernel.RuntimeKernel
+	recorder              *trace.Recorder
+	toolSpans             map[string]uint64
+	scheduler             *toolScheduler
+	diff                  *turnkernel.TurnDiffTracker
+	contextSeen           []promptcontext.Receipt
+	selections            []promptcontext.Selection
+	catalog               tool.CatalogSnapshot
+	catalogProjected      tool.CatalogSnapshot
+	sampledCatalog        tool.CatalogSnapshot
+	sampledTools          map[string]bool
+	referenceRecoveryOnly bool
+	contextLedger         *agentcontext.MessageLedger
+	mcpProjected          bool
+	diagnostics           []verify.DiagnosticReceipt
+	verification          []verify.Evidence
+	pendingVerification   map[string]verify.Evidence
+	rollback              []string
+	budgetStage           uint8
+	toolSurfaceMaxBytes   int
+	toolSurfaceItemBytes  int
+	mailbox               *turnkernel.Mailbox[PendingInput]
+	requests              *turnkernel.RequestLedger
 	// sampleCancel interrupts the open provider transport; steering and
 	// mailbox input use it to redirect the next sample. toolCancel aborts
 	// the running tool batch and is fired only by Cancel.

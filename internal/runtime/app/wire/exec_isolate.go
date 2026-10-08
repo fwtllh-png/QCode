@@ -26,13 +26,14 @@ func buildExecIsolator(
 	allowApply := state.security.runtime != nil &&
 		state.security.runtime.PermissionValue() != policy.PermissionNever
 	return execsettle.New(execsettle.Options{
-		Repository: state.config.execution.Workspace,
-		Scratch:    scratch,
-		Parent:     state.orchestration.parentFiles,
-		Journal:    state.security.journal,
-		Gate:       gate,
-		Brokers:    state.orchestration.workspaceBroker,
-		AllowApply: allowApply,
-		NewBackend: newPlatformBackend,
+		Repository:        state.config.execution.Workspace,
+		Scratch:           scratch,
+		Parent:            state.orchestration.parentFiles,
+		Journal:           state.security.journal,
+		Gate:              gate,
+		Brokers:           state.orchestration.workspaceBroker,
+		AllowApply:        allowApply,
+		NewBackend:        newPlatformBackend,
+		MaxMergeDiffBytes: state.config.execution.WorkspaceMergeMaxDiffBytes,
 	})
 }

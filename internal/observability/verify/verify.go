@@ -34,6 +34,7 @@ const (
 )
 
 const (
+	StatusNotRequired  = "not_required"
 	StatusPassed       = "passed"
 	StatusFailed       = "failed"
 	StatusUnavailable  = "unavailable"
@@ -105,12 +106,15 @@ func (r Receipt) Feedback(limit int) string {
 // Request describes one verification pass. Diagnostics carries the post-edit
 // receipts the turn already collected, so ScopeDiagnostics needs no new process.
 type Request struct {
-	Scope             Scope
-	Paths             []string
-	Diagnostics       []DiagnosticReceipt
-	WorkspaceRevision uint64
-	MutationRevision  uint64
-	Evidence          []Evidence
+	// RequireConfiguredCommand is set by hard policy. Model-selected commands
+	// remain evidence but cannot define their own acceptance criterion.
+	RequireConfiguredCommand bool
+	Scope                    Scope
+	Paths                    []string
+	Diagnostics              []DiagnosticReceipt
+	WorkspaceRevision        uint64
+	MutationRevision         uint64
+	Evidence                 []Evidence
 }
 
 // Runner performs one verification pass.

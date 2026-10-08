@@ -45,15 +45,7 @@ func (e *Engine) buildTruthCapsule(
 		Summary:       summary, Plan: plan, Turn: e.turn,
 		Evidence: evidenceDelta, WorkspaceDigests: workspaceDigests,
 		CriticalPaths: summary.CriticalPaths,
-		ExtraEntities: append(
-			append(
-				append(
-					e.pendingInputTruthEntities(),
-					e.continuityTruthEntities()...,
-				),
-				e.resumeTruthEntities()...,
-			),
-			e.omittedTurnTruthEntities(history)...,
-		),
+		ExtraEntities: append(append(e.pendingInputTruthEntities(),
+			e.continuityTruthEntities()...), e.resumeTruthEntities()...),
 	})
 }

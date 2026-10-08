@@ -2,6 +2,9 @@ package sandbox
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -58,6 +61,49 @@ func (a ExecutionAuthority) Validate() error {
 		}
 	}
 	return nil
+}
+
+// RelocateWorkspace projects the same grants into a trusted isolated copy.
+// The caller supplies the original workspace identity; no write grant may
+// escape it. Network, process and required controls remain unchanged.
+func (a ExecutionAuthority) RelocateWorkspace(source, target string) (ExecutionAuthority, error) {
+	if err := a.Validate(); err != nil {
+		return ExecutionAuthority{}, err
+	}
+	if !filepath.IsAbs(source) || !filepath.IsAbs(target) ||
+		filepath.Clean(a.WorkspaceRoot) != filepath.Clean(source) {
+		return ExecutionAuthority{}, errors.New("isolated authority requires the original workspace identity and an absolute target")
+	}
+	relocate := func(path string) (string, bool) {
+		relative, err := filepath.Rel(source, path)
+		if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+			return path, false
+		}
+		return filepath.Join(target, relative), true
+	}
+	result := a
+	result.WorkspaceRoot = filepath.Clean(target)
+	result.ReadPaths = slices.Clone(a.ReadPaths)
+	for index, path := range result.ReadPaths {
+		result.ReadPaths[index], _ = relocate(path)
+	}
+	result.WorkspaceWritePaths = slices.Clone(a.WorkspaceWritePaths)
+	for index, path := range result.WorkspaceWritePaths {
+		mapped, ok := relocate(path)
+		if !ok {
+			return ExecutionAuthority{}, fmt.Errorf("isolated write grant %q is outside the original workspace", path)
+		}
+		result.WorkspaceWritePaths[index] = mapped
+	}
+	result.NetworkTargets = slices.Clone(a.NetworkTargets)
+	// Bind the projection to both the source authority digest and new root.
+	encoded, err := json.Marshal(result)
+	if err != nil {
+		return ExecutionAuthority{}, err
+	}
+	digest := sha256.Sum256(encoded)
+	result.Digest = hex.EncodeToString(digest[:])
+	return result, result.Validate()
 }
 
 // VerifyPrepared checks the controls a backend reports for a prepared command

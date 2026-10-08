@@ -17,6 +17,10 @@ func applyVerificationFinished(
 		return err
 	}
 	switch command.Status {
+	case VerificationNotRequired:
+		if current.Workspace == nil || hasEffectiveChanges(current) || len(command.EvidenceCalls) != 0 {
+			return illegal(current, command, "not_required requires an observed unchanged workspace without checks")
+		}
 	case VerificationPassed, VerificationFailed, VerificationUnavailable:
 	default:
 		return illegal(current, command, "verification status is not terminal")
@@ -42,7 +46,7 @@ func applyVerificationFinished(
 		return illegal(current, command, err.Error())
 	}
 	action := VerificationActionPassed
-	needsRepair := command.Status != VerificationPassed &&
+	needsRepair := command.Status != VerificationPassed && command.Status != VerificationNotRequired &&
 		current.Policy.VerificationMode != "soft"
 	if needsRepair && current.Policy.VerificationRepairLimit != 0 {
 		err := spendRepairBudget(
@@ -61,6 +65,8 @@ func applyVerificationFinished(
 	}
 	if action != VerificationActionRepair {
 		switch {
+		case command.Status == VerificationNotRequired:
+			action = VerificationActionNotRequired
 		case command.Status == VerificationPassed:
 			action = VerificationActionPassed
 		case current.Policy.VerificationMustPass:
@@ -80,7 +86,7 @@ func applyVerificationFinished(
 		EvidenceCalls:  append([]string(nil), command.EvidenceCalls...),
 		FailureMessage: command.Message,
 	}
-	if command.Status != VerificationPassed && action != VerificationActionReported {
+	if command.Status != VerificationPassed && command.Status != VerificationNotRequired && action != VerificationActionReported {
 		transition.State.Completion = nil
 	} else if command.Status == VerificationPassed {
 		transition.State.WorkItem.Open.UnverifiedPaths = nil
@@ -113,7 +119,9 @@ func applyCompletion(
 		OutputMode:        candidate.OutputMode,
 		PendingActions:    append([]string(nil), candidate.PendingActions...),
 		Mutation:          current.MutationRevision,
-		ChangedPaths:      changedPaths(current.Changes),
+		ChangedPaths:      changedPaths(effectiveChanges(current)),
+		NoChangeReason:    candidate.NoChangeReason,
+		NoChangeEvidence:  append([]string(nil), candidate.NoChangeEvidence...),
 		VerificationCalls: append([]string(nil), candidate.VerificationCalls...),
 		CompletionCall:    candidate.CompletionCall,
 	}
@@ -160,16 +168,18 @@ func applyCompletion(
 		strings.TrimSpace(candidate.Summary) == "" ||
 		len(candidate.PendingActions) != 0:
 		decision.Reason = "incomplete_declaration"
+	case (candidate.NoChangeReason != "" || len(candidate.NoChangeEvidence) != 0) &&
+		!validNoChange(current, candidate.NoChangeReason, candidate.NoChangeEvidence):
+		decision.Reason = "invalid_no_change_evidence"
 	case current.Intent == protocol.TurnIntentWorkspaceChange &&
-		current.MutationRevision == 0:
+		current.MutationRevision == 0 && !validNoChange(current, candidate.NoChangeReason, candidate.NoChangeEvidence):
 		decision.Reason = "no_observed_changes"
 	case candidate.OutputMode == "preserve_provisional" &&
 		len(current.ProvisionalOutput) == 0:
 		decision.Reason = "provisional_output_unavailable"
 	default:
 		decision.Accepted = true
-		if current.MutationRevision != 0 &&
-			current.Policy.VerificationRequired {
+		if verificationPending(current) {
 			decision.RequiredAction = "await_runtime_verification"
 		} else {
 			decision.RequiredAction = "final_answer"
@@ -236,32 +246,14 @@ func validateCompletionReadiness(state State) error {
 }
 
 func validateCompletionContract(state State) error {
-	hasChanges := state.MutationRevision != 0
-	if state.Intent == protocol.TurnIntentWorkspaceChange && !hasChanges {
-		return errors.New("workspace_change has no observed mutation")
+	if err := validateCompletionPolicy(state); err != nil {
+		return err
 	}
-	if !hasChanges {
+	if state.MutationRevision == 0 {
 		if state.Journal != JournalNone {
 			return errors.New("unchanged turn has an open journal")
 		}
-	}
-	if RequiresCompletion(state) {
-		if state.Completion == nil || !state.Completion.Accepted {
-			return errors.New("turn has no accepted completion decision")
-		}
-		if state.Completion.Mutation != state.MutationRevision {
-			return errors.New("completion decision is stale")
-		}
-	}
-	if !hasChanges {
 		return nil
-	}
-	if state.Policy.VerificationRequired &&
-		(state.Verification.Mutation != state.MutationRevision ||
-			(state.Verification.Action != VerificationActionPassed &&
-				state.Verification.Action != VerificationActionReported &&
-				state.Verification.Action != VerificationActionReverted)) {
-		return errors.New("mutation has no current completion verification")
 	}
 	if state.Journal != JournalOpen {
 		return errors.New("mutation journal is not open")

@@ -9,26 +9,6 @@ import (
 	"github.com/fwtllh-png/QCode/internal/adapter/provider"
 )
 
-func TestOmittedHistorySkipsTailAndWorldFragments(t *testing.T) {
-	history := []provider.Message{
-		messageAt(provider.RoleUser, "old request", 1),
-		messageAt(provider.RoleAssistant, "old answer", 1),
-		messageAt(provider.RoleUser, "recent request", 2),
-		messageAt(provider.RoleAssistant, "recent answer", 2),
-		messageAt(provider.RoleUser, "latest request", 3),
-		messageAt(provider.RoleAssistant, "latest answer", 3),
-	}
-	omitted := OmittedHistory(history, 2)
-	if len(omitted) != 2 ||
-		omitted[0].Text() != "old request" ||
-		omitted[1].Text() != "old answer" {
-		t.Fatalf("omitted = %+v", omitted)
-	}
-	if OmittedHistory(history[:4], 2) != nil {
-		t.Fatal("full tail still produced omitted history")
-	}
-}
-
 func TestRenderNarrativeDigestIsOptionalPartition(t *testing.T) {
 	now := time.Date(2026, 8, 21, 12, 0, 0, 0, time.UTC)
 	input, err := BuildNarrativeInput(
@@ -39,7 +19,7 @@ func TestRenderNarrativeDigestIsOptionalPartition(t *testing.T) {
 		[]provider.Message{
 			messageAt(provider.RoleUser, "I prefer deterministic ledgers", 1),
 		},
-		DefaultNarrativeLimits(),
+		NarrativeLimits{},
 		now,
 		time.Hour,
 	)
@@ -66,7 +46,7 @@ func TestRenderNarrativeDigestIsOptionalPartition(t *testing.T) {
 		t.Fatal(err)
 	}
 	artifact, err := ValidateNarrativeJSON(
-		raw, input, DefaultNarrativeLimits(), 2, now,
+		raw, input, NarrativeLimits{}, 2, now,
 	)
 	if err != nil {
 		t.Fatal(err)

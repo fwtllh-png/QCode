@@ -319,17 +319,6 @@ func TruncateUTF8(value string, limit int) string {
 	return value
 }
 
-func TruncateUTF8Tail(value string, limit int) string {
-	if limit <= 0 || len(value) <= limit {
-		return value
-	}
-	start := len(value) - limit
-	for start < len(value) && !utf8.ValidString(value[start:]) {
-		start++
-	}
-	return value[start:]
-}
-
 // summaryIdentityBytes is the existing digest excerpt for one tool-call
 // argument list or tool-result body. The full payload stays on the Handle.
 const summaryIdentityBytes = 160

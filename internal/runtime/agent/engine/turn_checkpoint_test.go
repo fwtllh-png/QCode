@@ -9,10 +9,9 @@ import (
 	"github.com/fwtllh-png/QCode/internal/adapter/tool/interact"
 	turnhistory "github.com/fwtllh-png/QCode/internal/adapter/tool/turnhistory"
 	agentcontext "github.com/fwtllh-png/QCode/internal/runtime/agent/context"
-	promptcontext "github.com/fwtllh-png/QCode/internal/runtime/agent/prompt"
 )
 
-func TestPostTurnPromotesCitedOpenWorkIntoSessionState(t *testing.T) {
+func TestPostTurnNarrativeDoesNotCreateExecutionObligations(t *testing.T) {
 	runtime := &sourceEchoNarrativeProvider{
 		scriptedProvider: scriptedProvider{streams: []provider.Stream{
 			textStream("continue after clip"),
@@ -20,6 +19,7 @@ func TestPostTurnPromotesCitedOpenWorkIntoSessionState(t *testing.T) {
 	}
 	engine := newEngine(t, runtime, tool.NewRegistry(nil, nil))
 	engine.options.Context.SemanticNarrative = "post_turn"
+	engine.options.Context.Digest = "ledger+narrative"
 	engine.options.Workspace = t.TempDir()
 	if err := engine.ApplyPlan(interact.Plan{
 		Objective: "teach the parser about trailing commas",
@@ -30,7 +30,7 @@ func TestPostTurnPromotesCitedOpenWorkIntoSessionState(t *testing.T) {
 		t.Fatal(err)
 	}
 	seedOmittedHistory(engine)
-	result, err := engine.RunPostTurnNarrative(
+	result, err := engine.runPreparedNarrativeForTest(
 		t.Context(), "thread-1", "turn-3",
 	)
 	if err != nil || result.Fallback {
@@ -39,13 +39,11 @@ func TestPostTurnPromotesCitedOpenWorkIntoSessionState(t *testing.T) {
 	if _, err := engine.Run(t.Context(), "continue now", nil); err != nil {
 		t.Fatal(err)
 	}
-	joined := joinMessageText(runtime.requests[len(runtime.requests)-1].Messages)
-	if !strings.Contains(joined, "Write the parser implementation.") {
-		t.Fatalf("promoted open work missing from session state: %s", joined)
+	plan := engine.currentPlan()
+	if len(plan.Steps) != 1 || plan.Steps[0].Title != "update the lexer" || plan.Steps[0].Status != interact.StepInProgress {
+		t.Fatalf("narrative changed execution plan: %+v", plan)
 	}
-	if countWorldSection(engine.History(), promptcontext.PartitionSessionState) == 0 {
-		t.Fatal("session state missing after promotion")
-	}
+
 }
 
 func TestClosedTurnCheckpointIsAppendOnlyInDynamic(t *testing.T) {
@@ -56,25 +54,26 @@ func TestClosedTurnCheckpointIsAppendOnlyInDynamic(t *testing.T) {
 	}
 	engine := newEngine(t, runtime, tool.NewRegistry(nil, nil))
 	engine.options.Context.SemanticNarrative = "post_turn"
+	engine.options.Context.Digest = "ledger+narrative"
 	engine.options.Workspace = t.TempDir()
 	seedOmittedHistory(engine)
-	if _, err := engine.RunPostTurnNarrative(
+	if _, err := engine.runPreparedNarrativeForTest(
 		t.Context(), "thread-1", "turn-3",
 	); err != nil {
 		t.Fatal(err)
 	}
-	first := engine.closedTurnCheckpointMessages()
+	first := engine.checkpointMessagesForTest()
 	if len(first) != 1 ||
 		!strings.Contains(first[0].Text(), agentcontext.CheckpointMarkerStart) {
 		t.Fatalf("first checkpoints = %+v", first)
 	}
 	frozen := first[0].Text()
-	if _, err := engine.RunPostTurnNarrative(
+	if _, err := engine.runPreparedNarrativeForTest(
 		t.Context(), "thread-1", "turn-3",
 	); err != nil {
 		t.Fatal(err)
 	}
-	second := engine.closedTurnCheckpointMessages()
+	second := engine.checkpointMessagesForTest()
 	if len(second) != 1 || second[0].Text() != frozen {
 		t.Fatalf("checkpoint rewritten: first=%q second=%+v", frozen, second)
 	}
@@ -100,7 +99,7 @@ func TestCanceledTurnCheckpointKeepsNextPlanAndReadPaths(t *testing.T) {
 	}
 	engine.observePath(agentcontext.SourceRead, "multi_paxos_node.h")
 	engine.sealClosedTurnMemory(agentcontext.CheckpointCanceled, nil, "")
-	messages := engine.closedTurnCheckpointMessages()
+	messages := engine.checkpointMessagesForTest()
 	if len(messages) != 1 {
 		t.Fatalf("checkpoints = %+v", messages)
 	}
@@ -124,7 +123,7 @@ func TestFailedTurnCheckpointKeepsNextPlan(t *testing.T) {
 	engine.sealClosedTurnMemory(
 		agentcontext.CheckpointFailed, nil, "provider timeout",
 	)
-	messages := engine.closedTurnCheckpointMessages()
+	messages := engine.checkpointMessagesForTest()
 	if len(messages) != 1 {
 		t.Fatalf("checkpoints = %+v", messages)
 	}
@@ -139,6 +138,7 @@ func TestFailedTurnCheckpointKeepsNextPlan(t *testing.T) {
 func TestClosedTurnCheckpointsBackfillOmittedTurnsWithoutGuessing(t *testing.T) {
 	runtime := &scriptedProvider{streams: []provider.Stream{textStream("ok")}}
 	engine := newEngine(t, runtime, tool.NewRegistry(nil, nil))
+	engine.options.Context.RecentTailTurns = 2
 	engine.options.Workspace = t.TempDir()
 	engine.history = []provider.Message{
 		messageWithText(provider.RoleUser, "audit", 1),
@@ -154,14 +154,14 @@ func TestClosedTurnCheckpointsBackfillOmittedTurnsWithoutGuessing(t *testing.T) 
 	}
 	joined := joinMessageText(runtime.requests[len(runtime.requests)-1].Messages)
 	if !strings.Contains(joined, "turn_history") ||
-		!strings.Contains(joined, "preferred_turn=2") {
+		!strings.Contains(joined, `turn_history {"turn":2}`) {
 		t.Fatalf("restored session missing retrieval hint: %s", joined)
 	}
 	if strings.Contains(joined, "missing overflow test") {
 		t.Fatalf("backfill leaked turn-1 P2 text: %s", joined)
 	}
 	var sawTurnOne, sawTurnTwo, sawTurnThree bool
-	for _, checkpoint := range engine.closedTurnCheckpointMessages() {
+	for _, checkpoint := range engine.checkpointMessagesForTest() {
 		if strings.Contains(checkpoint.Text(), "missing overflow test") {
 			t.Fatalf("backfill invented P2 text: %s", checkpoint.Text())
 		}
@@ -178,7 +178,7 @@ func TestClosedTurnCheckpointsBackfillOmittedTurnsWithoutGuessing(t *testing.T) 
 		}
 	}
 	if !sawTurnOne || !sawTurnTwo || !sawTurnThree {
-		t.Fatalf("backfill = %+v", engine.closedTurnCheckpointMessages())
+		t.Fatalf("backfill = %+v", engine.checkpointMessagesForTest())
 	}
 }
 
@@ -212,7 +212,7 @@ func TestTurnHistoryFirstPageIncludesSealedFindings(t *testing.T) {
 		!strings.Contains(result.Content, "eds_metaserver.cc:88 hasGlobalLock") {
 		t.Fatalf("turn_history = %q", result.Content)
 	}
-	visible := engine.closedTurnCheckpointMessages()
+	visible := engine.checkpointMessagesForTest()
 	if len(visible) != 1 || strings.Contains(visible[0].Text(), "hasGlobalLock is the root cause") {
 		t.Fatalf("visible checkpoint leaked findings: %+v", visible)
 	}
@@ -262,8 +262,14 @@ func TestContextSnapshotRestoresWriteOnceCheckpoints(t *testing.T) {
 	if _, err := engine.RestoreContextSnapshot(snapshot); err != nil {
 		t.Fatal(err)
 	}
-	got := engine.closedTurnCheckpointMessages()
+	got := engine.checkpointMessagesForTest()
 	if len(got) != 1 || got[0].Text() != snapshot.TurnCheckpoints[0].Text {
 		t.Fatalf("restored = %+v want %q", got, snapshot.TurnCheckpoints[0].Text)
 	}
+}
+
+func (e *Engine) checkpointMessagesForTest() []provider.Message {
+	e.checkpointMu.Lock()
+	defer e.checkpointMu.Unlock()
+	return agentcontext.CheckpointMessages(e.turnCheckpoints)
 }

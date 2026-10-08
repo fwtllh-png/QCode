@@ -28,7 +28,8 @@ func TestRenderTurnCheckpointIsStructuredAndBounded(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !strings.Contains(checkpoint.Text, CheckpointMarkerStart) ||
-		!strings.Contains(checkpoint.Text, "P2: missing overflow test") ||
+		strings.Contains(checkpoint.Text, "P2: missing overflow test") ||
+		!strings.Contains(checkpoint.Text, "update the lexer") ||
 		!strings.Contains(checkpoint.Text, TurnHistoryToolName) {
 		t.Fatalf("checkpoint = %s", checkpoint.Text)
 	}
@@ -148,45 +149,6 @@ func TestMessagesForTurnSkipsWorldAndOtherTurns(t *testing.T) {
 	got := MessagesForTurn(history, 2)
 	if len(got) != 1 || got[0].Text() != "current" {
 		t.Fatalf("messages = %+v", got)
-	}
-}
-
-func TestOmittedTurnHintIsMandatoryAndDoesNotInventLists(t *testing.T) {
-	hint := FormatOmittedTurnHint([]uint64{1})
-	if !strings.Contains(hint, TurnHistoryToolName) ||
-		!strings.Contains(hint, "turn=1") ||
-		strings.Contains(hint, "P2") {
-		t.Fatalf("hint = %q", hint)
-	}
-	rangeHint := FormatOmittedTurnHint([]uint64{1, 2, 3})
-	if !strings.Contains(rangeHint, "1-3") ||
-		!strings.Contains(rangeHint, "preferred_turn=3") ||
-		strings.Contains(rangeHint, "for example turn=1") {
-		t.Fatalf("range hint = %q", rangeHint)
-	}
-	if preferred := PreferredOmittedTurn([]uint64{1, 2, 3}, []TurnCheckpoint{{
-		Turn: 2, Findings: TurnFindings{Sites: []string{"parser.go:41 Lex"}},
-	}}); preferred != 2 {
-		t.Fatalf("preferred = %d", preferred)
-	}
-	entity, ok := OmittedTurnRetrievalEntity([]uint64{1})
-	if !ok || entity.Retention != RetentionMandatory ||
-		entity.Source != TurnHistorySource ||
-		strings.Contains(entity.Value, "P2") {
-		t.Fatalf("entity = %+v ok=%v", entity, ok)
-	}
-	capsule := MandatorySessionState(BuildTruthCapsule(TruthProjection{
-		Compatibility: Compatibility{SchemaVersion: TruthSchemaVersion},
-		ModelID:       "model",
-		ContextTokens: 4096,
-		ExtraEntities: []TruthEntity{entity},
-	}))
-	rendered, err := RenderSessionState(capsule, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(rendered.Text, hint) {
-		t.Fatalf("session state missing retrieval hint: %s", rendered.Text)
 	}
 }
 

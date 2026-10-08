@@ -137,10 +137,17 @@ function MarkdownCodeBlock({
   const value = reactText(children).replace(/\n$/, "");
   const language = codeLanguage(children);
   const diagram = settled && language === "mermaid" && value.trim() !== "";
+  // 流式期间 react-markdown 每帧重建消息树；已完成代码块内容未变时按
+  // [value, language] 记忆，跳过重复的 Prism 分词。deps 不能用 children
+  // 引用——它是每帧新建的元素，必然失效。
   // Prism.highlight 在分词前转义源码，输出可安全注入；mermaid 属于图表
   // DSL，保持原文渲染。
-  const highlighted = language && language !== "mermaid"
-    ? <pre tabIndex={0}><code dangerouslySetInnerHTML={{__html: highlightCode(value, language)}} /></pre>
+  const highlightedHTML = useMemo(
+    () => language && language !== "mermaid" ? highlightCode(value, language) : undefined,
+    [language, value]
+  );
+  const highlighted = highlightedHTML !== undefined
+    ? <pre tabIndex={0}><code dangerouslySetInnerHTML={{__html: highlightedHTML}} /></pre>
     : <pre tabIndex={0}>{children}</pre>;
   const code = highlighted;
   const copy = async () => {

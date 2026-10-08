@@ -66,7 +66,7 @@ test -f "$input"
 	broker, err := workspacebroker.New(
 		root,
 		authority.NewLeaseAuthority(authority.LeaseAuthorityOptions{}),
-		time.Minute,
+		time.Minute, nil,
 	)
 	if err != nil {
 		t.Fatal(err)

@@ -172,6 +172,9 @@ func BindingForCall(call provider.ToolCall) CatalogBinding {
 
 func CachedResult(result Result, sourceCallID string) Result {
 	copy := result
+	if result.IsError {
+		copy.Content = fmt.Sprintf("Cached failure from call %s; no new execution was performed.\n%s", sourceCallID, result.Content)
+	}
 	copy.Metadata = maps.Clone(result.Metadata)
 	copy.Outcome = CloneOutcome(result.Outcome)
 	copy.Execution = CloneExecutionReceipt(result.Execution)

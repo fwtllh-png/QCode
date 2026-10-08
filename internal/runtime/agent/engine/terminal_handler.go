@@ -227,6 +227,9 @@ func (e *Engine) finalizeTerminalContext(
 	// within as long as the compactor preserves closed tool pairs.
 	switch {
 	case completed:
+		if err := e.captureConversationAnswer(transaction); err != nil {
+			return e.contextBudgetSnapshot(transaction), err
+		}
 		candidate = cloneMessages(transaction)
 		original = cloneMessages(candidate)
 	case canceled:
@@ -272,6 +275,30 @@ func (e *Engine) finalizeTerminalContext(
 	if snapshotErr != nil {
 		return e.contextBudgetSnapshot(candidate),
 			errors.Join(maintenanceErr, snapshotErr)
+	}
+	if completed {
+		// Stage deterministic closure in the same snapshot as the terminal;
+		// a failed commit must not leave a completed checkpoint in live state.
+		checkpoint, checkpointErr := agentcontext.RenderTurnCheckpoint(agentcontext.CheckpointRenderInput{
+			Turn: e.turn, Status: agentcontext.CheckpointCompleted, Plan: e.currentPlan(),
+			Findings: e.sealTurnFindings(e.turn, agentcontext.CheckpointCompleted), Budget: e.checkpointBudget(),
+		})
+		if checkpointErr != nil {
+			return e.contextBudgetSnapshot(candidate), checkpointErr
+		}
+		exists := false
+		for _, prior := range snapshot.TurnCheckpoints {
+			if prior.Turn == e.turn {
+				exists = true
+				break
+			}
+		}
+		if !exists {
+			snapshot.TurnCheckpoints = append(snapshot.TurnCheckpoints, checkpoint)
+		}
+		if sealErr := snapshot.Seal(); sealErr != nil {
+			return e.contextBudgetSnapshot(candidate), sealErr
+		}
 	}
 	accounting, err := agentcontext.PrepareAccountingDelta(
 		scope.spec.Identity.TurnID,

@@ -253,6 +253,13 @@ type AbortOpenCalls struct {
 
 func (AbortOpenCalls) commandName() string { return "abort_open_calls" }
 
+type WorkspaceReconciled struct {
+	Mutation uint64
+	Changes  []ObservedChange
+}
+
+func (WorkspaceReconciled) commandName() string { return "workspace_reconciled" }
+
 type VerificationStarted struct{}
 
 func (VerificationStarted) commandName() string { return "verification_started" }
@@ -268,6 +275,8 @@ type VerificationFinished struct {
 func (VerificationFinished) commandName() string { return "verification_finished" }
 
 type CompletionCandidate struct {
+	NoChangeReason    string
+	NoChangeEvidence  []string
 	DeclarationValid  bool
 	Status            string
 	Summary           string

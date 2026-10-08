@@ -18,11 +18,11 @@ func TestPrefixManifestReportsAppendOnlyAndEarlyDivergence(t *testing.T) {
 		provider.TextMessage(provider.RoleUser, "one"),
 		provider.TextMessage(provider.RoleAssistant, "two"),
 	})
-	firstManifest, err := BuildPrefixManifest(first, estimator, "route", "properties")
+	firstManifest, err := measuredPrefixForTest(first, estimator, "route", "properties")
 	if err != nil {
 		t.Fatal(err)
 	}
-	secondManifest, err := BuildPrefixManifest(second, estimator, "route", "properties")
+	secondManifest, err := measuredPrefixForTest(second, estimator, "route", "properties")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -32,7 +32,7 @@ func TestPrefixManifestReportsAppendOnlyAndEarlyDivergence(t *testing.T) {
 		comparison.StablePrefixDigest == "" {
 		t.Fatalf("append comparison = %+v", comparison)
 	}
-	rewritten, err := BuildPrefixManifest(
+	rewritten, err := measuredPrefixForTest(
 		first.WithHistory([]provider.Message{
 			provider.TextMessage(provider.RoleUser, "changed"),
 		}),
@@ -57,7 +57,7 @@ func TestPrefixManifestTreatsRequestIdentityAsPrefix(t *testing.T) {
 	snapshot := agentcontext.NewMessageLedger(agentcontext.LedgerInput{
 		History: []provider.Message{provider.TextMessage(provider.RoleUser, "one")},
 	}).Snapshot()
-	first, err := BuildPrefixManifest(snapshot, estimator, "route-a", "properties-a")
+	first, err := measuredPrefixForTest(snapshot, estimator, "route-a", "properties-a")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,7 +68,7 @@ func TestPrefixManifestTreatsRequestIdentityAsPrefix(t *testing.T) {
 		{"properties", "route-a", "properties-b", "request_properties"},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
-			current, buildErr := BuildPrefixManifest(
+			current, buildErr := measuredPrefixForTest(
 				snapshot, estimator, testCase.route, testCase.properties,
 			)
 			if buildErr != nil {
@@ -89,7 +89,7 @@ func TestPrefixManifestTreatsToolDefinitionsAsPrefix(t *testing.T) {
 		return agentcontext.EstimateMessageTokens(messages), nil
 	})
 	history := []provider.Message{provider.TextMessage(provider.RoleUser, "one")}
-	first, err := BuildPrefixManifest(
+	first, err := measuredPrefixForTest(
 		agentcontext.NewMessageLedger(agentcontext.LedgerInput{
 			History:     history,
 			Definitions: []provider.ToolDefinition{{Name: "first"}},
@@ -99,7 +99,7 @@ func TestPrefixManifestTreatsToolDefinitionsAsPrefix(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := BuildPrefixManifest(
+	second, err := measuredPrefixForTest(
 		agentcontext.NewMessageLedger(agentcontext.LedgerInput{
 			History:     history,
 			Definitions: []provider.ToolDefinition{{Name: "second"}},
@@ -115,4 +115,12 @@ func TestPrefixManifestTreatsToolDefinitionsAsPrefix(t *testing.T) {
 		comparison.FirstDivergenceKind != "tool_definitions" {
 		t.Fatalf("comparison = %+v", comparison)
 	}
+}
+
+func measuredPrefixForTest(snapshot agentcontext.MessageSnapshot, estimate agentcontext.Estimator, routeDigest, propertyDigest string) (PrefixManifest, error) {
+	measurement, err := snapshot.MeasureDetailed("test", "", estimate)
+	if err != nil {
+		return PrefixManifest{}, err
+	}
+	return BuildPrefixManifestFromMeasurement(snapshot, measurement, routeDigest, propertyDigest)
 }

@@ -206,7 +206,7 @@ func TestStructuredRenderMakesTruthMandatoryAndNarrativeOptional(t *testing.T) {
 	full, err := RenderStructured(
 		summary,
 		capsule,
-		Narrative{Lines: []string{"assistant: optional detail"}},
+		Narrative{Items: []NarrativeItem{{Kind: NarrativeCritical, Text: "optional detail"}}},
 		4096,
 	)
 	if err != nil {

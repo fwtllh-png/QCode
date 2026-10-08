@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/fwtllh-png/QCode/internal/common/workspacewrite"
 )
 
 func Defaults() Config {
@@ -61,10 +63,10 @@ func Defaults() Config {
 			CodingPolicy: CodingPolicy{Enabled: true},
 
 			View: View{
-				RecentTailTurns:       2,
+				RecentTailTurns:       0,
 				KeepRecentToolResults: 0,
 				HistoryTokenCeiling:   0,
-				Digest:                "ledger",
+				Digest:                "ledger+narrative",
 				NarrativeMode:         "post_turn",
 				CheckpointMaxBytes:    0,
 			},
@@ -77,10 +79,10 @@ func Defaults() Config {
 				FailureMaxEntities:               24,
 				HandleMaxEntities:                32,
 				OmissionSampleMaxEntities:        8,
-				SemanticNarrativeMaxInputTokens:  4096,
+				SemanticNarrativeMaxInputTokens:  0,
 				SemanticNarrativeMaxOutputTokens: 0,
-				SemanticNarrativeMaxItems:        32,
-				SemanticNarrativeItemMaxBytes:    512,
+				SemanticNarrativeMaxItems:        0,
+				SemanticNarrativeItemMaxBytes:    0,
 				SemanticNarrativeTimeout:         30 * time.Second,
 				SemanticNarrativeRetryLimit:      1,
 				OwnerDeltaMaxSegments:            16,
@@ -89,7 +91,8 @@ func Defaults() Config {
 		},
 		Telemetry: Telemetry{LogLevel: "info"},
 		Execution: Execution{
-			Protocol: "openai_chat", Mode: "act", Workspace: ".",
+			WorkspaceMergeMaxDiffBytes: workspacewrite.DefaultMergeDiffBytes,
+			Protocol:                   "openai_chat", Mode: "act", Workspace: ".",
 			MaxSteps:                   64,
 			ImplementNoProgressSamples: 6,
 			Timeout:                    2 * time.Minute,

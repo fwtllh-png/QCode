@@ -255,6 +255,7 @@ func (m *ThreadManager) Release(threadID protocol.ThreadID) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if adapter := m.threads[threadID]; adapter != nil && adapter.Underlying() != nil {
+		adapter.Underlying().CancelContextMaintenance()
 		m.retired[adapter.Underlying()] = struct{}{}
 	}
 	delete(m.threads, threadID)
@@ -285,6 +286,7 @@ func (m *ThreadManager) Close() error {
 		}
 		m.mu.Unlock()
 		for engine := range engines {
+			engine.CancelContextMaintenance()
 			m.closeErr = errors.Join(m.closeErr, engine.OptionsSeed().Tools.Close())
 		}
 	})
@@ -463,6 +465,9 @@ func (m *ThreadManager) CompactThread(
 		payload.Focus,
 	)
 	if err != nil {
+		return err
+	}
+	if err := emitNarrativeUsage(sink, result); err != nil {
 		return err
 	}
 	receipt := result.Receipt

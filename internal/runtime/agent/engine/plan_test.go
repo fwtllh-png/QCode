@@ -19,9 +19,9 @@ func TestApplyPlanPreservesAndOwnsToolPayload(t *testing.T) {
 		RecommendedApproach: "validate input", VerificationPlan: "go test",
 		RisksAndUnknowns: "integer width", HandoffPacket: "check boundary cases",
 		Steps: []interact.PlanStep{
-			{Title: "inspect", Status: interact.StepDone},
-			{Title: "implement", Status: interact.StepInProgress},
-			{Title: "verify", Status: interact.StepPending},
+			{ID: "inspect-id", Title: "inspect", Status: interact.StepDone},
+			{ID: "implement-id", Title: "implement", Status: interact.StepInProgress},
+			{ID: "verify-id", Title: "verify", Status: interact.StepPending},
 		},
 	}
 	want, err := json.Marshal(input)

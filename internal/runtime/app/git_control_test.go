@@ -53,7 +53,7 @@ func newGitRuntime(t *testing.T, initial bool) (*Runtime, string) {
 		gitFixture(t, root, "commit", "-m", "initial")
 	}
 	manager := authority.NewLeaseAuthority(authority.LeaseAuthorityOptions{})
-	brokers, err := workspacebroker.New(root, manager, time.Minute)
+	brokers, err := workspacebroker.New(root, manager, time.Minute, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -28,14 +28,17 @@ func TestDefaultsUseExtendedTurnBudget(t *testing.T) {
 			defaults.Context.Compact.TruthMaxBytes)
 	}
 	if defaults.Context.View.NarrativeMode != "post_turn" ||
-		defaults.Context.View.Digest != "ledger" ||
-		defaults.Context.View.RecentTailTurns != 2 ||
+		defaults.Context.View.Digest != "ledger+narrative" ||
+		defaults.Context.View.RecentTailTurns != 0 ||
 		defaults.Context.View.KeepRecentToolResults != 0 ||
 		defaults.Context.View.HistoryTokenCeiling != 0 ||
 		defaults.Context.View.CheckpointMaxBytes != 0 {
 		t.Fatalf("default view = %+v", defaults.Context.View)
 	}
-	if defaults.Context.Compact.SemanticNarrativeMaxOutputTokens != 0 {
+	if defaults.Context.Compact.SemanticNarrativeMaxInputTokens != 0 ||
+		defaults.Context.Compact.SemanticNarrativeMaxItems != 0 ||
+		defaults.Context.Compact.SemanticNarrativeItemMaxBytes != 0 ||
+		defaults.Context.Compact.SemanticNarrativeMaxOutputTokens != 0 {
 		t.Fatalf(
 			"default semantic narrative max output tokens = %d, want automatic",
 			defaults.Context.Compact.SemanticNarrativeMaxOutputTokens,

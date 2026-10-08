@@ -25,11 +25,9 @@ func (e *Engine) Execute(
 	e.mu.Unlock()
 	releasePriority := providerGate.BeginForegroundTurn(ctx)
 	defer releasePriority()
-	// Join before taking e.mu: the pending narrative settles under e.mu, so
-	// waiting while holding it would deadlock with the settling goroutine.
-	e.joinPendingNarrative()
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	e.installPendingNarrative(ctx)
 	e.syncSessionTitleState(provider.Usage{})
 	spec, persistedTurnID, err := e.prepareTurnSpec(
 		ctx,
@@ -121,7 +119,7 @@ func (e *Engine) prepareTurnSpec(
 	spec, err := SnapshotTurnSpec(
 		e.options,
 		TurnIdentity{
-			SessionID:       e.options.SessionID,
+			SessionID:       e.sessionIdentity(ctx),
 			ThreadID:        tool.InvocationIdentityFrom(ctx).ThreadID,
 			TurnID:          request.TurnID,
 			ProfileRevision: e.options.ProfileRevision,
@@ -391,6 +389,10 @@ func (s *Scope) Run(ctx context.Context) (result Result, resultErr error) {
 	terminal.setRelease(releaseCoordinator)
 	run := newTurnRun(ctx, s, kernel, terminal, transaction, &result)
 	defer run.settle(&resultErr)
+	if continuationErr != nil {
+		resultErr = fmt.Errorf("cannot resume accepted turn context: %w", continuationErr)
+		return result, resultErr
+	}
 	resultErr = run.execute(continuation, continuationUsable)
 	return result, resultErr
 }

@@ -33,7 +33,7 @@ func TestWorkspaceReconciliationRewritesStaleTruthInHistory(t *testing.T) {
 	rendered, err := RenderStructured(
 		Summary{Window: 2},
 		truth,
-		Narrative{Lines: []string{"old workspace conclusion"}},
+		Narrative{Items: []NarrativeItem{{Kind: NarrativeCritical, Text: "old workspace conclusion"}}},
 		0,
 	)
 	if err != nil {

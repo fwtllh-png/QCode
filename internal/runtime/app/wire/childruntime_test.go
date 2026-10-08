@@ -463,8 +463,9 @@ func TestChildAgentRunsRealEngineTurn(t *testing.T) {
 		t.Fatalf("result usage = %+v", result.Usage)
 	}
 	// A read-only child changes nothing, so the gate has nothing to verify. That
-	// must read as not_evaluated, never as passed.
-	if result.Verification.Verify != protocol.ReceiptNotEvaluated {
+	// follows the no-change contract: verification is not_required, while no
+	// test execution is claimed.
+	if result.Verification.Verify != protocol.ReceiptNotRequired || result.Verification.Tests != protocol.ReceiptNotEvaluated {
 		t.Fatalf("result verification = %+v", result.Verification)
 	}
 	if len(result.Diff) != 0 {

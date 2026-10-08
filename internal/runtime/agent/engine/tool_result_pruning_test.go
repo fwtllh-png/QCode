@@ -44,7 +44,7 @@ func TestCompactGateDoesNotRewriteOlderAdmittedToolResults(t *testing.T) {
 			return nil
 		},
 		0,
-		engine.contextViewProject(nil),
+		engine.projectSelectedHistoryForTest(nil),
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -73,8 +73,9 @@ func TestCompactGateDoesNotRewriteOlderAdmittedToolResults(t *testing.T) {
 	}
 }
 
-func TestStatelessDefaultKeepsLargeOlderTurnsOutOfTheProjection(t *testing.T) {
+func TestStatelessExplicitTurnLimitKeepsLargeOlderTurnsOutOfTheProjection(t *testing.T) {
 	engine := newEngine(t, &scriptedProvider{}, nil)
+	engine.options.Context.RecentTailTurns = 2
 	engine.options.Route = reasoningRoute(t)
 	history := []provider.Message{
 		messageWithText(provider.RoleUser, strings.Repeat("first context ", 5000), 1),
@@ -96,7 +97,7 @@ func TestStatelessDefaultKeepsLargeOlderTurnsOutOfTheProjection(t *testing.T) {
 			return nil
 		},
 		0,
-		engine.contextViewProject(nil),
+		engine.projectSelectedHistoryForTest(nil),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -107,7 +108,7 @@ func TestStatelessDefaultKeepsLargeOlderTurnsOutOfTheProjection(t *testing.T) {
 	if !strings.Contains(history[0].Text(), "first context") {
 		t.Fatalf("durable older turn was rewritten: %q", history[0].Text())
 	}
-	viewed := engine.contextViewProject(nil)(history)
+	viewed := engine.projectSelectedHistoryForTest(nil)(history)
 	if len(viewed) != 3 || !strings.Contains(viewed[0].Text(), "second context") {
 		t.Fatalf("projected tail = %+v", viewed)
 	}
@@ -248,7 +249,7 @@ func TestCompactGateKeepsOlderTurnToolResultWhenViewClipsIt(t *testing.T) {
 		true,
 		func(State, Event) error { return nil },
 		0,
-		engine.contextViewProject(nil),
+		engine.projectSelectedHistoryForTest(nil),
 	); err != nil {
 		t.Fatal(err)
 	}

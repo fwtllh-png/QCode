@@ -23,6 +23,23 @@ func TestReceiptRunnerNeverExecutesConfiguredCommand(t *testing.T) {
 	}
 }
 
+func TestHardPolicyCannotUseSelfSelectedCommandAsAcceptance(t *testing.T) {
+	request := Request{Scope: ScopeAffected, Paths: []string{"a.go"}, MutationRevision: 1,
+		RequireConfiguredCommand: true,
+		Evidence: []Evidence{{Kind: "check", Status: StatusPassed, Command: "true", CommandDigest: "sha256:fixture",
+			CoveredPaths: []string{"a.go"}, MutationRevision: 1}},
+	}
+	receipt, err := (&ReceiptRunner{}).Verify(t.Context(), request)
+	if err != nil || receipt.Status != StatusUnavailable || !strings.Contains(receipt.Message, "execution.verify.command") {
+		t.Fatalf("hard policy accepted model-selected check: %+v %v", receipt, err)
+	}
+	request.RequireConfiguredCommand = false
+	receipt, err = (&ReceiptRunner{}).Verify(t.Context(), request)
+	if err != nil || receipt.Status != StatusPassed {
+		t.Fatalf("soft evidence was lost: %+v %v", receipt, err)
+	}
+}
+
 func TestReceiptRunnerRequiresConfiguredCommandAndCurrentInput(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "a.txt")

@@ -3,6 +3,7 @@ package tool
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/fwtllh-png/QCode/internal/adapter/provider"
@@ -70,10 +71,14 @@ func TestResultCacheSuppressesExactNonRetryableFailure(t *testing.T) {
 		registry,
 	)
 	if !replay.SkipExecution[0] ||
-		replay.Results[0].Content != failure.Content ||
+		!strings.Contains(replay.Results[0].Content, failure.Content) ||
+		!strings.Contains(replay.Results[0].Content, "no new execution was performed") ||
 		replay.Results[0].Metadata["replayed_from_call_id"] != first.ID ||
 		cache.SuppressedNonRetryableCalls() != 1 {
 		t.Fatalf("replay = %+v, suppressed=%d", replay, cache.SuppressedNonRetryableCalls())
+	}
+	if failure.Content != "capability unavailable" {
+		t.Fatal("replay changed the original failure")
 	}
 }
 

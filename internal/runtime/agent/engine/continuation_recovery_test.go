@@ -95,6 +95,7 @@ func waitForContinuationFact(
 func restartTestEngines(
 	t *testing.T,
 	workspaceB string,
+	configure ...func(*Engine, *scriptedProvider),
 ) (*scriptedProvider, *Engine, *echoTool, *turnkernel.MemoryTerminalEnvelopeStore) {
 	t.Helper()
 	store := turnkernel.NewMemoryTerminalEnvelopeStore(nil, nil)
@@ -119,6 +120,9 @@ func restartTestEngines(
 	engineA.options.TurnContinuations = blobs
 	engineA.options.WorkspaceIdentity = "workspace-restart"
 	engineA.options.ProfileRevision = 1
+	for _, setup := range configure {
+		setup(engineA, providerA)
+	}
 
 	doneA := make(chan error, 1)
 	go func() {
@@ -205,40 +209,12 @@ func TestRestartedTurnRebuildsAcceptedConversation(t *testing.T) {
 func TestRestartedTurnRejectsContinuationOnEnvironmentDrift(t *testing.T) {
 	providerB, engineB, _, _ := restartTestEngines(t, "workspace-other")
 
-	var secondary []TerminalIssue
-	_, err := engineB.RunForTurn(
-		t.Context(),
-		"turn-restart",
-		"inspect the parser",
-		func(event Event) error {
-			if event.State == Completed {
-				secondary = append(secondary, event.SecondaryIssues...)
-			}
-			return nil
-		},
-	)
-	if err != nil {
-		t.Fatal(err)
+	_, err := engineB.RunForTurn(t.Context(), "turn-restart", "inspect the parser", nil)
+	if err == nil || !strings.Contains(err.Error(), "workspace identity changed") {
+		t.Fatalf("continuation drift was not rejected: %v", err)
 	}
-	request := providerB.requests[0]
-	if requestContainsToolResult(request, "probe") {
-		t.Fatalf(
-			"drifted continuation leaked into the restarted conversation: %+v",
-			request.Messages,
-		)
-	}
-	if !requestContains(request, "inspect the parser") {
-		t.Fatalf("drifted restart lost the goal: %+v", request.Messages)
-	}
-	var explained bool
-	for _, issue := range secondary {
-		if issue.Phase == "turn_continuation" &&
-			strings.Contains(issue.Message, "workspace identity changed") {
-			explained = true
-		}
-	}
-	if !explained {
-		t.Fatalf("continuation drift was not explained: %+v", secondary)
+	if len(providerB.requests) != 0 {
+		t.Fatal("sampled without the accepted context after environment drift")
 	}
 }
 

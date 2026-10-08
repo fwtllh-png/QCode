@@ -209,6 +209,66 @@ func TestThreadManagerBindsToolIdentityAndContextLookup(t *testing.T) {
 	}
 }
 
+func TestThreadManagerConversationSourcesUseDurableSession(t *testing.T) {
+	p := &threadEchoProvider{}
+	engine, err := newTestAgentEngine(agentengine.Options{
+		ProviderConfig: agentengine.ProviderConfig{Provider: p, Route: runtimeTestRoute(t), MaxOutputTokens: 128},
+		ToolConfig:     agentengine.ToolConfig{Tools: tool.NewRegistry(nil, nil)},
+		LifecycleConfig: agentengine.LifecycleConfig{
+			SessionID: "process-session",
+			SessionForTurn: func(_ context.Context, turn string) (string, bool) {
+				return "session-real", turn == "report" || turn == "followup"
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := NewThreadManager(func() (*EngineAdapter, error) { return AdaptEngine(engine), nil })
+	runtime := NewRuntime(Options{
+		Engine: manager,
+		SessionLifecycle: &memorySessionLifecycleStore{summary: protocol.SessionSummary{
+			Version: protocol.SessionLifecycleVersion, SessionID: "session-real", ThreadID: "thread-parent",
+		}},
+	})
+	t.Cleanup(func() { _ = runtime.Close(context.Background()) })
+	events, err := runtime.Events(t.Context(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, turn := range []protocol.TurnID{"report", "followup"} {
+		operation, err := protocol.NewOperation(&protocol.StartTurnPayload{
+			ThreadID: "thread-parent", TurnID: turn, ItemID: protocol.ItemID("item-" + turn), Prompt: "继续分析第二项",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := runtime.Submit(t.Context(), operation); err != nil {
+			t.Fatal(err)
+		}
+		waitTerminal(t, events, 3*time.Second)
+		snapshot, err := engine.ExportContextSnapshot()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if snapshot.Conversation == nil {
+			t.Fatalf("turn %s did not produce conversation state", turn)
+		}
+		found := false
+		for _, source := range snapshot.Conversation.Sources {
+			found = found || source.ThreadID == "thread-parent" && source.TurnID == string(turn)
+		}
+		if !found {
+			t.Fatalf("turn %s did not complete with its durable conversation source", turn)
+		}
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.calls != 2 {
+		t.Fatalf("provider calls=%d, want 2", p.calls)
+	}
+}
+
 func TestThreadManagerRestoresPendingApprovalOnChildThread(t *testing.T) {
 	registry := tool.NewRegistry(nil, nil)
 	if err := registry.Register(restoredApprovalTool{}); err != nil {

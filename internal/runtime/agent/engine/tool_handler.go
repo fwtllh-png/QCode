@@ -7,8 +7,10 @@ import (
 
 	"github.com/fwtllh-png/QCode/internal/adapter/provider"
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
+	"github.com/fwtllh-png/QCode/internal/adapter/tool/interact"
 	toolresult "github.com/fwtllh-png/QCode/internal/adapter/tool/result"
 	"github.com/fwtllh-png/QCode/internal/adapter/tool/toolsearch"
+	"github.com/fwtllh-png/QCode/internal/adapter/tool/turnhistory"
 	"github.com/fwtllh-png/QCode/internal/common/tokenestimate"
 	"github.com/fwtllh-png/QCode/internal/observability/verify"
 	agentcontext "github.com/fwtllh-png/QCode/internal/runtime/agent/context"
@@ -51,6 +53,18 @@ func (e *Engine) runToolsWithCache(
 	toolCtx, cancel := context.WithCancelCause(tool.WithInvocationIdentity(ctx, identity))
 	toolCtx = tool.WithInvocationSource(toolCtx, tool.InvocationSourceModel)
 	toolCtx = toolsearch.WithEnabled(toolCtx, e.toolEnabled)
+	toolCtx = turnhistory.WithLookup(toolCtx, e.lookupTurnHistoryEntry, e.lookupConversationEntry)
+	toolCtx = interact.WithPlanRuntime(toolCtx, interact.PlanRuntime{
+		Apply: e.ApplyPlan,
+		CurrentSteps: func() []interact.PlanStep {
+			plan := e.currentPlan()
+			steps := make([]interact.PlanStep, len(plan.Steps))
+			for i, step := range plan.Steps {
+				steps[i] = interact.PlanStep{ID: step.ID, Title: step.Title, Status: step.Status, ReferenceItemIDs: step.ReferenceItemIDs}
+			}
+			return steps
+		},
+	})
 	// The per-result ceiling guides producer pre-clamping and bounds any
 	// single projection; the batch total is the aggregate pool the batch
 	// admission redistributes by real result size. Both derive from the same
@@ -96,6 +110,7 @@ func (e *Engine) runToolsWithCache(
 	defer e.clearToolCancel()
 	defer cancel(nil)
 
+	recoveryOnly := e.referenceRecoveryOnly()
 	sched := scope.state.scheduler
 	diagnosticReceipts := make(map[string][]verify.DiagnosticReceipt, len(calls))
 	return kernel.ExecuteToolEffect(turnkernel.ToolEffect{
@@ -117,6 +132,13 @@ func (e *Engine) runToolsWithCache(
 			})
 		},
 		Execute: func(callCtx context.Context, call provider.ToolCall) (tool.Result, error) {
+			if recoveryOnly && !conversationRecoveryTool(call.Name) {
+				return tool.Result{
+					Content:  "Current source definitions are not in the sampled context. Recover them with turn_history and bind the required IDs with update_plan.context_selection before acting. Business tools become available after the next sample includes the definitions.",
+					IsError:  true,
+					Metadata: map[string]any{"error_category": "context_reference_required", "retry_original": false},
+				}, nil
+			}
 			binding := tool.BindingForCall(call)
 			if e.options.VerificationOnly && call.Name == "exec_command" {
 				var declaration struct {
@@ -132,7 +154,7 @@ func (e *Engine) runToolsWithCache(
 				}
 			}
 			finishOnly := tool.FinishOnlyEnabled(toolCtx)
-			if finishOnly {
+			if finishOnly && !recoveryOnly {
 				canonical, descriptor, _, resolveErr :=
 					e.options.Tools.ResolveBound(call.Name, binding)
 				if resolveErr == nil &&
@@ -151,7 +173,7 @@ func (e *Engine) runToolsWithCache(
 					}, nil
 				}
 			}
-			if blocked := e.observationGate(call, finishOnly); blocked != nil {
+			if blocked := e.observationGate(call, finishOnly && !recoveryOnly); blocked != nil {
 				return *blocked, nil
 			}
 			if !e.toolCallEnabled(call.Name, binding) {
@@ -269,6 +291,7 @@ func (e *Engine) runToolsWithCache(
 			)
 		},
 		CompletionCandidate: e.completionCandidate,
+		AfterBatchClose:     func() error { return e.reconcileWorkspace(kernel) },
 		AfterClose: func(call provider.ToolCall, result tool.Result) error {
 			if call.Name == toolsearch.ToolName && !result.IsError {
 				return e.refreshScopeCatalog()

@@ -29,9 +29,9 @@ requested window, and file version. Read uncovered windows, changed content,
 or unavailable prior text as needed for read-only analysis or edits.
 After search_text returns line hits, start with that window and expand only
 as needed to answer the task; avoid paging unrelated content.
-When session state lists confirmed continuity or Located sites, do not call
-turn_history or search tools to restore that analysis. Read only uncovered
-windows needed for the current request.
+Reuse confirmed continuity or Located sites when they cover the current request.
+When a needed definition or evidence is missing, use the context selection's
+turn_history address or read only the uncovered source window.
 When progress truly depends on a user answer, call request_user_input and wait
 for the reply in the same Turn. Include options for a finite choice. Never ask
 for required input in ordinary assistant text. Text accompanying ordinary tool

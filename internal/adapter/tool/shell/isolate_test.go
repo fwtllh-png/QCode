@@ -1,8 +1,10 @@
 package shell
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,14 +13,16 @@ import (
 
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
 	filetool "github.com/fwtllh-png/QCode/internal/adapter/tool/file"
+	toolguard "github.com/fwtllh-png/QCode/internal/adapter/tool/guard"
 	"github.com/fwtllh-png/QCode/internal/orchestration/execsettle"
+	"github.com/fwtllh-png/QCode/internal/orchestration/workspacebroker"
 	"github.com/fwtllh-png/QCode/internal/persist/contentstore"
 	"github.com/fwtllh-png/QCode/internal/persist/workspacejournal"
 	"github.com/fwtllh-png/QCode/internal/platform/process"
 	agentengine "github.com/fwtllh-png/QCode/internal/runtime/agent/engine"
 	"github.com/fwtllh-png/QCode/internal/security/authority"
+	"github.com/fwtllh-png/QCode/internal/security/policy"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
-	"github.com/fwtllh-png/QCode/internal/orchestration/workspacebroker"
 	"github.com/fwtllh-png/QCode/testutil/tooltest"
 )
 
@@ -37,6 +41,61 @@ func TestExistingWriteTreesIgnoresFilesAndWorkspaceRoot(t *testing.T) {
 	trees := existingWriteTrees(workspace, []string{"generated", "file.txt", ".", "missing"})
 	if len(trees) != 1 || trees[0] != "generated" {
 		t.Fatalf("trees = %#v", trees)
+	}
+}
+
+func TestRequiredWriteIsolationDoesNotFallBackAfterTreeDisappears(t *testing.T) {
+	workspace, err := sandbox.NewWorkspace(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := &commandProtocol{workspace: workspace}
+	ctx := tool.RequireWriteIsolation(t.Context())
+	if _, degraded, err := p.beginIsolatedCommand(ctx, []string{"missing"}, false); err == nil || degraded {
+		t.Fatalf("required isolation fell back: degraded=%v error=%v", degraded, err)
+	}
+}
+
+type failingShellIsolator struct{ err error }
+
+func (f failingShellIsolator) Begin(context.Context, string, []string) (tool.IsolatedWorkspace, error) {
+	return nil, f.err
+}
+
+func (f failingShellIsolator) BeginShadow(ctx context.Context, id string, paths []string) (tool.IsolatedWorkspace, error) {
+	return f.Begin(ctx, id, paths)
+}
+
+func TestIsolationPreparationFailureNeverRunsInParent(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "generated"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	backend, err := sandbox.NewPlatformBackend(sandbox.Options{WorkspaceRoot: root, PrivateTemp: t.TempDir(), SkipPATHReadRoots: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sandbox.CloseBackend(backend) })
+	manager := process.NewSessionManager(4096)
+	t.Cleanup(manager.CloseAll)
+	registry := tool.NewRegistry(nil, nil)
+	registry.SetSandboxBackend(backend)
+	if err := RegisterWithManagerAndBackend(registry, root, manager, backend); err != nil {
+		t.Fatal(err)
+	}
+	g, err := toolguard.New(toolguard.Options{Workspace: root, Registry: registry,
+		Policy:   policy.DefaultRuntime(policy.ModeAct, policy.PermissionBypass),
+		Isolator: failingShellIsolator{err: errors.New("snapshot unavailable")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = g.Execute(t.Context(), "failed-isolation", "exec_command", json.RawMessage(`{"command":"echo changed > generated/out.txt","write_paths":["generated"]}`))
+	if !errors.Is(err, tool.ErrPrecondition) {
+		t.Fatalf("preparation error=%v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(root, "generated", "out.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("failed preparation changed parent: %v", err)
 	}
 }
 
@@ -111,7 +170,7 @@ func TestExecCommandIsolatedTreeWriteDoesNotTakeUserEdit(t *testing.T) {
 func newShellIsolator(t *testing.T, workspace string, backend sandbox.Backend) execsettle.Isolator {
 	t.Helper()
 	leases := authority.NewLeaseAuthority(authority.LeaseAuthorityOptions{})
-	brokers, err := workspacebroker.New(workspace, leases, time.Minute)
+	brokers, err := workspacebroker.New(workspace, leases, time.Minute, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -470,5 +529,102 @@ func TestAbandonedIsolatedSessionIsReclaimedOnThreadClose(t *testing.T) {
 	}
 	if _, err := os.Lstat(cwd); !os.IsNotExist(err) {
 		t.Fatalf("abandoned isolate was not reclaimed: %v", err)
+	}
+}
+
+func TestGuardedExecCommandBuildsWithLargeIgnoredDependencyTree(t *testing.T) {
+	workspace, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	tree := filepath.Join(workspace, "deps")
+	if err := os.MkdirAll(filepath.Join(tree, "cache"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, ".gitignore"), []byte("deps/\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for i := range sandbox.MaxExactWorkspaceWritePaths + 1 {
+		if err := os.WriteFile(filepath.Join(tree, fmt.Sprintf("%04d.txt", i)), []byte("dependency\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	backend, err := sandbox.NewPlatformBackend(sandbox.Options{WorkspaceRoot: workspace, PrivateTemp: t.TempDir(), SkipPATHReadRoots: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sandbox.CloseBackend(backend) })
+	manager := process.NewSessionManager(4096)
+	t.Cleanup(manager.CloseAll)
+	registry := tool.NewRegistry(nil, nil)
+	registry.SetSandboxBackend(backend)
+	if err := RegisterWithManagerAndBackend(registry, workspace, manager, backend); err != nil {
+		t.Fatal(err)
+	}
+	g, err := toolguard.New(toolguard.Options{Workspace: workspace, Registry: registry,
+		Policy:   policy.DefaultRuntime(policy.ModeAct, policy.PermissionBypass),
+		Isolator: newShellIsolator(t, workspace, backend),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := tool.WithInvocationIdentity(t.Context(), tool.InvocationIdentity{SessionID: "large-tree", ThreadID: processTestThread, TurnID: "large-tree"})
+	raw, err := json.Marshal(map[string]any{
+		"command": "cat deps/0000.txt > deps/cache/result.txt && printf 'exact\\n' > exact.txt",
+		"cwd":     workspace, "write_paths": []string{tree, filepath.Join(workspace, "exact.txt")}, "yield_time_ms": 30000,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := g.Execute(ctx, "large-tree", "exec_command", raw)
+	if err != nil || result.IsError {
+		t.Fatalf("guarded command: result=%+v error=%v", result, err)
+	}
+	if result.Metadata["workspace_settlement"] != "isolated_three_way" {
+		t.Fatalf("settlement=%+v", result.Metadata)
+	}
+	for name, want := range map[string]string{"deps/cache/result.txt": "dependency\n", "exact.txt": "exact\n"} {
+		body, err := os.ReadFile(filepath.Join(workspace, name))
+		if err != nil || string(body) != want {
+			t.Fatalf("%s=%q error=%v", name, body, err)
+		}
+	}
+}
+
+func TestExecCommandDeclaredPathLimitRejectsBeforeApproval(t *testing.T) {
+	root := t.TempDir()
+	manager := process.NewSessionManager(4096)
+	t.Cleanup(manager.CloseAll)
+	registry := tool.NewRegistry(nil, nil)
+	backend, err := sandbox.NewPlatformBackend(sandbox.Options{WorkspaceRoot: root, PrivateTemp: t.TempDir(), SkipPATHReadRoots: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sandbox.CloseBackend(backend) })
+	if err := RegisterWithManagerAndBackend(registry, root, manager, backend); err != nil {
+		t.Fatal(err)
+	}
+	asked := false
+	g, err := toolguard.New(toolguard.Options{Workspace: root, Registry: registry,
+		Policy: policy.DefaultRuntime(policy.ModeAct, policy.PermissionSuggest),
+		Approvals: func(context.Context, toolguard.ApprovalRequest) error {
+			asked = true
+			return errors.New("unexpected approval")
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	paths := make([]string, sandbox.MaxExactWorkspaceWritePaths+1)
+	for i := range paths {
+		paths[i] = fmt.Sprintf("%d.txt", i)
+	}
+	raw, err := json.Marshal(map[string]any{"command": "true", "write_paths": paths})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = g.Execute(t.Context(), "too-many-paths", "exec_command", raw)
+	if !errors.Is(err, tool.ErrInvalidArguments) || asked {
+		t.Fatalf("error=%v approved=%v", err, asked)
 	}
 }

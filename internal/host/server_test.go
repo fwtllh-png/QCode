@@ -1090,7 +1090,7 @@ func TestWorkspaceRoutesUseBoundedWorkspaceQuery(t *testing.T) {
 	vcs, err := vcsbroker.New(
 		root,
 		authority.NewLeaseAuthority(authority.LeaseAuthorityOptions{}),
-		time.Minute,
+		time.Minute, nil,
 	)
 	if err != nil {
 		t.Fatal(err)

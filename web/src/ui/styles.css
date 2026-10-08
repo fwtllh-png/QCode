@@ -1,6 +1,8 @@
+/* 主界面样式：语义 token 与基础原件由顶部 @import 引入；以下按界面区域分段，主段用 =====、子段用 —— 标记。 */
 @import "./theme/tokens.css";
 @import "./primitives/primitives.css";
 
+/* ===== 全局基础：根元素、盒模型重置与原生控件缺省 ===== */
 :root {
   font-family: var(--ch-font-sans);
   color: var(--ch-text);
@@ -72,6 +74,7 @@ textarea:disabled {
   border: 0;
 }
 
+/* ===== 应用骨架：三栏网格与移动端侧栏开关 ===== */
 .app {
   display: grid;
   grid-template-columns: var(--ch-rail-width) minmax(0, 1fr);
@@ -100,6 +103,7 @@ textarea:disabled {
   }
 }
 
+/* ===== 会话侧栏 rail：品牌行、版块标题与新增入口 ===== */
 .sessionRail {
   position: relative;
   min-width: 0;
@@ -230,6 +234,7 @@ textarea:disabled {
   color: var(--ch-text);
 }
 
+/* —— 搜索框与归档过滤 —— */
 .searchBox {
   position: relative;
   display: flex;
@@ -279,6 +284,7 @@ textarea:disabled {
   font-size: 12px;
 }
 
+/* —— 工作区分组与会话列表（含右键菜单与状态标记） —— */
 .sessionList {
   flex: 1;
   min-height: 0;
@@ -589,6 +595,7 @@ textarea:disabled {
   }
 }
 
+/* ===== 侧栏折叠态、会话分隔条与连接状态 ===== */
 .app[data-rail-collapsed] .sessionRail {
   align-items: center;
 }
@@ -658,6 +665,7 @@ textarea:disabled {
   background: var(--ch-success);
 }
 
+/* ===== 对话区：设置横幅、头部与导航控件 ===== */
 .conversation {
   display: flex;
   flex-direction: column;
@@ -803,6 +811,7 @@ textarea:disabled {
   color: color-mix(in srgb, var(--ch-warning) 65%, var(--ch-text));
 }
 
+/* —— transcript 滚动视口、轮次骨架与空态 —— */
 .conversationScrollport,
 .transcript {
   display: flex;
@@ -959,6 +968,7 @@ textarea:disabled {
   font-size: 12px;
 }
 
+/* ===== 工作区对话框与首次启动设置 ===== */
 .setupPage {
   display: grid;
   min-height: 100vh;
@@ -1243,6 +1253,7 @@ textarea:disabled {
   background: var(--ch-accent-hover);
 }
 
+/* ===== 用户消息：气泡、操作与撤回折叠 ===== */
 .userMessageGroup {
   display: flex;
   flex-direction: column;
@@ -1329,6 +1340,7 @@ textarea:disabled {
   border-radius: var(--ch-radius);
 }
 
+/* ===== 助手消息与披露（disclosure）骨架 ===== */
 .assistantMessage {
   margin: 0;
   overflow-wrap: anywhere;
@@ -1521,6 +1533,7 @@ textarea:disabled {
   color: var(--ch-text-secondary);
 }
 
+/* —— 推理/工具/子代理披露与活动指示 —— */
 .reasoningDisclosure[data-running] > button,
 .toolDisclosure[data-running] > .disclosureRow {
   background: linear-gradient(
@@ -1652,6 +1665,7 @@ textarea:disabled {
   animation: disclosure-open var(--ch-motion-disclosure) var(--ch-ease-in-out);
 }
 
+/* —— 工具执行表面：终端、读取、搜索与 diff 输出 —— */
 .toolSurface,
 .toolIOCard {
   width: calc(100% - 4px);
@@ -1996,6 +2010,7 @@ textarea:disabled {
   opacity: 1;
 }
 
+/* —— 终端运行态、内联问题与轮次恢复 —— */
 @keyframes terminal-pulse {
   50% {
     opacity: 0.4;
@@ -2123,6 +2138,7 @@ textarea:disabled {
   overflow-wrap: anywhere;
 }
 
+/* ===== Composer 座位与"回到最新"按钮 ===== */
 .composerSeat {
   position: sticky;
   bottom: 0;
@@ -2169,6 +2185,7 @@ textarea:disabled {
   pointer-events: auto;
 }
 
+/* ===== Composer：输入行与发送动作 ===== */
 .composer,
 .pendingComposer {
   position: relative;
@@ -2208,6 +2225,7 @@ textarea:disabled {
   gap: 4px;
 }
 
+/* —— 排队轮次与会话执行进度（计划/子代理/轨迹） —— */
 .turnQueue,
 .sessionProgress {
   width: min(var(--ch-chat-width), calc(100% - 32px));
@@ -2631,6 +2649,7 @@ textarea:disabled {
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--ch-accent) 22%, transparent);
 }
 
+/* —— 模型/推理选择与上下文计量条 —— */
 .compactSelect {
   position: relative;
   display: inline-flex;
@@ -2859,6 +2878,7 @@ textarea:disabled {
   font-variant-numeric: tabular-nums;
 }
 
+/* —— Composer 统计弹层（token 与上下文用量） —— */
 .composerStatsPopover {
   position: absolute;
   bottom: 100%;
@@ -3068,6 +3088,7 @@ textarea:disabled {
   line-height: 16px;
 }
 
+/* —— 上下文托盘条目 —— */
 .contextTray {
   display: flex;
   max-height: 72px;
@@ -3101,6 +3122,7 @@ textarea:disabled {
   height: 27px;
 }
 
+/* ===== 待确认/审批 Composer ===== */
 .pendingComposer {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
@@ -3274,6 +3296,7 @@ textarea:disabled {
   border-radius: var(--ch-radius);
 }
 
+/* ===== 输入替换编辑器 ===== */
 .replacementEditor {
   display: grid;
   min-width: 0;
@@ -3304,6 +3327,7 @@ textarea:disabled {
   outline: 0;
 }
 
+/* ===== 选项型输入响应（primaryText/inputOption） ===== */
 .primaryText {
   color: var(--ch-on-accent);
   background: var(--ch-accent) !important;
@@ -3427,6 +3451,7 @@ textarea:disabled {
   border-radius: var(--ch-radius);
 }
 
+/* ===== 通用控件：图标按钮、下拉选择与工件动作 ===== */
 .iconButton {
   display: grid;
   flex: 0 0 auto;
@@ -3502,6 +3527,7 @@ textarea:disabled {
   border-radius: var(--ch-radius);
 }
 
+/* ===== 对话标识与视图切换标签 ===== */
 .conversationIdentity {
   display: flex;
   flex-direction: column;
@@ -3553,6 +3579,7 @@ textarea:disabled {
   border-radius: 2px;
 }
 
+/* ===== 启动/连接状态屏与全局 keyframes ===== */
 .bootState {
   display: grid;
   width: 100%;
@@ -3639,6 +3666,7 @@ textarea:disabled {
   }
 }
 
+/* ===== 紧凑视口全局适配（≤720px） ===== */
 @media (max-width: 720px) {
   :root {
     --ch-header-height: 56px;
@@ -3810,6 +3838,7 @@ textarea:disabled {
 
 }
 
+/* ===== 可访问性：减少动效与强制色模式 ===== */
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
@@ -3859,6 +3888,7 @@ textarea:disabled {
   }
 }
 
+/* ===== 对话框输入控件 ===== */
 .sessionDialogInput {
   width: 100%;
   height: 32px;
@@ -3879,6 +3909,7 @@ textarea:disabled {
   color: var(--ch-danger);
 }
 
+/* ===== Markdown 流式光标与活动高亮动画 ===== */
 .assistantMarkdown[data-streaming] > :last-child::after {
   content: "";
   display: inline-block;
@@ -3901,6 +3932,7 @@ textarea:disabled {
   50% { background-position: 100% 0; }
 }
 
+/* ===== 检查面板（inspect）与终端待定态 ===== */
 .inspectPanelOverlay {
   position: fixed;
   inset: 0;

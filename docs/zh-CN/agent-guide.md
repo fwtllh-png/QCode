@@ -79,28 +79,39 @@
   Durable Journal，不作为模型上下文。TTFT、成本或缓存优化不得丢掉 mandatory
   用户语义，也不得用隐藏百分比替代公开的 `context.view.recent_tail_turns` 与
   剩余硬输入 residual 契约。`context.view.history_token_ceiling=0` 表示
-  Mandatory 分区之后的剩余容量，不是窗口百分比。
+  Mandatory 分区之后的剩余容量，不是窗口百分比。`recent_tail_turns=0` 表示
+  容量选择，也是默认值；正值是包含当前轮的显式上限。默认
+  `digest=ledger+narrative`，与 `narrative_mode=post_turn` 同时启用才自动生成摘要；
+  `off` 可继续复用有效缓存。摘要输入、条数和单条字节数的零值不能被替换为隐藏上限。
+  原文选择和遗漏指引必须使用同一 `ProjectionResult`；最终 Normalize 后计入
+  Schema、动态内容、续写、提示和输出预留再准入。只有完整成本净下降才接受
+  折叠；短轮不足以抵消提示开销时检查后续安全边界，找不到则回滚。
   Tool Result 首次准入后，未超硬输入时不再改写；超硬输入时采样路径可把已
   发送结果和调用参数收成 Handle / 身份投影，不得用隐藏 N 代替 ResultStore
   合同或 `result_get`。伴随已闭合工具调用的分析正文默认保留；只有超硬输入
   时才收成带来源的非权威摘要，不能仅因为文字和工具在同一条消息就丢掉判断。
   进行中的 Turn 不得因窗口失败，除非用户请求加
-  Mandatory 分区已超过硬输入。闭合 Turn 的 Checkpoint 同样 write-once，放在 Dynamic 而不是
-  Stable 或 History 前缀；`context.view.checkpoint_max_bytes=0` 继承公开的
-  summary / narrative item 预算。未完成工作只能从带 `source_message_ids` 的
-  Narrative 项提升为 Plan Todo，禁止从散文猜测清单。  旧 Turn 回读走
-  `turn_history`（首次投影是 Turn 尾部，并以 Findings 索引结尾），继续分页用
-  `result_get` `mode=tail` 或 `mode=query`（例如 `query=sites`），不要用默认
-  `summary`。首次写入后保持 append-only。被投影裁掉的旧 Turn 必须在
-  `session_state` 给出检索指针和 `preferred_turn`；缺失 Checkpoint 只回封
+  Mandatory 分区已超过硬输入。闭合 Turn 的 Checkpoint 持久化仍 write-once，
+  采样仅选当前来源引用轮和最近闭合轮，放在 Dynamic；`checkpoint_max_bytes`
+  约束可选块总投影，0 用必要上下文之后的请求余量。摘要不得自动提升执行 Todo。
+  历史恢复走 `turn_history` 的 turn/source_id/item_id/catalog 互斥选择器，
+  source_id 可读 index_only；max_bytes 有界，继续源分页用 offset/content_digest。
+  `result_get` 只恢复已存工具页，不代替读取源分页遗漏。完整归档优先于内存残片。
+  未绑定定义过大时先目录恢复；实际执行入口只允许恢复、绑定与澄清，
+  同批次绑定不能提前执行业务工具。下一次采样装入必要定义后再继续。
+  被投影裁掉的旧 Turn 必须由本次
+  选择生成临时 `[context_selection]`，给出实际原因与合法 `turn_history {"turn":N}`
+  参数，不写入冻结 World。稀疏轮号不虚构区间，提示缩短时声明未展示组数；
+  缺失 Checkpoint 只回封
   turn id，不把旧审计猜进 Plan。最近完成轮的用户可见终答与工具定位位点必须
   进入 mandatory Continuity 胶囊，不能只留在被裁掉的原文 Tail 里。Plan 已有完成步骤或 Working Set 已有已读路径时，`session_state`
   必须带 Resume Fact：不要重复已完成步骤，下一项未完成工作取第一项
   outstanding Plan 标题，并列出全部已读路径。Prompt 工作集仍按
   `context.working_set.max_entries` 取 top-N。已读列表超过 `session_state`
   分区预算时截断并写 `(N more already-read paths omitted)`。
-  有行号命中时 Continuity / Resume 还列出 `Located sites`。已有 Continuity
-  时不要用 `turn_history` 或搜索做开场恢复。`working_set` 只列路径；
+  有行号命中时 Continuity / Resume 还列出 `Located sites`。已有信息覆盖当前
+  请求时直接复用；缺少必要定义或证据时，按遗漏指针或未覆盖窗口恢复。
+  `working_set` 只列路径；
   不要再次 `file_read`，除非即将编辑具体窗口。`search_text` /
   `search_definition` 命中后优先读该窗口。
   预期命中面很广的 `search_text` / `search_project` 先用 `output=files` 或
@@ -122,8 +133,8 @@
   Handle、进程 ID 与输出游标不续期。未知输出保守处理，原始结果仍完整保留。
 - 模型窗口、经济预算和 Provider Throughput 是三个独立容量平面。Operator 通过
   `execution.tokens_per_minute` 声明 TPM；`0` 表示未知，不发明按模型名称的默认值。
-  合法工作集超过已知 Burst 或等待将超过预算时，先做一次 Visible Tail Fold 再
-  重新准入；仍超则延迟或拒绝，不得静默重探同一 Digest，也不得因此改写 Durable
+  合法工作集超过已知 Burst 或等待将超过预算时，先寻找包含遗漏提示成本的
+  Visible Tail 净缩减再重新准入；仍超则延迟或拒绝，不得静默重探同一 Digest，也不得因此改写 Durable
   History。
 - 动态策略必须覆盖不同 Context Window、Output Reserve、Provider Projection Mode
   和缓存状态的参数化测试，禁止只针对某个模型规格编写固定期望值测试。
@@ -285,3 +296,16 @@ Coding Benchmark；全部使用 `_test.go`，类型和辅助函数保持私有�
 - 环境失败或跳过测试；
 - 兼容或 Migration 影响；
 - 未纳入任务的剩余 Untracked File。
+
+
+### 稳定引用报告与计划
+
+模型输入中的 `conversation_references` 保存早先报告的原始编号和来源条目 ID。
+继续处理某项时使用已经随请求提供的定义；多个报告有同一编号时先根据用户上下文
+确定来源，不能自行选最近报告。无需因原文轮次被裁剪而重复读取已覆盖的定义。
+
+执行计划更新时复用 `steps[].id`，用 `reference_item_ids` 关联报告项；新增步骤
+省略 ID 后使用工具返回值继续更新。只改变材料焦点时，向 `update_plan` 传
+`context_selection`，可省略 `steps`；空对象清空焦点，不会完成或删除既有计划。
+替代来源必须依据用户纠正提交 `replacements`，并同步重绑尚未完成的计划引用。
+报告、摘要及交付方案本身不构成执行授权，完成与验证继续依据 Plan 和 Evidence。

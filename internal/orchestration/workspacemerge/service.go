@@ -15,29 +15,35 @@ import (
 
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
 	filetool "github.com/fwtllh-png/QCode/internal/adapter/tool/file"
+	"github.com/fwtllh-png/QCode/internal/common/workspacewrite"
 	"github.com/fwtllh-png/QCode/internal/persist/workspacejournal"
 	"github.com/fwtllh-png/QCode/internal/platform/process"
 	"github.com/fwtllh-png/QCode/internal/security/filebroker"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
 )
 
-const (
-	maxMergeFiles     = 512
-	mergeBatchFiles   = 64
-	maxMergeDiffBytes = 3 << 20
-)
+const mergeBatchFiles = 64
 
 var ErrWorkspaceClean = errors.New("Chat worktree has no changes to merge")
 
 // Service owns merge planning, journaling, baseline snapshots, and Git calls.
 type Service struct {
-	repository string
-	root       string
-	parent     *filetool.Tools
-	journal    *workspacejournal.Manager
-	gate       WorkspaceGate
-	brokers    WorkspaceBroker
-	allowApply bool
+	repository     string
+	root           string
+	parent         *filetool.Tools
+	journal        *workspacejournal.Manager
+	gate           WorkspaceGate
+	brokers        WorkspaceBroker
+	allowApply     bool
+	includeIgnored bool
+	maxDiffBytes   int
+}
+
+type Options struct {
+	// IncludeIgnored is only for private command baselines; chat worktrees
+	// keep their Git-visible semantics.
+	IncludeIgnored bool
+	MaxDiffBytes   int
 }
 
 // WorkspaceGate serializes application-owned merges with turns writing the parent workspace.
@@ -47,6 +53,7 @@ type WorkspaceGate interface {
 
 type WorkspaceBroker interface {
 	ReadVCS(context.Context, string, ...string) (string, error)
+	ReadVCSResult(context.Context, string, ...string) (process.Result, error)
 	AddWorktree(context.Context, string, string, string) error
 	RemoveWorktree(context.Context, string, string) error
 	PruneWorktrees(context.Context, string) error
@@ -75,6 +82,7 @@ func New(
 	gate WorkspaceGate,
 	brokers WorkspaceBroker,
 	allowApply bool,
+	options Options,
 ) *Service {
 	if parent == nil || journal == nil || gate == nil ||
 		brokers == nil {
@@ -84,10 +92,17 @@ func New(
 	if err != nil {
 		return nil
 	}
+	if options.MaxDiffBytes < 0 {
+		return nil
+	}
+	if options.MaxDiffBytes == 0 {
+		options.MaxDiffBytes = workspacewrite.DefaultMergeDiffBytes
+	}
 	return &Service{
 		repository: canonicalRepository, root: root,
 		parent: parent, journal: journal, gate: gate,
 		brokers: brokers, allowApply: allowApply,
+		includeIgnored: options.IncludeIgnored, maxDiffBytes: options.MaxDiffBytes,
 	}
 }
 
@@ -232,14 +247,12 @@ func (c *Service) plan(
 	if len(paths) == 0 {
 		return preparedMerge{}, ErrWorkspaceClean
 	}
-	if len(paths) > maxMergeFiles {
-		return preparedMerge{}, fmt.Errorf(
-			"Chat merge has %d files; at most %d are allowed", len(paths), maxMergeFiles,
-		)
-	}
 	changes := make([]filetool.Change, 0, len(paths))
 	expected := make(map[string]workspacejournal.Fingerprint, len(paths))
 	for _, path := range paths {
+		if err := ctx.Err(); err != nil {
+			return preparedMerge{}, err
+		}
 		parentPath := filepath.Join(c.repository, filepath.FromSlash(path))
 		fingerprint, _, _, err := workspacejournal.Snapshot(parentPath)
 		if err != nil {
@@ -285,9 +298,9 @@ func (c *Service) plan(
 			diff.WriteByte('\n')
 		}
 		diff.WriteString(batchPlan.Diff)
-		if diff.Len() > maxMergeDiffBytes {
+		if diff.Len() > c.maxDiffBytes {
 			return preparedMerge{}, fmt.Errorf(
-				"Chat merge diff exceeds %d bytes", maxMergeDiffBytes,
+				"workspace merge diff exceeds execution.workspace_merge_max_diff_bytes=%d; narrow the writes or increase the configured preview budget", c.maxDiffBytes,
 			)
 		}
 		for _, file := range batchPlan.Files {
@@ -383,10 +396,12 @@ func (c *Service) changedPaths(
 	if err != nil {
 		return nil, err
 	}
-	untracked, err := c.git(
-		ctx, worktree, "ls-files", "--others", "--exclude-standard", "-z",
-		"--", ".", ":(exclude).qcode",
-	)
+	untrackedArgs := []string{"ls-files", "--others", "-z"}
+	if !c.includeIgnored {
+		untrackedArgs = append(untrackedArgs, "--exclude-standard")
+	}
+	untrackedArgs = append(untrackedArgs, "--", ".", ":(exclude).qcode")
+	untracked, err := c.git(ctx, worktree, untrackedArgs...)
 	if err != nil {
 		return nil, err
 	}
@@ -468,11 +483,7 @@ func (c *Service) baselineFile(
 	worktree string,
 	path string,
 ) (mergeFile, error) {
-	result, err := process.Run(ctx, process.Options{
-		Path: process.GitExecutable(),
-		Args: process.ManagedGitArguments([]string{"show", "HEAD:" + path}),
-		Dir:  worktree,
-	})
+	result, err := c.brokers.ReadVCSResult(ctx, worktree, "show", "HEAD:"+path)
 	if err != nil {
 		return mergeFile{}, err
 	}
@@ -500,11 +511,7 @@ func (c *Service) baselineMode(
 	worktree string,
 	path string,
 ) (fs.FileMode, error) {
-	result, err := process.Run(ctx, process.Options{
-		Path: process.GitExecutable(),
-		Args: process.ManagedGitArguments([]string{"ls-tree", "HEAD", "--", path}),
-		Dir:  worktree,
-	})
+	result, err := c.brokers.ReadVCSResult(ctx, worktree, "ls-tree", "HEAD", "--", path)
 	if err != nil {
 		return 0, err
 	}
@@ -604,16 +611,8 @@ func (c *Service) mergeText(
 			return nil, err
 		}
 	}
-	result, err := process.Run(ctx, process.Options{
-		Path: process.GitExecutable(),
-		Args: process.ManagedGitArguments([]string{
-			"merge-file", "-p",
-			filepath.Join(directory, "parent"),
-			filepath.Join(directory, "base"),
-			filepath.Join(directory, "child"),
-		}),
-		Dir: c.repository,
-	})
+	result, err := c.brokers.ReadVCSResult(ctx, c.repository, "merge-file", "-p",
+		filepath.Join(directory, "parent"), filepath.Join(directory, "base"), filepath.Join(directory, "child"))
 	if err != nil {
 		return nil, err
 	}

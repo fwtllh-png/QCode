@@ -23,7 +23,7 @@ func TestDeliverablePlanPreservesExecutionPlan(t *testing.T) {
 		t.Fatal(err)
 	}
 	execution := map[string]any{
-		"steps": []any{map[string]any{"title": "Current task"}},
+		"steps": []any{map[string]any{"id": "current-task-id", "title": "Current task"}},
 	}
 	execute(t, registry, "update_plan", execution)
 	result := execute(t, registry, "submit_plan", map[string]any{

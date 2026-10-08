@@ -40,23 +40,23 @@ func TestContinuitySitesKeepSymbolAndSkipFileOnlyHits(t *testing.T) {
 }
 
 func TestContinuityHintIsMandatoryAndDoesNotInventOldLists(t *testing.T) {
-	hint := FormatContinuityHint(ContinuityInput{
+	hint := FormatContinuityHintBudgeted(ContinuityInput{
 		Conclusion:  "hasGlobalLock must be held across the lease",
 		Sites:       []string{"eds_metaserver.cc:88 hasGlobalLock"},
 		SourceTurns: []uint64{6, 4, 6},
 		Next:        "patch the lease path",
-	})
+	}, 0)
 	if !strings.Contains(hint, "Confirmed continuity from turn 4, 6.") ||
 		!strings.Contains(hint, "Conclusion: hasGlobalLock must be held across the lease.") ||
 		!strings.Contains(hint, "Located sites: eds_metaserver.cc:88 hasGlobalLock.") ||
-		!strings.Contains(hint, "Do not call "+TurnHistoryToolName+" or search the repository") ||
+		!strings.Contains(hint, "Recover missing conversation definitions") ||
 		!strings.Contains(hint, "Next open work: patch the lease path.") ||
 		strings.Contains(hint, "P2:") {
 		t.Fatalf("hint = %q", hint)
 	}
-	entity, ok := ContinuityRetrievalEntity(ContinuityInput{
+	entity, ok := ContinuityRetrievalEntityBudgeted(ContinuityInput{
 		Sites: []string{"eds_metaserver.cc:88 hasGlobalLock"},
-	})
+	}, 0)
 	if !ok || entity.Retention != RetentionMandatory ||
 		entity.Source != ContinuitySource ||
 		entity.Kind != EntityFact {
@@ -99,10 +99,10 @@ func TestFormatContinuityHintBudgetOmitsOverflowingSites(t *testing.T) {
 	for index := 0; index < 12; index++ {
 		sites = append(sites, "internal/pkg/site_"+string(rune('a'+index))+".go:10 Sym")
 	}
-	full := FormatContinuityHint(ContinuityInput{
+	full := FormatContinuityHintBudgeted(ContinuityInput{
 		Conclusion: strings.Repeat("hold the lock ", 8),
 		Sites:      sites,
-	})
+	}, 0)
 	budget := len(full) - 1
 	hint := FormatContinuityHintBudgeted(ContinuityInput{
 		Conclusion: strings.Repeat("hold the lock ", 8),
@@ -112,16 +112,16 @@ func TestFormatContinuityHintBudgetOmitsOverflowingSites(t *testing.T) {
 		t.Fatalf("budgeted hint = %q len=%d budget=%d", hint, len(hint), budget)
 	}
 	if !strings.Contains(hint, "more located sites omitted") ||
-		!strings.Contains(hint, "Do not call "+TurnHistoryToolName) {
+		!strings.Contains(hint, "Recover missing conversation definitions") {
 		t.Fatalf("budgeted hint = %q", hint)
 	}
 }
 
 func TestContinuityHintEmptyWithoutConclusionOrSites(t *testing.T) {
-	if got := FormatContinuityHint(ContinuityInput{Next: "keep looking"}); got != "" {
+	if got := FormatContinuityHintBudgeted(ContinuityInput{Next: "keep looking"}, 0); got != "" {
 		t.Fatalf("hint = %q", got)
 	}
-	if _, ok := ContinuityRetrievalEntity(ContinuityInput{}); ok {
+	if _, ok := ContinuityRetrievalEntityBudgeted(ContinuityInput{}, 0); ok {
 		t.Fatal("empty continuity emitted")
 	}
 }

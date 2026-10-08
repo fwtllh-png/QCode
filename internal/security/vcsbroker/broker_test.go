@@ -15,7 +15,7 @@ import (
 func TestBrokerAddsAndRemovesDetachedWorktree(t *testing.T) {
 	repository := gitRepository(t)
 	manager := authority.NewLeaseAuthority(authority.LeaseAuthorityOptions{})
-	broker, err := New(repository, manager, time.Minute)
+	broker, err := New(repository, manager, time.Minute, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,7 +53,7 @@ func TestBrokerRejectsUnallowlistedGitMutation(t *testing.T) {
 	broker, err := New(
 		repository,
 		authority.NewLeaseAuthority(authority.LeaseAuthorityOptions{}),
-		time.Minute,
+		time.Minute, nil,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -73,12 +73,14 @@ func TestBrokerRejectsUnsafeModelGitArguments(t *testing.T) {
 	broker, err := New(
 		repository,
 		authority.NewLeaseAuthority(authority.LeaseAuthorityOptions{}),
-		time.Minute,
+		time.Minute, nil,
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
 	tests := []Mutation{
+		{Kind: RepositoryInit, Dir: repository, Args: []string{"init", "--bare"}},
+		{Kind: SnapshotIndex, Dir: repository, Args: []string{"add", "-A", "--force", "--", "../outside"}},
 		{
 			Kind: IndexAdd, Dir: repository,
 			Args: []string{"add", "-A", "--", "../outside"},
@@ -174,7 +176,7 @@ func TestBrokerExecutesExtendedMutations(t *testing.T) {
 	broker, err := New(
 		repository,
 		authority.NewLeaseAuthority(authority.LeaseAuthorityOptions{}),
-		time.Minute,
+		time.Minute, nil,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -244,7 +246,7 @@ func TestBrokerRejectsUnknownRemoteBeforeMutation(t *testing.T) {
 	broker, err := New(
 		repository,
 		authority.NewLeaseAuthority(authority.LeaseAuthorityOptions{}),
-		time.Minute,
+		time.Minute, nil,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -273,7 +275,7 @@ func TestBrokerSwitchesAllowlistedLocalBranch(t *testing.T) {
 	broker, err := New(
 		repository,
 		authority.NewLeaseAuthority(authority.LeaseAuthorityOptions{}),
-		time.Minute,
+		time.Minute, nil,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -297,7 +299,7 @@ func TestBrokerRejectsInvalidBranchSwitch(t *testing.T) {
 	broker, err := New(
 		repository,
 		authority.NewLeaseAuthority(authority.LeaseAuthorityOptions{}),
-		time.Minute,
+		time.Minute, nil,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -316,7 +318,7 @@ func TestBrokerRequiresExplicitLeaseTTL(t *testing.T) {
 	if _, err := New(
 		repository,
 		authority.NewLeaseAuthority(authority.LeaseAuthorityOptions{}),
-		0,
+		0, nil,
 	); err == nil || !strings.Contains(err.Error(), "Lease TTL") {
 		t.Fatalf("missing TTL error = %v", err)
 	}
@@ -327,7 +329,7 @@ func TestBrokerRejectsIndexDriftBeforeMutation(t *testing.T) {
 	broker, err := New(
 		repository,
 		authority.NewLeaseAuthority(authority.LeaseAuthorityOptions{}),
-		time.Minute,
+		time.Minute, nil,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -360,7 +362,7 @@ func TestBrokerRejectsConfigDriftBeforeMutation(t *testing.T) {
 	broker, err := New(
 		repository,
 		authority.NewLeaseAuthority(authority.LeaseAuthorityOptions{}),
-		time.Minute,
+		time.Minute, nil,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -386,7 +388,7 @@ func TestBrokerBindsMutationToTargetWorktreeIndex(t *testing.T) {
 	broker, err := New(
 		repository,
 		authority.NewLeaseAuthority(authority.LeaseAuthorityOptions{}),
-		time.Minute,
+		time.Minute, nil,
 	)
 	if err != nil {
 		t.Fatal(err)

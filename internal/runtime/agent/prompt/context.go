@@ -59,7 +59,6 @@ const (
 	PartitionToolPrefix   = "tool_prefix"
 	PartitionPlan         = "plan"
 	PartitionSessionState = "session_state"
-	PartitionNarrative    = "narrative"
 	PartitionConstitution = "constitution"
 	PartitionTotal        = "total"
 )

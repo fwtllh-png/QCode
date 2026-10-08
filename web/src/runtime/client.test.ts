@@ -1,6 +1,6 @@
 import {afterEach, beforeEach, describe, expect, it, vi} from "vitest";
 import type {AgentPreset} from "../protocol";
-import {RuntimeClient} from "./client";
+import {RuntimeClient, RuntimeProblem} from "./client";
 import {reconnectDelay, reconnectMaxDelayMs} from "./reconnect";
 import type {
   BrowserProjectionState,
@@ -136,6 +136,11 @@ describe("RuntimeClient", () => {
   let failBootstrapAttempts = 0;
   let failSnapshotSessions = new Set<string>();
   let holdNextProfile: Promise<void> | undefined;
+  let listWorkspaces:
+    | Array<Record<string, unknown>>
+    | (() => Array<Record<string, unknown>>)
+    | undefined;
+  let listCalls = 0;
 
   beforeEach(() => {
     requests.length = 0;
@@ -166,6 +171,8 @@ describe("RuntimeClient", () => {
     failBootstrapAttempts = 0;
     failSnapshotSessions = new Set<string>();
     holdNextProfile = undefined;
+    listWorkspaces = undefined;
+    listCalls = 0;
     window.history.replaceState(null, "", "/?workspace=workspace-id");
     vi.stubGlobal("WebSocket", FakeWebSocket);
     vi.stubGlobal("crypto", {
@@ -230,7 +237,13 @@ describe("RuntimeClient", () => {
         });
       }
       if (route.endsWith("/workspace/list")) {
-        return envelope({version: 1, workspaces});
+        listCalls += 1;
+        return envelope({
+          version: 1,
+          workspaces: typeof listWorkspaces === "function"
+            ? listWorkspaces()
+            : listWorkspaces ?? workspaces
+        });
       }
       if (route.includes("/api/v1/content/")) {
         requests.push({
@@ -2713,6 +2726,91 @@ describe("RuntimeClient", () => {
     client.stop();
   });
 
+  it("wraps non-JSON RPC responses in a RuntimeProblem with the status", async () => {
+    const client = new RuntimeClient();
+    await startClient(client);
+    const originalFetch = globalThis.fetch;
+    vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).endsWith("/agent-preset/save")) {
+        return Promise.resolve(new Response("<html>502 Bad Gateway</html>", {
+          status: 502,
+          headers: {"Content-Type": "text/html"}
+        }));
+      }
+      return originalFetch(input, init);
+    }));
+    const call = (client as unknown as {
+      call: (route: string, body: unknown, options: unknown) => Promise<unknown>;
+    }).call.bind(client);
+    const failure = await call("agent-preset/save", {}, {})
+      .then(() => undefined, (error: unknown) => error);
+    expect(failure).toBeInstanceOf(RuntimeProblem);
+    expect((failure as RuntimeProblem).problem).toMatchObject({
+      code: "internal",
+      message: "Request failed (502) with a non-JSON response",
+      retryable: false
+    });
+    vi.stubGlobal("fetch", originalFetch);
+    client.stop();
+  });
+
+  it("does not retry an aborted request", async () => {
+    const client = new RuntimeClient();
+    await startClient(client);
+    const originalFetch = globalThis.fetch;
+    const requests: string[] = [];
+    vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).endsWith("/agent-preset/save")) {
+        requests.push(String(input));
+        return Promise.reject(new DOMException("aborted", "AbortError"));
+      }
+      return originalFetch(input, init);
+    }));
+    const controller = new AbortController();
+    controller.abort();
+    const call = (client as unknown as {
+      call: (route: string, body: unknown, options: unknown) => Promise<unknown>;
+    }).call.bind(client);
+    await call("agent-preset/save", {}, {
+      retryNetwork: true, idempotencyKey: "key", signal: controller.signal
+    }).catch(() => undefined);
+    expect(requests).toHaveLength(1);
+    vi.stubGlobal("fetch", originalFetch);
+    client.stop();
+  });
+
+  it("waits the reconnect base delay before retrying a failed network call", async () => {
+    vi.useFakeTimers();
+    const client = new RuntimeClient();
+    const originalFetch = globalThis.fetch;
+    let attempts = 0;
+    vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).endsWith("/agent-preset/save")) {
+        attempts += 1;
+        if (attempts === 1) {
+          return Promise.reject(new TypeError("connection reset"));
+        }
+        return Promise.resolve(new Response(JSON.stringify({version: 1, result: {}}), {
+          status: 200,
+          headers: {"Content-Type": "application/json"}
+        }));
+      }
+      return originalFetch(input, init);
+    }));
+    const call = (client as unknown as {
+      call: (route: string, body: unknown, options: unknown) => Promise<unknown>;
+    }).call.bind(client);
+    const pending = call("agent-preset/save", {}, {retryNetwork: true, idempotencyKey: "key"});
+    await vi.advanceTimersByTimeAsync(reconnectDelay(0) - 1);
+    expect(attempts).toBe(1);
+    await vi.advanceTimersByTimeAsync(1);
+    await pending;
+    expect(attempts).toBe(2);
+    vi.stubGlobal("fetch", originalFetch);
+    vi.useRealTimers();
+    client.stop();
+  });
+
   it("disconnects live progress when the event stream closes", async () => {
     vi.useFakeTimers();
     snapshotEvents = [runtimeEvent(1, "turn.started")];
@@ -2941,6 +3039,89 @@ describe("RuntimeClient", () => {
     });
     expect(client.getSnapshot().phase).toBe("desynchronized");
     client.stop();
+  });
+
+  it("fails immediately when the live workspace list reports a problem", async () => {
+    listWorkspaces = [{
+      id: "workspace-id",
+      root: "/workspace",
+      label: "workspace",
+      ready: false,
+      problem: "activation crashed"
+    }];
+    const client = new RuntimeClient(new MemoryBrowserStorage());
+    await client.start();
+    expect(client.getSnapshot().phase).toBe("failed");
+    expect(client.getSnapshot().problem?.message).toBe("activation crashed");
+    client.stop();
+  });
+
+  it("fails when the live workspace list drops the selected workspace", async () => {
+    listWorkspaces = [];
+    const client = new RuntimeClient(new MemoryBrowserStorage());
+    await client.start();
+    expect(client.getSnapshot().problem?.message)
+      .toBe("Workspace is not registered");
+    client.stop();
+  });
+
+  it("polls until the readiness budget is exhausted", async () => {
+    listWorkspaces = [{
+      id: "workspace-id",
+      root: "/workspace",
+      label: "workspace",
+      ready: false
+    }];
+    const client = new RuntimeClient(new MemoryBrowserStorage(), {
+      workspaceReadyBudgetMs: 12,
+      workspaceReadyPollIntervalMs: 3
+    });
+    await client.start();
+    expect(client.getSnapshot().problem?.message)
+      .toBe("Workspace Runtime is not ready");
+    expect(listCalls).toBeGreaterThanOrEqual(2);
+    expect(listCalls).toBeLessThanOrEqual(12);
+    client.stop();
+  });
+
+  it("resumes startup once the activating workspace becomes ready", async () => {
+    let calls = 0;
+    listWorkspaces = () => {
+      calls += 1;
+      return [{
+        id: "workspace-id",
+        root: "/workspace",
+        label: "workspace",
+        ready: calls >= 2
+      }];
+    };
+    const client = new RuntimeClient(new MemoryBrowserStorage(), {
+      workspaceReadyBudgetMs: 2_000,
+      workspaceReadyPollIntervalMs: 2
+    });
+    await startClient(client);
+    const snapshot = client.getSnapshot();
+    expect(snapshot.phase).not.toBe("failed");
+    expect(snapshot.problem).toBeUndefined();
+    expect(snapshot.workspaces.every((workspace) => workspace.ready))
+      .toBe(true);
+    client.stop();
+  });
+
+  it("rejects invalid workspace readiness options at construction", () => {
+    expect(() => new RuntimeClient(new MemoryBrowserStorage(), {
+      workspaceReadyBudgetMs: 0
+    })).toThrow(RangeError);
+    expect(() => new RuntimeClient(new MemoryBrowserStorage(), {
+      workspaceReadyBudgetMs: Number.POSITIVE_INFINITY
+    })).toThrow(RangeError);
+    expect(() => new RuntimeClient(new MemoryBrowserStorage(), {
+      workspaceReadyPollIntervalMs: -1
+    })).toThrow(RangeError);
+    expect(() => new RuntimeClient(new MemoryBrowserStorage(), {
+      workspaceReadyBudgetMs: 10,
+      workspaceReadyPollIntervalMs: 20
+    })).toThrow(RangeError);
   });
 });
 

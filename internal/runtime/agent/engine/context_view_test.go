@@ -33,7 +33,7 @@ func TestCompactGateKeepsAdmittedToolResultsAppendOnly(t *testing.T) {
 		true,
 		func(State, Event) error { return nil },
 		0,
-		engine.contextViewProject(nil),
+		engine.projectSelectedHistoryForTest(nil),
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -58,7 +58,7 @@ func TestContextViewFillsNewestTailUntilResidual(t *testing.T) {
 			messageWithText(provider.RoleUser, "current request", 2),
 		}
 		original := history[0].Text()
-		viewed := engine.contextViewProject(nil)(history)
+		viewed := engine.projectSelectedHistoryForTest(nil)(history)
 		if len(viewed) == 0 || strings.Contains(viewed[0].Text(), "tok ") {
 			t.Fatalf(
 				"context=%d residual view kept the oldest group: %+v",
@@ -82,7 +82,7 @@ func TestContextViewOperatorTailCeilingClipsBeforeHardInput(t *testing.T) {
 		messageWithText(provider.RoleAssistant, strings.Repeat("ans ", 40), 1),
 		messageWithText(provider.RoleUser, "current request", 2),
 	}
-	viewed := engine.contextViewProject(nil)(history)
+	viewed := engine.projectSelectedHistoryForTest(nil)(history)
 	if len(viewed) != 1 || viewed[0].Text() != "current request" {
 		t.Fatalf("operator ceiling view = %+v", viewed)
 	}
@@ -109,14 +109,14 @@ func TestContextViewResidualDropsOlderTurnWithoutRewritingToolResult(t *testing.
 		true,
 		func(State, Event) error { return nil },
 		0,
-		engine.contextViewProject(nil),
+		engine.projectSelectedHistoryForTest(nil),
 	); err != nil {
 		t.Fatal(err)
 	}
 	if history[2].Blocks[0].ToolResult.Content != encoded {
 		t.Fatalf("view residual rewrote durable tool result: %+v", history[2])
 	}
-	viewed := engine.contextViewProject(nil)(history)
+	viewed := engine.projectSelectedHistoryForTest(nil)(history)
 	if len(viewed) == 0 || viewed[len(viewed)-1].Text() != "current request" {
 		t.Fatalf("view = %+v", viewed)
 	}
@@ -124,6 +124,7 @@ func TestContextViewResidualDropsOlderTurnWithoutRewritingToolResult(t *testing.
 
 func TestContextViewProjectorHidesTurnsOutsideRecentTail(t *testing.T) {
 	engine := newEngine(t, &scriptedProvider{}, tool.NewRegistry(nil, nil))
+	engine.options.Context.RecentTailTurns = 2
 	history := []provider.Message{
 		messageWithText(provider.RoleUser, "turn one "+strings.Repeat("x", 200), 1),
 		messageWithText(provider.RoleAssistant, "answer one", 1),
@@ -131,7 +132,7 @@ func TestContextViewProjectorHidesTurnsOutsideRecentTail(t *testing.T) {
 		messageWithText(provider.RoleAssistant, "answer two", 2),
 		messageWithText(provider.RoleUser, "turn three", 3),
 	}
-	viewed := engine.contextViewProject(nil)(history)
+	viewed := engine.projectSelectedHistoryForTest(nil)(history)
 	if len(viewed) != 3 ||
 		!strings.Contains(viewed[0].Text(), "turn two") ||
 		viewed[2].Text() != "turn three" {
@@ -164,7 +165,7 @@ func TestAdmitFoldsOldestVisibleTailWithoutReplacingHistory(t *testing.T) {
 			return nil
 		},
 		0,
-		engine.contextViewProject(nil),
+		engine.projectSelectedHistoryForTest(nil),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -177,7 +178,7 @@ func TestAdmitFoldsOldestVisibleTailWithoutReplacingHistory(t *testing.T) {
 	if history[0].Text() != original[0].Text() || len(history) != len(original) {
 		t.Fatalf("durable history changed: %+v", history)
 	}
-	viewed := engine.contextViewProject(nil)(history)
+	viewed := engine.projectSelectedHistoryForTest(nil)(history)
 	if len(viewed) == 0 || strings.Contains(viewed[0].Text(), "old ") {
 		t.Fatalf("folded view still has the oldest group: %+v", viewed)
 	}
@@ -208,7 +209,7 @@ func TestOverflowFoldDoesNotRetryAfterOneVisibleFold(t *testing.T) {
 	)
 	changed, err := engine.recoverContextOverflow(
 		overflow, false, &history, snapshot, 128,
-		func(State, Event) error { return nil },
+		func(State, Event) error { return nil }, engine.projectSelectedHistoryForTest(nil),
 	)
 	if err != nil || !changed {
 		t.Fatalf("first overflow fold changed=%t err=%v", changed, err)
@@ -216,7 +217,7 @@ func TestOverflowFoldDoesNotRetryAfterOneVisibleFold(t *testing.T) {
 	before := cloneMessages(history)
 	changed, err = engine.recoverContextOverflow(
 		overflow, false, &history, snapshot, 128,
-		func(State, Event) error { return nil },
+		func(State, Event) error { return nil }, engine.projectSelectedHistoryForTest(nil),
 	)
 	if err != nil || changed {
 		t.Fatalf("second overflow fold changed=%t err=%v", changed, err)
@@ -255,7 +256,7 @@ func TestCompactGateDoesNotStageNarrativeOrReplaceUnderHardLimit(t *testing.T) {
 			return nil
 		},
 		0,
-		engine.contextViewProject(nil),
+		engine.projectSelectedHistoryForTest(nil),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -268,5 +269,16 @@ func TestCompactGateDoesNotStageNarrativeOrReplaceUnderHardLimit(t *testing.T) {
 	}
 	if len(history) != len(original) || history[0].Text() != original[0].Text() {
 		t.Fatalf("durable history changed: %+v", history)
+	}
+}
+
+func (e *Engine) projectSelectedHistoryForTest(
+	next agentcontext.HistoryProjector,
+) agentcontext.HistoryProjector {
+	return func(history []provider.Message) []provider.Message {
+		return agentcontext.ProjectHistory(
+			e.contextProjection(history).Messages,
+			next,
+		)
 	}
 }

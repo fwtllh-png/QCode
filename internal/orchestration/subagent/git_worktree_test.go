@@ -171,7 +171,7 @@ func TestChildWorktreeProvisionRecoversMissingRegisteredPath(t *testing.T) {
 	workspace := newGitWorkspace(t)
 	root := t.TempDir()
 	broker, err := workspacebroker.New(workspace,
-		authority.NewLeaseAuthority(authority.LeaseAuthorityOptions{}), time.Minute)
+		authority.NewLeaseAuthority(authority.LeaseAuthorityOptions{}), time.Minute, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -81,6 +81,10 @@ fmt:
 capacity-policy-check:
 	$(GO) test ./scripts -run '^TestCapacityPathsDoNotReintroduceLegacyTiers$$'
 
+.PHONY: context-continuity-replay
+context-continuity-replay:
+	$(GO) test ./internal/runtime/agent/engine -run '^TestContextContinuityP5Replay$$' -count=1 -v
+
 verify: docs-check brand-check web-protocol-check \
 	web-check web-test web-assets-check web-supply-chain-check \
 	reliability-gate

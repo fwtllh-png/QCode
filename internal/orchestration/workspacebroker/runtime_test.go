@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -13,6 +14,46 @@ import (
 	"github.com/fwtllh-png/QCode/internal/security/filebroker"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
 )
+
+func TestContentBaselineUsesPrivateBrokerUnderCommandAuthority(t *testing.T) {
+	parent, isolated := t.TempDir(), t.TempDir()
+	broker, err := New(parent, authority.NewLeaseAuthority(authority.LeaseAuthorityOptions{}), time.Minute, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, body := range map[string]string{".gitignore": "ignored.txt\n", "ignored.txt": "dependency\n"} {
+		if err := os.WriteFile(filepath.Join(isolated, name), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ctx, err := sandbox.WithExecutionAuthority(t.Context(), sandbox.ExecutionAuthority{
+		Digest: strings.Repeat("a", 64), Enforcement: sandbox.EnforcementStrong,
+		WorkspaceRoot: parent, AllowProcess: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := broker.InitContentBaseline(ctx, isolated); err != nil {
+		t.Fatal(err)
+	}
+	result, err := broker.ReadVCSResult(ctx, isolated, "show", "HEAD:ignored.txt")
+	if err != nil || result.ExitCode != 0 || result.Stdout != "dependency\n" {
+		t.Fatalf("baseline=%+v error=%v", result, err)
+	}
+	if _, err := os.Lstat(filepath.Join(parent, ".git")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("baseline touched parent Git: %v", err)
+	}
+	if err := broker.InitContentBaseline(ctx, isolated); err == nil {
+		t.Fatal("existing Git repository was reinitialized")
+	}
+	marker := t.TempDir()
+	if err := os.WriteFile(filepath.Join(marker, ".git"), []byte("gitdir: "+filepath.Join(isolated, ".git")), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := broker.InitContentBaseline(ctx, marker); err == nil {
+		t.Fatal("shared worktree metadata was accepted as a private baseline")
+	}
+}
 
 type recordingJournal struct {
 	before []string
@@ -42,7 +83,7 @@ func TestCommitFilesUsesJournalPort(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			broker, err := New(root, authority.NewLeaseAuthority(authority.LeaseAuthorityOptions{}), time.Minute)
+			broker, err := New(root, authority.NewLeaseAuthority(authority.LeaseAuthorityOptions{}), time.Minute, nil)
 			if err != nil {
 				t.Fatal(err)
 			}

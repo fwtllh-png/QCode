@@ -90,6 +90,9 @@ func (p *commandProtocol) beginIsolatedCommand(
 	shadow bool,
 ) (isolatedCommand, bool, error) {
 	trees := existingWriteTrees(p.workspace, writePaths)
+	if tool.WriteIsolationRequired(ctx) && (len(trees) == 0 || tool.IsolatorFrom(ctx) == nil) {
+		return isolatedCommand{}, false, errors.New("required write tree isolation is no longer available")
+	}
 	if len(trees) == 0 {
 		if shadow {
 			return isolatedCommand{}, false, errors.New(
@@ -119,10 +122,24 @@ func (p *commandProtocol) beginIsolatedCommand(
 	}
 	var session tool.IsolatedWorkspace
 	var err error
+	// A tree causes the whole command to run in the copy. Exact file grants
+	// alongside it must be settled too, including grants outside that tree.
+	scopes := make([]string, 0, len(writePaths))
+	for _, path := range writePaths {
+		resolved, resolveErr := p.workspace.Resolve(path, sandbox.AllowMissing)
+		if resolveErr != nil {
+			return isolatedCommand{}, false, resolveErr
+		}
+		relative, relErr := filepath.Rel(p.workspace.Root(), resolved)
+		if relErr != nil {
+			return isolatedCommand{}, false, relErr
+		}
+		scopes = append(scopes, filepath.ToSlash(relative))
+	}
 	if shadow {
-		session, err = isolator.BeginShadow(ctx, id, trees)
+		session, err = isolator.BeginShadow(ctx, id, scopes)
 	} else {
-		session, err = isolator.Begin(ctx, id, trees)
+		session, err = isolator.Begin(ctx, id, scopes)
 	}
 	if err != nil {
 		return isolatedCommand{}, false, fmt.Errorf("isolate write trees: %w", err)

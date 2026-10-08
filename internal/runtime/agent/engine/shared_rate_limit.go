@@ -201,8 +201,8 @@ func (s *SharedRateLimit) AcquireBackground(ctx context.Context) (context.Contex
 	}
 }
 
-// BeginForegroundTurn cancels and settles optional samples before the engine
-// freezes its next budget. It does not hold a provider slot during tool work.
+// BeginForegroundTurn cancels optional samples without joining their cleanup.
+// Provider concurrency remains enforced by Acquire at the actual call boundary.
 func (s *SharedRateLimit) BeginForegroundTurn(ctx context.Context) func() {
 	if s == nil || ctx.Err() != nil {
 		return func() {}
@@ -213,21 +213,8 @@ func (s *SharedRateLimit) BeginForegroundTurn(ctx context.Context) func() {
 	for _, cancel := range s.background {
 		cancel()
 	}
-	for len(s.background) != 0 {
-		if s.changed == nil {
-			s.changed = make(chan struct{})
-		}
-		changed := s.changed
-		s.mu.Unlock()
-		select {
-		case <-ctx.Done():
-			s.finishForeground()
-			return func() {}
-		case <-changed:
-		}
-		s.mu.Lock()
-	}
 	s.mu.Unlock()
+
 	var once sync.Once
 	return func() { once.Do(s.finishForeground) }
 }

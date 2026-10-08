@@ -51,9 +51,12 @@ type turnReceiptRecorder struct {
 	verification *agentengine.VerificationReceipt
 	// turn is the turn the observed events belong to, which a caller needs to ask
 	// the engine what that turn read. budget is frozen on the terminal event.
-	turn   uint64
-	budget *protocol.ReceiptContextBudget
-	frozen *turnReceiptObservations
+	turn       uint64
+	budget     *protocol.ReceiptContextBudget
+	projection *protocol.ReceiptContextProjection
+	sample     *protocol.SampleContextData
+	recovery   protocol.ReceiptContextRecovery
+	frozen     *turnReceiptObservations
 }
 
 // turnReceiptObservations is what the engine knows at the end of a turn that the event
@@ -118,6 +121,26 @@ func (r *turnReceiptRecorder) observe(event agentengine.Event) {
 	if r == nil {
 		return
 	}
+	if event.ContextProjection != nil {
+		r.projection = event.ContextProjection
+	}
+	if event.InputContext != nil {
+		value := *event.InputContext
+		r.sample = &value
+	}
+	if event.SampleContext != nil {
+		value := *event.SampleContext
+		r.sample = &value
+	}
+	if event.State == agentengine.RunningTools && event.ToolCall != nil && event.Result != nil &&
+		(event.ToolCall.Name == "turn_history" || event.ToolCall.Name == "result_get") {
+		r.recovery.Calls++
+		if event.Result.IsError {
+			r.recovery.Failed++
+		} else {
+			r.recovery.Bytes += uint64(len(event.Result.Content))
+		}
+	}
 	switch event.State {
 	case agentengine.Preparing:
 		r.mode, r.posture = event.Mode, event.Posture
@@ -158,8 +181,10 @@ func (r *turnReceiptRecorder) observe(event agentengine.Event) {
 		}
 		r.completion = &protocol.CompletionDeclaration{
 			Status: declaration.Status, Summary: declaration.Summary,
-			OutputMode:   declaration.OutputMode,
-			ChangedPaths: append([]string(nil), declaration.ChangedPaths...),
+			NoChangeReason:   declaration.NoChangeReason,
+			NoChangeEvidence: append([]string(nil), declaration.NoChangeEvidence...),
+			OutputMode:       declaration.OutputMode,
+			ChangedPaths:     append([]string(nil), declaration.ChangedPaths...),
 			VerificationCallIDs: append(
 				[]string(nil), declaration.VerificationCallIDs...,
 			),
@@ -416,6 +441,9 @@ func (r *turnReceiptRecorder) build(
 		EditorContext:      append([]protocol.EditorContextReceipt(nil), r.editorContext...),
 		Catalog:            observed.catalog,
 		ContextBudget:      observed.budget,
+		ContextProjection:  r.projection,
+		ContextSample:      r.sample,
+		ContextRecovery:    &r.recovery,
 		Evidence:           receiptEvidence(observed.evidence),
 		ReadPaths:          append([]string(nil), observed.readPaths...),
 		InputTokens:        usage.InputTokens, OutputTokens: usage.OutputTokens,
@@ -703,6 +731,8 @@ func (r *turnReceiptRecorder) verifyOutcome() string {
 		return protocol.ReceiptNotEvaluated
 	}
 	switch r.verification.Status {
+	case verify.StatusNotRequired:
+		return protocol.ReceiptNotRequired
 	case verify.StatusPassed:
 		return protocol.ReceiptPassed
 	case verify.StatusFailed:
@@ -720,6 +750,10 @@ func (r *turnReceiptRecorder) testsOutcome() string {
 	if r.verification == nil ||
 		(r.verification.Scope != verify.ScopeRepository &&
 			r.verification.Scope != verify.ScopeAffected) {
+		return protocol.ReceiptNotEvaluated
+	}
+	// A net-zero gate settles readiness without running repository checks.
+	if r.verification.Status == verify.StatusNotRequired {
 		return protocol.ReceiptNotEvaluated
 	}
 	return r.verifyOutcome()

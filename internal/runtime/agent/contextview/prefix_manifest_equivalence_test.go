@@ -1,6 +1,7 @@
 package contextview
 
 import (
+	"encoding/json"
 	"math"
 	"testing"
 
@@ -40,7 +41,7 @@ func TestBuildPrefixManifestFromMeasurementMatchesEstimation(t *testing.T) {
 		}},
 	}).Snapshot()
 
-	reestimated, err := BuildPrefixManifest(
+	reestimated, err := reestimatedPrefixForTest(
 		snapshot, estimate, "route-digest", "property-digest",
 	)
 	if err != nil {
@@ -80,4 +81,37 @@ func TestBuildPrefixManifestFromMeasurementMatchesEstimation(t *testing.T) {
 	); err == nil {
 		t.Fatal("misaligned measurement must be rejected")
 	}
+}
+
+// Independent re-estimation is retained only as an equivalence-test oracle.
+func reestimatedPrefixForTest(
+	snapshot agentcontext.MessageSnapshot,
+	estimate agentcontext.Estimator,
+	routeDigest string,
+	propertyDigest string,
+) (PrefixManifest, error) {
+	contextDigest, err := snapshot.Digest()
+	if err != nil {
+		return PrefixManifest{}, err
+	}
+	items := snapshot.Items()
+	manifest := PrefixManifest{
+		RouteDigest: routeDigest, PropertyDigest: propertyDigest,
+		ContextDigest: contextDigest, Items: make([]PrefixItem, 0, len(items)),
+	}
+	for _, item := range items {
+		tokens, estimateErr := estimate.Estimate([]provider.Message{item.Message})
+		if estimateErr != nil {
+			return PrefixManifest{}, estimateErr
+		}
+		manifest.Items = append(manifest.Items, PrefixItem{item.ID, item.Kind, tokens})
+	}
+	if definitions := snapshot.Definitions(); len(definitions) != 0 {
+		encoded, encodeErr := json.Marshal(definitions)
+		if encodeErr != nil {
+			return PrefixManifest{}, encodeErr
+		}
+		manifest.ToolDefinitionDigest = prefixDigest(encoded)
+	}
+	return manifest, nil
 }

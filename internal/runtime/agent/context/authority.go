@@ -10,12 +10,13 @@ import (
 // unit. Callers provide synchronization; Authority keeps cloning and restore
 // semantics in the context owner instead of duplicating them in hosts.
 type Authority struct {
-	working    *WorkingSetLedger
-	evidence   *EvidenceSet
-	failures   *Failures
-	world      WorldBaseline
-	window     WindowLedger
-	compaction Compaction
+	working      *WorkingSetLedger
+	evidence     *EvidenceSet
+	failures     *Failures
+	world        WorldBaseline
+	window       WindowLedger
+	compaction   Compaction
+	conversation *ConversationState
 }
 
 func NewAuthority() Authority {
@@ -28,12 +29,13 @@ func NewAuthority() Authority {
 
 func (a Authority) Clone() Authority {
 	return Authority{
-		working:    a.WorkingSet().Clone(),
-		evidence:   a.Evidence().Clone(),
-		failures:   a.Failures().Clone(),
-		world:      CloneWorldBaseline(a.world),
-		window:     CloneWindowLedger(a.window),
-		compaction: CloneCompaction(a.compaction),
+		working:      a.WorkingSet().Clone(),
+		evidence:     a.Evidence().Clone(),
+		failures:     a.Failures().Clone(),
+		world:        CloneWorldBaseline(a.world),
+		window:       CloneWindowLedger(a.window),
+		compaction:   CloneCompaction(a.compaction),
+		conversation: CloneConversation(a.conversation),
 	}
 }
 
@@ -56,6 +58,12 @@ func (a *Authority) Failures() *Failures {
 		a.failures = NewFailures()
 	}
 	return a.failures
+}
+
+func (a Authority) Conversation() *ConversationState { return CloneConversation(a.conversation) }
+
+func (a *Authority) SetConversation(value *ConversationState) {
+	a.conversation = CloneConversation(value)
 }
 
 func (a Authority) World() WorldBaseline {
@@ -165,6 +173,7 @@ func (a Authority) Snapshot(request SnapshotRequest) (ContextSnapshot, error) {
 		Workspace:       workspace,
 		Window:          a.Window(),
 		TurnCheckpoints: CloneTurnCheckpoints(request.TurnCheckpoints),
+		Conversation:    a.Conversation(),
 	}
 	if err := snapshot.Seal(); err != nil {
 		return ContextSnapshot{}, err

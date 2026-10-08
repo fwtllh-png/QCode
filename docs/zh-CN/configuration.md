@@ -64,6 +64,7 @@ max_steps = 64                  # 连续无结构化进展的 Step Lease；0 = �
 implement_no_progress_samples = 6  # 同一工作状态且同一工具身份重复时的 finish-only 租约；0 = 继承 max_steps 派生的 2/3
 timeout = "2m"                  # 连接、TLS 和响应头阶段
 lease_timeout = "2m"            # Guard 授权到 Executor 接管前的 Lease 有效期
+workspace_merge_max_diff_bytes = 3145728 # 命令 / Chat 工作区结算 diff 的字节预算；必须为正
 approval_timeout = "0s"         # 0 = 审批随 Turn/Session 生命周期，不独立过期
 connection_timeout = "0s"       # 0 表示继承 timeout
 tls_handshake_timeout = "0s"    # 0 表示继承 timeout
@@ -174,12 +175,12 @@ max_bytes = 4096
 enabled = true
 
 [context.view]
-recent_tail_turns = 2
+recent_tail_turns = 0 # 默认按容量选择；正值限制原文轮数（含当前轮）
 keep_recent_tool_results = 0 # 快照字段；已发送 Tool Result 不再按此改写
 history_token_ceiling = 0 # 0 表示 Mandatory 分区之后的剩余硬输入容量
-digest = "ledger" # 或 "ledger+narrative"；session_state 始终 mandatory
+digest = "ledger+narrative" # 允许使用有效摘要；ledger 只使用确定性状态、原文和摘录
 narrative_mode = "post_turn" # 不阻塞 Sample；仅允许 off 或 post_turn
-checkpoint_max_bytes = 0 # 0 继承 summary_max_bytes，再继承 semantic_narrative_item_max_bytes
+checkpoint_max_bytes = 0 # 本次可选 Checkpoint 总字节预算；0 使用必要上下文之后的请求余量
 
 [context.compact]
 prepare_tokens = 0 # 0 表示不设提前压缩档；非 0 为 Operator Ceiling
@@ -196,10 +197,10 @@ verified_change_retention_turns = 32
 failure_max_entities = 24
 handle_max_entities = 32
 omission_sample_max_entities = 8
-semantic_narrative_max_input_tokens = 4096
+semantic_narrative_max_input_tokens = 0 # 使用 summary Route 窗口、完整封装和作业预算
 semantic_narrative_max_output_tokens = 0 # 0 = 使用 summary 模型声明的 MaxOutputTokens
-semantic_narrative_max_items = 32
-semantic_narrative_item_max_bytes = 512
+semantic_narrative_max_items = 0 # 不另设条数上限；完整输出仍受总预算限制
+semantic_narrative_item_max_bytes = 0 # 不另设单条字节上限
 semantic_narrative_timeout = "30s"
 semantic_narrative_retry_limit = 1
 owner_delta_max_segments = 16
@@ -207,9 +208,10 @@ owner_delta_max_bytes = 65536
 
 Tool Result 在首次 `Admit` 时定稿：不超过 ResultStore 合同则保留原文，超限则
 写成有界说明 + Handle。未超硬输入时 Sample 不再改写已发送结果，以便保持
-append-only 前缀。再只把最近 `context.view.recent_tail_turns` 个 Turn 投影给
-模型。完整 transcript 留在 Durable Journal。超窗时对可见 Tail 做一次旧 Turn
-折叠；当前 Turn 仍超硬输入则钉住用户请求，收掉已闭合因果组，并继续降级最新
+append-only 前缀。原文按 `context.view.recent_tail_turns` 的显式轮数上限和
+剩余容量选择，完整 transcript 留在 Durable Journal。超窗时沿安全边界缩减
+旧 Turn，并重算遗漏提示与完整请求成本；当前 Turn 仍超硬输入则钉住用户请求，
+收掉已闭合因果组，并继续降级最新
 一批结果、调用参数、reasoning 和过长的闭合轮次分析正文。伴随工具调用的判断
 默认保留。只有不可再缩前缀（Mandatory 分区 + 当前用户
 请求 + output reserve）仍超硬输入，才 `resource_exhausted`。
@@ -255,8 +257,12 @@ JSON `error.message` 中的原因；消息经过凭证脱敏。错误正文沿�
 诊断上限 `httpclient.MaxErrorBodyBytes`（16 KiB），超过上限、读取失败、非 JSON
 或缺少有效消息时仅显示状态码，不展示原始或截断正文。
 
-`context.view.recent_tail_turns` 是模型可见原文的主边界，默认 2。更早 Turn 的
-消息会被投影裁掉，但不改写 Durable History 里已发送的 Tool Result。
+`context.view.recent_tail_turns` 接受 `0..128`，默认 `0`。零值
+不按固定轮数提前裁剪，改由容量选择；正值是普通原文的轮数上限，包含当前轮。
+文件配置或环境变量中的显式 `0` 保留其 provenance，不会被默认值覆盖。
+更早 Turn 的消息可以退出模型视图，但不改写 Durable History 里已发送的 Tool Result。
+P2 的稳定问题定义通过独立来源依赖投影保留，普通原文的轮数和 token ceiling
+不限制该分区，但它完整计入模型总窗口和经济准入。
 `keep_recent_tool_results` 仍出现在快照里，不再在后续 Sample 把已消费结果收成
 Handle。体积由首次准入决定，需要更多内容时用 `result_get`。Goal、未完成
 Todo 和未验证 Change 是每轮必带的 `session_state` 分区，从 Plan / Evidence
@@ -268,29 +274,51 @@ Ledger 确定性生成，不依赖 compact 事件。Working Set 与 Evidence 仍
 Turn 冻结的硬输入容量减去 Stable / `session_state` 等 Mandatory 分区，而不是
 窗口百分比。投影从最新闭合因果组向前填充，直到 `recent_tail_turns` 或该剩余
 容量先到达，且不拆 Tool Pair、不隐藏当前用户请求。Operator 显式正值是更紧的
-SLA Ceiling，仍不能超过剩余硬输入。若当前 Turn 本身超过该上限，溢出路径先
-折叠一次可见 Tail，再对当前 Turn 做钉死用户的 working-set 降级；只有不可再缩
-前缀仍超硬输入才 `resource_exhausted`。
+SLA Ceiling，仍不能超过剩余硬输入。轮数和原文 ceiling 不授权隐藏当前用户请求。
+最终准入在规范化后计入工具定义、动态分区、续写、遗漏提示、协议封装估算与
+输出预留；超限时继续缩减并重新计量。若移除一个短轮不足以抵消新增提示，
+会继续检查后续安全边界，只有完整成本净下降才接受，否则回滚。当前 Turn 仍超
+硬输入时再做钉死用户的 working-set 降级；不可再缩前缀超限才 `resource_exhausted`。
 
-`digest` 只允许 `ledger` 或 `ledger+narrative`。`ledger` 是 Mandatory Session
-State；`narrative_mode=post_turn` 另加非阻塞 Narrative 分区。`digest=off` 非法，
-因为 Session State 不能关掉。`digest=ledger+narrative` 时 `narrative_mode` 必须
-是 `post_turn`。Context Budget 快照报告这些 view 字段；只有 Operator 显式设置
-时才报告 `prepare_tokens` / `emergency_tokens`。
+`digest` 只允许 `ledger` 或 `ledger+narrative`，默认后者。`ledger` 使用确定性状态、原文和无损摘录，不自动生成摘要。`narrative_mode` 控制新生成：只有 `ledger+narrative` 与 `post_turn` 同时成立才自动调度；`ledger+narrative` 与 `off` 可以复用仍有效的缓存。`digest=off` 非法，Session State 与稳定来源不能关闭。摘要逐次检查来源、过期、Route/Window、重复表示和完整请求余量，不复制已在原文或摘录中的来源；不可拆分的多来源摘要存在部分重叠时整体省略。Context Budget 快照报告这些 view 字段；只有 Operator 显式设置时才报告 `prepare_tokens` / `emergency_tokens`。
 
-闭合 Turn 后，带 `source_message_ids` 的 `unresolved` / `pending_job` /
-`next_step` 会提升为未完成 Plan Todo，进入每轮 `session_state`，不自动完成已有
-条目。同时在 History 之后的 Dynamic 区追加一块 write-once Turn Checkpoint，不写
-Stable、不插到 last-2 前面、不改写旧块。`checkpoint_max_bytes=0` 继承
-`summary_max_bytes`，再继承 `semantic_narrative_item_max_bytes`（默认 512）。
-超限只保留标题与检索指针。闭合完成轮另存 Findings（终答与工具位点），不写入
-模型可见 Checkpoint 正文，以免旧轮对话清单漏进后续 Sample。完整旧 Turn 原文用
-`turn_history`（按 turn id）；首次投影是该 Turn 尾部，并以 Findings 索引结尾。
-继续分页用 `result_get` 的 `mode=tail` 或 `mode=query`（例如 `query=sites`），
-不要用默认 `summary`。首次写入后不再改写。被裁掉的旧 Turn 在 `session_state`
-给出确定性 `turn_history` 指针和 `preferred_turn`；升级前缺失的 Checkpoint
-只回封 turn id，不猜测会话清单。最近完成轮的终答与会话内工具位点进入
-mandatory Continuity 胶囊。继续原 Session 即可，不必开新会话。当 Plan 已有完成步骤或
+闭合 Turn 的摘要条目仅作为解释保存；`unresolved` / `pending_job` / `next_step`
+不再自动提升为 Plan Todo。执行义务只由现有计划入口更新；报告或 deliverable
+本身不会创建 pending 步骤。闭合时持久化 write-once Turn Checkpoint；每次采样仅把
+当前来源引用轮及最近闭合轮的可选块放入 History 之后的 Dynamic 区，不改写旧块。
+`checkpoint_max_bytes` 是本次所有可选块的总字节上限；正值仍为 256–1048576，
+0 表示只受必要上下文之后的请求余量约束。完整规范化请求（含 Schema、提示、续写、
+运行时观测校准和输出预留）还必须满足硬窗口及经济预算。新块渲染仍用公开的摘要
+预算（显式 Checkpoint 上限、`summary_max_bytes`、`semantic_narrative_item_max_bytes`
+依次生效）；无法装入的可选块跳过，持久内容保留可查询。
+
+闭合完成轮另存 Findings（终答与工具位点），不写入模型可见 Checkpoint 正文。
+`turn_history` 互斥接受 `turn`、`source_id`、`item_id` 或 `catalog=true`。
+`source_id` 可配 `index_only=true` 读取条目索引；来源/条目/目录默认读头，
+`turn` 默认读完整归档尾部及 Findings。`max_bytes` 严格限制返回内容字节数，
+0 使用既有工具结果准入；显式分页不足以容纳一个 UTF-8 字符时返回错误。
+继续向后读取须保留选择器，传 `offset=next_offset` 与返回的 `content_digest`；
+读取初始尾页之前的内容用 `from=head`，或用同 digest 和 `offset=previous_offset`
+从头开始。游标针对本次渲染内容的 UTF-8 字节范围，内容改变时拒绝旧游标。
+`result_get` 只能取回已保存的工具页；该页因工具准入再次缩短时先取回页内遗漏，
+源分页遗漏仍用 `turn_history`。归档优先于内存残片，无完整归档时标明完整性未知。
+
+未绑定报告过大时，请求改为目录恢复提示，使用会话状态预算建议分页大小；
+恢复期间只开放 `turn_history`、`result_get`、`update_plan`、`request_user_input`。
+实际工具执行入口也检查该状态，同批次绑定焦点不会提前开放业务工具。
+下一次采样装入已绑定的完整定义后恢复正常；显式焦点或未完成 Plan 所需定义
+本身超限时仍明确失败，需要缩小选择或拆分任务。
+
+被裁掉的旧 Turn 由本次
+`ProjectionResult` 生成临时 `[context_selection]` 提示，使用合法参数
+`turn_history {"turn":1}`。提示同时覆盖轮数、原文 token ceiling、模型容量、
+operator ceiling、经济预算和吞吐/溢出恢复等原因，不再写入轮内冻结的 World。
+连续轮号按原因聚合，稀疏轮号不虚构区间。提示复用 `truth_max_bytes` 派生的
+会话状态预算；放不下时省去说明并汇总未展示组数，最小提示仍超限则拒绝采样。
+完整遗漏元数据不随提示缩短而丢弃。升级前缺失的 Checkpoint 只回封 turn id，
+不猜测会话清单。已建立索引的终答由即时 `[conversation_references]` 提供，
+不再在冻结的 Continuity 胶囊重复正文；没有索引的旧 Findings 和会话工具位点沿用
+原有 Continuity/检索路径。继续原 Session 即可，不必开新会话。当 Plan 已有完成步骤或
 Working Set 已有已读路径时，`session_state` 还给出 Resume Fact：不要重复已
 完成步骤，下一项未完成工作取第一项 outstanding Plan 标题，并列出全部已读路径。
 Prompt 工作集仍按 `context.working_set.max_entries` 取 top-N，两层不要混用。
@@ -349,8 +377,13 @@ Role Policy。`task_capsule` 中的每个 Relevant File 附带不超过 2048 字
 剥离 Excerpt 再丢弃文件路径，Child 需要完整内容时仍应自行读取窗口。Tool 返回
 `context_receipt`，记录来源、包含/排除原因、字节和 Token
 预算及 SHA-256 Digest。旧的 `fork_context` 和 `parent_context` 参数不再接受。
-Capsule 未显式配置容量时，使用父 Turn 硬输入容量扣除当前模型可见 Context 后的余量，
-再由 Child Agent Token Budget 收窄；不再套用固定的字节或 Token 档位。
+Capsule 使用统一文本 token 估算，独立检查 token 和显式字节上限，不按固定
+bytes/token 比例换算。Token 上限取已配置上限、父 Turn 剩余容量和 Child Agent
+Token Budget 中有效限制的最小值；字节上限未配置时回执为 0，不生成隐含字节上限。
+除 `fresh` 外，各模式独立携带父侧已绑定及未完成 Plan 必需的来源定义，包含稳定
+source/item ID、原始 digest/字节范围及脱敏标记；未绑定目录需父侧先消歧并绑定。
+历史裁剪先删可选轮次、证据和文件提示，不裁切任务目标、当前请求、角色/工作区约束
+或所选来源定义。必要材料本身放不下时拒绝委派，由父侧缩小任务或调整预算。
 
 Agent Tree、Mailbox、Result 和 Budget Ledger 持久化在 Workspace State Store。
 每个 Agent 具有 Canonical Path 和 CAS Revision；终态 Result 与 Completion Outbox
@@ -439,6 +472,9 @@ Progress 与 Convergence 状态都会持久化并在 Runtime 恢复后延续。
 对应阶段；响应体开始后，生命周期只由 Turn Context 或显式执行 Lease 决定。
 `execution.idle_timeout` 约束相邻流事件之间的空闲时间，每收到一个事件就重新计时，
 因此持续产出进展的长流不会在固定两分钟后被中断。
+它不判断内容是否有效。工具参数另按 JSON 对象成员唯一性进行增量校验：同一对象的
+重复成员一经确认即停止采样并报告 Provider 响应错误，保留已有草稿供恢复，不需要
+调整超时，也不会自动续写这个无效调用。普通文本或字符串值的重复不据此判为错误。
 
 `execution.max_concurrent` 是运维侧声明的 Provider 并发合同。同一 Session 内
 主 Agent 与全部 Subagent 的并发模型采样都受它约束：Runtime 在两个层面执行同一
@@ -460,28 +496,22 @@ Token。它与模型 Context Window、`budget_tokens` / `turn_budget_tokens` 经
 做 Admission；请求冷却仍然生效。非零值或 Provider 返回的 Token 专用 Header
 （`X-RateLimit-*-Tokens`）成为已知 Burst 后，准入按
 `投影输入 + 输出保留` 计算，缓存 Token 在合同未声明免费前计入全量。超过已知 Burst
-的合法工作集先对可见 Tail 做一次因果组折叠再重新准入；仍超过 Burst 才拒绝
+的合法工作集先按安全因果组边界找到包含提示成本的净缩减，再重新准入；仍超过 Burst 才拒绝
 （`resource_exhausted` / `provider_throughput` / `exceeds_route_burst`），
 不会静默重探同一 Digest，也不会改写 Durable History。滚动窗口不足时等待，累计
-等待将超过 `execution.rate_limit_wait` 时同样先折叠一次，仍不足则拒绝
+等待将超过 `execution.rate_limit_wait` 时同样先尝试净缩减，仍不足则拒绝
 （`wait_exceeds_budget`）。通用 `RateLimit-Remaining` 不当作 Token 合同。Host
 不实现 Governor。该字段可由 `QCODE_TOKENS_PER_MINUTE` 覆盖。
 
-`context.view.narrative_mode=post_turn` 仅在 `turn.completed` 之后通过 `route.summary` 生成独立的
-结构化 Continuation Checkpoint，不阻塞下一轮 Sample。Checkpoint 保留文件与
-代码接口、当前工作和下一步，并要求每项引用输入消息。`off` 只保留 Truth Capsule
-与原始 Tail。`inline` 不再合法。
-`semantic_narrative_max_output_tokens = 0` 与主采样的 `max_output_tokens = 0` 相同：
-初始 Ceiling 来自 summary 模型声明的 `MaxOutputTokens`，再被本次输入后的剩余窗口
-收窄。正值是 Operator 显式上限。失败时保留 Ledger Session State；对话投影不把
-`post_turn` Narrative fallback 显示成 Compaction 卡片。
-语义压缩与主采样共用同一套失败分类：兼容提供商上的 HTTP 429（含
-`insufficient_quota` 这类瞬时配额文案）走 Rate Limit Recovery Budget；5xx /
-Timeout 走 `semantic_narrative_retry_limit`（默认 1）和
-`execution.provider_retry_limit` 的较小值。账户硬配额（`FailureQuota`）立即
-`fallback=ledger`，不重试。全部 Attempt 与等待仍受
-`semantic_narrative_timeout`（默认 30s）约束，超时或预算耗尽后保留 Ledger
-Session State 与 write-once Checkpoint，不改写业务 Turn。
+`context.view.digest=ledger+narrative` 且 `narrative_mode=post_turn` 时，仅在 `turn.completed` 后为实际投影拟淘汰的、尚未处理的来源生成可选解释性摘要；显式 `thread.compact` 也可发起生成。编号结构、原文来源和 write-once Checkpoint 在终态确定性封存，不依赖模型。`off` 关闭摘要生成，保留这些状态；`inline` 不再合法。
+
+`semantic_narrative_max_input_tokens` 默认 `0`，由 summary Route 容量和完整封装导出，实际调用继续受作业的会话预算约束；正值是每次完整摘要请求的额外 token ceiling，包括提示、Truth 和来源元数据。输入先按消息、Markdown 标题/列表/段落/代码块划分，放不下的块继续按 UTF-8 范围拆分，保留父结构、原编号和全部尾部。已移除默认每消息 1024 字节截断、英文关键词优先级和固定字节/token 换算。计量使用冻结 summary Route 的规范化请求与 TokenEstimator。若元数据加最小范围也放不下，生成失败并保留原文。
+
+`semantic_narrative_max_output_tokens = 0` 从 summary 模型声明的 `MaxOutputTokens` 和本次输入后的剩余窗口导出；正值是额外的 token 上限。`semantic_narrative_max_items` 和 `semantic_narrative_item_max_bytes` 默认 `0`，在总输出预算内分配，底层不会补回旧的 32 条或 512 字节限制；正值分别限制单次输出条目数和条目字节数。引用必须覆盖本次全部输入范围，聚合后再次核对完整源范围与 digest；覆盖失败或没有净压缩收益的候选不安装。机械引用覆盖不代表自然语言语义忠实，活动问题定义仍保留原文锚点。
+
+后台生成复用共享 Provider 并发许可与限流，前台到来时取消可选采样；前台不等待摘要作业结算，实际 Provider 调用仍遵守配置的并发上限。结果只在空闲或下一轮开始的安全边界安装，不修改已冻结 Sample。安装检查来源、撤回、epoch、权限、Route 与显式来源替代，只合并解释性表示，不回写 Plan、选择或验证状态。持久化通过现有 Context Manifest/CAS 维护提交，在同一事务内以最新业务终态与维护快照中较新的 Context revision 比较 BaseRevision；版本冲突时保留当前状态，损坏终态不能作为缺省版本跳过。
+
+5xx、网络错误和 Timeout 的重试复用 `semantic_narrative_retry_limit`（默认 1）与 `execution.provider_retry_limit`；429 使用既有 Rate Limit Recovery Budget，硬配额不重试。`semantic_narrative_timeout`（默认 30s）覆盖一次作业的分块、排队、请求与重试，总时限不会逐块重置。每次调用计入共享 session token/费用预算，校验失败、超时和过期候选仍结算已观测用量。相同来源、Route、规则与配置的已处理输入持久化去重，避免每轮重复失败重试；显式 compact 可重新生成。默认容量选择不会仅因为完成了一轮就生成摘要；没有实际遗漏来源时不调度作业。
 
 `execution.provider_retry_limit` 是单次 Model Sample 对 5xx、网络中断、Timeout
 等普通瞬时故障的重试预算。`0` 表示这次 Sample 不重试这些故障。空响应仍允许 1
@@ -645,7 +675,16 @@ Mode 固定为 `act`；新 Session 的 Posture 默认为 `auto`，通过界面�
 但该命令现在是所需证据的约束和执行提示；只有匹配命令的当前输入证据能够满足它。
 普通命令没有验证声明时不自动提供覆盖证明。
 
-只有仓库验证命令在目标沙箱内稳定可复现时，才应使用 `hard`。
+`hard` 必须显式配置 `execution.verify.command`，且命令应在目标沙箱内稳定可复现。
+没有配置命令时，实际有变更的验证结果为 `unavailable`；模型自行选择的命令不能定义
+强制验收标准。默认 `soft` 可继续汇总模型执行证据或编辑后诊断。检查执行成功不代表
+需求已全部满足，`covered_paths` 也不是语义覆盖证明。
+
+没有剩余净变更时，启用的门禁记录 `not_required`，不执行检查；这与关闭门禁的
+`not_evaluated` 和执行成功的 `passed` 不同。新建后删除、修改后还原都按 Journal
+前后内容判断。修改类任务经核查不需要改动时，可通过完成声明说明原因并引用本轮
+文件读取证据。验证器不可用按 `unavailable` 处理，soft 报告后结束；hard 按修复预算
+和失败策略处理，受阻草稿可在配置或环境修复后继续。
 
 ## 编辑后诊断
 
@@ -654,6 +693,14 @@ Mode 固定为 `act`；新 Session 的 Posture 默认为 `auto`，通过界面�
 执行，因此仓库本地配置只有在被显式信任后才能定义它们。
 
 ## 状态与持久化
+
+`execution.workspace_merge_max_diff_bytes` 是命令隔离与 Chat 工作区合并共享的
+实际结算 diff 上限，默认 `3145728`（3 MiB），来源为原有结算预览内存预算。
+它独立于授权路径条目数，也不限制目录内文件总数。支持 TOML 和环境变量
+`QCODE_WORKSPACE_MERGE_MAX_DIFF_BYTES`；环境变量覆盖文件值，来源记录在
+配置 provenance，零和负数拒绝加载。超出预算会在应用变更前拒绝结算并提示
+收窄写入或调整配置；不会仅应用一部分文件。显式调高不会再被隐藏的 512 个
+变更文件上限收紧。目录扫描与隔离复制受调用取消控制。
 
 默认用户数据目录为 `~/.qcode/v1`。工作区可通过 `--data-dir` 或
 `[state].data_dir` 使用独立目录。State Directory 不能位于 Workspace 内部，也不能
@@ -850,3 +897,37 @@ Lexical Repository Index。结果始终标注 `resolution`、`source`、`version
 - 每次修改配置后重启 Web，并检查 Boot/Settings 中的结构化状态。
 - 启动参数、环境变量和 TOML 行为不一致时，以 Runtime 发布的有效配置为准。
 - Hard Verify、启用写能力和自定义 Shell Command 都应经过 Review。
+
+
+**P2 会话来源与计划引用**
+
+完成轮的终答在终态压缩之前建立 Markdown 来源索引，和终态 Context Snapshot
+一起提交；`narrative_mode=off` 不关闭来源保存。标题/列表保留原始编号、嵌套父项
+及 UTF-8 字节范围，代码围栏里的数字不作为列表项。解析范围无法可靠表达时保留
+整个原文块，不用摘要截断替代定义。失败、取消或状态未知的轮次不推断为完成报告。
+
+`update_plan` 的 `steps[].id` 是稳定步骤身份。新增步骤可以省略，由工具生成并在结果
+中返回；后续更新、改名、重排须复用它。`steps[].reference_item_ids` 引用当前会话
+索引中的条目 ID。相同标题可属于不同步骤；已完成步骤可以保留被替代的历史来源，
+未完成步骤必须在来源替代时显式重绑。计划完成状态与验证证据仍由各自账本维护。
+
+`update_plan.context_selection` 接受 `group_ids`、`item_ids` 和
+`replacements=[{old_group_id,new_group_id}]`。可只传该对象切换材料焦点，不创建
+Plan 或 PlanDelta；空对象清空焦点。运行时附加当前用户请求的轮次、Turn ID 与
+摘要作为出处，模型只能依据用户选择或纠正提交绑定。引用只在当前 Context 内解析，
+无效、重复、已替代的活动引用会拒绝整个更新。`submit_plan` 不接受此字段。
+
+没有显式焦点时，提供尚有效的结构化报告和最近终答，多个报告的相同编号保持歧义，
+由主模型依据用户上下文判断或澄清。显式焦点及未完成 Plan 的关联定义参与每次
+即时投影；嵌套条目保留父项前提。原文已经可见时只补 ID/范围元数据，避免复制正文。
+来源依赖同样计入最终请求，放不下时以容量错误拒绝采样，不静默丢弃报告尾部。
+P2 尚不自动分页大量候选；目录分页、压力下分段与更广生命周期验收在 P4 完成。
+
+清空焦点后，可通过 `turn_history` 重新取回旧报告的稳定来源组和条目 ID，再提交
+新的绑定。完整 Transcript 不可用而终答来源仍在时，工具只返回已保存终答并明确
+标注范围；来源回读同样检查撤回状态，不利用 CAS 正文绕过撤回。
+
+ConversationState 与来源索引参与 Snapshot、Session Delta、Manifest 的摘要校验。
+Manifest 为正文维护独立 CAS 引用，更新焦点复用正文；正文引用进入 ContentIDs，
+由既有根/边回收机制保护。可选字段缺省时保持原编码；旧会话没有来源索引时继续用
+已有 Findings/`turn_history` 恢复，不在读取时伪造完成来源或重写旧摘要。

@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -134,11 +136,11 @@ func TestWorkspaceChangeReceiptMatchesTerminalOutcome(t *testing.T) {
 	})
 
 	t.Run("completed_with_changes", func(t *testing.T) {
+		root := t.TempDir()
 		registry := tool.NewRegistry(nil, nil)
-		if err := registry.Register(&runtimeWriteTool{}); err != nil {
+		if err := registry.Register(&runtimeWriteTool{root: root}); err != nil {
 			t.Fatal(err)
 		}
-		root := t.TempDir()
 		worker, err := newTestAgentEngine(agentengine.Options{ProviderConfig: agentengine.ProviderConfig{Provider: &runtimeApprovalProvider{}, Route: runtimeTestRoute(t),
 
 			MaxOutputTokens: 128}, ToolConfig: agentengine.ToolConfig{Tools: registry,
@@ -933,7 +935,10 @@ terminal:
 	}
 }
 
-type runtimeWriteTool struct{ calls atomic.Int32 }
+type runtimeWriteTool struct {
+	calls atomic.Int32
+	root  string
+}
 
 func (*runtimeWriteTool) Descriptor() tool.Descriptor {
 	return tool.Descriptor{
@@ -956,6 +961,11 @@ func (*runtimeWriteTool) Descriptor() tool.Descriptor {
 
 func (t *runtimeWriteTool) Execute(context.Context, json.RawMessage) (tool.Result, error) {
 	t.calls.Add(1)
+	if t.root != "" {
+		if err := os.WriteFile(filepath.Join(t.root, "out.txt"), []byte("written\n"), 0o600); err != nil {
+			return tool.Result{}, err
+		}
+	}
 	return tool.Result{
 		Content: "written",
 		Outcome: &tool.Outcome{Facts: &tool.OutcomeFacts{

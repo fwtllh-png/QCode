@@ -69,10 +69,11 @@ func (i TurnIntent) Valid() bool {
 type TurnOutcome string
 
 const (
-	TurnOutcomeAnswered TurnOutcome = "answered"
-	TurnOutcomePlanned  TurnOutcome = "planned"
-	TurnOutcomeChanged  TurnOutcome = "changed"
-	TurnOutcomeOperated TurnOutcome = "operated"
+	TurnOutcomeAnswered  TurnOutcome = "answered"
+	TurnOutcomePlanned   TurnOutcome = "planned"
+	TurnOutcomeUnchanged TurnOutcome = "unchanged"
+	TurnOutcomeChanged   TurnOutcome = "changed"
+	TurnOutcomeOperated  TurnOutcome = "operated"
 )
 
 func OutcomeForIntent(intent TurnIntent) TurnOutcome {

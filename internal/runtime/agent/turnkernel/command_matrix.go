@@ -50,6 +50,7 @@ var commandContracts = []CommandContract{
 	{Name: "input_required", Family: CommandFamilyInteraction, AllowedPhases: []Phase{PhaseExecutingTools}},
 	{Name: "input_resolved", Family: CommandFamilyInteraction, AllowedPhases: []Phase{PhaseAwaitingInput}},
 	{Name: "input_result_received", Family: CommandFamilyInteraction, AllowedPhases: []Phase{PhaseAwaitingInput}},
+	{Name: "workspace_reconciled", Family: CommandFamilyVerification, AllowedPhases: []Phase{PhaseSampling}},
 	{Name: "verification_started", Family: CommandFamilyVerification, AllowedPhases: []Phase{PhaseSampling}},
 	{Name: "verification_finished", Family: CommandFamilyVerification, AllowedPhases: []Phase{PhaseVerifying}},
 	{Name: "completion_evaluated", Family: CommandFamilyVerification},

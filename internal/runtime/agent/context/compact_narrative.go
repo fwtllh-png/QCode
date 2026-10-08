@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -36,13 +35,13 @@ const (
 )
 
 type NarrativeExcerpt struct {
-	MessageID string        `json:"message_id"`
-	Role      provider.Role `json:"role"`
-	Turn      uint64        `json:"turn,omitempty"`
-	Text      string        `json:"text"`
-	Digest    string        `json:"digest"`
-	Truncated bool          `json:"truncated,omitempty"`
-	Priority  int           `json:"priority"`
+	MessageID string                `json:"message_id"`
+	Role      provider.Role         `json:"role"`
+	Turn      uint64                `json:"turn,omitempty"`
+	Text      string                `json:"text"`
+	Digest    string                `json:"digest"`
+	Truncated bool                  `json:"truncated,omitempty"`
+	Source    *NarrativeSourceRange `json:"source,omitempty"`
 }
 
 type NarrativeInputArtifact struct {
@@ -56,6 +55,7 @@ type NarrativeInputArtifact struct {
 	Excerpts        []NarrativeExcerpt `json:"excerpts"`
 	Digest          string             `json:"digest"`
 	ExpiresAt       time.Time          `json:"expires_at"`
+	CompleteSources bool               `json:"complete_sources,omitempty"`
 }
 
 type NarrativeItem struct {
@@ -68,16 +68,17 @@ type NarrativeItem struct {
 }
 
 type NarrativeArtifact struct {
-	Version         int               `json:"version"`
-	ThreadID        protocol.ThreadID `json:"thread_id"`
-	WindowID        string            `json:"window_id"`
-	AuthorityDigest string            `json:"authority_digest"`
-	InputDigest     string            `json:"input_digest"`
-	RouteDigest     string            `json:"route_digest"`
-	Body            Narrative         `json:"body"`
-	CreatedAt       time.Time         `json:"created_at"`
-	ExpiresAt       time.Time         `json:"expires_at"`
-	Digest          string            `json:"digest"`
+	Version         int                 `json:"version"`
+	ThreadID        protocol.ThreadID   `json:"thread_id"`
+	WindowID        string              `json:"window_id"`
+	AuthorityDigest string              `json:"authority_digest"`
+	InputDigest     string              `json:"input_digest"`
+	RouteDigest     string              `json:"route_digest"`
+	Body            Narrative           `json:"body"`
+	Coverage        []NarrativeCoverage `json:"coverage,omitempty"`
+	CreatedAt       time.Time           `json:"created_at"`
+	ExpiresAt       time.Time           `json:"expires_at"`
+	Digest          string              `json:"digest"`
 }
 
 type CompactedContext struct {
@@ -198,7 +199,9 @@ func (p PreparedCompaction) digest() string {
 }
 
 type NarrativeLimits struct {
-	MaxInputBytes int
+	MaxInputTokens  uint64
+	MaxOutputTokens uint64
+	MaxInputBytes   int
 	// MaxOutputBytes is an optional operator ceiling. Zero means the
 	// summary route's advertised MaxOutputTokens and remaining context
 	// window decide the request budget.
@@ -206,13 +209,6 @@ type NarrativeLimits struct {
 	MaxItems        int
 	ItemMaxBytes    int
 	ExcerptMaxBytes int
-}
-
-func DefaultNarrativeLimits() NarrativeLimits {
-	return NarrativeLimits{
-		MaxInputBytes: 16 << 10, MaxOutputBytes: 8 << 10,
-		MaxItems: 32, ItemMaxBytes: 512, ExcerptMaxBytes: 1024,
-	}
 }
 
 func BuildNarrativeInput(
@@ -226,7 +222,6 @@ func BuildNarrativeInput(
 	ttl time.Duration,
 	requiredKinds ...[]string,
 ) (NarrativeInputArtifact, error) {
-	limits = normalizeNarrativeLimits(limits)
 	if threadID == "" || sourceWindowID == "" ||
 		authorityDigest == "" || routeDigest == "" {
 		return NarrativeInputArtifact{}, errors.New("narrative input identity is incomplete")
@@ -234,163 +229,43 @@ func BuildNarrativeInput(
 	if ttl <= 0 {
 		ttl = 24 * time.Hour
 	}
-	type ranked struct {
-		excerpt NarrativeExcerpt
-		index   int
-	}
-	toolCalls := make(map[string]provider.ToolCall)
-	for _, message := range removed {
-		for _, block := range message.Blocks {
-			if block.ToolCall != nil {
-				toolCalls[block.ToolCall.ID] = *block.ToolCall
-			}
-		}
-	}
-	var candidates []ranked
-	for index, message := range removed {
-		if message.Role != provider.RoleUser &&
-			message.Role != provider.RoleAssistant &&
-			message.Role != provider.RoleTool {
-			continue
-		}
-		text := narrativeMessageText(message, toolCalls)
-		if text == "" {
-			continue
-		}
-		truncated := false
-		if len(text) > limits.ExcerptMaxBytes {
-			text = utf8Prefix(text, limits.ExcerptMaxBytes)
-			truncated = true
-		}
-		id := StableMessageID(threadID, message, index)
-		candidates = append(candidates, ranked{
-			index: index,
-			excerpt: NarrativeExcerpt{
-				MessageID: id, Role: message.Role, Turn: message.Turn,
-				Text: text, Digest: digestString(text),
-				Truncated: truncated,
-				Priority:  narrativePriority(message, text),
-			},
-		})
-	}
-	sort.SliceStable(candidates, func(i, j int) bool {
-		if candidates[i].excerpt.Priority != candidates[j].excerpt.Priority {
-			return candidates[i].excerpt.Priority <
-				candidates[j].excerpt.Priority
-		}
-		if candidates[i].excerpt.Turn != candidates[j].excerpt.Turn {
-			return candidates[i].excerpt.Turn >
-				candidates[j].excerpt.Turn
-		}
-		if candidates[i].index != candidates[j].index {
-			return candidates[i].index > candidates[j].index
-		}
-		return candidates[i].excerpt.MessageID <
-			candidates[j].excerpt.MessageID
-	})
 	artifact := NarrativeInputArtifact{
-		Version: NarrativeSchemaVersion, ThreadID: threadID,
+		Version: NarrativeSchemaVersion, ThreadID: threadID, CompleteSources: true,
 		SourceWindowID: sourceWindowID, AuthorityDigest: authorityDigest,
 		RouteDigest: routeDigest, PrivacyClass: NarrativePrivacyClass,
 		ExpiresAt: now.UTC().Add(ttl),
 	}
 	if len(requiredKinds) != 0 {
-		artifact.RequiredKinds = append(
-			[]string(nil),
-			requiredKinds[0]...,
-		)
+		artifact.RequiredKinds = append([]string(nil), requiredKinds[0]...)
 	}
-	selected := make([]ranked, 0, len(candidates))
-	for _, candidate := range candidates {
-		trial := append(
-			append([]ranked(nil), selected...),
-			candidate,
-		)
-		sort.Slice(trial, func(i, j int) bool {
-			return trial[i].index < trial[j].index
-		})
-		artifact.Excerpts = artifact.Excerpts[:0]
-		for _, value := range trial {
-			artifact.Excerpts = append(
-				artifact.Excerpts,
-				value.excerpt,
-			)
+	calls := make(map[string]provider.ToolCall)
+	for _, message := range removed {
+		for _, block := range message.Blocks {
+			if block.ToolCall != nil {
+				calls[block.ToolCall.ID] = *block.ToolCall
+			}
 		}
-		artifact.Digest = artifact.digest()
-		encoded, err := json.Marshal(artifact)
-		if err != nil {
-			return NarrativeInputArtifact{}, err
-		}
-		if len(encoded) > limits.MaxInputBytes {
+	}
+	// Index within each turn, so dropping earlier complete turns does not
+	// change the identity of unchanged sources.
+	indices := make(map[uint64]int)
+	for _, message := range removed {
+		if IsWorldStateMessage(message) {
 			continue
 		}
-		selected = append(selected, candidate)
-	}
-	sort.Slice(selected, func(i, j int) bool {
-		return selected[i].index < selected[j].index
-	})
-	artifact.Excerpts = artifact.Excerpts[:0]
-	selectedToolContext := false
-	for _, value := range selected {
-		artifact.Excerpts = append(artifact.Excerpts, value.excerpt)
-		selectedToolContext = selectedToolContext ||
-			value.excerpt.Role == provider.RoleTool
-	}
-	if slices.Contains(artifact.RequiredKinds, NarrativeFileCode) &&
-		!selectedToolContext {
-		return NarrativeInputArtifact{},
-			errors.New("narrative input cannot retain required tool context")
+		index := indices[message.Turn]
+		indices[message.Turn]++
+		if message.Role != provider.RoleUser && message.Role != provider.RoleAssistant && message.Role != provider.RoleTool {
+			continue
+		}
+		body := narrativeMessageText(message, calls)
+		if body == "" {
+			continue
+		}
+		id := StableMessageID(threadID, message, index)
+		artifact.Excerpts = append(artifact.Excerpts, narrativeSourceExcerpts(id, message.Role, message.Turn, body, limits.ExcerptMaxBytes)...)
 	}
 	artifact.Digest = artifact.digest()
-	encoded, err := json.Marshal(artifact)
-	if err != nil {
-		return NarrativeInputArtifact{}, err
-	}
-	if len(encoded) > limits.MaxInputBytes {
-		return NarrativeInputArtifact{},
-			errors.New("narrative input metadata exceeds byte limit")
-	}
-	return artifact, artifact.Validate(now)
-}
-
-func RebindNarrativeInput(
-	previous NarrativeInputArtifact,
-	sourceWindowID string,
-	authorityDigest string,
-	routeDigest string,
-	limits NarrativeLimits,
-	now time.Time,
-	ttl time.Duration,
-) (NarrativeInputArtifact, error) {
-	if err := previous.Validate(now); err != nil {
-		return NarrativeInputArtifact{}, err
-	}
-	if sourceWindowID == "" || authorityDigest == "" || routeDigest == "" {
-		return NarrativeInputArtifact{},
-			errors.New("narrative input identity is incomplete")
-	}
-	if ttl <= 0 {
-		ttl = 24 * time.Hour
-	}
-	artifact := previous
-	artifact.SourceWindowID = sourceWindowID
-	artifact.AuthorityDigest = authorityDigest
-	artifact.RouteDigest = routeDigest
-	artifact.Excerpts = append([]NarrativeExcerpt(nil), previous.Excerpts...)
-	artifact.RequiredKinds = append(
-		[]string(nil),
-		previous.RequiredKinds...,
-	)
-	artifact.ExpiresAt = now.UTC().Add(ttl)
-	artifact.Digest = artifact.digest()
-	encoded, err := json.Marshal(artifact)
-	if err != nil {
-		return NarrativeInputArtifact{}, err
-	}
-	if len(encoded) > normalizeNarrativeLimits(limits).MaxInputBytes {
-		return NarrativeInputArtifact{},
-			errors.New("narrative input metadata exceeds byte limit")
-	}
 	return artifact, artifact.Validate(now)
 }
 
@@ -425,12 +300,15 @@ func (a NarrativeInputArtifact) Validate(now time.Time) error {
 				excerpt.Role != provider.RoleTool {
 			return errors.New("narrative excerpt is invalid")
 		}
+		if err := validateNarrativeRange(excerpt); err != nil {
+			return err
+		}
 		if _, duplicate := seen[excerpt.MessageID]; duplicate {
 			return errors.New("narrative excerpt source is duplicated")
 		}
 		seen[excerpt.MessageID] = struct{}{}
 	}
-	return nil
+	return validateCompleteNarrativeSources(a)
 }
 
 func (a NarrativeInputArtifact) digest() string {
@@ -449,7 +327,6 @@ func ValidateNarrativeJSON(
 	if err := input.Validate(now); err != nil {
 		return NarrativeArtifact{}, err
 	}
-	limits = normalizeNarrativeLimits(limits)
 	if len(raw) == 0 || !utf8.Valid(raw) ||
 		limits.MaxOutputBytes > 0 && len(raw) > limits.MaxOutputBytes {
 		return NarrativeArtifact{}, errors.New("narrative output size or encoding is invalid")
@@ -497,7 +374,7 @@ func ValidateNarrativeJSON(
 	appendItems := func(kind string, values []narrativeJSONItem) error {
 		for _, value := range values {
 			text := strings.TrimSpace(value.Text)
-			if text == "" || len(text) > limits.ItemMaxBytes ||
+			if text == "" || (limits.ItemMaxBytes > 0 && len(text) > limits.ItemMaxBytes) ||
 				!utf8.ValidString(text) || len(value.SourceMessageIDs) == 0 {
 				return errors.New("narrative item is invalid")
 			}
@@ -520,7 +397,7 @@ func ValidateNarrativeJSON(
 			item.ID = stableNarrativeItemID(item)
 			items = append(items, item)
 			counts[kind]++
-			if len(items) > limits.MaxItems {
+			if limits.MaxItems > 0 && len(items) > limits.MaxItems {
 				return errors.New("narrative item count exceeds limit")
 			}
 		}
@@ -554,6 +431,10 @@ func ValidateNarrativeJSON(
 			)
 		}
 	}
+	coverage, err := narrativeCoverage(input, items)
+	if err != nil {
+		return NarrativeArtifact{}, err
+	}
 	seen := make(map[string]struct{}, len(items))
 	for _, item := range items {
 		if _, duplicate := seen[item.ID]; duplicate {
@@ -566,7 +447,7 @@ func ValidateNarrativeJSON(
 		WindowID:        input.SourceWindowID,
 		AuthorityDigest: input.AuthorityDigest,
 		InputDigest:     input.Digest, RouteDigest: input.RouteDigest,
-		Body: Narrative{Items: items}, CreatedAt: now.UTC(),
+		Body: Narrative{Items: items}, Coverage: coverage, CreatedAt: now.UTC(),
 		ExpiresAt: input.ExpiresAt,
 	}
 	artifact.Digest = artifact.digest()
@@ -605,7 +486,7 @@ func (a NarrativeArtifact) Validate(now time.Time) error {
 			}
 		}
 	}
-	return nil
+	return validateNarrativeArtifactCoverage(a)
 }
 
 func (a NarrativeArtifact) digest() string {
@@ -752,51 +633,6 @@ func validNarrativeKind(kind string) bool {
 		kind == NarrativeErrorFix || kind == NarrativePendingJob ||
 		kind == NarrativeCurrent || kind == NarrativeNextStep ||
 		kind == NarrativeCritical
-}
-
-func normalizeNarrativeLimits(limits NarrativeLimits) NarrativeLimits {
-	defaults := DefaultNarrativeLimits()
-	if limits.MaxInputBytes <= 0 {
-		limits.MaxInputBytes = defaults.MaxInputBytes
-	}
-	if limits.MaxItems <= 0 {
-		limits.MaxItems = defaults.MaxItems
-	}
-	if limits.ItemMaxBytes <= 0 {
-		limits.ItemMaxBytes = defaults.ItemMaxBytes
-	}
-	if limits.ExcerptMaxBytes <= 0 {
-		limits.ExcerptMaxBytes = defaults.ExcerptMaxBytes
-	}
-	return limits
-}
-
-func (l NarrativeLimits) Normalized() NarrativeLimits {
-	return normalizeNarrativeLimits(l)
-}
-
-func narrativePriority(message provider.Message, text string) int {
-	lower := strings.ToLower(text)
-	switch {
-	case message.Role == provider.RoleUser &&
-		(strings.Contains(lower, "must") ||
-			strings.Contains(lower, "prefer")):
-		return 0
-	case strings.Contains(lower, "decision") ||
-		strings.Contains(lower, "because"):
-		return 1
-	case strings.Contains(lower, "unresolved") ||
-		strings.Contains(lower, "todo"):
-		return 2
-	case message.Role == provider.RoleTool:
-		return 2
-	case message.Role == provider.RoleUser:
-		return 3
-	case message.Role == provider.RoleAssistant:
-		return 5
-	default:
-		return 6
-	}
 }
 
 func narrativeMessageText(

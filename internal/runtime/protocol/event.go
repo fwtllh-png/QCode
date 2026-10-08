@@ -383,28 +383,30 @@ const (
 // Provider retries, genuine incomplete output recovery, and normal tool-use
 // boundaries without relying on assistant-generated prose.
 type ProviderAttemptData struct {
-	SampleID              string                  `json:"sample_id"`
-	Attempt               uint32                  `json:"attempt"`
-	Status                string                  `json:"status"`
-	Reason                string                  `json:"reason,omitempty"`
-	FailureCode           string                  `json:"failure_code,omitempty"`
-	ErrorCode             ErrorCode               `json:"error_code,omitempty"`
-	HTTPStatus            int                     `json:"http_status,omitempty"`
-	ProviderRetryAfterMS  uint64                  `json:"provider_retry_after_ms,omitempty"`
-	EffectiveDelayMS      uint64                  `json:"effective_delay_ms,omitempty"`
-	RouteCooldownWaitMS   uint64                  `json:"route_cooldown_wait_ms,omitempty"`
-	RetryAt               *time.Time              `json:"retry_at,omitempty"`
-	PolicyRevision        string                  `json:"policy_revision,omitempty"`
-	RequestBytes          uint64                  `json:"request_bytes,omitempty"`
-	ProjectedInputTokens  uint64                  `json:"projected_input_tokens,omitempty"`
-	Projection            *ProviderProjectionData `json:"projection,omitempty"`
-	StopReason            string                  `json:"stop_reason,omitempty"`
-	StartedAt             *time.Time              `json:"started_at,omitempty"`
-	FinishedAt            *time.Time              `json:"finished_at,omitempty"`
-	RateLimitRetries      uint32                  `json:"rate_limit_retries,omitempty"`
-	RateLimitRetryLimit   uint32                  `json:"rate_limit_retry_limit,omitempty"`
-	RateLimitWaitedMS     uint64                  `json:"rate_limit_waited_ms,omitempty"`
-	RateLimitWaitBudgetMS uint64                  `json:"rate_limit_wait_budget_ms,omitempty"`
+	ContextProjection     *ReceiptContextProjection `json:"context_projection,omitempty"`
+	Context               *SampleContextData        `json:"context,omitempty"`
+	SampleID              string                    `json:"sample_id"`
+	Attempt               uint32                    `json:"attempt"`
+	Status                string                    `json:"status"`
+	Reason                string                    `json:"reason,omitempty"`
+	FailureCode           string                    `json:"failure_code,omitempty"`
+	ErrorCode             ErrorCode                 `json:"error_code,omitempty"`
+	HTTPStatus            int                       `json:"http_status,omitempty"`
+	ProviderRetryAfterMS  uint64                    `json:"provider_retry_after_ms,omitempty"`
+	EffectiveDelayMS      uint64                    `json:"effective_delay_ms,omitempty"`
+	RouteCooldownWaitMS   uint64                    `json:"route_cooldown_wait_ms,omitempty"`
+	RetryAt               *time.Time                `json:"retry_at,omitempty"`
+	PolicyRevision        string                    `json:"policy_revision,omitempty"`
+	RequestBytes          uint64                    `json:"request_bytes,omitempty"`
+	ProjectedInputTokens  uint64                    `json:"projected_input_tokens,omitempty"`
+	Projection            *ProviderProjectionData   `json:"projection,omitempty"`
+	StopReason            string                    `json:"stop_reason,omitempty"`
+	StartedAt             *time.Time                `json:"started_at,omitempty"`
+	FinishedAt            *time.Time                `json:"finished_at,omitempty"`
+	RateLimitRetries      uint32                    `json:"rate_limit_retries,omitempty"`
+	RateLimitRetryLimit   uint32                    `json:"rate_limit_retry_limit,omitempty"`
+	RateLimitWaitedMS     uint64                    `json:"rate_limit_waited_ms,omitempty"`
+	RateLimitWaitBudgetMS uint64                    `json:"rate_limit_wait_budget_ms,omitempty"`
 }
 
 func (*ProviderAttemptData) eventKind() EventKind { return EventProviderAttempt }
@@ -437,6 +439,7 @@ type SampleContextData struct {
 	ReasoningEffort           string                  `json:"reasoning_effort,omitempty"`
 	ContextRevision           uint64                  `json:"context_revision,omitempty"`
 	ContextDigest             string                  `json:"context_digest,omitempty"`
+	ContextProjectionDigest   string                  `json:"context_projection_digest,omitempty"`
 	WorldRevision             uint64                  `json:"world_revision,omitempty"`
 	WorldDigest               string                  `json:"world_digest,omitempty"`
 	WorldMode                 string                  `json:"world_mode,omitempty"`
@@ -607,6 +610,8 @@ type ToolResultData struct {
 }
 
 type CompletionDeclaration struct {
+	NoChangeReason      string   `json:"no_change_reason,omitempty"`
+	NoChangeEvidence    []string `json:"no_change_evidence,omitempty"`
 	Status              string   `json:"status"`
 	Summary             string   `json:"summary"`
 	OutputMode          string   `json:"output_mode,omitempty"`
@@ -759,6 +764,14 @@ func (d *ToolResultData) validate() error {
 }
 
 func (d *CompletionDeclaration) validate() error {
+	if (strings.TrimSpace(d.NoChangeReason) != "") != (len(d.NoChangeEvidence) != 0) {
+		return errors.New("no-change reason and evidence must be supplied together")
+	}
+	for _, id := range d.NoChangeEvidence {
+		if strings.TrimSpace(id) == "" {
+			return errors.New("no-change evidence call id is empty")
+		}
+	}
 	if strings.TrimSpace(d.Summary) == "" {
 		return errors.New("completion declaration is incomplete")
 	}
@@ -893,7 +906,7 @@ func (*TurnCompletedData) eventKind() EventKind { return EventTurnCompleted }
 
 func (d *TurnCompletedData) validate() error {
 	switch d.Outcome {
-	case "", TurnOutcomeAnswered, TurnOutcomePlanned, TurnOutcomeChanged, TurnOutcomeOperated:
+	case "", TurnOutcomeAnswered, TurnOutcomePlanned, TurnOutcomeChanged, TurnOutcomeUnchanged, TurnOutcomeOperated:
 		for _, issue := range d.SecondaryIssues {
 			if issue.Phase == "" || issue.Code == "" ||
 				issue.Message == "" {
@@ -1334,12 +1347,18 @@ type TurnCompactionData struct {
 	NarrativeProvider     string                   `json:"narrative_provider,omitempty"`
 	NarrativeModel        string                   `json:"narrative_model,omitempty"`
 	NarrativeMetadata     *ModelMetadataProvenance `json:"narrative_metadata_provenance,omitempty"`
-	FallbackReason        string                   `json:"fallback_reason,omitempty"`
-	CapsuleBytes          int                      `json:"capsule_bytes,omitempty"`
-	MandatoryBytes        int                      `json:"mandatory_bytes,omitempty"`
-	MandatoryEntities     int                      `json:"mandatory_entities,omitempty"`
-	OmissionCount         int                      `json:"omission_count,omitempty"`
-	Retention             []TruthRetentionCount    `json:"retention,omitempty"`
+	// Maintenance cost is diagnostic only; billing uses usage events per call.
+	NarrativeDurationMS       int64                 `json:"narrative_duration_ms,omitempty"`
+	NarrativeBackground       bool                  `json:"narrative_background,omitempty"`
+	NarrativeForegroundWaitMS uint64                `json:"narrative_foreground_wait_ms"`
+	NarrativeCostMicrounits   uint64                `json:"narrative_cost_microunits,omitempty"`
+	NarrativeCostKnown        bool                  `json:"narrative_cost_known"`
+	FallbackReason            string                `json:"fallback_reason,omitempty"`
+	CapsuleBytes              int                   `json:"capsule_bytes,omitempty"`
+	MandatoryBytes            int                   `json:"mandatory_bytes,omitempty"`
+	MandatoryEntities         int                   `json:"mandatory_entities,omitempty"`
+	OmissionCount             int                   `json:"omission_count,omitempty"`
+	Retention                 []TruthRetentionCount `json:"retention,omitempty"`
 }
 
 func (*TurnCompactionData) eventKind() EventKind { return EventTurnCompaction }
@@ -1416,9 +1435,12 @@ func (d *TurnVerificationData) validate() error {
 		return errors.New("verification action is required")
 	}
 	switch d.Status {
-	case ReceiptPassed, ReceiptFailed, ReceiptUnavailable, ReceiptNotEvaluated:
+	case ReceiptNotRequired, ReceiptPassed, ReceiptFailed, ReceiptUnavailable, ReceiptNotEvaluated:
 	default:
 		d.Status = ReceiptNotEvaluated
+	}
+	if d.Status == ReceiptNotRequired && (d.Action != "not_required" || len(d.Paths) != 0 || len(d.Checks) != 0 || len(d.UncoveredPaths) != 0) {
+		return errors.New("not_required verification cannot carry checks or changed paths")
 	}
 	for _, check := range d.Checks {
 		if check.Name == "" {

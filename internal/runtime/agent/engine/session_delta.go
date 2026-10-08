@@ -74,6 +74,7 @@ func (e *Engine) applyDurableSessionDelta(
 		restore.State.Window,
 		restore.History,
 	)
+	e.context.SetConversation(restore.State.Conversation)
 	if restore.State.Plan != nil {
 		e.setPlan(restore.State.Plan.Clone())
 	}
@@ -119,6 +120,7 @@ func (e *Engine) RestoreSessionDelta(raw json.RawMessage) error {
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	e.invalidatePendingNarrative()
 	return e.applyDurableSessionDelta(
 		delta,
 		e.sessionRevision == 0 && len(e.appliedDeltas) == 0,

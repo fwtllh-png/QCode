@@ -19,7 +19,6 @@ const (
 	CheckpointUnknown   = "unknown"
 
 	TurnHistoryToolName = "turn_history"
-	TurnHistorySource   = "runtime.turn_history"
 )
 
 // TurnCheckpoint is one write-once Dynamic block for a closed turn.
@@ -140,7 +139,7 @@ func ResolveCheckpointBudget(checkpointMaxBytes, summaryMaxBytes, itemMaxBytes i
 	if itemMaxBytes > 0 {
 		return itemMaxBytes
 	}
-	return DefaultNarrativeLimits().ItemMaxBytes
+	return 0
 }
 
 func MessagesForTurn(history []provider.Message, turn uint64) []provider.Message {
@@ -203,21 +202,11 @@ func RenderTurnCheckpoint(input CheckpointRenderInput) (TurnCheckpoint, error) {
 		body.Goal = strings.TrimSpace(input.Plan.Title)
 	}
 	sources := append([]string(nil), input.SourceMessageIDs...)
+	// Narrative citations remain audit metadata; only Plan creates open work.
 	for _, item := range input.Items {
-		if !IsOpenWorkNarrativeKind(item.Kind) ||
-			strings.TrimSpace(item.Text) == "" ||
-			len(item.SourceMessageIDs) == 0 {
-			continue
-		}
-		body.Open = append(body.Open, CheckpointOpenItem{
-			Title:            strings.TrimSpace(item.Text),
-			Kind:             item.Kind,
-			Status:           StepPending,
-			SourceMessageIDs: append([]string(nil), item.SourceMessageIDs...),
-		})
 		sources = append(sources, item.SourceMessageIDs...)
 	}
-	if status == CheckpointCompleted && len(body.Open) == 0 {
+	if status == CheckpointCompleted {
 		for _, step := range input.Plan.Steps {
 			if step.Done() || strings.TrimSpace(step.Title) == "" {
 				continue
@@ -363,86 +352,4 @@ func CheckpointMessages(checkpoints []TurnCheckpoint) []provider.Message {
 		messages = append(messages, message)
 	}
 	return messages
-}
-
-func OmittedTurnIDs(history []provider.Message, tailTurns int) []uint64 {
-	return UniqueMessageTurns(OmittedHistory(history, tailTurns))
-}
-
-func FormatOmittedTurnHint(turns []uint64) string {
-	return FormatOmittedTurnHintPreferred(turns, PreferredOmittedTurn(turns, nil))
-}
-
-func FormatOmittedTurnHintPreferred(turns []uint64, preferred uint64) string {
-	if len(turns) == 0 {
-		return ""
-	}
-	if preferred == 0 {
-		preferred = turns[len(turns)-1]
-	}
-	first, last := turns[0], turns[len(turns)-1]
-	if first == last {
-		return fmt.Sprintf(
-			"Older turn %d is omitted from the visible raw tail. Call %s with turn=%d to read its findings index and tail. The first page ends with conclusion and sites. If truncated, page with result_get mode=tail or mode=query (for example query=sites). Do not search the repository for conversation-only lists.",
-			first, TurnHistoryToolName, first,
-		)
-	}
-	return fmt.Sprintf(
-		"Older turns %d-%d are omitted from the visible raw tail. Call %s with a closed turn id in that range (preferred_turn=%d) to read that turn's findings index and tail. The first page ends with conclusion and sites. If truncated, page with result_get mode=tail or mode=query (for example query=sites). Do not search the repository for conversation-only lists.",
-		first, last, TurnHistoryToolName, preferred,
-	)
-}
-
-func PreferredOmittedTurn(turns []uint64, checkpoints []TurnCheckpoint) uint64 {
-	if len(turns) == 0 {
-		return 0
-	}
-	byTurn := make(map[uint64]TurnFindings, len(checkpoints))
-	for _, checkpoint := range checkpoints {
-		byTurn[checkpoint.Turn] = checkpoint.Findings
-	}
-	for index := len(turns) - 1; index >= 0; index-- {
-		if !byTurn[turns[index]].Empty() {
-			return turns[index]
-		}
-	}
-	return turns[len(turns)-1]
-}
-
-func OmittedTurnRetrievalEntity(turns []uint64) (TruthEntity, bool) {
-	return OmittedTurnRetrievalEntityPreferred(turns, PreferredOmittedTurn(turns, nil))
-}
-
-func OmittedTurnRetrievalEntityPreferred(
-	turns []uint64, preferred uint64,
-) (TruthEntity, bool) {
-	hint := FormatOmittedTurnHintPreferred(turns, preferred)
-	if hint == "" {
-		return TruthEntity{}, false
-	}
-	entity := NewTruthEntity(EntityFact, "omitted_turns", hint, TurnHistorySource)
-	entity.normalizeLifecycle()
-	return entity, true
-}
-
-func SessionStateRetrievalHint(capsule TruthCapsule) string {
-	for _, entity := range capsule.Entities {
-		if entity.Kind == EntityFact && entity.Source == TurnHistorySource {
-			return entity.Value
-		}
-	}
-	return ""
-}
-
-func HistoryHasSessionStateHint(history []provider.Message, hint string) bool {
-	if strings.TrimSpace(hint) == "" {
-		return false
-	}
-	for _, message := range history {
-		id, ok := WorldMessageID(message)
-		if ok && id == "session_state" && strings.Contains(message.Text(), hint) {
-			return true
-		}
-	}
-	return false
 }

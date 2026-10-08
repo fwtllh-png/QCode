@@ -420,6 +420,15 @@ Provider Delta 按消费进度合并：`Recv` 立即交付已有片段，不等�
 满批与类型、索引、工具身份、用量、终止或错误边界均向上游施加背压。
 关闭会唤醒消费者和等待交接的生产者，并关闭源流以终止阻塞读取。
 
+带 Provider Event ID 或 Sequence 的片段保留事件边界，由 Response Assembly 去重，
+不能在合并时丢失身份。工具参数在去重后逐段检查 JSON 对象成员的唯一性：同一对象中
+第二个同名成员的名称闭合时立即终止采样，关闭 Provider 流并持久化失败检查点；不会
+等待整个参数闭合，也不按重复次数或持续时间猜测生成是否退化。名称按 JSON 转义解码
+后比较，不同对象可使用相同名称，字符串值中的代码不参与检查。检查状态按调用索引及
+Transport 隔离，逐字节推进，不反复扫描累计参数。完整参数及持久化组装结果在交给
+Guard 前再次验证；重复成员归为 `malformed_response`，不自动重试或续写无效片段，
+通过正常失败结算保留已有草稿，用户可重试或继续该 Turn。
+
 阶段说明使用独立的 `commentary.completed` 持久事件，包含稳定 Message ID、Sample ID、
 正文与关联 Call ID；Thread/Turn 归属来自事件信封。普通协议在完整逻辑采样成功后，
 将伴随常规工具调用的普通文本分类为阶段说明，并随采样结果原子写入 Kernel 状态，
@@ -622,10 +631,23 @@ Snapshot、待审批/输入与队列查询仍能返回；跨函数死锁由 `go 
 | `contextview` | 模型可见历史选择、尾部裁剪、Economic Admission、Stateless 投影与 Prefix Manifest |
 | `prompt` | 指令、仓库信息等输入分区的内容组装、文本呈现与 Receipt |
 
-`contextview/view.go` 根据容量与已选折叠位置生成模型输入，不修改 Durable History。
+`contextview/selection.go` 统一轮数、token ceiling 与安全折叠选择，返回
+`context.ProjectionResult`：选中原文、精确遗漏、原因和合法读取参数。
+`contextview/view.go` 根据选择位置生成模型输入，不修改 Durable History。
+`ProjectionSource.Index` 只在对应 `SourceHistoryDigest` 内有效，不是持久问题条目 ID。
+World 消息按既有分区规则处理，不计入普通原文差集；规范化时移除孤立工具块、
+投影图片等变化继续由 `NormalizationReceipt` 记录。
 历史切分是否保留完整工具调用由 `context.HistoryCuts` / `SafeToolBoundary` 判定；
 当前折叠位置和调用时机仍属于 Engine。工具并发调度器属于 `engine.Scope`，
 不参与 Kernel 状态转换或恢复。
+
+遗漏提示由 `prompt.ContextSelectionHint` 根据本次 `ProjectionResult` 渲染，
+不再通过固定轮数生成 `session_state` 中的历史范围提示。可选摘要由
+`contextview.SelectNarrative` 逐请求检查来源、重复内容和容量后进入 Dynamic，
+World 投影不提供摘要注入入口。摘要输入保持捕获时的窗口身份，不通过重绑定
+延长旧输入的有效期；零值额度直接传递给预算逻辑，不经过默认值补齐包装。
+Prefix Manifest 复用最终请求的 `MeasureDetailed` 结果，生产路径不重复估算；
+独立估算实现仅保留在等价性测试中。
 
 Repository Map 属于 `internal/runtime/agent/prompt` 的模型输入投影。
 `repository_map.go` 根据 Repo Index 快照聚合、筛选目录和符号提纲；
@@ -842,11 +864,19 @@ Token 估算默认使用字符数启发式：拉丁文本按约四字符一 Toke
 Provider Throughput 是第三条独立容量平面：`execution.tokens_per_minute` 或 Token
 专用限流 Header 给出已知 Burst 时，Runtime 在发送前按 `投影输入 + 输出保留` 准入；
 未知则跳过 Token Admission，不按模型名称发明 TPM。超过已知 Burst 或等待将超过
-预算时，先对可见 Tail 做一次因果组折叠再重新准入；仍超则拒绝或等待，不会静默
+预算时，先沿可见 Tail 的安全因果组边界寻找完整成本净下降的投影再重新准入；
+仍超则拒绝或等待，不会静默
 重探，也不会改写 Durable History。
 折叠后重新投影、规范化并计量完整输入，吞吐准入、预算检查、Provider 请求和
 Sample Context 使用同一份准备结果；前缀身份从最终消息与实际输出保留生成。
 折叠或输入重建的计量错误会中止本次采样，不继续准入或发送未规范化的请求。
+最终准入循环包含工具 Schema、即时遗漏提示、Dynamic、Continuation、封装估算
+和 Output Reserve；每次接受的缩减必须减少规范化后的完整成本。单个短轮
+不足以抵消提示开销时继续检查下一安全边界，无可用净缩减则回滚；不以固定
+次数替代收敛判断。Provider 报溢出后的额外恢复仍保留原有每次 modelStep 一次
+折叠恢复限制。`SampleContextData.context_projection_digest` 绑定最终选择、
+源历史摘要、冻结窗口、Route、Context digest 和实际输出预留。成本继续使用
+现有 TokenEstimator、Provider 封装估算和观测校准，并非精确 wire tokenizer。
 
 Tool Result 在执行边界按硬输入容量、并行 Batch 大小与 ResultStore Capacity 取得
 本次 Token Budget；完整原文保存在 Durable Content Store，模型只接收带稳定
@@ -882,6 +912,32 @@ Trace 与 Receipt 保留逻辑公共前缀指标和最终 Transport Payload Dige
 验证状态、缺失覆盖和调用 ID 来自同一次筛选与输入复核；相同命令针对不同路径的证据
 分别保留。重复失败不会因新的调用 ID 重置 Repair Budget，失败进程已经产生的文件
 变更也必须进入 Turn Diff。诊断只覆盖部分修改文件时不能声明整体通过。
+
+完成判断区分历史 Mutation Revision 与有效净变更。每个工具批次全部关闭后，Engine
+以 Journal 的前后存在性和内容摘要对齐净 Turn Diff，通过 `WorkspaceReconciled` 把当前
+Revision 的有效变更写入 Kernel。未纳入 Journal 的工具变更保守保留；Journal 身份不匹配
+不能当作“没有变更”。净快照留存到 Turn 结算后，供完成声明、验证和回执共用。
+
+新建后删除、修改后恢复原内容都可能没有剩余净变更，历史 Revision 仍保留用于审计和
+证据失效。启用门禁时，这种情况以及只读 Turn 记录 `not_required`，Action 同为
+`not_required`，Workspace 为 `unchanged`，不调用验证器、不生成测试通过证据；测试
+回执仍是 `not_evaluated`。`passed`、`failed`、`unavailable` 表达实际验证事实，
+`reported`、`repair`、`blocked`、`reverted` 等 Action 表达策略处理，不互相替代。
+
+步骤选择、最终就绪检查、输出释放和终态校验共享完成策略。阶段各自保留工具、审批、
+输入、Effect 和 Journal 的结算约束。新的文件修改清除净快照、完成声明和旧验证结论。
+从未产生修改的 `workspace_change` 可以通过 `turn_complete` 的 `no_change_reason`
+及 `no_change_evidence` 说明无需修改；后者必须引用本轮成功的文件读取 Call ID。
+这是声明的来源检查，不是对需求已满足的语义证明。普通回答仍不强制调用完成工具，
+Plan 未完成项也不自动变成门禁。
+
+默认继续使用 `soft`。`hard` 的生产验证器要求显式 `execution.verify.command`，
+按现有命令、目录、Revision 和输入摘要约束收集证据。退出码为零与模型声明的覆盖路径
+只证明这些检查执行成功，不证明需求全部满足。缺少命令、检查失败和验证器不可用
+都会保留各自事实；hard 修复预算耗尽后按策略受阻并保留可恢复草稿，或按配置回滚。
+无需修改或修改全部还原的修改类 Turn，终态 Outcome 和回执为 `unchanged`，不再按 Intent 强写为 `changed`。
+Web 分别展示本轮结束、验证结论和任务待办；`not_required` 不显示为测试通过，
+受阻的验证通过 Fault 恢复契约提供继续入口。
 
 `internal/observability/verify` 统一拥有编辑后诊断与验证证据归约。
 `diagnostics.go` 中的 `DiagnosticRunner` 在 Guard 完成文件编辑后采集诊断，
@@ -1034,7 +1090,9 @@ Fail Closed。
 
 Session Checkpoint 与 Plan Artifact 复用 Snapshot Index 和 CAS。Checkpoint 只保存
 经过校验的 Context Manifest 与 Profile Snapshot；Manifest 将 History 拆为 Base/Tail，
-并将 Working Set、Evidence、Failures 和 Plan 拆为有界 Owner Segment。Restore 不能
+并将 Working Set、Evidence、Failures 和 Plan 拆为有界 Owner Segment。
+P2 的 ConversationState 索引作为独立 Owner，终答正文使用单独 CAS 引用，
+焦点更新复用正文；全部正文与索引引用纳入 ContentIDs。Restore 不能
 执行历史 Event，也不回退独立的 Usage/Cost Accounting。Checkpoint Restore/Fork 创建
 新的 State Epoch 和 Token Window，并用 Sparse Workspace Binding 重新核对文件相关
 Evidence；不匹配的验证声明会失效为 stale。持久化 Restore/Fork Event 保证重启重建
@@ -1105,6 +1163,14 @@ HEAD、完整暂存差异与本地 Git 配置共同形成状态版本，旧版�
 提交与推送分别返回完成事实；推送失败不能回滚已经完成的提交，也不自动重放。
 这些显式操作不进入 Turn 恢复队列，网络中断后由用户刷新 Git 状态再决定下一步。
 
+VCS Broker 的读取、预检和修改共用构造时捕获的已准备环境，环境值与命令参数一起
+绑定到进程租约；执行时不重新继承宿主环境。主会话 `native` 保留所选 HOME 和
+Git 配置位置，因此仅在全局 `.gitconfig` 配置身份也能提交；`isolated` 与私有内容
+基线不读取用户全局或系统 Git 配置。环境快照只传递变量，不增加文件或网络授权。
+Git 非零退出保留退出码与 stderr，stderr 为空时保留 stdout，并保留底层错误链。
+失败恢复先指向 `git_status`，核对实际状态和错误后再处理；同轮重复的不可重试失败
+继续去重，但返回正文明确注明复用了哪次失败、没有重新执行，避免被误认为再次尝试。
+
 Provider Replay State 同时绑定 Adapter、Provider 和 Model。Router 在目标 Route 改变时
 清除不兼容的原生 Replay，仅保留可见 Assistant 内容，避免同 Adapter 跨模型切换后因
 Provenance 不匹配导致下一 Turn 失败。
@@ -1131,26 +1197,41 @@ Context Rebase、基线快照、终态和续跑批次在成功、失败及部分
 单独使用的文件 CAS 保留原有接口；`cas.Release` 本身不删盘，状态 CAS 的回收与写入
 通过 SQLite 事务串行，避免检查引用后被并发保留的竞态。
 采样路径按公开合同 `context.view.recent_tail_turns` 和剩余硬输入（或显式
-`context.view.history_token_ceiling`）投影原文，超窗时再用一次 Visible Tail
-Fold。Fold 后仍超硬输入时，对当前 Turn 做钉死用户请求的 working-set 替换：
+`context.view.history_token_ceiling`）投影原文。轮数默认 0，仅按
+容量选择，正值是包含当前轮的显式上限。超窗时按完整成本逐步缩减 Visible Tail，
+仍超硬输入时，对当前 Turn 做钉死用户请求的 working-set 替换：
 已闭合因果组收成一条 Truth Capsule，当前 Turn 的 world patch 收成最新基线；
 若仍超限，已闭合及最新一批工具结果、调用参数、已消费 reasoning 和过长的闭合轮次
 分析正文都可降级为有界投影（正文收成带来源的非权威摘要；工具原文留在
 ResultStore / Journal，可通过 `result_get` 回读），并推进 Token Window。进行中的 Turn 继续降级到不可再缩前缀——Stable、`session_state`、
-工具定义、当前用户请求原文和 output reserve。只有该前缀仍超硬输入，或部分
+工具定义、当前用户请求原文、仍有效的会话来源依赖和 output reserve。只有该前缀仍超硬输入，或部分
 Provider 续写无法放入窗口时，才以 `resource_exhausted` 失败。
 跨 Turn 的完整 History Replacement 仍留给显式 `thread.compact` 与 Turn 终态维护。
 压缩 digest 二次折叠时并入上一份 Removed History；超出 `max_digest_entries`
 的条数写入 omitted 计数，不静默丢掉。
-`context.view.narrative_mode=post_turn` 写独立 Digest 分区，不阻塞下一轮 Sample。
-带出处的未完成工作提升为 Plan Todo 后进入 `session_state`；每个闭合 Turn 在
-Dynamic（History 之后）追加一块 write-once Checkpoint。旧 Turn 原文通过
-`turn_history` / `result_get` 有界回读，不恢复整段旧 History。Turn 开始时冻结归档
+默认 `context.view.digest=ledger+narrative`，与 `narrative_mode=post_turn` 同时成立才自动生成摘要。已校验 Digest 在每次实际请求的动态分区选择，`narrative_mode=off` 可复用有效缓存，`digest=ledger` 不使用语义表示。来源失效、过期、重复表示或完整请求放不下时只省略可选摘要。`context` 负责完整来源范围、分块请求预算与覆盖校验；`engine` 负责 summary Provider 调用、总超时、共享调度和用量。
+后台只生成固定 thread/turn、epoch、来源 digest、Route、权限与规则绑定的候选，不获取整轮执行锁等待。下一轮不 join；候选在空闲或下一轮开始时检查来源有效性并合并。安装使用现有 Context Manifest/CAS 维护提交及 BaseRevision 比较，不覆盖新的 Plan、焦点或证据；无净缩减、覆盖失败、源替代、撤回或 epoch 变化时保留当前表示。每个物理 Attempt 的已观测费用独立结算，丢弃候选不丢费用。同源处理记录随 Compaction Owner 保存。
+业务终态保存在既有 Terminal Envelope，维护快照保存在 `context_current`；二者交错时，维护与显式压缩提交都在同一事务内读取最新终态，以其 Context revision 和维护根 revision 的较大值进行版本比较。事务读取复用会话恢复的终态查询，校验 Context Envelope/SessionDelta 后取版本，不建立第二份版本事实或容忍跳版本提交。
+摘要条目不会自动提升 Plan Todo；报告结论、执行计划和验证证据分别保留各自语义。
+每个闭合 Turn 持久化一块 write-once Checkpoint，采样按来源引用轮及最近闭合轮
+选择可选块放入 Dynamic。`checkpoint_max_bytes` 限制本次总投影，0 使用必要分区
+之后的余量；准入包含完整规范化请求、观测校准、输出预留与经济预算。
+旧 Turn 原文通过 `turn_history` 的 turn/source/item/目录与 digest 绑定分页恢复，
+不恢复整段旧 History；`result_get` 仅回读已存工具页。完整归档优先于内存残片，
+没有归档的内存结果明确声明无法证明完整。Turn 开始时冻结归档
 句柄与 Turn ID 映射，工具回读使用该快照，不获取覆盖整轮执行的 Engine 锁；
 归档读取继续传递取消信号并检查撤回状态，未知 Turn 或缺少归档时如实返回未命中。
-被裁掉的旧 Turn
-在 `session_state` 给出检索指针，并指向最近带 Findings 的 omitted turn
-（`preferred_turn`）；升级前缺失的 Checkpoint 只回封 turn id。
+被裁掉的旧 Turn 由同一次选择生成临时 `[context_selection]` 提示，按实际
+遗漏原因聚合轮号，并提供 `turn_history {"turn":N}`。提示自身参与每次重计量，
+不写入轮内冻结的 `session_state`，防止后续 token 裁剪后提示过期。提示受会话
+状态预算约束，缩短时明确声明未展示组数；完整元数据仍保留。
+每次 `provider.attempt` 的 started 事件保存无正文的 `context_projection` 和输入计量；
+`turn.receipt` 保存最后一次选择、校准和前台恢复统计，未返回 usage 的失败请求也可诊断。
+来源 ID、摘要范围和完整遗漏目录只属于会话诊断，不进入监控标签。
+后台 `turn.compaction` 事件按同一作业 ID 报告 started/prepared/completed/fallback，
+迟到安装结果仍发往原作业的 Turn；token/费用只由各物理调用的 usage 事件汇总一次。
+Web 在运行统计中折叠这些诊断，维护结果不改写任务终态。
+升级前缺失的 Checkpoint 只回封 turn id。
 最近闭合且已完成的用户可见终答，以及工具定位的 `path:line` / 符号，写入
 mandatory Continuity 胶囊，不依赖可见 Tail，也不把旧轮对话清单写进 Checkpoint
 正文。Plan 已有完成步骤或已读路径时，`session_state` 另带 Resume Fact，避免
@@ -1159,7 +1240,8 @@ Continue / Retry / 新 prompt 把已读文件再读一遍；Resume 使用全部�
 omitted 计数。有行号命中时 Continuity / Resume 列出
 `Located sites`。搜索命中后优先按 `start_line` 读取相关窗口，根据当前问题扩展，
 不要求读取后必须编辑；Plan 和只读分析同样可补读未覆盖窗口。已有 Continuity
-或 Located sites 时，不要用 `turn_history` 或搜索做开场恢复。
+或 Located sites 覆盖本次请求时直接复用；缺少必要定义或证据时按遗漏指针恢复
+所需轮次或读取未覆盖窗口。
 相邻 Sample 在同一工作状态上重复同一工具身份达到
 `execution.implement_no_progress_samples`（默认 6）即进入 Finish-only；该阶段
 不允许 `git_status` / `git_diff` 或整文件读取。新的内容版本、翻页窗口或新的
@@ -1376,6 +1458,14 @@ Git 适配器只翻译文档中的用户配置文件位置；`.git-credentials` 
 运行，真实 cwd 写入 `isolated_cwd`，退出后经 File Broker / Journal 三方结算；
 用户并发修改不自动算 Agent 修改。进程不再无条件重写 HOME / 缓存，
 证书发现改走准备链，v1 shell 使用非登录 `sh -c`。
+命令隔离以文件系统副本建立私有 Git 基线，包含 Git 忽略的依赖、输出及空目录，
+父仓库 Git 对象库不保存这些快照。可信工具绑定的 `isolates_write_trees` 承诺在
+绑定 Isolator 且声明目录时隔离全部工作区写入；Guard 据此把基线和实际变更记录
+交给隔离结算，不重复遍历依赖并写入父 Journal。混合声明的精确文件仍纳入结算。
+私有基线初始化由 VCS Broker 签发独立租约；命令执行授权仅把工作区路径映射到
+副本，保留其余权限约束，准备失败或目录失效时拒绝执行。
+512 条路径是工具输入授权策略的上限，目录内文件数不消耗该额度。实际合并预览
+独立受 `execution.workspace_merge_max_diff_bytes` 约束，取消传播到目录遍历。
 `exec_command` / `write_stdin` 失败时，`error_category` 与 `required_action`
 只来自 Gate、代理或 OS 后端的结构化事实；没有事实时标记 `unknown`，
 不从命令输出中的 `401` 或 `permission denied` 改判。
@@ -1563,3 +1653,55 @@ Scheduler。
 5. 增加 Contract 或 Architecture Test。
 6. 同步更新中文文档。
 7. 必要时重新生成 Protocol 与 Compatibility Artifact。
+
+
+### P2 稳定会话来源
+
+`context.Authority` 拥有 `ConversationState`。Engine 在成功终态压缩前从终答
+建立不可变 `ConversationSource`，随同一 Snapshot/SessionDelta 提交；失败和取消
+不建立完成报告。来源组 ID 绑定 Thread、Turn、终答消息槽和正文摘要，条目 ID
+绑定来源组、Markdown 类型和字节范围。索引使用 goldmark AST，在块解析开始时
+记录原始位置，以覆盖代码围栏和空列表项；标题/嵌套列表保留原标签与父项关系。
+
+`interact.update_plan` 保留步骤 ID 与 `reference_item_ids`，Engine 校验引用，
+PlanTruthEntities 使用步骤 ID，改名和重排不改变身份。工具可只提交
+`context_selection`，沿用同一个 Runtime 回调记录带用户出处的焦点或替代关系，
+不生成执行 PlanDelta。报告不产生执行义务，摘要不再自动追加 Plan Todo。
+
+`contextview.SelectConversation` 按焦点、未完成步骤引用和未绑定时的候选组选择
+来源；`prompt` 只渲染选择结果。它在每次模型请求中重新生成，绕开 World 的轮内
+冻结约束，但仍经唯一 MessageLedger 与规范化后的总输入准入。
+`ProjectionResult.references` 记录 source ID、正文摘要、item ID、精确字节范围
+及 raw_history/extractive 表示，参与本次 projection digest。所选子项完整保留，
+祖先只附带自身前提及非子项正文，不带无关兄弟定义；模型投影、恢复和继承共用
+Context 的字节范围计算。原文已在请求内时
+不重复注入正文。未绑定候选过大时投影来源目录提示；该次采样只广告恢复、
+绑定和澄清工具，现有工具执行生命周期同步执行此上下文前置条件，同批次绑定
+不能绕过。下一次采样完整装入定义后解除限制。显式焦点和未完成 Plan 引用
+仍是必要依赖，放不下时明确失败。所有装入来源继续检查会话归属和撤回状态。
+
+会话归属以 Runtime 绑定的持久 SessionID 为准，并在 TurnSpec 中冻结；活动
+Scope 的来源采样与工具回读共用该身份，工具回调的 Context 不能覆盖它。
+Engine 启动时的进程级 SessionID 仅作为独立运行、未绑定调用身份时的回退值。
+后台摘要在捕获候选时按所属 Turn 查询并保存持久 SessionID，安装时重新核对
+所有来源 Turn 的归属和撤回状态；会话或来源已删除时拒绝安装。重启后通过
+原会话恢复的来源沿用原 ID 与正文，不需要按新进程身份迁移。
+
+来源索引和焦点进入 Snapshot/Delta/Manifest。Manifest 将正文与索引分开存 CAS，
+焦点更新只改变索引；正文引用纳入同一根/边回收体系。Restore、Fork 和撤回通过
+现有 Context Snapshot 路径保留或恢复来源身份；任意外部 ID 不能触发跨会话读取。
+旧快照缺省字段保持原摘要，无索引旧轮次沿用有界历史恢复。
+
+P4 将运行中 TurnContinuation 的已接受来源、焦点、Plan 和恢复阶段状态接入
+同一 CAS 提交链。正文通过 ConversationManifest 保存，续跑根包含其全部子引用；
+恢复检查身份、环境、epoch 与 SessionRevision。已提交续跑点损坏、来源缺失或
+环境漂移时拒绝执行，不退回缺失已接受状态的请求。可选字段沿用缺省编码，
+没有引入预发布迁移框架。
+
+Session Fork 深复制选择与计划，保留来源 lineage，后续焦点独立。历史查询及 Plan 回调
+随工具调用 Context 绑定执行 Engine，共享工具注册表不复用父侧回调或广播更新。模型/输出配置
+变化重算成本与窗口，source/item 身份保持不变。父快照只导出绑定或未完成 Plan
+需要的定义，子任务 `fresh` 不继承，其余模式独立携带这些定义并脱敏。
+历史轮数和可选内容裁剪不会删除必要定义、任务请求与角色/工作区约束；必要材料
+超预算拒绝委派。Capsule 使用统一文本 token 估算，token 与字节分别检查，
+有效 token 上限同时受父侧余量、配置和子任务预算约束。

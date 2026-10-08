@@ -83,6 +83,16 @@ func (t *TurnDiffTracker) Record(entry TurnDiffEntry) {
 	t.entries[entry.Path] = entry
 }
 
+// Replace freezes a reconciled net diff for receipts after journal settlement.
+func (t *TurnDiffTracker) Replace(entries []TurnDiffEntry) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.entries = make(map[string]TurnDiffEntry, len(entries))
+	for _, entry := range entries {
+		t.entries[entry.Path] = entry
+	}
+}
+
 func (t *TurnDiffTracker) Snapshot() []TurnDiffEntry {
 	if t == nil {
 		return nil

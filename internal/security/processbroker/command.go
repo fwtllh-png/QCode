@@ -132,10 +132,14 @@ func validateCommand(request CommandRequest) error {
 	if operation.Process == nil {
 		return errors.New("process operation has no process intent")
 	}
+	environment, err := request.Options.BoundEnvironment()
+	if err != nil {
+		return err
+	}
 	digest, err := authority.ManagedProcessArgumentsDigest(
 		request.Options.Path,
 		request.Options.Args,
-		request.Options.Env,
+		environment,
 		request.Options.Dir,
 	)
 	if err != nil {

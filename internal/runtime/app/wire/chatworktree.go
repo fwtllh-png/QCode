@@ -21,6 +21,7 @@ func buildChatWorkspaces(
 		state.config.execution.Workspace, state.orchestration.chatRoot,
 		state.orchestration.parentFiles, state.security.journal,
 		gate, state.orchestration.workspaceBroker, allowApply,
+		workspacemerge.Options{MaxDiffBytes: state.config.execution.WorkspaceMergeMaxDiffBytes},
 	)
 	if merger == nil {
 		return nil

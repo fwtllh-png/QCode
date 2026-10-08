@@ -23,6 +23,7 @@ type ToolEffect struct {
 	PublishAborted      func(provider.ToolCall, tool.Result) error
 	BeforeClose         func(provider.ToolCall, *tool.Result, bool, uint64)
 	CompletionCandidate func(provider.ToolCall, tool.Result, bool, int, uint64) CompletionCandidate
+	AfterBatchClose     func() error
 	AfterClose          func(provider.ToolCall, tool.Result) error
 	PublishResult       func(provider.ToolCall, tool.Result) error
 }
@@ -184,6 +185,11 @@ func (s *RuntimeKernel) ExecuteToolEffect(
 		}
 		if !defersFinish {
 			finishClosed(index, call)
+		}
+	}
+	if effect.AfterBatchClose != nil && projectionErr == nil {
+		if err := effect.AfterBatchClose(); err != nil {
+			return results, err
 		}
 	}
 	for _, evaluation := range pending {

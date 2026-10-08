@@ -4,6 +4,7 @@ import (
 	agentcontext "github.com/fwtllh-png/QCode/internal/runtime/agent/context"
 	"testing"
 
+	"github.com/fwtllh-png/QCode/internal/adapter/model"
 	"github.com/fwtllh-png/QCode/internal/adapter/provider"
 	"github.com/fwtllh-png/QCode/internal/adapter/tool/interact"
 	"github.com/fwtllh-png/QCode/internal/observability/verify"
@@ -130,6 +131,10 @@ func TestDeliverablePlanDoesNotBypassVerification(t *testing.T) {
 		Scope: verify.ScopeDiagnostics, Status: verify.StatusUnavailable,
 		Message: "document not verified",
 	})
+	// This fixture tests verification gating, not capacity exhaustion. Keep
+	// room for the complete tool surface and verification feedback.
+	engine.options.Route = mustTestRouteWithContext(t, 8192)
+	engine.options.Routes, _ = model.NewRouteSet(engine.options.Route, nil, false)
 	engine.options.Verify.Mode = VerifyModeHard
 	result, err := engine.RunForTurnWithIntentAndAttachments(t.Context(),
 		"turn-plan-verify", "write and verify a plan", protocol.TurnIntentAnswer, nil, nil)

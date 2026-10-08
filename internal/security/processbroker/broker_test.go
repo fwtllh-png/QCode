@@ -85,6 +85,20 @@ func TestRunCommandSettlesNonZeroExitAsFailure(t *testing.T) {
 	workspace := t.TempDir()
 	sum := sha256.Sum256([]byte(filepath.Clean(workspace)))
 	workspaceID := hex.EncodeToString(sum[:])
+	prepared, err := process.EnvironmentFromPolicy(sandbox.Policy{
+		EnvironmentValues: []string{"LANG=prepared"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	options := process.Options{
+		Path: "/bin/sh", Args: []string{"-c", "printf '%s' \"$LANG\"; exit 7"}, Dir: workspace,
+		Environment: prepared,
+	}
+	environment, err := options.BoundEnvironment()
+	if err != nil {
+		t.Fatal(err)
+	}
 	subject, err := authority.NewManagedProcessSubject(
 		authority.SubjectHost, "command-test", authority.TrustHost, 1,
 		map[string]string{"command": "exit 7"},
@@ -97,7 +111,7 @@ func TestRunCommandSettlesNonZeroExitAsFailure(t *testing.T) {
 			ID: "command-exit", Tool: "command-test",
 			WorkspaceID: workspaceID, WorkspaceGeneration: 1,
 			Subject: subject, Executable: "/bin/sh",
-			Args: []string{"-c", "exit 7"}, WorkingDirectory: workspace,
+			Args: options.Args, WorkingDirectory: workspace, Environment: environment,
 			Effect: authority.ManagedProcessEffect(securitymodel.RiskLow),
 		},
 	)
@@ -121,24 +135,32 @@ func TestRunCommandSettlesNonZeroExitAsFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := broker.RunCommand(t.Context(), CommandRequest{
+	request := CommandRequest{
 		Lease: lease,
 		Validation: authority.LeaseValidation{
 			Operation: operation, PolicyRevision: 1,
 			WorkspaceID: workspaceID, WorkspaceGeneration: 1,
 			SubjectDigest: subject.Digest, SubjectGeneration: 1, Attempt: 1,
 		},
-		Options: process.Options{
-			Path: "/bin/sh", Args: []string{"-c", "exit 7"}, Dir: workspace,
-		},
+		Options: options,
 		Identity: Identity{
 			SessionID: "session", ThreadID: "thread", TurnID: "turn",
 		},
-	})
+	}
+	request.Options.Env = []string{"LANG=changed"}
+	if _, err := broker.RunCommand(t.Context(), request); err == nil || !strings.Contains(err.Error(), "does not match") {
+		t.Fatalf("changed environment accepted: %v", err)
+	}
+	state, err := manager.Snapshot(lease)
+	if err != nil || state.State != authority.LeaseIssued {
+		t.Fatalf("environment mismatch consumed lease: %+v err=%v", state, err)
+	}
+	request.Options = options
+	result, err := broker.RunCommand(t.Context(), request)
 	if err == nil || !strings.Contains(err.Error(), "exit status 7") {
 		t.Fatalf("RunCommand error = %v", err)
 	}
-	if result.Process.ExitCode != 7 ||
+	if result.Process.ExitCode != 7 || result.Process.Stdout != "prepared" ||
 		result.Settlement.Status != "failed" ||
 		result.Settlement.Reason != "command_failed" {
 		t.Fatalf("result = %+v", result)

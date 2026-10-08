@@ -31,7 +31,7 @@ func TestCompactionReceiptReportsModelDownshiftAndDropsNarrative(t *testing.T) {
 	rendered, err := agentcontext.RenderStructured(
 		agentcontext.Summary{Window: 2},
 		previous,
-		agentcontext.Narrative{Lines: []string{"assistant: old discussion"}},
+		agentcontext.Narrative{Items: []agentcontext.NarrativeItem{{Kind: agentcontext.NarrativeCritical, Text: "old discussion"}}},
 		4<<10,
 	)
 	if err != nil {
@@ -43,7 +43,7 @@ func TestCompactionReceiptReportsModelDownshiftAndDropsNarrative(t *testing.T) {
 		messageWithText(provider.RoleAssistant, strings.Repeat("answer ", 500), 1),
 		messageWithText(provider.RoleUser, "current", 2),
 	}
-	receipt := engine.CompactForced()
+	receipt := engine.compactForcedForTest()
 	if receipt == nil || !receipt.ModelDownshifted ||
 		receipt.NarrativeIncluded ||
 		receipt.DownshiftPolicy != agentcontext.DownshiftRuntimeTruthOnly ||
@@ -79,4 +79,14 @@ func TestTruthCapsuleDowngradesVerifiedChangeWhenWorkspaceCannotBind(t *testing.
 		return
 	}
 	t.Fatal("change truth entity was not emitted")
+}
+
+// compactForcedForTest exercises history replacement without a durable store.
+func (e *Engine) compactForcedForTest() *CompactionReceipt {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.resetViewFold()
+	receipt := e.compactHistory(&e.history, true)
+	e.reconcileWorldBaseline(e.history)
+	return receipt
 }

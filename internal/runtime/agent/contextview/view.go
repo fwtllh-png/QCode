@@ -24,9 +24,7 @@ func VisibleTailStart(history []provider.Message, turns, foldStart int) int {
 func OldestVisibleTailFold(
 	history []provider.Message,
 	turns, foldStart int,
-	allowCurrentTurn bool,
 ) (int, bool) {
-	_ = allowCurrentTurn
 	base := VisibleTailStart(history, turns, foldStart)
 	for _, cut := range agentcontext.HistoryCuts(history, false) {
 		if cut <= base {
@@ -89,21 +87,12 @@ func FillVisibleTailStart(
 		if estimate(RawTailMessages(history, start)) <= maxTokens {
 			return start
 		}
-		next, ok := OldestVisibleTailFold(history, turns, start, false)
+		next, ok := OldestVisibleTailFold(history, turns, start)
 		if !ok || next <= start {
 			return start
 		}
 		start = next
 	}
-}
-
-// ProjectContextView returns the model-visible raw tail. Durable history is
-// not modified.
-func ProjectContextView(
-	history []provider.Message,
-	turns int,
-) []provider.Message {
-	return ProjectContextViewFrom(history, agentcontext.SafeTailStart(history, turns))
 }
 
 func ProjectContextViewFrom(

@@ -1,44 +1,28 @@
 package agentcontext
 
 import (
-	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"strings"
-	"time"
 
 	"github.com/fwtllh-png/QCode/internal/adapter/model"
 	"github.com/fwtllh-png/QCode/internal/adapter/provider"
-	"github.com/fwtllh-png/QCode/internal/common/tokenestimate"
-	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
 )
+
+var ErrNarrativeInputBudget = errors.New("narrative input does not fit request budget")
 
 type TokenEstimator interface {
 	Estimate([]provider.Message) (uint64, error)
 }
 
 type NarrativeGeneratorConfig struct {
-	Provider       provider.Provider
 	Routes         model.RouteSet
 	TokenEstimator TokenEstimator
 	Limits         NarrativeLimits
-	Timeout        time.Duration
 	Focus          string
-}
-
-type NarrativeGenerationResult struct {
-	Artifact      NarrativeArtifact
-	Usage         provider.Usage
-	Provider      string
-	Model         string
-	ModelMetadata protocol.ModelMetadataProvenance
-	CostUSD       float64
-	CostKnown     bool
-	RouteDigest   string
 }
 
 func SummaryRouteDigest(routes model.RouteSet) (string, error) {
@@ -58,31 +42,29 @@ func SummaryRouteDigest(routes model.RouteSet) (string, error) {
 	return "sha256:" + hex.EncodeToString(sum[:]), nil
 }
 
-func GenerateNarrative(
-	ctx context.Context,
+func PrepareNarrativeRequest(
 	options NarrativeGeneratorConfig,
 	truth TruthCapsule,
 	input NarrativeInputArtifact,
-	createdTurn uint64,
-) (NarrativeGenerationResult, error) {
+) (provider.ModelRequest, int, error) {
 	authorityDigest, err := truth.AuthorityDigest()
 	if err != nil {
-		return NarrativeGenerationResult{}, err
+		return provider.ModelRequest{}, 0, err
 	}
 	if authorityDigest != input.AuthorityDigest {
-		return NarrativeGenerationResult{},
+		return provider.ModelRequest{}, 0,
 			errors.New("narrative input authority digest is stale")
 	}
 	route, err := options.Routes.For(model.PurposeSummary)
 	if err != nil {
-		return NarrativeGenerationResult{}, err
+		return provider.ModelRequest{}, 0, err
 	}
 	routeDigest, err := SummaryRouteDigest(options.Routes)
 	if err != nil {
-		return NarrativeGenerationResult{}, err
+		return provider.ModelRequest{}, 0, err
 	}
 	if routeDigest != input.RouteDigest {
-		return NarrativeGenerationResult{},
+		return provider.ModelRequest{}, 0,
 			errors.New("narrative input route digest is stale")
 	}
 	payload, err := json.Marshal(struct {
@@ -99,7 +81,7 @@ func GenerateNarrative(
 		Focus: strings.TrimSpace(options.Focus),
 	})
 	if err != nil {
-		return NarrativeGenerationResult{}, err
+		return provider.ModelRequest{}, 0, err
 	}
 	messages := []provider.Message{
 		provider.TextMessage(
@@ -119,14 +101,25 @@ func GenerateNarrative(
 				"technical_concepts, files_and_code, errors_and_fixes, pending_jobs, "+
 				"current_work, next_steps, critical_context, decisions, rationale, preferences, "+
 				"and unresolved arrays; every item has text and source_message_ids. Include every "+
-				"array even when empty.",
+				"array even when empty. Every supplied excerpt ID must be cited. Preserve literal numbering and parent structure; never omit a range silently.",
 		),
 		provider.TextMessage(provider.RoleUser, string(payload)),
 	}
+	normalized, _, err := NewMessageLedger(LedgerInput{Stable: messages[:1], History: messages[1:]}).Snapshot().Normalize(route.Model().Capabilities)
+	if err != nil {
+		return provider.ModelRequest{}, 0, err
+	}
+	messages = normalized.Messages()
 	estimatedInput, err := options.TokenEstimator.Estimate(messages)
 	if err != nil {
-		return NarrativeGenerationResult{},
+		return provider.ModelRequest{}, 0,
 			fmt.Errorf("estimate narrative input: %w", err)
+	}
+	if options.Limits.MaxInputTokens > 0 && estimatedInput > options.Limits.MaxInputTokens {
+		return provider.ModelRequest{}, 0, fmt.Errorf("%w: token ceiling", ErrNarrativeInputBudget)
+	}
+	if options.Limits.MaxInputBytes > 0 && len(payload) > options.Limits.MaxInputBytes {
+		return provider.ModelRequest{}, 0, fmt.Errorf("%w: byte ceiling", ErrNarrativeInputBudget)
 	}
 	maxOutput, outputBytes, err := NarrativeOutputBudget(
 		options.Limits,
@@ -134,7 +127,7 @@ func GenerateNarrative(
 		estimatedInput,
 	)
 	if err != nil {
-		return NarrativeGenerationResult{}, err
+		return provider.ModelRequest{}, 0, err
 	}
 	zero := 0.0
 	request := provider.ModelRequest{
@@ -145,86 +138,8 @@ func GenerateNarrative(
 		ReasoningEffort: NarrativeReasoningEffort(route.Model().Capabilities),
 		NativeSearch:    false, Tools: nil, Idempotent: true,
 	}
-	timeout := options.Timeout
-	if timeout <= 0 {
-		timeout = 30 * time.Second
-	}
-	callCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-	stream, err := options.Provider.Stream(callCtx, request)
-	if err != nil {
-		return NarrativeGenerationResult{}, err
-	}
-	defer stream.Close()
-	var text strings.Builder
-	var usage provider.Usage
-	complete := false
-	for {
-		event, recvErr := stream.Recv()
-		if errors.Is(recvErr, io.EOF) {
-			break
-		}
-		if recvErr != nil {
-			return NarrativeGenerationResult{}, recvErr
-		}
-		switch event.Type {
-		case provider.EventTextDelta:
-			text.WriteString(event.Text)
-			if text.Len() > outputBytes {
-				return NarrativeGenerationResult{},
-					errors.New("narrative output exceeds byte limit")
-			}
-		case provider.EventUsage:
-			if event.Usage != nil {
-				usage.Add(*event.Usage)
-			}
-		case provider.EventMessageStop:
-			if event.StopReason.Incomplete() ||
-				event.StopReason == provider.StopReasonToolUse {
-				return NarrativeGenerationResult{},
-					errors.New("narrative provider output is incomplete")
-			}
-			complete = true
-		case provider.EventMessageStart, provider.EventReasoningDelta,
-			provider.EventReasoningSignature,
-			provider.EventTransportProgress, provider.EventReplayState,
-			provider.EventResponseState:
-		default:
-			return NarrativeGenerationResult{},
-				fmt.Errorf("narrative provider emitted forbidden event %q", event.Type)
-		}
-	}
-	if !complete {
-		return NarrativeGenerationResult{},
-			errors.New("narrative provider omitted message_stop")
-	}
-	limits := options.Limits
-	limits.MaxOutputBytes = outputBytes
-	artifact, err := ValidateNarrativeJSON(
-		[]byte(text.String()), input, limits, createdTurn, time.Now().UTC(),
-	)
-	if err != nil {
-		return NarrativeGenerationResult{}, err
-	}
-	return NarrativeGenerationResult{
-		Artifact: artifact, Usage: usage,
-		Provider: route.ProviderID(), Model: route.Model().ID,
-		ModelMetadata: protocol.ModelMetadataProvenance{
-			CanonicalID:  string(route.Model().MetadataProvenance.CanonicalID),
-			WireID:       string(route.Model().MetadataProvenance.WireID),
-			Limits:       string(route.Model().MetadataProvenance.Limits),
-			Capabilities: string(route.Model().MetadataProvenance.Capabilities),
-			Pricing:      string(route.Model().MetadataProvenance.Pricing),
-		},
-		CostUSD: cost(route.Model().Pricing, usage),
-		CostKnown: route.Model().Pricing.Known &&
-			(usage.CachedTokens == 0 ||
-				route.Model().Pricing.CachedInputPerMillion != nil),
-		RouteDigest: routeDigest,
-	}, nil
+	return request, outputBytes, nil
 }
-
-const narrativeFramingReserve = 128
 
 func NarrativeOutputBudget(
 	limits NarrativeLimits,
@@ -236,26 +151,18 @@ func NarrativeOutputBudget(
 		return 0, 0, errors.New("summary route does not advertise max output tokens")
 	}
 	if limit := modelLimits.ContextTokens; limit > 0 {
-		if estimatedInput+narrativeFramingReserve >= limit {
-			return 0, 0, errors.New(
-				"narrative request exceeds the summary route context window",
-			)
+		if estimatedInput >= limit {
+			return 0, 0, fmt.Errorf("%w: narrative request exceeds the summary route context window", ErrNarrativeInputBudget)
 		}
-		tokens = min(tokens, limit-estimatedInput-narrativeFramingReserve)
+		tokens = min(tokens, limit-estimatedInput)
 	}
-	if limits.MaxOutputBytes > 0 {
-		tokens = min(tokens, tokenestimate.MaxTokensForBytes(uint64(limits.MaxOutputBytes)))
+	if limits.MaxOutputTokens > 0 {
+		tokens = min(tokens, limits.MaxOutputTokens)
 	}
 	if tokens == 0 {
-		return 0, 0, errors.New(
-			"narrative request exceeds the summary route context window",
-		)
+		return 0, 0, errors.New("narrative output budget is empty")
 	}
-	outputBytes := int(tokenestimate.BytesForTokens(tokens))
-	if limits.MaxOutputBytes > 0 {
-		outputBytes = min(outputBytes, limits.MaxOutputBytes)
-	}
-	return tokens, outputBytes, nil
+	return tokens, limits.MaxOutputBytes, nil
 }
 
 func NarrativeReasoningEffort(capabilities model.Capabilities) string {
@@ -266,15 +173,4 @@ func NarrativeReasoningEffort(capabilities model.Capabilities) string {
 		return "low"
 	}
 	return ""
-}
-
-func cost(pricing model.Pricing, usage provider.Usage) float64 {
-	uncached := usage.InputTokens - min(usage.InputTokens, usage.CachedTokens)
-	cachedPrice := pricing.InputPerMillion
-	if pricing.CachedInputPerMillion != nil {
-		cachedPrice = *pricing.CachedInputPerMillion
-	}
-	return float64(uncached)/1_000_000*pricing.InputPerMillion +
-		float64(usage.CachedTokens)/1_000_000*cachedPrice +
-		float64(usage.OutputTokens)/1_000_000*pricing.OutputPerMillion
 }

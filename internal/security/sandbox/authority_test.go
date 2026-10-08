@@ -1,10 +1,53 @@
 package sandbox
 
 import (
+	"path/filepath"
+	"reflect"
+	"strings"
 	"testing"
 
 	securitymodel "github.com/fwtllh-png/QCode/internal/security/model"
 )
+
+func TestRelocateWorkspacePreservesAuthorityCeiling(t *testing.T) {
+	source, target, external := t.TempDir(), t.TempDir(), t.TempDir()
+	original := ExecutionAuthority{
+		Digest: strings.Repeat("a", 64), Enforcement: EnforcementStrong,
+		WorkspaceRoot: source, AllowProcess: true,
+		ReadPaths: []string{source, external}, WorkspaceWritePaths: []string{filepath.Join(source, "deps")},
+		NetworkTargets: []string{"https://example.com:443"}, ManagedProxyPort: 12345,
+		RequiredControls: securitymodel.RequiredControls{FilesystemWrite: securitymodel.FilesystemWriteExactPaths},
+	}
+	projected, err := original.RelocateWorkspace(source, target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if projected.Digest == original.Digest || projected.WorkspaceRoot != target ||
+		!reflect.DeepEqual(projected.ReadPaths, []string{target, external}) ||
+		!reflect.DeepEqual(projected.WorkspaceWritePaths, []string{filepath.Join(target, "deps")}) {
+		t.Fatalf("projection=%+v", projected)
+	}
+	if projected.Enforcement != original.Enforcement || projected.RequiredControls != original.RequiredControls ||
+		projected.AllowNetwork != original.AllowNetwork || projected.ManagedProxyPort != original.ManagedProxyPort ||
+		projected.WorkspaceBaseWrite != original.WorkspaceBaseWrite || !reflect.DeepEqual(projected.NetworkTargets, original.NetworkTargets) {
+		t.Fatal("projection changed authority ceiling")
+	}
+	if _, denied := projected.DeniedWritePath([]string{filepath.Join(target, "outside.txt")}); !denied {
+		t.Fatal("projection authorized an undeclared path")
+	}
+	if _, err := original.RelocateWorkspace(external, target); err == nil {
+		t.Fatal("wrong source identity accepted")
+	}
+	invalid := original
+	invalid.WorkspaceWritePaths = []string{external}
+	if _, err := invalid.RelocateWorkspace(source, target); err == nil {
+		t.Fatal("external write grant accepted")
+	}
+	projected.WorkspaceWritePaths[0] = "changed"
+	if original.WorkspaceWritePaths[0] != filepath.Join(source, "deps") {
+		t.Fatal("projection mutated the original authority")
+	}
+}
 
 func TestLoopbackOnlyRejectsProxyOrOutboundTargets(t *testing.T) {
 	loopback := ExecutionAuthority{

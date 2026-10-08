@@ -179,18 +179,6 @@ func (l *MessageLedger) Snapshot() MessageSnapshot {
 	return snapshot
 }
 
-// countPriorIDs reports how many earlier messages in the partition share the
-// id, for the occurrence suffix on duplicate identities.
-func countPriorIDs(ids []string, index int) int {
-	occurrence := 0
-	for prior := 0; prior < index; prior++ {
-		if ids[prior] == ids[index] {
-			occurrence++
-		}
-	}
-	return occurrence
-}
-
 func (s MessageSnapshot) Revision() uint64 {
 	return s.revision
 }
@@ -258,20 +246,29 @@ func (s MessageSnapshot) Digest() (string, error) {
 	return "sha256:" + hex.EncodeToString(sum[:]), nil
 }
 
+// WithDynamic returns an ephemeral projection for optional-context admission.
+func (s MessageSnapshot) WithDynamic(dynamic []provider.Message) MessageSnapshot {
+	return s.withPartition(KindDynamic, dynamic)
+}
+
 // WithHistory returns an ephemeral rewrite used while measuring compaction.
 func (s MessageSnapshot) WithHistory(history []provider.Message) MessageSnapshot {
-	if reflect.DeepEqual(s.partitions[KindHistory], history) {
+	return s.withPartition(KindHistory, history)
+}
+
+func (s MessageSnapshot) withPartition(replaced MessageKind, messages []provider.Message) MessageSnapshot {
+	if reflect.DeepEqual(s.partitions[replaced], messages) {
 		return s
 	}
-	clonedHistory := CloneMessages(history)
+	cloned := CloneMessages(messages)
 	partitions := make(map[MessageKind][]provider.Message, len(s.partitions))
 	ids := make(map[MessageKind][]string, len(s.partitions))
 	var items []MessageItem
 	for _, kind := range orderedKinds {
-		if kind == KindHistory {
-			partitions[kind] = clonedHistory
-			ids[kind] = make([]string, len(clonedHistory))
-			for index, message := range clonedHistory {
+		if kind == replaced {
+			partitions[kind] = cloned
+			ids[kind] = make([]string, len(cloned))
+			for index, message := range cloned {
 				ids[kind][index] = itemID(kind, message)
 			}
 			continue

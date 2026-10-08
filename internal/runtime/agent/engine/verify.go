@@ -32,7 +32,7 @@ type verifyAction string
 
 const (
 	// verifyActionSkipped means the gate had nothing to judge: it is off, has no
-	// runner, or the turn changed no files.
+	// runner. An unchanged workspace gets an explicit not_required receipt.
 	verifyActionSkipped verifyAction = "skipped"
 	verifyActionPassed  verifyAction = "passed"
 	verifyActionRepair  verifyAction = "repair"
@@ -70,13 +70,10 @@ func (g *verifyGate) evaluate(
 	ctx context.Context, send func(State, Event) error,
 ) (verifyOutcome, error) {
 	options := g.engine.options.Verify
-	if !options.Enabled() {
+	if !options.Enabled() && (g.kernel == nil || !g.kernel.Snapshot().Policy.VerificationRequired) {
 		return verifyOutcome{action: verifyActionSkipped}, nil
 	}
 	paths := changedPaths(g.engine.TurnDiff())
-	if len(paths) == 0 {
-		return verifyOutcome{action: verifyActionSkipped}, nil
-	}
 	if g.kernel == nil {
 		return verifyOutcome{}, protocol.NewProblem(
 			protocol.CodeInternal,
@@ -84,6 +81,11 @@ func (g *verifyGate) evaluate(
 			false,
 			nil,
 		)
+	}
+	// Restored turns retain the policy that admitted their work.
+	policy := g.kernel.Snapshot().Policy
+	if policy.VerificationMode != "" {
+		options.Mode = policy.VerificationMode
 	}
 	if err := g.kernel.BeginVerification(); err != nil {
 		return verifyOutcome{}, err
@@ -102,34 +104,27 @@ func (g *verifyGate) evaluate(
 		"scope": string(scope), "repair_step": g.extraSteps(),
 	})
 	mutationRevision := g.kernel.MutationRevision()
-	receipt, err := options.Runner.Verify(verifyCtx, verify.Request{
-		Scope: scope, Paths: paths, Diagnostics: g.engine.turnDiagnostics(),
-		WorkspaceRevision: g.engine.sessionRevision, MutationRevision: mutationRevision,
-		Evidence: g.engine.verificationEvidence(),
-	})
+	var receipt verify.Receipt
+	var err error
+	if len(paths) == 0 {
+		// Absence of net changes is a recorded applicability decision, not a test pass.
+		receipt = verify.Receipt{
+			Scope: scope, Status: verify.StatusNotRequired,
+			Message: "no net workspace changes remain; no verification checks were run",
+		}
+	} else if options.Runner == nil {
+		receipt = verify.Receipt{Scope: scope, Status: verify.StatusUnavailable, Message: "verification runner is not configured", UncoveredPaths: append([]string(nil), paths...)}
+	} else {
+		receipt, err = options.Runner.Verify(verifyCtx, verify.Request{
+			RequireConfiguredCommand: options.Mode == VerifyModeHard,
+			Scope:                    scope, Paths: paths, Diagnostics: g.engine.turnDiagnostics(),
+			WorkspaceRevision: g.engine.sessionRevision, MutationRevision: mutationRevision,
+			Evidence: g.engine.verificationEvidence(),
+		})
+	}
 	if err != nil {
 		span.Set("error", errorText(err))
 		span.End(trace.StatusError)
-		// A soft gate must never change the turn outcome, so a runner that could
-		// not run is reported as unavailable. A hard gate cannot be honoured
-		// without a working runner, so the error stands.
-		if options.Mode != VerifyModeSoft {
-			_, _ = g.kernel.FinishVerification(
-				g.verificationCommand(verify.Receipt{Status: verify.StatusUnavailable, Message: err.Error()}),
-			)
-			return verifyOutcome{}, protocol.NewFault(
-				protocol.CodeUnavailable,
-				fmt.Sprintf("verification (%s) is unavailable", scope),
-				true,
-				protocol.FaultMetadata{
-					Origin:         protocol.FaultOriginVerification,
-					Disposition:    protocol.FaultResumeTurn,
-					SideEffects:    protocol.SideEffectDraft,
-					RecoveryAction: "restore verification and continue the retained draft",
-				},
-				err,
-			)
-		}
 		receipt = verify.Receipt{
 			Scope: scope, Status: verify.StatusUnavailable, Message: err.Error(),
 			UncoveredPaths: append([]string(nil), paths...),
@@ -156,7 +151,7 @@ func (g *verifyGate) evaluate(
 			g.engine.options.Workspace,
 			paths,
 		)
-	} else {
+	} else if receipt.Status != verify.StatusNotRequired {
 		// An unavailable run is recorded too, and says so: "nobody could check
 		// this" is a different instruction to the next turn than "the check ran
 		// and it is broken", and neither is silence.
@@ -171,6 +166,9 @@ func (g *verifyGate) evaluate(
 		Receipt: receipt, Mode: options.Mode, Action: string(action),
 		RepairSteps: g.extraSteps(), Paths: paths,
 		Attempts: append([]verify.Receipt(nil), g.attempts...),
+	}
+	if len(paths) == 0 {
+		observed.Workspace = &VerificationWorkspace{Status: "unchanged"}
 	}
 	if err := send(Verifying, Event{Verification: observed}); err != nil {
 		return verifyOutcome{}, err
@@ -207,6 +205,8 @@ func kernelVerificationStatus(
 	status string,
 ) turnkernel.VerificationStatus {
 	switch status {
+	case verify.StatusNotRequired:
+		return turnkernel.VerificationNotRequired
 	case verify.StatusPassed:
 		return turnkernel.VerificationPassed
 	case verify.StatusFailed:

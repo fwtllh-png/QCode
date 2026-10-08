@@ -1,6 +1,9 @@
 package sandbox
 
 import (
+	"context"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -25,7 +28,7 @@ func TestCollectWriteTreeFilesSkipsProtectedAndSymlinks(t *testing.T) {
 	if err := os.Symlink(keep, filepath.Join(tree, "link.txt")); err != nil {
 		t.Fatal(err)
 	}
-	files, err := CollectWriteTreeFiles(root, tree, MaxExactWorkspaceWritePaths)
+	files, err := CollectWriteTreeFiles(t.Context(), root, tree)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -42,19 +45,25 @@ func TestCollectWriteTreeFilesSkipsProtectedAndSymlinks(t *testing.T) {
 	}
 }
 
-func TestCollectWriteTreeFilesHonorsLimit(t *testing.T) {
+func TestCollectWriteTreeFilesDoesNotCountDirectoryContentsAsGrants(t *testing.T) {
 	root := t.TempDir()
 	tree := filepath.Join(root, "generated")
 	if err := os.Mkdir(tree, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(tree, "a.txt"), []byte("a"), 0o600); err != nil {
-		t.Fatal(err)
+	count := MaxExactWorkspaceWritePaths + 1
+	for i := range count {
+		if err := os.WriteFile(filepath.Join(tree, fmt.Sprintf("%04d.txt", i)), []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if err := os.WriteFile(filepath.Join(tree, "b.txt"), []byte("b"), 0o600); err != nil {
-		t.Fatal(err)
+	files, err := CollectWriteTreeFiles(t.Context(), root, tree)
+	if err != nil || len(files) != count {
+		t.Fatalf("files=%d error=%v", len(files), err)
 	}
-	if _, err := CollectWriteTreeFiles(root, tree, 1); err == nil {
-		t.Fatal("over-limit write tree was accepted")
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if _, err := CollectWriteTreeFiles(ctx, root, tree); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled walk: %v", err)
 	}
 }

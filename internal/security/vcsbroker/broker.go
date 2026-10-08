@@ -18,11 +18,14 @@ import (
 	"github.com/fwtllh-png/QCode/internal/security/authority"
 	securitymodel "github.com/fwtllh-png/QCode/internal/security/model"
 	"github.com/fwtllh-png/QCode/internal/security/processbroker"
+	"github.com/fwtllh-png/QCode/internal/security/sandbox"
 )
 
 type MutationKind string
 
 const (
+	RepositoryInit MutationKind = "repository_init"
+	SnapshotIndex  MutationKind = "snapshot_index"
 	WorktreeAdd    MutationKind = "worktree_add"
 	WorktreeRemove MutationKind = "worktree_remove"
 	WorktreePrune  MutationKind = "worktree_prune"
@@ -65,6 +68,8 @@ type Broker struct {
 	commonDir        string
 	authority        *authority.LeaseAuthority
 	processes        *processbroker.Broker
+	environment      *process.Environment
+	configEnv        []string
 	sequence         atomic.Uint64
 	leaseTTL         time.Duration
 	mu               sync.Mutex
@@ -75,6 +80,7 @@ func New(
 	repository string,
 	manager *authority.LeaseAuthority,
 	leaseTTL time.Duration,
+	backend sandbox.Backend,
 ) (*Broker, error) {
 	if manager == nil {
 		return nil, errors.New("VCS Broker requires a Lease Authority")
@@ -98,10 +104,23 @@ func New(
 	if err != nil {
 		return nil, err
 	}
+	policy, hasPolicy := sandbox.BackendPolicy(backend)
+	if backend != nil && !hasPolicy {
+		return nil, errors.New("VCS Broker requires a prepared environment policy")
+	}
+	environment, err := process.EnvironmentFromPolicy(policy)
+	if err != nil {
+		return nil, fmt.Errorf("VCS Broker environment: %w", err)
+	}
+	var configEnv []string
+	if policy.EnvironmentProfile != "native" {
+		configEnv = []string{"GIT_CONFIG_GLOBAL=" + os.DevNull, "GIT_CONFIG_SYSTEM=" + os.DevNull}
+	}
 	sum := sha256.Sum256([]byte(filepath.Clean(canonical)))
 	return &Broker{
 		repository: canonical, workspaceID: hex.EncodeToString(sum[:]),
 		authority: manager, processes: processes, leaseTTL: leaseTTL,
+		environment: environment, configEnv: configEnv,
 	}, nil
 }
 
@@ -113,7 +132,19 @@ func (b *Broker) Read(
 	if b == nil {
 		return "", errors.New("VCS Broker is required")
 	}
-	return runGit(trustedReadContext{Context: ctx}, dir, arguments...)
+	return b.runGit(trustedReadContext{Context: ctx}, dir, arguments...)
+}
+
+// ReadResult preserves exit status for fixed baseline and merge queries.
+// Like Read, it uses the broker's authority rather than the caller's command.
+func (b *Broker) ReadResult(ctx context.Context, dir string, arguments ...string) (process.Result, error) {
+	if b == nil {
+		return process.Result{}, errors.New("VCS Broker is required")
+	}
+	return process.Run(trustedReadContext{Context: ctx}, process.Options{
+		Path: process.GitExecutable(), Args: process.ManagedGitArguments(arguments), Dir: dir,
+		Environment: b.environment, Env: b.configEnv,
+	})
 }
 
 func (b *Broker) SwitchBranch(
@@ -148,13 +179,13 @@ func (b *Broker) Mutate(
 			arguments = append(arguments, "--push")
 		}
 		arguments = append(arguments, remote)
-		if _, err := runGit(readCtx, mutation.Dir, arguments...); err != nil {
+		if _, err := b.runGit(readCtx, mutation.Dir, arguments...); err != nil {
 			return processbroker.Result{}, fmt.Errorf(
 				"resolve configured Git remote %q: %w", remote, err,
 			)
 		}
 	}
-	before, err := b.snapshot(readCtx, mutation.Dir)
+	before, err := b.mutationSnapshot(readCtx, mutation)
 	if err != nil {
 		return processbroker.Result{}, err
 	}
@@ -174,6 +205,14 @@ func (b *Broker) Mutate(
 	}
 	executable := process.GitExecutable()
 	arguments := process.ManagedGitArguments(mutation.Args)
+	options := process.Options{
+		Path: executable, Args: arguments, Dir: mutation.Dir,
+		Environment: b.environment, Env: b.configEnv,
+	}
+	environment, err := options.BoundEnvironment()
+	if err != nil {
+		return processbroker.Result{}, err
+	}
 	effectKind := securitymodel.ProcessMutating
 	reversibility := securitymodel.Bounded
 	risk := securitymodel.RiskHigh
@@ -194,6 +233,7 @@ func (b *Broker) Mutate(
 			WorkspaceID: b.workspaceID, WorkspaceGeneration: 1,
 			Subject: subject, Executable: executable,
 			Args: arguments, WorkingDirectory: mutation.Dir,
+			Environment: environment,
 			Effect: authority.EffectContract{
 				Kind:                 effectKind,
 				Reversibility:        reversibility,
@@ -245,7 +285,7 @@ func (b *Broker) Mutate(
 			return processbroker.Result{}, err
 		}
 	}
-	current, err := b.snapshot(readCtx, mutation.Dir)
+	current, err := b.mutationSnapshot(readCtx, mutation)
 	if err != nil {
 		return processbroker.Result{}, err
 	}
@@ -260,22 +300,19 @@ func (b *Broker) Mutate(
 	}
 	result, err := b.processes.RunCommand(ctx, processbroker.CommandRequest{
 		Lease: lease, Validation: validation,
-		Options: process.Options{
-			Path: executable, Args: arguments, Dir: mutation.Dir,
-		},
+		Options: options,
 		Identity: processbroker.Identity{
 			SessionID: "vcs-broker", ThreadID: operation.ID, TurnID: operation.ID,
 		},
 	})
 	terminal = true
-	if err == nil && result.Process.ExitCode != 0 {
+	if result.Process.ExitCode != 0 {
 		message := strings.TrimSpace(result.Process.Stderr)
 		if message == "" {
 			message = strings.TrimSpace(result.Process.Stdout)
 		}
-		err = fmt.Errorf(
-			"git %s: %s", strings.Join(mutation.Args, " "), message,
-		)
+		failure := fmt.Errorf("git %s exited with code %d: %s", mutation.Kind, result.Process.ExitCode, message)
+		err = errors.Join(err, failure)
 	}
 	return result, err
 }
@@ -287,11 +324,23 @@ type trustedReadContext struct{ context.Context }
 
 func (trustedReadContext) Value(any) any { return nil }
 
+func (b *Broker) mutationSnapshot(ctx context.Context, mutation Mutation) (RepositoryState, error) {
+	if mutation.Kind != RepositoryInit {
+		return b.snapshot(ctx, mutation.Dir)
+	}
+	// Initializing a private content snapshot must never reinitialize an
+	// existing repository or follow a worktree marker to shared metadata.
+	if _, err := os.Lstat(filepath.Join(mutation.Dir, ".git")); !errors.Is(err, os.ErrNotExist) {
+		return RepositoryState{}, errors.New("content baseline requires an absent .git entry")
+	}
+	return RepositoryState{CommonDirIdentity: b.repository}, nil
+}
+
 func (b *Broker) snapshot(
 	ctx context.Context,
 	dir string,
 ) (RepositoryState, error) {
-	common, err := runGit(ctx, dir, "rev-parse", "--git-common-dir")
+	common, err := b.runGit(ctx, dir, "rev-parse", "--git-common-dir")
 	if err != nil {
 		return RepositoryState{}, err
 	}
@@ -312,12 +361,12 @@ func (b *Broker) snapshot(
 	} else if b.commonDir != common {
 		return RepositoryState{}, errors.New("VCS mutation changed Repository identity")
 	}
-	head, err := runGit(ctx, dir, "rev-parse", "--revs-only", "--end-of-options", "HEAD")
+	head, err := b.runGit(ctx, dir, "rev-parse", "--revs-only", "--end-of-options", "HEAD")
 	if err != nil {
 		return RepositoryState{}, err
 	}
-	ref, _ := runGit(ctx, dir, "symbolic-ref", "-q", "HEAD")
-	indexPath, err := runGit(ctx, dir, "rev-parse", "--git-path", "index")
+	ref, _ := b.runGit(ctx, dir, "symbolic-ref", "-q", "HEAD")
+	indexPath, err := b.runGit(ctx, dir, "rev-parse", "--git-path", "index")
 	if err != nil {
 		return RepositoryState{}, err
 	}
@@ -329,7 +378,7 @@ func (b *Broker) snapshot(
 	if err != nil {
 		return RepositoryState{}, err
 	}
-	configPath, err := runGit(ctx, dir, "rev-parse", "--git-path", "config")
+	configPath, err := b.runGit(ctx, dir, "rev-parse", "--git-path", "config")
 	if err != nil {
 		return RepositoryState{}, err
 	}
@@ -341,7 +390,7 @@ func (b *Broker) snapshot(
 	if err != nil {
 		return RepositoryState{}, err
 	}
-	worktrees, err := runGit(ctx, dir, "worktree", "list", "--porcelain")
+	worktrees, err := b.runGit(ctx, dir, "worktree", "list", "--porcelain")
 	if err != nil {
 		return RepositoryState{}, err
 	}
@@ -392,6 +441,14 @@ func validateMutation(repository string, mutation Mutation) error {
 		return errors.New("VCS mutation is incomplete")
 	}
 	switch mutation.Kind {
+	case RepositoryInit:
+		if directory != repository || strings.Join(mutation.Args, "\x00") != "init\x00--quiet" {
+			return errors.New("invalid repository initialization")
+		}
+	case SnapshotIndex:
+		if directory != repository || strings.Join(mutation.Args, "\x00") != "add\x00-A\x00--force\x00--\x00.\x00:(exclude).qcode" {
+			return errors.New("invalid content snapshot index mutation")
+		}
 	case WorktreeAdd:
 		if len(mutation.Args) != 5 ||
 			strings.Join(mutation.Args[:3], " ") != "worktree add --detach" {
@@ -666,11 +723,12 @@ func validCommitMessage(message string) bool {
 		!strings.ContainsAny(message, "\x00\r")
 }
 
-func runGit(ctx context.Context, dir string, arguments ...string) (string, error) {
+func (b *Broker) runGit(ctx context.Context, dir string, arguments ...string) (string, error) {
 	result, err := process.Run(ctx, process.Options{
-		Path: process.GitExecutable(),
-		Args: process.ManagedGitArguments(arguments),
-		Dir:  dir,
+		Path:        process.GitExecutable(),
+		Args:        process.ManagedGitArguments(arguments),
+		Dir:         dir,
+		Environment: b.environment, Env: b.configEnv,
 	})
 	if err != nil {
 		return "", err

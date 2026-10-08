@@ -4,6 +4,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/fwtllh-png/QCode/internal/security/sandbox"
 )
 
 func TestSecretEnvironmentNameCoversKeySuffixAndLookalikes(t *testing.T) {
@@ -22,6 +24,46 @@ func TestSecretEnvironmentNameCoversKeySuffixAndLookalikes(t *testing.T) {
 	for _, name := range []string{"KEYBOARD_LAYOUT", "MONKEY_PATCH", "HOME", "PATH"} {
 		if SecretEnvironmentName(name) {
 			t.Fatalf("%q was wrongly treated as secret", name)
+		}
+	}
+}
+
+func TestPreparedEnvironmentPreservesPolicyWithoutHostRecapture(t *testing.T) {
+	policy := sandbox.Policy{
+		EnvironmentProfile: "native", PrivateTemp: t.TempDir(),
+		EnvironmentValues: []string{"HOME=/prepared/home", "LANG=prepared"},
+	}
+	prepared, err := EnvironmentFromPolicy(policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy.EnvironmentValues[0] = "HOME=/changed/home"
+	t.Setenv("HOME", "/host/home")
+	t.Setenv("API_TOKEN", "host-secret")
+	options := Options{Path: "/usr/bin/env", Dir: t.TempDir(), Environment: prepared, Env: []string{"LANG=declared"}}
+	result, err := Run(t.Context(), options)
+	if err != nil || result.ExitCode != 0 || !strings.Contains(result.Stdout, "HOME=/prepared/home\n") ||
+		!strings.Contains(result.Stdout, "LANG=declared\n") || !strings.Contains(result.Stdout, "TMPDIR="+policy.PrivateTemp+"\n") ||
+		strings.Contains(result.Stdout, "host-secret") || strings.Contains(result.Stdout, "API_TOKEN=") {
+		t.Fatalf("prepared environment result=%+v err=%v", result, err)
+	}
+	options.Env = []string{"HOME=/override"}
+	if _, err := NewCommand(t.Context(), options); err == nil {
+		t.Fatal("declaration overrode policy-owned HOME")
+	}
+	options.Env = nil
+	options.TrustedRuntimeHelper = true
+	if _, err := NewCommand(t.Context(), options); err == nil {
+		t.Fatal("prepared environment mixed with host capture")
+	}
+}
+
+func TestPreparedEnvironmentRejectsUnsafePolicyValues(t *testing.T) {
+	for _, values := range [][]string{
+		{"API_TOKEN=fixture"}, {"BASH_ENV=/fixture"}, {"malformed"}, {"LANG=a", "LANG=b"},
+	} {
+		if _, err := EnvironmentFromPolicy(sandbox.Policy{EnvironmentValues: values}); err == nil {
+			t.Fatalf("unsafe prepared environment accepted: %v", values)
 		}
 	}
 }

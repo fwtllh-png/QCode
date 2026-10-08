@@ -239,6 +239,20 @@ Web Markdown 不执行原始 HTML 或危险 URL。同源图片可以直接显示
   自动算 Agent 修改，重叠冲突拒绝。`Isolator` 不可用时保持原地树写；隔离
   准备失败则拒绝并要求精确 `write_paths`。隔离 cwd 出现在结果的
   `isolated_cwd`。
+- `write_paths` 的公开上限为 512 条授权路径，目录算一条；`write_globs` 展开后的
+  精确路径也计入该额度。目录内已有文件和实际变更文件不使用这个计数上限。
+  因此依赖目录包含超过 512 个文件不会阻止构建；仍应声明所需的最小输出或缓存目录。
+  写树失效等执行前拒绝返回可恢复工具结果，带 `check_write_paths` 提示，允许 Agent
+  调整调用。审批期间目录被删除也会在执行前重新检查。
+- 命令隔离使用私有文件系统副本及独立 Git 基线，保留被忽略的依赖文件、空目录和
+  符号链接；不把依赖快照加入父仓库的 Git 对象库。受保护控制目录继续排除，符号链接
+  不递归跟随。隔离路径的绝对 `cwd` / `write_paths` 按父工作区相对位置映射。
+  Guard 不重复快照隔离写树；实际变更仍由 File Broker / Journal 三方结算，
+  忽略文件的新增和修改也必须经过该边界。目录遍历和复制响应调用取消。
+  私有基线初始化经 VCS Broker 独立租约执行；命令授权按同一相对路径映射到副本，
+  保留网络、进程及必需控制约束，目录失效时禁止退回父工作区执行。
+  实际结算 diff 的预览字节预算独立使用
+  `execution.workspace_merge_max_diff_bytes`，见[配置说明](./configuration.md)。
 - 配置后，写入型 Subagent 使用 Worktree。
 - 隔离 Worktree 仅可只读访问经过校验的自身 Git Administration Directory，以及
   Repository Common Git Directory 中必要的 Object、Ref 与配置路径；这不会授予
@@ -248,6 +262,9 @@ Web Markdown 不执行原始 HTML 或危险 URL。同源图片可以直接显示
   `switch`、`fetch`、fast-forward `pull` 和非 force `push` 只能由 VCS Broker
   执行。每次白名单 Mutation 绑定 Common Git Directory Identity、目标 Worktree
   HEAD/Ref、Index Digest 和 Worktree Registration Digest；执行接管前发生漂移即拒绝。
+  Broker 只复制已准备策略中的环境值，并将其纳入进程租约摘要；不重新捕获宿主
+  环境，不允许命令声明覆盖 HOME 或临时目录。`native` 使用所选用户 Git 配置，
+  `isolated` 和私有内容基线禁用全局及系统 Git 配置；环境值不增加文件或网络授权。
   远端写入使用不可逆高风险 Effect，并要求单次审批。
 - 使用 `apply --dry-run` 检查生成计划。
 - 重要仓库必须纳入版本控制并维护备份。

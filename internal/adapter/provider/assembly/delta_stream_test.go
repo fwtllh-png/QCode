@@ -2,6 +2,7 @@ package assembly
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"reflect"
 	"strings"
@@ -121,6 +122,33 @@ func TestDeltaCoalescingStreamPreservesBoundaries(t *testing.T) {
 	}
 	if _, err := stream.Recv(); err != io.EOF {
 		t.Fatalf("terminal error = %v", err)
+	}
+}
+
+func TestDeltaCoalescingStreamPreservesProviderEventIdentities(t *testing.T) {
+	for _, sequenced := range []bool{false, true} {
+		t.Run(fmt.Sprint(sequenced), func(t *testing.T) {
+			first := provider.StreamEvent{Type: provider.EventToolCallDelta,
+				ToolCall: &provider.ToolCallFragment{ID: "call", Name: "read", Arguments: `{"path":`}}
+			second := provider.StreamEvent{Type: provider.EventToolCallDelta,
+				ToolCall: &provider.ToolCallFragment{Arguments: `"a"}`}}
+			if sequenced {
+				first.Sequenced, first.Sequence = true, 1
+				second.Sequenced, second.Sequence = true, 2
+			} else {
+				first.EventID, second.EventID = "first", "second"
+			}
+			source := newNotifyingDeltaStream([]provider.StreamEvent{first, first, second})
+			stream := startDeltaStream(t, source)
+			defer stream.Close()
+			for i, want := range []provider.StreamEvent{first, first, second} {
+				source.waitReads(t, i+2)
+				got, err := stream.Recv()
+				if err != nil || !reflect.DeepEqual(got, want) {
+					t.Fatalf("event %d = %+v, %v; want %+v", i, got, err, want)
+				}
+			}
+		})
 	}
 }
 

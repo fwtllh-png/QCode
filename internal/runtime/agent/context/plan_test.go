@@ -34,3 +34,17 @@ func TestOutstandingStepsCountsFinishedWork(t *testing.T) {
 		t.Fatalf("open = %+v done = %d", open, done)
 	}
 }
+
+func TestPlanTruthIdentitySurvivesRenameAndReorder(t *testing.T) {
+	plan := Plan{Steps: []PlanStep{{ID: "a", Title: "same", Status: StepPending}, {ID: "b", Title: "same", Status: StepPending}}}
+	before := PlanTruthEntities(plan, 1)
+	if before[0].ID == before[1].ID {
+		t.Fatal("same titles merged truth identity")
+	}
+	plan.Steps[1].Title = "renamed"
+	plan.Steps[0], plan.Steps[1] = plan.Steps[1], plan.Steps[0]
+	after := PlanTruthEntities(plan, 2)
+	if before[0].ID != after[1].ID || before[1].ID != after[0].ID {
+		t.Fatal("plan truth identity changed")
+	}
+}

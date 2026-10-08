@@ -6,6 +6,21 @@ import {
 } from "./conversation";
 
 describe("ConversationProjection", () => {
+	 it("attaches late summary diagnostics without rewriting terminal receipt usage", () => {
+    const projection = new ConversationProjection();
+    projection.apply(event(1, "turn.receipt", {input_tokens: 10, output_tokens: 2}));
+    const before = projection.snapshot();
+    const receiptID = before.order[0]!;
+    for (const [index, status] of ["started", "prepared", "completed"].entries()) {
+      projection.apply(event(index + 2, "turn.compaction", {phase: "post_turn", compaction_id: "job", status,
+        narrative_input_tokens: 9, narrative_cost_microunits: 3}));
+    }
+    const after = projection.snapshot();
+    expect(after.order).toEqual(before.order);
+    expect(before.nodes.get(receiptID)).toMatchObject({data: {input_tokens: 10, context_maintenance: []}});
+    expect(after.nodes.get(receiptID)).toMatchObject({data: {input_tokens: 10, output_tokens: 2,
+      context_maintenance: [{compaction_id: "job", status: "completed", narrative_cost_microunits: 3}]}});
+  });
   it("advances the structure revision only when the transcript shape changes", () => {
     const projection = new ConversationProjection();
     const step = (value: RuntimeEvent) => {
@@ -142,7 +157,7 @@ describe("ConversationProjection", () => {
     expect(verification).toMatchObject([
       {
         title: "Checks passed",
-        text: "Changed files are covered by recorded checks.",
+        text: "Recorded checks passed for the current changes.",
         failed: false
       }
     ]);
@@ -157,8 +172,19 @@ describe("ConversationProjection", () => {
     ]);
 
     expect(snapshot.nodes.get(snapshot.order[0])).toMatchObject({
-      title: "Not fully verified",
-      text: "No structured check covered every changed file.",
+      title: "Verification unavailable",
+      text: "structured quality evidence does not cover every changed path",
+      failed: false
+    });
+  });
+
+  it("reports unchanged completion without claiming tests passed", () => {
+    const snapshot = projectConversation([
+      event(1, "turn.verification", {status: "not_required", action: "not_required"})
+    ]);
+    expect(snapshot.nodes.get(snapshot.order[0])).toMatchObject({
+      title: "No verification required",
+      text: "No net workspace changes remain. No checks were run.",
       failed: false
     });
   });

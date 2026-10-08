@@ -313,7 +313,7 @@ func TestFoldWorkingSetForThroughputDoesNotReplaceHistory(t *testing.T) {
 	var receipt *CompactionReceipt
 	next, ok, err := engine.foldWorkingSetForThroughput(
 		&history,
-		engine.contextViewProject(nil),
+		engine.projectSelectedHistoryForTest(nil),
 		agentcontext.NewMessageLedger(agentcontext.LedgerInput{
 			History: history,
 		}).Snapshot(),
@@ -333,7 +333,7 @@ func TestFoldWorkingSetForThroughputDoesNotReplaceHistory(t *testing.T) {
 	if history[0].Text() != original {
 		t.Fatal("throughput fold replaced durable history")
 	}
-	viewed := engine.contextViewProject(nil)(history)
+	viewed := engine.projectSelectedHistoryForTest(nil)(history)
 	if len(viewed) == 0 || strings.Contains(viewed[0].Text(), "old ") {
 		t.Fatalf("folded view still has the oldest group: %+v", viewed)
 	}
@@ -452,7 +452,11 @@ func TestThroughputFoldPreservesPreparedModelInput(t *testing.T) {
 			routeDigest, propertyDigest := contextview.PrefixRequestIdentity(
 				request.Route, request.MaxOutputTokens, request.ReasoningEffort, request.NativeSearch,
 			)
-			manifest, err := contextview.BuildPrefixManifest(expected, engine.options.TokenEstimator, routeDigest, propertyDigest)
+			measurement, err := expected.MeasureDetailed("test", "", engine.options.TokenEstimator)
+			if err != nil {
+				t.Fatal(err)
+			}
+			manifest, err := contextview.BuildPrefixManifestFromMeasurement(expected, measurement, routeDigest, propertyDigest)
 			if err != nil {
 				t.Fatal(err)
 			}

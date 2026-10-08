@@ -60,7 +60,7 @@ func (e *Engine) projectWorldState(
 			Budgets: e.options.ContextBudgets, Repository: e.options.RepoContext,
 			WorkingSet: e.workingLedger().Select(e.turn, e.options.WorkingSetLimit),
 			Evidence:   evidence, PlanText: plan, PlanReceipt: planReceipt,
-			SessionState: sessionState, Narrative: e.narrativePartition(),
+			SessionState: sessionState,
 		},
 	)
 	if err != nil {

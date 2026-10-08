@@ -48,25 +48,26 @@ type OwnerManifest struct {
 }
 
 type ContextManifest struct {
-	Version         int               `json:"version"`
-	ThreadID        protocol.ThreadID `json:"thread_id"`
-	TurnID          protocol.TurnID   `json:"turn_id"`
-	Epoch           uint64            `json:"epoch"`
-	BaseRevision    uint64            `json:"base_revision"`
-	Revision        uint64            `json:"revision"`
-	Turn            uint64            `json:"turn,omitempty"`
-	History         HistoryManifest   `json:"history"`
-	Working         OwnerManifest     `json:"working"`
-	Evidence        OwnerManifest     `json:"evidence"`
-	Failures        OwnerManifest     `json:"failures"`
-	Plan            OwnerManifest     `json:"plan"`
-	Workspace       WorkspaceBinding  `json:"workspace"`
-	World           WorldBaseline     `json:"world,omitempty"`
-	Window          WindowLedger      `json:"window"`
-	Compaction      Compaction        `json:"compaction"`
-	TurnCheckpoints []TurnCheckpoint  `json:"turn_checkpoints,omitempty"`
-	ContextDigest   string            `json:"context_digest"`
-	Digest          string            `json:"digest"`
+	Conversation    *ConversationManifest `json:"conversation,omitempty"`
+	Version         int                   `json:"version"`
+	ThreadID        protocol.ThreadID     `json:"thread_id"`
+	TurnID          protocol.TurnID       `json:"turn_id"`
+	Epoch           uint64                `json:"epoch"`
+	BaseRevision    uint64                `json:"base_revision"`
+	Revision        uint64                `json:"revision"`
+	Turn            uint64                `json:"turn,omitempty"`
+	History         HistoryManifest       `json:"history"`
+	Working         OwnerManifest         `json:"working"`
+	Evidence        OwnerManifest         `json:"evidence"`
+	Failures        OwnerManifest         `json:"failures"`
+	Plan            OwnerManifest         `json:"plan"`
+	Workspace       WorkspaceBinding      `json:"workspace"`
+	World           WorldBaseline         `json:"world,omitempty"`
+	Window          WindowLedger          `json:"window"`
+	Compaction      Compaction            `json:"compaction"`
+	TurnCheckpoints []TurnCheckpoint      `json:"turn_checkpoints,omitempty"`
+	ContextDigest   string                `json:"context_digest"`
+	Digest          string                `json:"digest"`
 }
 
 type ManifestLimits struct {
@@ -107,6 +108,9 @@ func (m ContextManifest) ContentIDs() []string {
 		for _, ref := range owner.DeltaRefs {
 			ids = append(ids, ref.Handle)
 		}
+	}
+	if m.Conversation != nil {
+		ids = append(ids, m.Conversation.ContentIDs()...)
 	}
 	return ids
 }
@@ -285,6 +289,15 @@ func BuildContextManifest(
 		}
 		*owner.target = next
 	}
+	var previousConversation *ConversationManifest
+	if previous != nil {
+		previousConversation = previous.Conversation
+	}
+	var err error
+	manifest.Conversation, err = buildConversationManifest(ctx, store, snapshot.Conversation, previousConversation, limits)
+	if err != nil {
+		return ContextManifest{}, err
+	}
 	manifest.Digest = manifest.digest()
 	if err := manifest.Validate(); err != nil {
 		return ContextManifest{}, err
@@ -356,6 +369,11 @@ func LoadContextManifest(
 		if index < len(snapshot.History) {
 			snapshot.History[index].Turn = turn
 		}
+	}
+	var err error
+	snapshot.Conversation, err = loadConversationManifest(ctx, store, manifest.Conversation)
+	if err != nil {
+		return ContextSnapshot{}, err
 	}
 	if err := snapshot.Seal(); err != nil {
 		return ContextSnapshot{}, err
@@ -455,6 +473,9 @@ func (m ContextManifest) Validate() error {
 				return err
 			}
 		}
+	}
+	if m.Conversation != nil {
+		return m.Conversation.Validate()
 	}
 	return nil
 }

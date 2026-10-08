@@ -11,7 +11,6 @@ import (
 // WithdrawTurn runs only after Runtime admission has excluded concurrent work.
 // Commit the replacement before touching memory so a failed write is harmless.
 func (e *Engine) WithdrawTurn(ctx context.Context, thread protocol.ThreadID, turn protocol.TurnID) error {
-	e.joinPendingNarrative()
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	store := e.options.TurnContexts

@@ -19,7 +19,7 @@ func TestProjectContextViewKeepsOnlyRecentTurns(t *testing.T) {
 		textTurn(provider.RoleAssistant, "third", 3),
 		textTurn(provider.RoleUser, "four", 4),
 	}
-	viewed := ProjectContextView(history, 2)
+	viewed := SelectHistory(history, SelectionPolicy{RecentTurns: 2}).Messages
 	if len(viewed) != 3 ||
 		viewed[0].Text() != "three" ||
 		viewed[2].Text() != "four" {
@@ -30,15 +30,15 @@ func TestProjectContextViewKeepsOnlyRecentTurns(t *testing.T) {
 	}
 }
 
-func TestProjectContextViewZeroTurnsUsesPublicDefault(t *testing.T) {
+func TestProjectContextViewZeroTurnsLeavesSelectionToCapacity(t *testing.T) {
 	history := []provider.Message{
 		textTurn(provider.RoleUser, "one", 1),
 		textTurn(provider.RoleUser, "two", 2),
 		textTurn(provider.RoleUser, "three", 3),
 	}
-	viewed := ProjectContextView(history, 0)
-	if len(viewed) != 2 || viewed[0].Text() != "two" {
-		t.Fatalf("default view = %+v", viewed)
+	viewed := SelectHistory(history, SelectionPolicy{}).Messages
+	if len(viewed) != 3 || viewed[0].Text() != "one" {
+		t.Fatalf("capacity-selected view = %+v", viewed)
 	}
 }
 
@@ -65,7 +65,7 @@ func TestSafeTailStartDoesNotSplitToolPairs(t *testing.T) {
 	if start != 1 {
 		t.Fatalf("start = %d, want tool-pair-safe 1", start)
 	}
-	viewed := ProjectContextView(history, 2)
+	viewed := SelectHistory(history, SelectionPolicy{RecentTurns: 2}).Messages
 	if !agentcontext.ToolPairsClosed(viewed) || len(viewed) != 3 {
 		t.Fatalf("view = %+v", viewed)
 	}
@@ -79,7 +79,7 @@ func TestOldestVisibleTailFoldDropsOldestClosedGroup(t *testing.T) {
 		textTurn(provider.RoleAssistant, "second", 2),
 		textTurn(provider.RoleUser, "three", 3),
 	}
-	start, ok := OldestVisibleTailFold(history, 2, 0, false)
+	start, ok := OldestVisibleTailFold(history, 2, 0)
 	if !ok || start != 4 {
 		t.Fatalf("fold start = %d ok=%t, want 4", start, ok)
 	}
@@ -97,7 +97,7 @@ func TestOldestVisibleTailFoldKeepsCurrentUserRequest(t *testing.T) {
 		textTurn(provider.RoleUser, strings.Repeat("request ", 4000), 1),
 		textTurn(provider.RoleAssistant, "ack", 1),
 	}
-	if _, ok := OldestVisibleTailFold(history, 2, 0, true); ok {
+	if _, ok := OldestVisibleTailFold(history, 2, 0); ok {
 		t.Fatal("single-turn fold hid the current request")
 	}
 }
@@ -121,7 +121,7 @@ func TestOldestVisibleTailFoldDoesNotSplitToolPairs(t *testing.T) {
 		},
 		textTurn(provider.RoleUser, "now", 3),
 	}
-	start, ok := OldestVisibleTailFold(history, 2, 0, false)
+	start, ok := OldestVisibleTailFold(history, 2, 0)
 	if !ok {
 		t.Fatal("expected a safe fold")
 	}
@@ -198,7 +198,7 @@ func TestProjectContextViewKeepsWorldStateOutsideTheTail(t *testing.T) {
 		textTurn(provider.RoleUser, "two", 2),
 		textTurn(provider.RoleUser, "three", 3),
 	}
-	viewed := ProjectContextView(history, 2)
+	viewed := SelectHistory(history, SelectionPolicy{RecentTurns: 2}).Messages
 	if len(viewed) != 3 || !agentcontext.IsWorldStateMessage(viewed[0]) ||
 		viewed[1].Text() != "two" {
 		t.Fatalf("view = %+v", viewed)

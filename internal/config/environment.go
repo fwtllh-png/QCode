@@ -12,6 +12,7 @@ func applyEnvironment(lookup func(string) (string, bool), config *Config, proven
 		field  string
 		target *int
 	}{
+		{"QCODE_WORKSPACE_MERGE_MAX_DIFF_BYTES", fieldWorkspaceMergeMaxDiffBytes, &config.Execution.WorkspaceMergeMaxDiffBytes},
 		{"QCODE_RUNTIME_OPERATION_BUFFER", fieldOperationBuffer, &config.Runtime.OperationBuffer},
 		{"QCODE_RUNTIME_EVENT_HISTORY", fieldEventHistory, &config.Runtime.EventHistory},
 		{"QCODE_RUNTIME_SUBSCRIBER_BUFFER", fieldSubscriberBuffer, &config.Runtime.SubscriberBuffer},

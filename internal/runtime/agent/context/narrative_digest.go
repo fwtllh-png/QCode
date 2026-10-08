@@ -1,27 +1,6 @@
 package agentcontext
 
-import (
-	"time"
-
-	"github.com/fwtllh-png/QCode/internal/adapter/provider"
-)
-
-// OmittedHistory returns durable messages the projector no longer sends as
-// raw tail. World fragments stay in the live view and are not summarized.
-func OmittedHistory(history []provider.Message, turns int) []provider.Message {
-	start := SafeTailStart(history, turns)
-	if start <= 0 {
-		return nil
-	}
-	omitted := make([]provider.Message, 0, start)
-	for _, message := range history[:start] {
-		if IsWorldStateMessage(message) {
-			continue
-		}
-		omitted = append(omitted, CloneMessage(message))
-	}
-	return omitted
-}
+import "time"
 
 // RenderNarrativeDigest writes the optional rolling digest partition. It is
 // not a history replacement. Oversized text is omitted so narrative cannot

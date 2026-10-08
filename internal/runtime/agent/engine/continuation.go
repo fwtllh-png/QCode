@@ -70,6 +70,9 @@ func (e *Engine) loadTurnContinuation(
 			spec.Identity.TurnID,
 		)
 	}
+	if record.ContextCaptured && (record.StateEpoch != max(uint64(1), e.stateEpoch) || record.SessionRevision != e.sessionRevision) {
+		return agentcontext.TurnContinuation{}, false, fmt.Errorf("continuation context revision or epoch changed")
+	}
 	// The record's turn number is the saving engine's local ordering; the
 	// restoring engine owns the authoritative numbering for this session.
 	for index := range record.Messages {

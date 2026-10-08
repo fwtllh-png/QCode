@@ -130,6 +130,7 @@ func ConsumeStream(
 			Meaningful: assembly.CurrentMeaningful(),
 		}
 	}
+	argumentMembers := make(map[int]*jsonMemberTracker)
 	for {
 		event, err := stream.Recv()
 		if err != nil {
@@ -161,10 +162,24 @@ func ConsumeStream(
 			return result, err
 		}
 		applied, applyErr := assembly.Apply(event)
+		if applyErr == nil && applied && event.Type == provider.EventToolCallDelta {
+			fragment := event.ToolCall
+			members := argumentMembers[fragment.Index]
+			if members == nil {
+				members = &jsonMemberTracker{}
+				argumentMembers[fragment.Index] = members
+			}
+			if err := members.Append(fragment.Arguments); err != nil {
+				applyErr = fmt.Errorf("tool call %d: %w", fragment.Index, err)
+			}
+		}
 		if applyErr != nil {
 			failure := &provider.Failure{
 				Code:    provider.FailureMalformedResponse,
 				Message: "provider stream violated the incremental response contract",
+			}
+			if errors.Is(applyErr, errDuplicateJSONMember) {
+				failure.Message = "provider generated tool arguments with a duplicate JSON object member"
 			}
 			_ = assembly.Fail(applyErr)
 			if persistErr := persist(true); persistErr != nil {

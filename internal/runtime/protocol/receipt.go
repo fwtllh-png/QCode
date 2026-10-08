@@ -9,6 +9,7 @@ import (
 // runtime never ran that check, which is deliberately distinct from Passed so a
 // receipt can never imply verification that did not happen.
 const (
+	ReceiptNotRequired  = "not_required"
 	ReceiptNotEvaluated = "not_evaluated"
 	ReceiptPassed       = "passed"
 	ReceiptFailed       = "failed"
@@ -64,7 +65,7 @@ type ReceiptWorkspaceOutcome struct {
 func (v *ReceiptVerification) normalize() {
 	for _, field := range []*string{&v.Diagnostics, &v.Tests, &v.Verify} {
 		switch *field {
-		case ReceiptPassed, ReceiptFailed, ReceiptNotEvaluated, ReceiptUnavailable:
+		case ReceiptNotRequired, ReceiptPassed, ReceiptFailed, ReceiptNotEvaluated, ReceiptUnavailable:
 		default:
 			*field = ReceiptNotEvaluated
 		}
@@ -172,27 +173,27 @@ type ReceiptEvidence struct {
 // lost it to a budget that is about to bite again. A thread on its fourth
 // compaction is one whose early history now exists only as summary.
 type ReceiptContextBudget struct {
-	WindowID             string `json:"window_id,omitempty"`
-	WindowNumber         uint64 `json:"window_number,omitempty"`
-	Observed             bool   `json:"observed,omitempty"`
-	ActiveTokens         uint64 `json:"active_tokens"`
-	FullActiveTokens     uint64 `json:"full_active_tokens,omitempty"`
-	PrefillTokens        uint64 `json:"prefill_tokens,omitempty"`
-	BodyTokens           uint64 `json:"body_tokens,omitempty"`
-	ToolDefinitionTokens uint64 `json:"tool_definition_tokens,omitempty"`
-	PendingTokens        uint64 `json:"pending_tokens,omitempty"`
-	OutputReserve        uint64 `json:"output_reserve,omitempty"`
-	AutoCompactTokens       uint64 `json:"auto_compact_tokens"`
-	PrepareTokens           uint64 `json:"prepare_tokens,omitempty"`
-	EmergencyTokens         uint64 `json:"emergency_tokens,omitempty"`
-	RecentTailTurns         int    `json:"recent_tail_turns,omitempty"`
-	KeepRecentToolResults   int    `json:"keep_recent_tool_results,omitempty"`
-	HistoryTokenCeiling     uint64 `json:"history_token_ceiling,omitempty"`
-	Digest                  string `json:"digest,omitempty"`
-	NarrativeMode           string `json:"narrative_mode,omitempty"`
-	EstimatedTokens         uint64 `json:"estimated_tokens,omitempty"`
-	MaxContextTokens     uint64 `json:"max_context_tokens,omitempty"`
-	Compactions          int    `json:"compactions"`
+	WindowID              string `json:"window_id,omitempty"`
+	WindowNumber          uint64 `json:"window_number,omitempty"`
+	Observed              bool   `json:"observed,omitempty"`
+	ActiveTokens          uint64 `json:"active_tokens"`
+	FullActiveTokens      uint64 `json:"full_active_tokens,omitempty"`
+	PrefillTokens         uint64 `json:"prefill_tokens,omitempty"`
+	BodyTokens            uint64 `json:"body_tokens,omitempty"`
+	ToolDefinitionTokens  uint64 `json:"tool_definition_tokens,omitempty"`
+	PendingTokens         uint64 `json:"pending_tokens,omitempty"`
+	OutputReserve         uint64 `json:"output_reserve,omitempty"`
+	AutoCompactTokens     uint64 `json:"auto_compact_tokens"`
+	PrepareTokens         uint64 `json:"prepare_tokens,omitempty"`
+	EmergencyTokens       uint64 `json:"emergency_tokens,omitempty"`
+	RecentTailTurns       int    `json:"recent_tail_turns,omitempty"`
+	KeepRecentToolResults int    `json:"keep_recent_tool_results,omitempty"`
+	HistoryTokenCeiling   uint64 `json:"history_token_ceiling,omitempty"`
+	Digest                string `json:"digest,omitempty"`
+	NarrativeMode         string `json:"narrative_mode,omitempty"`
+	EstimatedTokens       uint64 `json:"estimated_tokens,omitempty"`
+	MaxContextTokens      uint64 `json:"max_context_tokens,omitempty"`
+	Compactions           int    `json:"compactions"`
 }
 
 // ReceiptLatency records measured phase duration. Phases overlap:
@@ -347,6 +348,11 @@ type ExecutionReceiptData struct {
 
 	// ContextBudget reports the public view contract and replacement ceiling.
 	ContextBudget *ReceiptContextBudget `json:"context_budget,omitempty"`
+	// The last sampled selection and calibration are retained even if the
+	// provider returned no usage. Earlier selections live on provider attempts.
+	ContextProjection *ReceiptContextProjection `json:"context_projection,omitempty"`
+	ContextSample     *SampleContextData        `json:"context_sample,omitempty"`
+	ContextRecovery   *ReceiptContextRecovery   `json:"context_recovery,omitempty"`
 
 	// Evidence reports what lookups established and which changes are still
 	// unproved. It is observed like Changes: nothing here comes from the model
@@ -409,7 +415,7 @@ func (d *ExecutionReceiptData) validate() error {
 		return errors.New("receipt turn intent is invalid")
 	}
 	switch d.Outcome {
-	case "", TurnOutcomeAnswered, TurnOutcomePlanned, TurnOutcomeChanged, TurnOutcomeOperated:
+	case "", TurnOutcomeAnswered, TurnOutcomePlanned, TurnOutcomeChanged, TurnOutcomeUnchanged, TurnOutcomeOperated:
 	default:
 		return errors.New("receipt turn outcome is invalid")
 	}

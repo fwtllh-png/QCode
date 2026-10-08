@@ -160,15 +160,15 @@ func (e *Engine) foldWorkingSetForThroughput(
 	if err != nil {
 		return 0, false, err
 	}
-	if !e.foldOldestVisibleTail(*history, true) {
-		return 0, false, nil
-	}
-	after := e.projectGateHistory(*history, projectHistory)
-	afterWindow, err := e.measureTokenWindow(
-		input.WithHistory(after), outputReserve, 0,
+	after, afterWindow, folded, err := e.foldForNetReduction(
+		*history, input, outputReserve, 0, agentcontext.OmittedThroughput,
+		projectHistory, before, beforeWindow,
 	)
 	if err != nil {
 		return 0, false, err
+	}
+	if !folded {
+		return 0, false, nil
 	}
 	receipt := viewFoldReceipt(
 		phase, before, after, beforeWindow, afterWindow,

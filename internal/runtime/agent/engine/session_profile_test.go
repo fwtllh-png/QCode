@@ -239,6 +239,15 @@ func TestSessionProfileModelChangeRotatesTokenWindowAndPreparedCompaction(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
+	source := agentcontext.IndexConversationAnswer("thread", "report", 1, "1. 切换模型前绑定的定义")
+	conversation := &agentcontext.ConversationState{}
+	if err := conversation.Add(source); err != nil {
+		t.Fatal(err)
+	}
+	if err := conversation.Select(agentcontext.NewConversationSelection(nil, []string{source.Items[0].ID}, 1, "report", "继续第一项"), nil); err != nil {
+		t.Fatal(err)
+	}
+	engine.context.SetConversation(conversation)
 	before := engine.context.Window()
 	observed := protocol.SampleContextData{
 		ContextDigest:   "sha256:old-model",
@@ -267,6 +276,10 @@ func TestSessionProfileModelChangeRotatesTokenWindowAndPreparedCompaction(t *tes
 	}
 	if err := engine.ApplySessionProfile(profile); err != nil {
 		t.Fatal(err)
+	}
+	retained := engine.context.Conversation()
+	if retained.Sources[source.ID].ContentDigest != source.ContentDigest || retained.Selection.ItemIDs[0] != source.Items[0].ID || retained.Sources[source.ID].Text != source.Text {
+		t.Fatal("model switch changed source identity, selection or definition")
 	}
 	after := engine.context.Window()
 	if after.ID == before.ID ||

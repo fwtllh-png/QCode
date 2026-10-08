@@ -21,13 +21,16 @@ import (
 )
 
 type Options struct {
-	Command              string
-	Path                 string
-	Args                 []string
-	Dir                  string
-	DirFile              *os.File
-	PTY                  bool
-	Env                  []string
+	Command string
+	Path    string
+	Args    []string
+	Dir     string
+	DirFile *os.File
+	PTY     bool
+	Env     []string
+	// Environment supplies a prepared policy snapshot to trusted brokers that
+	// run under their own lease. It is not a model-supplied environment layer.
+	Environment          *Environment
 	Stdin                io.Reader
 	Sandbox              sandbox.Backend
 	RequireSandbox       bool
@@ -173,23 +176,22 @@ func NewCommand(ctx context.Context, options Options) (*exec.Cmd, error) {
 			return nil, err
 		}
 	}
-	if err := ValidateDeclaredEnvironment(options.Env); err != nil {
+	boundEnvironment, err := options.BoundEnvironment()
+	if err != nil {
 		return nil, err
 	}
 	policy, hasPolicy := sandbox.BackendPolicy(options.Sandbox)
 	var environment []string
 	if hasPolicy {
-		if err := envpolicy.ValidatePreparedEnvironment(policy.EnvironmentValues); err != nil {
+		prepared, err := EnvironmentFromPolicy(policy)
+		if err != nil {
 			return nil, err
 		}
-		if err := envpolicy.ValidatePreparedEnvironment(policy.Toolchains.Environment); err != nil {
-			return nil, err
-		}
-		environment, err = envpolicy.Merge(policy.Toolchains.Environment, policy.EnvironmentValues, options.Env)
+		environment, err = envpolicy.Merge(prepared.values, options.Env)
 	} else if options.TrustedRuntimeHelper {
 		environment, err = SanitizedEnvironment(options.Env)
 	} else {
-		environment, err = envpolicy.Merge(options.Env)
+		environment, err = envpolicy.Merge(boundEnvironment)
 	}
 	if err != nil {
 		return nil, err
@@ -197,18 +199,7 @@ func NewCommand(ctx context.Context, options Options) (*exec.Cmd, error) {
 	if options.TrustedRuntimeHelper {
 		environment = append(environment, tracecontext.Environment(ctx)...)
 	}
-	if hasPolicy {
-		if policy.PrivateTemp != "" {
-			if policy.EnvironmentProfile == "isolated" {
-				environment = setEnvironmentValue(environment, "HOME", policy.PrivateTemp)
-			}
-			if !policy.SharedUserTemp {
-				environment = setEnvironmentValue(environment, "TMPDIR", policy.PrivateTemp)
-				environment = setEnvironmentValue(environment, "TMP", policy.PrivateTemp)
-				environment = setEnvironmentValue(environment, "TEMP", policy.PrivateTemp)
-			}
-		}
-	} else {
+	if !hasPolicy {
 		environment = ensurePlatformToolchainPATH(environment)
 		environment = ensureGitToolchain(environment)
 	}

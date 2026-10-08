@@ -7,20 +7,17 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
-	"fmt"
 	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
 	filetool "github.com/fwtllh-png/QCode/internal/adapter/tool/file"
 	"github.com/fwtllh-png/QCode/internal/orchestration/workspacemerge"
 	"github.com/fwtllh-png/QCode/internal/persist/workspacejournal"
-	"github.com/fwtllh-png/QCode/internal/platform/process"
 	securitypaths "github.com/fwtllh-png/QCode/internal/security/pathpolicy"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
 )
@@ -33,22 +30,28 @@ type Isolator = tool.Isolator
 // parent and never copies isolate files over user concurrent edits.
 type Workspace = tool.IsolatedWorkspace
 
+type WorkspaceBroker interface {
+	workspacemerge.WorkspaceBroker
+	InitContentBaseline(context.Context, string) error
+}
+
 type Options struct {
-	Repository string
-	Scratch    string
-	Parent     *filetool.Tools
-	Journal    *workspacejournal.Manager
-	Gate       workspacemerge.WorkspaceGate
-	Brokers    workspacemerge.WorkspaceBroker
-	AllowApply bool
-	NewBackend func(sandbox.Options) (sandbox.Backend, error)
+	Repository        string
+	Scratch           string
+	Parent            *filetool.Tools
+	Journal           *workspacejournal.Manager
+	Gate              workspacemerge.WorkspaceGate
+	Brokers           WorkspaceBroker
+	AllowApply        bool
+	NewBackend        func(sandbox.Options) (sandbox.Backend, error)
+	MaxMergeDiffBytes int
 }
 
 type Service struct {
 	repository string
 	scratch    string
 	merger     *workspacemerge.Service
-	brokers    workspacemerge.WorkspaceBroker
+	brokers    WorkspaceBroker
 	newBackend func(sandbox.Options) (sandbox.Backend, error)
 
 	mu   sync.Mutex
@@ -56,12 +59,10 @@ type Service struct {
 }
 
 type session struct {
-	service  *Service
-	id       string
-	root     string
-	trees    []string
-	git      bool
-	worktree bool
+	service *Service
+	id      string
+	root    string
+	trees   []string
 	// shadow marks a discard-only session: Settle reports the planned
 	// changes and never applies them to the parent.
 	shadow  bool
@@ -81,6 +82,7 @@ func New(options Options) *Service {
 	merger := workspacemerge.New(
 		repository, options.Scratch, options.Parent, options.Journal,
 		options.Gate, options.Brokers, options.AllowApply,
+		workspacemerge.Options{IncludeIgnored: true, MaxDiffBytes: options.MaxMergeDiffBytes},
 	)
 	if merger == nil {
 		return nil
@@ -128,11 +130,12 @@ func (s *Service) begin(
 	}
 	prefixes := normalizeTrees(trees)
 	current := &session{service: s, id: id, root: root, trees: prefixes, shadow: shadow}
-	if err := s.provisionGit(ctx, current); err != nil {
-		if err := s.provisionContent(ctx, current); err != nil {
-			_ = os.RemoveAll(root)
-			return nil, err
-		}
+	// Commands need the current filesystem, including ignored dependencies
+	// and empty cache directories. A private baseline also keeps these files
+	// out of the parent repository's Git object store.
+	if err := s.provisionContent(ctx, current); err != nil {
+		_ = os.RemoveAll(root)
+		return nil, err
 	}
 	canonical, err := filepath.EvalSymlinks(current.root)
 	if err != nil {
@@ -171,7 +174,7 @@ func (s *session) PrepareBackend(
 	backend, err := s.service.newBackend(sandbox.Options{
 		WorkspaceRoot:          s.root,
 		PrivateTemp:            policy.PrivateTemp,
-		HostReadRoots:          isolateHostReadRoots(s, policy.HostReadRoots),
+		HostReadRoots:          append([]string(nil), policy.HostReadRoots...),
 		HostReadFiles:          append([]string(nil), policy.HostReadFiles...),
 		HostWriteRoots:         append([]string(nil), policy.HostWriteRoots...),
 		ManagedProxyPort:       policy.ManagedProxyPort,
@@ -240,62 +243,20 @@ func (s *session) Close() error {
 		backendErr = sandbox.CloseBackend(s.backend)
 		s.backend = nil
 	}
-	if s.worktree {
-		ctx, cancel := context.WithTimeout(context.Background(), gitCommandTimeout)
-		defer cancel()
-		if err := s.service.brokers.RemoveWorktree(
-			ctx, s.service.repository, s.root,
-		); err != nil {
-			_ = os.RemoveAll(s.root)
-			return errors.Join(backendErr, fmt.Errorf(
-				"remove isolated worktree %s: %w (scratch copy removed; "+
-					"stale worktree metadata may remain in the parent "+
-					"repository and can be cleaned with git worktree prune)",
-				s.root, err,
-			))
-		}
-		return backendErr
-	}
 	return errors.Join(backendErr, os.RemoveAll(s.root))
 }
 
-func (s *Service) provisionGit(ctx context.Context, current *session) error {
-	inside, err := s.brokers.ReadVCS(ctx, s.repository, "rev-parse", "--is-inside-work-tree")
-	if err != nil || strings.TrimSpace(inside) != "true" {
-		return errors.New("parent is not a git work tree")
-	}
-	revision, err := s.brokers.ReadVCS(ctx, s.repository, "rev-parse", "HEAD")
-	if err != nil {
-		return err
-	}
-	revision = strings.TrimSpace(revision)
-	if revision == "" {
-		return errors.New("parent git HEAD is missing")
-	}
-	if err := s.brokers.AddWorktree(ctx, s.repository, current.root, revision); err != nil {
-		return err
-	}
-	current.git = true
-	current.worktree = true
-	if err := s.merger.Snapshot(ctx, current.root); err != nil {
-		_ = s.brokers.RemoveWorktree(ctx, s.repository, current.root)
-		return err
-	}
-	return nil
-}
-
 func (s *Service) provisionContent(ctx context.Context, current *session) error {
-	if err := copyWorkspace(s.repository, current.root); err != nil {
+	if err := copyWorkspace(ctx, s.repository, current.root); err != nil {
 		return err
 	}
-	if err := initContentBaseline(ctx, current.root); err != nil {
+	if err := s.brokers.InitContentBaseline(ctx, current.root); err != nil {
 		return err
 	}
-	current.git = true
 	return nil
 }
 
-func copyWorkspace(source, target string) error {
+func copyWorkspace(ctx context.Context, source, target string) error {
 	if resolved, err := filepath.EvalSymlinks(source); err == nil {
 		source = resolved
 	}
@@ -304,6 +265,9 @@ func copyWorkspace(source, target string) error {
 		return err
 	}
 	return filepath.WalkDir(classifier.Workspace(), func(path string, entry fs.DirEntry, walkErr error) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if walkErr != nil {
 			return walkErr
 		}
@@ -351,11 +315,11 @@ func copyWorkspace(source, target string) error {
 		if err := os.MkdirAll(filepath.Dir(destination), 0o700); err != nil {
 			return err
 		}
-		return copyRegularFile(path, destination)
+		return copyRegularFile(ctx, path, destination)
 	})
 }
 
-func copyRegularFile(source, target string) error {
+func copyRegularFile(ctx context.Context, source, target string) error {
 	in, err := os.Open(source)
 	if err != nil {
 		return err
@@ -369,67 +333,23 @@ func copyRegularFile(source, target string) error {
 	if err != nil {
 		return err
 	}
-	if _, err := io.Copy(out, in); err != nil {
+	if _, err := io.Copy(out, cancelableReader{ctx: ctx, reader: in}); err != nil {
 		_ = out.Close()
 		return err
 	}
 	return out.Close()
 }
 
-func initContentBaseline(ctx context.Context, root string) error {
-	commands := [][]string{
-		{"init", "--quiet"},
-		{"add", "-A", "--", ".", ":(exclude).qcode"},
-		{
-			"-c", "user.name=QCode", "-c", "user.email=qcode@localhost",
-			"commit", "--quiet", "--allow-empty", "--no-gpg-sign",
-			"-m", "qcode exec baseline",
-		},
-	}
-	for _, arguments := range commands {
-		result, err := process.Run(ctx, process.Options{
-			Path: process.GitExecutable(),
-			Args: process.ManagedGitArguments(arguments),
-			Dir:  root,
-		})
-		if err != nil {
-			return err
-		}
-		if result.ExitCode != 0 {
-			return fmt.Errorf(
-				"initialize isolated baseline: %s",
-				strings.TrimSpace(result.Stderr),
-			)
-		}
-	}
-	return nil
+type cancelableReader struct {
+	ctx    context.Context
+	reader io.Reader
 }
 
-func isolateHostReadRoots(current *session, roots []string) []string {
-	hostRead := append([]string(nil), roots...)
-	if current == nil || !current.worktree || current.service == nil ||
-		current.service.brokers == nil {
-		return hostRead
+func (r cancelableReader) Read(p []byte) (int, error) {
+	if err := r.ctx.Err(); err != nil {
+		return 0, err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), gitCommandTimeout)
-	defer cancel()
-	common, err := current.service.brokers.ReadVCS(
-		ctx, current.service.repository, "rev-parse", "--git-common-dir",
-	)
-	if err != nil {
-		return hostRead
-	}
-	common = strings.TrimSpace(common)
-	if common == "" {
-		return hostRead
-	}
-	if !filepath.IsAbs(common) {
-		common = filepath.Join(current.service.repository, common)
-	}
-	if resolved, err := filepath.EvalSymlinks(common); err == nil {
-		common = resolved
-	}
-	return append(hostRead, common)
+	return r.reader.Read(p)
 }
 
 func isolateID(id string) string {
@@ -457,9 +377,3 @@ func normalizeTrees(trees []string) []string {
 	}
 	return result
 }
-
-// gitCommandTimeout bounds every git invocation the isolator runs (worktree
-// add/list/prune, baseline commits, settlement diffs). Two minutes covers a
-// large monorepo worktree checkout on a cold cache; beyond it the isolate
-// fails closed instead of hanging the turn. Public contract constant.
-const gitCommandTimeout = 2 * time.Minute

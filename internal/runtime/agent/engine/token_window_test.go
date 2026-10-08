@@ -126,7 +126,7 @@ func TestCompactionAndReplacementAdvanceTokenWindow(t *testing.T) {
 		messageWithText(provider.RoleAssistant, "old answer", 1),
 		messageWithText(provider.RoleUser, "current", 2),
 	}
-	if receipt := engine.CompactForced(); receipt == nil {
+	if receipt := engine.compactForcedForTest(); receipt == nil {
 		t.Fatal("forced compaction produced no receipt")
 	}
 	window := engine.context.Window()
@@ -271,7 +271,7 @@ func TestBodyScopeStillCompactsBeforeTheHardTotalWindow(t *testing.T) {
 		func(_ State, event Event) error {
 			receipt = event.Compaction
 			return nil
-		}, 0, engine.contextViewProject(nil),
+		}, 0, engine.projectSelectedHistoryForTest(nil),
 	)
 	if err != nil && protocol.CodeOf(err) != protocol.CodeResourceExhausted {
 		t.Fatalf("window=%+v receipt=%+v error=%v", window, receipt, err)

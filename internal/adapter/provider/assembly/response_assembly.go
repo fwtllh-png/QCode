@@ -448,6 +448,12 @@ func (a *ResponseAssembly) ExecutableToolCalls() ([]ToolCall, error) {
 				fragment.Index,
 			)
 		}
+		// Recheck persisted assemblies as well as live streams. encoding/json
+		// otherwise silently accepts the last value of a duplicated member.
+		var members jsonMemberTracker
+		if err := members.Append(arguments); err != nil {
+			return nil, fmt.Errorf("tool call fragment %d: %w", fragment.Index, err)
+		}
 		calls = append(calls, ToolCall{
 			ID: fragment.ID, Name: fragment.Name,
 			Arguments: arguments,

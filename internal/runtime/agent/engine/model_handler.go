@@ -43,6 +43,7 @@ func finishOnlyReasoningEffort(
 // accounting together. A visible-tail fold replaces this value as a whole.
 type preparedModelInput struct {
 	snapshot        agentcontext.MessageSnapshot
+	projection      agentcontext.ProjectionResult
 	measurement     agentcontext.Measurement
 	window          agentcontext.WindowProjection
 	maxOutputTokens uint64
@@ -184,7 +185,6 @@ func (e *Engine) modelStep(
 		e.recordTurnContextReceipts(turnReceipts)
 		route := e.activeRoute()
 		maxOutputTokens := e.maxOutputFor(route)
-		turnContext = append(turnContext, e.closedTurnCheckpointMessages()...)
 		budgetMessage, budgetFinishOnly := e.budgetConvergence(
 			turnUsage.Total() + totalUsage.Total(),
 		)
@@ -210,34 +210,149 @@ func (e *Engine) modelStep(
 		statelessProjector := contextview.NewStatelessProjector(
 			route.Model().Capabilities.IncrementalResponses,
 		)
-		projectHistory := e.contextViewProject(statelessProjector.Project)
+		admission := e.economicAdmission(
+			turnUsage, totalUsage, maxOutputTokens, maxOutputTokens, remainingCalls,
+		)
+		economicFinishOnly := false
+		if admission.Budgeted && admission.AllowedInput == 0 {
+			admission = e.economicAdmission(turnUsage, totalUsage, 0, 0, 1)
+			economicFinishOnly = true
+		}
+		var selection agentcontext.ProjectionResult
+		var selectionError error
+		// Once directory recovery is needed, keep that decision for this sample.
+		// Repeated compaction projections must not oscillate as schemas shrink.
+		recoveryOnly := false
+		fitsRequest := func(snapshot agentcontext.MessageSnapshot) (bool, error) {
+			normalized, _, err := snapshot.Normalize(route.Model().Capabilities)
+			if err != nil {
+				return false, err
+			}
+			measurement, err := normalized.MeasureDetailed(sampleReason, reasoningEffort, e.options.TokenEstimator)
+			if err != nil {
+				return false, err
+			}
+			window := e.prepareTokenWindow(&measurement.Data, maxOutputTokens)
+			return window.FullActiveTokens <= admission.AllowedInput &&
+				window.FullActiveTokens <= window.HardLimit-min(window.HardLimit, maxOutputTokens), nil
+		}
+		projectHistory := func(history []provider.Message) []provider.Message {
+			selectionError = nil
+			baseSelection := e.contextProjection(history)
+			original := statelessProjector.Project(baseSelection.Messages)
+			conversation := e.contextAuthority().Conversation()
+			plan := e.currentPlan()
+			render := func(directory bool) []provider.Message {
+				selection = baseSelection
+				selection.References = slices.Clone(baseSelection.References)
+				state := conversation
+				messages := slices.Clone(original)
+				if directory {
+					state = agentcontext.CloneConversation(conversation)
+					state.Selection = &agentcontext.ConversationSelection{}
+					messages = append(messages, promptcontext.ConversationCatalogHint(len(conversation.CandidateSources(plan)), e.sessionStateBudget()))
+				}
+				excerpts := contextview.SelectConversation(state, plan, messages)
+				for _, excerpt := range excerpts {
+					available, err := e.conversationSourceAvailable(ctx, excerpt.Source)
+					if err != nil {
+						selectionError = err
+					} else if !available {
+						selectionError = fmt.Errorf("conversation source %s is withdrawn or outside this session", excerpt.Source.ID)
+					}
+					selection.References = append(selection.References, excerpt.Coverage)
+				}
+				if references := promptcontext.ConversationReferences(excerpts); references != nil {
+					messages = append(messages, *references)
+				}
+				selection.Representations = contextview.ConversationOmissions(conversation, selection.References, directory)
+				selection.Seal()
+				hint, err := promptcontext.ContextSelectionHint(selection, e.sessionStateBudget())
+				if err != nil {
+					selectionError = err
+				}
+				if hint != nil {
+					messages = append(messages, *hint)
+				}
+				return messages
+			}
+			messages := render(recoveryOnly)
+			if !recoveryOnly && conversation != nil && conversation.Selection == nil && len(selection.References) != 0 {
+				candidate := contextLedger.Project(agentcontext.LedgerProjection{
+					Stable: stableContext, History: messages, Dynamic: turnContext,
+					Continuation: continuationMessages, Definitions: requestTools,
+				})
+				fits, err := fitsRequest(candidate)
+				if err != nil {
+					selectionError = err
+				} else if !fits {
+					recoveryOnly = true
+					requestTools = slices.DeleteFunc(slices.Clone(requestTools), func(definition provider.ToolDefinition) bool {
+						return !conversationRecoveryTool(definition.Name)
+					})
+					nativeSearch = false
+					messages = render(true)
+				}
+			}
+			return messages
+		}
 		project := func() agentcontext.MessageSnapshot {
-			return contextLedger.Project(agentcontext.LedgerProjection{
+			base := contextLedger.Project(agentcontext.LedgerProjection{
 				Stable: stableContext, History: projectHistory(*history), Dynamic: turnContext,
+				Continuation: continuationMessages, Definitions: requestTools,
+			})
+			e.checkpointMu.Lock()
+			checkpoints := agentcontext.CloneTurnCheckpoints(e.turnCheckpoints)
+			e.checkpointMu.Unlock()
+			selected, err := contextview.SelectCheckpoints(checkpoints, selection.References, e.options.Context.CheckpointMaxBytes, func(candidate []provider.Message) (bool, error) {
+				dynamic := append(slices.Clone(turnContext), candidate...)
+				return fitsRequest(base.WithDynamic(dynamic))
+			})
+			if err != nil {
+				selectionError = err
+				return base
+			}
+			dynamic := append(slices.Clone(turnContext), selected...)
+			summaryRoute, _ := e.SummaryRouteDigest()
+			narrative, observations, err := contextview.SelectNarrative(
+				e.contextAuthority().Compaction().Digest, e.options.Context.Digest == "ledger+narrative",
+				summaryRoute, e.currentWindowLedger().ID, *history, selection, time.Now().UTC(),
+				func(message provider.Message) (bool, error) {
+					return fitsRequest(base.WithDynamic(append(slices.Clone(dynamic), message)))
+				})
+			if err != nil {
+				selectionError = err
+				return base
+			}
+			selection.Representations = append(selection.Representations, observations...)
+			if narrative != nil {
+				dynamic = append(dynamic, *narrative)
+			}
+			return contextLedger.Project(agentcontext.LedgerProjection{
+				Stable: stableContext, History: base.Partition(agentcontext.KindHistory),
+				Dynamic:      dynamic,
 				Continuation: continuationMessages, Definitions: requestTools,
 			})
 		}
 		snapshot := project()
+		if selectionError != nil {
+			return nil, nil, totalUsage, lastEstimate, selectionError
+		}
 		phase := CompactionPhaseMidTurn
 		if turnUsage.InputTokens+totalUsage.InputTokens == 0 {
 			phase = CompactionPhasePreSampling
 		}
 		gateSend := deduplicateCompactionReceipts(send)
-		admission := e.economicAdmission(
-			turnUsage, totalUsage, maxOutputTokens, maxOutputTokens,
-			remainingCalls,
-		)
-		economicFinishOnly := false
-		if admission.Budgeted && admission.AllowedInput == 0 {
-			admission = e.economicAdmission(
-				turnUsage, totalUsage, 0, 0, 1,
-			)
-			economicFinishOnly = true
+		economicInput := func() uint64 {
+			if admission.Budgeted {
+				return admission.AllowedInput
+			}
+			return 0
 		}
 		window, err := e.runCompactGate(
 			ctx,
 			history, snapshot, maxOutputTokens, phase, true, gateSend,
-			admission.AllowedInput, projectHistory,
+			economicInput(), projectHistory,
 		)
 		if err != nil {
 			return nil, nil, totalUsage, window.estimated, err
@@ -255,7 +370,7 @@ func (e *Engine) modelStep(
 					ctx,
 					history, snapshot, maxOutputTokens,
 					phase, true, gateSend,
-					admission.AllowedInput, projectHistory,
+					economicInput(), projectHistory,
 				)
 				if err != nil {
 					return nil, nil, totalUsage, window.estimated, err
@@ -280,42 +395,77 @@ func (e *Engine) modelStep(
 			nativeSearch = false
 		}
 		prepareInput := func() (preparedModelInput, error) {
-			normalized, normalization, err := project().Normalize(route.Model().Capabilities)
-			if err != nil {
-				return preparedModelInput{}, fmt.Errorf("normalize context projection: %w", err)
+			var previousDigest string
+			var previousTokens uint64
+			for {
+				candidate := project()
+				if selectionError != nil {
+					return preparedModelInput{}, selectionError
+				}
+				normalized, normalization, err := candidate.Normalize(route.Model().Capabilities)
+				if err != nil {
+					return preparedModelInput{}, fmt.Errorf("normalize context projection: %w", err)
+				}
+				measurement, err := normalized.MeasureDetailed(
+					sampleReason, reasoningEffort, e.options.TokenEstimator,
+				)
+				if err != nil {
+					return preparedModelInput{}, err
+				}
+				attribution := &measurement.Data
+				attribution.WorldRevision = worldProjection.Baseline.Revision
+				attribution.WorldDigest = worldProjection.Baseline.Digest
+				attribution.WorldMode = string(worldProjection.Mode)
+				attribution.WorldChangedSections = len(worldProjection.Changed)
+				contextview.ApplyEconomicAttribution(attribution, admission)
+				attribution.PairingCalls = normalization.ToolCalls
+				attribution.PairingResults = normalization.ToolResults
+				attribution.PairingPairs = normalization.PairedCalls
+				attribution.PairingDroppedOrphans = normalization.DroppedOrphans
+				attribution.PairingVisibleOrphans = normalization.ModelVisibleOrphans
+				attribution.ProjectedImages = normalization.ProjectedImages
+				attribution.DroppedReasoning = normalization.DroppedReasoning
+				window := e.prepareTokenWindow(attribution, 0)
+				// Admission uses the complete normalized request, including schemas,
+				// dynamic/continuation partitions and the freshly rendered omissions.
+				// Every retry must reduce that cost, not just the raw tail estimate.
+				if previousDigest != "" && (attribution.ContextDigest == previousDigest ||
+					window.FullActiveTokens >= previousTokens) {
+					if admission.Budgeted && window.FullActiveTokens > admission.AllowedInput {
+						return preparedModelInput{}, contextview.EconomicBudgetError(admission, window.FullActiveTokens)
+					}
+					return preparedModelInput{}, compactionBudgetError(tokenWindow{
+						total: window.FullActiveTokens + maxOutputTokens, hardLimit: window.HardLimit,
+					})
+				}
+				if window.FullActiveTokens+maxOutputTokens > window.HardLimit ||
+					admission.Budgeted && window.FullActiveTokens > admission.AllowedInput {
+					previousDigest, previousTokens = attribution.ContextDigest, window.FullActiveTokens
+					if _, err := e.runCompactGate(ctx, history, normalized, maxOutputTokens,
+						phase, true, gateSend, economicInput(), projectHistory); err != nil {
+						return preparedModelInput{}, err
+					}
+					continue
+				}
+				attribution.EconomicRequestedTokens = window.FullActiveTokens
+				outputReserve, err := e.checkBudget(
+					window.FullActiveTokens, turnUsage, totalUsage, maxOutputTokens,
+				)
+				if err != nil {
+					return preparedModelInput{}, err
+				}
+				window = e.prepareTokenWindow(attribution, outputReserve)
+				selection.SourceWindowID, selection.SourceWindowNumber = window.ID, window.Number
+				selection.RouteDigest, _ = contextview.PrefixRequestIdentity(route, outputReserve, reasoningEffort, nativeSearch)
+				selection.ContextRevision, selection.ContextDigest = attribution.ContextRevision, attribution.ContextDigest
+				selection.InputTokens, selection.OutputReserve = window.FullActiveTokens, outputReserve
+				selection.Seal()
+				attribution.ContextProjectionDigest = selection.Digest
+				return preparedModelInput{
+					snapshot: normalized, projection: selection, measurement: measurement,
+					window: window, maxOutputTokens: outputReserve,
+				}, nil
 			}
-			measurement, err := normalized.MeasureDetailed(
-				sampleReason, reasoningEffort, e.options.TokenEstimator,
-			)
-			if err != nil {
-				return preparedModelInput{}, err
-			}
-			attribution := &measurement.Data
-			attribution.WorldRevision = worldProjection.Baseline.Revision
-			attribution.WorldDigest = worldProjection.Baseline.Digest
-			attribution.WorldMode = string(worldProjection.Mode)
-			attribution.WorldChangedSections = len(worldProjection.Changed)
-			contextview.ApplyEconomicAttribution(attribution, admission)
-			attribution.PairingCalls = normalization.ToolCalls
-			attribution.PairingResults = normalization.ToolResults
-			attribution.PairingPairs = normalization.PairedCalls
-			attribution.PairingDroppedOrphans = normalization.DroppedOrphans
-			attribution.PairingVisibleOrphans = normalization.ModelVisibleOrphans
-			attribution.ProjectedImages = normalization.ProjectedImages
-			attribution.DroppedReasoning = normalization.DroppedReasoning
-			window := e.prepareTokenWindow(attribution, 0)
-			attribution.EconomicRequestedTokens = window.FullActiveTokens
-			outputReserve, err := e.checkBudget(
-				window.FullActiveTokens, turnUsage, totalUsage, maxOutputTokens,
-			)
-			if err != nil {
-				return preparedModelInput{}, err
-			}
-			window = e.prepareTokenWindow(attribution, outputReserve)
-			return preparedModelInput{
-				snapshot: normalized, measurement: measurement,
-				window: window, maxOutputTokens: outputReserve,
-			}, nil
 		}
 		prepared, err := prepareInput()
 		if err != nil {
@@ -394,12 +544,20 @@ func (e *Engine) modelStep(
 			)
 			contextview.ApplyPrefixAttribution(&attribution, previousPrefix, prefixManifest)
 			windowProjection = e.prepareTokenWindow(&attribution, maxOutputTokens)
+			prepared.projection.OutputReserve = maxOutputTokens
+			prepared.projection.Seal()
+			attribution.ContextProjectionDigest = prepared.projection.Digest
 		}
 		e.recordSampledTools(scope, catalog, requestTools)
+		scope.mu.Lock()
+		scope.state.referenceRecoveryOnly = recoveryOnly
+		scope.mu.Unlock()
 		e.recordToolSurfaceBudget(scope, attribution, admission)
 		providerAttempt++
 		attemptStarted := time.Now()
 		if err := send(CallingModel, Event{
+			ContextProjection: contextProjectionReceipt(prepared.projection, recoveryOnly),
+			InputContext:      &attribution,
 			ModelExecution: &ModelExecution{
 				Kind: "provider_attempt", SampleID: sampleID,
 				Attempt: providerAttempt, Status: protocol.ProviderAttemptStarted,
@@ -676,6 +834,7 @@ func (e *Engine) modelStep(
 			snapshot,
 			maxOutputTokens,
 			send,
+			projectHistory,
 		)
 		if recoveryErr != nil {
 			sampleLease.Release()

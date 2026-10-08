@@ -46,7 +46,7 @@ func TestLookupTurnHistoryFallsBackToArchive(t *testing.T) {
 		messageWithText(provider.RoleUser, "current request", 8),
 	}
 
-	messages, err := engine.lookupTurnHistory(t.Context(), 7)
+	messages, _, err := engine.lookupTurnHistoryData(t.Context(), 7)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,7 +58,7 @@ func TestLookupTurnHistoryFallsBackToArchive(t *testing.T) {
 	}
 
 	// In-memory hits never consult the archive.
-	messages, err = engine.lookupTurnHistory(t.Context(), 8)
+	messages, _, err = engine.lookupTurnHistoryData(t.Context(), 8)
 	if err != nil || len(messages) != 1 {
 		t.Fatalf("current lookup = %+v err=%v", messages, err)
 	}
@@ -67,7 +67,7 @@ func TestLookupTurnHistoryFallsBackToArchive(t *testing.T) {
 	}
 
 	// Unknown turn numbers stay honest misses instead of probing storage.
-	if messages, err = engine.lookupTurnHistory(t.Context(), 9); err != nil ||
+	if messages, _, err = engine.lookupTurnHistoryData(t.Context(), 9); err != nil ||
 		len(messages) != 0 {
 		t.Fatalf("unknown lookup = %+v err=%v", messages, err)
 	}

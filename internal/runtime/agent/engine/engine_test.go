@@ -2360,7 +2360,7 @@ func TestEngineCompactionMergesTruthCapsulesAcrossGenerations(t *testing.T) {
 		messageWithText(provider.RoleAssistant, strings.Repeat("later ", 400), 2),
 		messageWithText(provider.RoleUser, "third request", 3),
 	)
-	if receipt := engine.CompactForced(); receipt == nil {
+	if receipt := engine.compactForcedForTest(); receipt == nil {
 		t.Fatal("expected a second compaction")
 	}
 	second := engine.history[0].Text()
@@ -2402,7 +2402,7 @@ func TestEngineCompactStripsConstitutionAndStaticContextReinjects(t *testing.T) 
 		messageWithText(provider.RoleAssistant, strings.Repeat("ans ", 80), 1),
 		messageWithText(provider.RoleUser, "keep", 2),
 	}
-	receipt := engine.CompactForced()
+	receipt := engine.compactForcedForTest()
 	if receipt == nil {
 		t.Fatal("expected forced compact")
 	}
@@ -2440,8 +2440,8 @@ func TestEngineCompactForcedRejectsAReplacementThatWouldGrowHistory(t *testing.T
 		t.Fatalf("auto Compact under budget = %+v", receipt)
 	}
 	before := engine.History()
-	if receipt := engine.CompactForced(); receipt != nil {
-		t.Fatalf("CompactForced receipt = %+v, want no-growth rejection", receipt)
+	if receipt := engine.compactForcedForTest(); receipt != nil {
+		t.Fatalf("forced compaction receipt = %+v, want no-growth rejection", receipt)
 	}
 	if !reflect.DeepEqual(engine.History(), before) {
 		t.Fatalf("rejected compaction changed history: %+v", engine.History())
@@ -2464,7 +2464,7 @@ func TestStructuredCompactionFailureLeavesOriginalHistoryIntact(t *testing.T) {
 		messageWithText(provider.RoleUser, "current", 2),
 	}
 	before := engine.History()
-	if receipt := engine.CompactForced(); receipt != nil {
+	if receipt := engine.compactForcedForTest(); receipt != nil {
 		t.Fatalf("malformed truth produced receipt: %+v", receipt)
 	}
 	if !reflect.DeepEqual(engine.History(), before) {
@@ -2532,7 +2532,7 @@ func TestMidTurnCompactionCutsClosedToolPairsWithinActiveTurn(t *testing.T) {
 		func(_ State, event Event) error {
 			receipt = event.Compaction
 			return nil
-		}, 0, engine.contextViewProject(nil),
+		}, 0, engine.projectSelectedHistoryForTest(nil),
 	)
 	if err != nil {
 		t.Fatalf("progressing turn failed: %v", err)
@@ -2567,7 +2567,7 @@ func TestMidTurnCompactionFailsClosedWhenNoSafeCandidateFits(t *testing.T) {
 	snapshot := agentcontext.NewMessageLedger(agentcontext.LedgerInput{}).Snapshot()
 	window, err := engine.runCompactGate(
 		t.Context(), &history, snapshot, 128, CompactionPhaseMidTurn, true,
-		func(State, Event) error { return nil }, 0, engine.contextViewProject(nil),
+		func(State, Event) error { return nil }, 0, engine.projectSelectedHistoryForTest(nil),
 	)
 	if protocol.CodeOf(err) != protocol.CodeResourceExhausted ||
 		window.hardLimit == 0 || window.total <= window.hardLimit {
@@ -3296,6 +3296,7 @@ func newEngine(t *testing.T, runtime provider.Provider, registry *tool.Registry)
 	t.Helper()
 	engine, err := newTestEngine(Options{ProviderConfig: ProviderConfig{Provider: runtime, Route: testRoute(t), MaxOutputTokens: 128}, ToolConfig: ToolConfig{Tools: registry,
 		Authorize: func(provider.ToolCall) bool { return true }},
+		ContextConfig: ContextConfig{Context: ContextPolicy{RecentTailTurns: agentcontext.DefaultRecentTailTurns}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -3898,7 +3899,7 @@ func TestMidTurnSurfacePruneSavesOverpressureTurn(t *testing.T) {
 				receipts = append(receipts, event.Compaction)
 			}
 			return nil
-		}, 0, engine.contextViewProject(nil),
+		}, 0, engine.projectSelectedHistoryForTest(nil),
 	)
 	if err != nil {
 		t.Fatalf("over-pressure turn failed instead of degrading: %v", err)

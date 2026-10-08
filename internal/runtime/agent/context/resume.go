@@ -7,22 +7,6 @@ import (
 
 const ResumeSource = "runtime.resume"
 
-func ReadPathsFromWorkingSet(entries []WorkingSetEntry) []string {
-	var paths []string
-	for _, entry := range entries {
-		path := strings.TrimSpace(entry.Path)
-		if path == "" || !workingSetHasSource(entry, SourceRead) {
-			continue
-		}
-		paths = append(paths, path)
-	}
-	return paths
-}
-
-func FormatResumeHint(plan Plan, readPaths []string, locatedSites ...[]string) string {
-	return FormatResumeHintBudgeted(plan, readPaths, 0, resumeSites(locatedSites))
-}
-
 // FormatResumeHintBudgeted lists every already-read path that fits the existing
 // session-state or checkpoint byte budget. Paths beyond that budget stay in the
 // working-set ledger; the hint records how many were omitted. budget <= 0 keeps
@@ -85,10 +69,6 @@ func formatResumeHint(
 	return strings.Join(parts, " ")
 }
 
-func ResumeRetrievalEntity(plan Plan, readPaths []string, locatedSites ...[]string) (TruthEntity, bool) {
-	return ResumeRetrievalEntityBudgeted(plan, readPaths, 0, resumeSites(locatedSites))
-}
-
 func ResumeRetrievalEntityBudgeted(
 	plan Plan, readPaths []string, budget int, locatedSites []string,
 ) (TruthEntity, bool) {
@@ -101,13 +81,6 @@ func ResumeRetrievalEntityBudgeted(
 	return entity, true
 }
 
-func resumeSites(locatedSites [][]string) []string {
-	if len(locatedSites) == 0 {
-		return nil
-	}
-	return locatedSites[0]
-}
-
 func SessionStateResumeHint(capsule TruthCapsule) string {
 	for _, entity := range capsule.Entities {
 		if entity.Kind == EntityFact && entity.Source == ResumeSource {
@@ -115,15 +88,6 @@ func SessionStateResumeHint(capsule TruthCapsule) string {
 		}
 	}
 	return ""
-}
-
-func workingSetHasSource(entry WorkingSetEntry, source WorkingSetSource) bool {
-	for _, value := range entry.Sources {
-		if value == source {
-			return true
-		}
-	}
-	return false
 }
 
 func FirstOutstandingPlanTitle(plan Plan) string {

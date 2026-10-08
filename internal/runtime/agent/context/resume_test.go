@@ -6,12 +6,12 @@ import (
 )
 
 func TestFormatResumeHintEmptyWithoutCompletedWorkOrReads(t *testing.T) {
-	if got := FormatResumeHint(Plan{Steps: []PlanStep{{
+	if got := FormatResumeHintBudgeted(Plan{Steps: []PlanStep{{
 		Title: "still exploring", Status: StepInProgress,
-	}}}, nil); got != "" {
+	}}}, nil, 0, nil); got != "" {
 		t.Fatalf("hint = %q", got)
 	}
-	entity, ok := ResumeRetrievalEntity(Plan{}, nil)
+	entity, ok := ResumeRetrievalEntityBudgeted(Plan{}, nil, 0, nil)
 	if ok || entity.Value != "" {
 		t.Fatalf("entity = %+v ok=%v", entity, ok)
 	}
@@ -22,7 +22,7 @@ func TestResumeHintIsMandatoryAndDoesNotInventLists(t *testing.T) {
 		{Title: "audit multi_paxos_node.h", Status: StepDone},
 		{Title: "fix overflow in accept()", Status: StepPending},
 	}}
-	hint := FormatResumeHint(plan, []string{"multi_paxos_node.h", "snapshot_store.h"})
+	hint := FormatResumeHintBudgeted(plan, []string{"multi_paxos_node.h", "snapshot_store.h"}, 0, nil)
 	if hint == "" ||
 		!strings.Contains(hint, "Do not repeat completed plan steps") ||
 		!strings.Contains(hint, "Next open work: fix overflow in accept().") ||
@@ -37,7 +37,7 @@ func TestResumeHintIsMandatoryAndDoesNotInventLists(t *testing.T) {
 		strings.Contains(hint, "P2:") {
 		t.Fatalf("hint = %q", hint)
 	}
-	entity, ok := ResumeRetrievalEntity(plan, []string{"multi_paxos_node.h"})
+	entity, ok := ResumeRetrievalEntityBudgeted(plan, []string{"multi_paxos_node.h"}, 0, nil)
 	if !ok || entity.Retention != RetentionMandatory ||
 		entity.Source != ResumeSource ||
 		entity.Kind != EntityFact ||
@@ -68,9 +68,10 @@ func TestFormatResumeHintIncludesLocatedSites(t *testing.T) {
 		{Title: "audit", Status: StepDone},
 		{Title: "fix overflow in accept()", Status: StepPending},
 	}}
-	hint := FormatResumeHint(
+	hint := FormatResumeHintBudgeted(
 		plan,
 		[]string{"paxos_core.cpp"},
+		0,
 		[]string{"paxos_core.cpp:412", "types.h:88"},
 	)
 	if !strings.Contains(hint, "Located sites: paxos_core.cpp:412, types.h:88.") ||
@@ -78,9 +79,10 @@ func TestFormatResumeHintIncludesLocatedSites(t *testing.T) {
 		!strings.Contains(hint, "Next open work: fix overflow in accept().") {
 		t.Fatalf("hint = %q", hint)
 	}
-	entity, ok := ResumeRetrievalEntity(
+	entity, ok := ResumeRetrievalEntityBudgeted(
 		plan,
 		nil,
+		0,
 		[]string{"paxos_core.cpp:412"},
 	)
 	if !ok || !strings.Contains(entity.Value, "Located sites: paxos_core.cpp:412.") {
@@ -97,7 +99,7 @@ func TestFormatResumeHintBudgetOmitsOverflowingPaths(t *testing.T) {
 	for index := 0; index < 20; index++ {
 		paths = append(paths, "internal/pkg/already_read_"+string(rune('a'+index))+".go")
 	}
-	full := FormatResumeHint(plan, paths)
+	full := FormatResumeHintBudgeted(plan, paths, 0, nil)
 	budget := len(full) - 1
 	if budget < 200 {
 		t.Fatalf("full hint too small to exercise budget: %d", len(full))
@@ -114,17 +116,5 @@ func TestFormatResumeHintBudgetOmitsOverflowingPaths(t *testing.T) {
 	entity, ok := ResumeRetrievalEntityBudgeted(plan, paths, budget, nil)
 	if !ok || entity.Value != hint || entity.Retention != RetentionMandatory {
 		t.Fatalf("entity = %+v ok=%v", entity, ok)
-	}
-}
-
-func TestReadPathsFromWorkingSetKeepsReadSourcesOnly(t *testing.T) {
-	paths := ReadPathsFromWorkingSet([]WorkingSetEntry{
-		{Path: "edited.go", Sources: []WorkingSetSource{SourceEdited}},
-		{Path: "read.go", Sources: []WorkingSetSource{SourceRead}},
-		{Path: "both.go", Sources: []WorkingSetSource{SourceEdited, SourceRead}},
-		{Path: "  ", Sources: []WorkingSetSource{SourceRead}},
-	})
-	if len(paths) != 2 || paths[0] != "read.go" || paths[1] != "both.go" {
-		t.Fatalf("paths = %v", paths)
 	}
 }

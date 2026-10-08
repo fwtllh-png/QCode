@@ -44,18 +44,12 @@ func normalizeEngineOptions(options *Options) error {
 	default:
 		return errors.New("context view digest is invalid")
 	}
-	if options.Context.Digest == "ledger+narrative" &&
-		options.Context.SemanticNarrative != "post_turn" {
-		return errors.New("ledger+narrative digest requires post_turn narrative")
-	}
-	if options.Context.RecentTailTurns <= 0 {
-		options.Context.RecentTailTurns = agentcontext.DefaultRecentTailTurns
+	if options.Context.RecentTailTurns < 0 {
+		return errors.New("recent tail turns cannot be negative")
 	}
 	if options.Context.CheckpointMaxBytes < 0 {
 		return errors.New("checkpoint max bytes cannot be negative")
 	}
-	options.Context.NarrativeLimits =
-		options.Context.NarrativeLimits.Normalized()
 	if options.Context.NarrativeTimeout < 0 {
 		return errors.New("semantic narrative timeout cannot be negative")
 	}

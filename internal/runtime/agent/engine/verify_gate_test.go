@@ -560,7 +560,7 @@ func TestSoftWorkspaceVerificationReportsWithoutForcingExtraCommands(t *testing.
 	}
 }
 
-func TestVerifyGateHardFailureFailsTurnAndRollsBack(t *testing.T) {
+func TestVerifyGateHardFailureBlocksAndRetainsDraft(t *testing.T) {
 	verifier := &scriptedVerifier{receipts: []verify.Receipt{failedReceipt("broken")}}
 	fixture := newVerifyGateFixture(t, VerifyOptions{
 		Mode: VerifyModeHard, OnFailure: VerifyOnFailureFail, Scope: verify.ScopeDiagnostics,
@@ -579,13 +579,12 @@ func TestVerifyGateHardFailureFailsTurnAndRollsBack(t *testing.T) {
 		t.Fatalf("result state = %q", result.State)
 	}
 	if result.Verification == nil || result.Verification.Workspace == nil ||
-		result.Verification.Workspace.Status != "restored" ||
-		len(result.Verification.Workspace.Restored) != 1 {
+		result.Verification.Workspace.Status != "draft" {
 		t.Fatalf("verification receipt = %+v", result.Verification)
 	}
 	assertOneTerminal(t, states, Failed)
-	if fixture.contents(t) != "before\n" {
-		t.Fatalf("workspace = %q, want the failed turn rolled back", fixture.contents(t))
+	if fixture.contents(t) != "after\n" {
+		t.Fatalf("workspace = %q, want the blocked draft retained", fixture.contents(t))
 	}
 }
 
@@ -711,11 +710,115 @@ func TestVerifyGateSkipsTurnsWithoutFileChanges(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.State != Completed || result.Verification != nil {
+	if result.State != Completed || result.Verification == nil || result.Verification.Status != verify.StatusNotRequired {
 		t.Fatalf("result = %+v verification = %+v", result, result.Verification)
 	}
 	if len(verifier.requests) != 0 {
 		t.Fatalf("verifier ran %d times for a read-only turn", len(verifier.requests))
+	}
+}
+
+func TestVerifyGateSettlesCreatedThenDeletedFiles(t *testing.T) {
+	for _, mode := range []string{VerifyModeSoft, VerifyModeHard} {
+		for _, restoredContent := range []bool{false, true} {
+			for _, retainedEdit := range []bool{false, true} {
+				name := mode + "/no_remaining_changes"
+				if retainedEdit {
+					name = mode + "/remaining_edit"
+				}
+				if restoredContent {
+					name += "/restore_content"
+				} else {
+					name += "/create_delete"
+				}
+				t.Run(name, func(t *testing.T) {
+					verifier := &scriptedVerifier{receipts: []verify.Receipt{failedReceipt("remaining edit is broken")}}
+					fixture := newVerifyGateFixture(t, VerifyOptions{
+						Mode: mode, Scope: verify.ScopeDiagnostics, OnFailure: VerifyOnFailureFail,
+					}, verifier, 0, 8)
+					call := func(id, toolName, arguments string) provider.Stream {
+						return &providerfixture.SliceStream{Events: []provider.StreamEvent{
+							{Type: provider.EventToolCallDelta, ToolCall: &provider.ToolCallFragment{
+								ID: id, Name: toolName, Arguments: arguments,
+							}},
+							{Type: provider.EventMessageStop},
+						}}
+					}
+					streams := []provider.Stream{
+						call("create", "file_write", `{"path":"temporary.txt","content":"temporary\n"}`),
+						call("read-temporary", "file_read", `{"path":"temporary.txt"}`),
+						call("delete", "file_apply", `{"changes":[{"op":"delete","path":"temporary.txt"}]}`),
+					}
+					if restoredContent {
+						streams = []provider.Stream{
+							call("read-before", "file_read", `{"path":"value.txt"}`),
+							call("edit-content", "file_edit", `{"path":"value.txt","old":"before","new":"intermediate"}`),
+							call("read-intermediate", "file_read", `{"path":"value.txt"}`),
+							call("restore-content", "file_edit", `{"path":"value.txt","old":"intermediate","new":"before"}`),
+						}
+					}
+					if retainedEdit {
+						streams = append(streams, fixture.provider.streams[:2]...)
+					}
+					fixture.provider.streams = append(streams, &providerfixture.SliceStream{Events: []provider.StreamEvent{
+						{Type: provider.EventTextDelta, Text: "analysis complete"},
+						{Type: provider.EventMessageStop},
+					}})
+					var verifications []*VerificationReceipt
+					result, err := fixture.engine.RunForTurn(t.Context(), "net-zero-turn", "analyze", func(event Event) error {
+						if event.State == Verifying && event.Verification != nil {
+							verifications = append(verifications, event.Verification)
+						}
+						return nil
+					})
+					if retainedEdit {
+						if (err != nil) != (mode == VerifyModeHard) {
+							t.Fatalf("remaining edit: state=%s error=%v", result.State, err)
+						}
+						if len(verifier.requests) != 1 || len(verifier.requests[0].Paths) != 1 ||
+							!strings.HasSuffix(verifier.requests[0].Paths[0], "value.txt") {
+							t.Fatalf("remaining edit verification = %+v", verifier.requests)
+						}
+						if result.Verification == nil || result.Verification.Status != verify.StatusFailed {
+							t.Fatalf("remaining edit receipt = %+v", result.Verification)
+						}
+						return
+					}
+					if err != nil || result.State != Completed || result.Text != "analysis complete" {
+						t.Fatalf("net-zero result = %+v, error = %v", result, err)
+					}
+					if len(verifier.requests) != 0 || len(fixture.engine.TurnDiff()) != 0 {
+						t.Fatalf("net-zero verification requests = %+v, diff = %+v", verifier.requests, fixture.engine.TurnDiff())
+					}
+					if len(verifications) != 1 || result.Verification == nil {
+						t.Fatalf("verification events = %+v, receipt = %+v", verifications, result.Verification)
+					}
+					receipt := result.Verification
+					if receipt.Action != "not_required" || receipt.Status != verify.StatusNotRequired ||
+						len(receipt.Checks) != 0 || len(receipt.Paths) != 0 || receipt.Message == "" ||
+						receipt.Workspace == nil || receipt.Workspace.Status != "unchanged" {
+						t.Fatalf("net-zero receipt = %+v", receipt)
+					}
+					if _, err := os.Stat(filepath.Join(filepath.Dir(fixture.path), "temporary.txt")); !errors.Is(err, os.ErrNotExist) {
+						t.Fatalf("temporary file remains: %v", err)
+					}
+					handle, err := fixture.engine.options.TurnCoordinatorRuntime.Restore(t.Context(), "net-zero-turn")
+					if err != nil {
+						t.Fatal(err)
+					}
+					t.Cleanup(func() {
+						_ = fixture.engine.options.TurnCoordinatorRuntime.Release(context.Background(), "net-zero-turn")
+					})
+					state := handle.Coordinator.Snapshot()
+					if state.Phase != turnkernel.PhaseCompleted || state.Journal != turnkernel.JournalCommitted ||
+						state.MutationRevision != 2 || state.Verification.Mutation != state.MutationRevision ||
+						state.Verification.Action != turnkernel.VerificationActionNotRequired ||
+						len(state.Verification.EvidenceCalls) != 0 || len(state.WorkItem.Open.UnverifiedPaths) != 0 {
+						t.Fatalf("restored net-zero kernel state = %+v", state)
+					}
+				})
+			}
+		}
 	}
 }
 
@@ -813,8 +916,8 @@ func TestVerifyGateCoversToolsWhoseArgumentsCarryNoPath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(data) != "before\n" {
-		t.Fatalf("workspace = %q, want the failed turn rolled back", data)
+	if string(data) != "after\n" {
+		t.Fatalf("workspace = %q, want the blocked draft retained", data)
 	}
 }
 
@@ -864,7 +967,7 @@ func TestVerifyGateSkipsWritesThatChangeNoBytes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.State != Completed || result.Verification != nil {
+	if result.State != Completed || result.Verification == nil || result.Verification.Status != verify.StatusNotRequired {
 		t.Fatalf("result = %+v verification = %+v", result, result.Verification)
 	}
 	if len(verifier.requests) != 0 {

@@ -14,46 +14,40 @@ func (e *Engine) recentTailTurns() int {
 type viewFoldState struct {
 	start  int
 	folded bool
+	folds  []contextview.HistoryFold
 }
 
 func (e *Engine) visibleTailStart(history []provider.Message) int {
-	turns := e.recentTailTurns()
-	start := contextview.VisibleTailStart(
-		history, turns, e.viewFold.start,
-	)
-	budget, limited := e.rawTailTokenBudget(history)
-	return contextview.FillVisibleTailStart(
-		history, turns, start, budget, limited, e.estimateTokens,
-	)
+	return e.contextProjection(history).TailStart
 }
 
-func (e *Engine) contextViewProject(
-	next agentcontext.HistoryProjector,
-) agentcontext.HistoryProjector {
-	return func(history []provider.Message) []provider.Message {
-		return agentcontext.ProjectHistory(
-			contextview.ProjectContextViewFrom(
-				history, e.visibleTailStart(history),
-			),
-			next,
-		)
+func (e *Engine) contextProjection(history []provider.Message) agentcontext.ProjectionResult {
+	budget, limited := e.rawTailTokenBudget(history)
+	reason := agentcontext.OmittedCapacity
+	if operator := e.recentTailMaxTokens(); operator != 0 && budget == operator {
+		reason = agentcontext.OmittedTokenLimit
 	}
+	return contextview.SelectHistory(history, contextview.SelectionPolicy{
+		RecentTurns: e.recentTailTurns(), FoldStart: e.viewFold.start,
+		Folds: e.viewFold.folds, MaxTokens: budget, Limited: limited,
+		TokenLimitReason: reason, Estimate: e.estimateTokens,
+	})
 }
 
 func (e *Engine) foldOldestVisibleTail(
 	history []provider.Message,
-	allowCurrentTurn bool,
+	reason agentcontext.OmissionReason,
 ) bool {
-	if e.viewFold.folded {
-		return false
-	}
+	previousStart := e.visibleTailStart(history)
 	start, ok := contextview.OldestVisibleTailFold(
-		history, e.recentTailTurns(), e.viewFold.start, allowCurrentTurn,
+		history, e.recentTailTurns(), previousStart,
 	)
 	if !ok {
 		return false
 	}
-	e.viewFold = viewFoldState{start: start, folded: true}
+	folds := append([]contextview.HistoryFold(nil), e.viewFold.folds...)
+	folds = append(folds, contextview.HistoryFold{Start: previousStart, End: start, Reason: reason})
+	e.viewFold = viewFoldState{start: start, folded: true, folds: folds}
 	return true
 }
 

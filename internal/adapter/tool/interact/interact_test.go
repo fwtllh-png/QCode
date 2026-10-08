@@ -465,8 +465,8 @@ func TestUpdatePlanRejectsUnchangedStepSignature(t *testing.T) {
 	input := map[string]any{
 		"title": "P",
 		"steps": []any{
-			map[string]any{"title": "one", "status": "done"},
-			map[string]any{"title": "two", "status": "pending"},
+			map[string]any{"id": "one-id", "title": "one", "status": "done"},
+			map[string]any{"id": "two-id", "title": "two", "status": "pending"},
 		},
 	}
 	first := execute(t, registry, "update_plan", input)
@@ -477,8 +477,8 @@ func TestUpdatePlanRejectsUnchangedStepSignature(t *testing.T) {
 		"title":           "P",
 		"context_summary": "rewritten prose",
 		"steps": []any{
-			map[string]any{"title": "one", "status": "done"},
-			map[string]any{"title": "two", "status": "pending"},
+			map[string]any{"id": "one-id", "title": "one", "status": "done"},
+			map[string]any{"id": "two-id", "title": "two", "status": "pending"},
 		},
 	})
 	if !second.IsError ||
@@ -491,8 +491,8 @@ func TestUpdatePlanRejectsUnchangedStepSignature(t *testing.T) {
 	}
 	progressed := execute(t, registry, "update_plan", map[string]any{
 		"steps": []any{
-			map[string]any{"title": "one", "status": "done"},
-			map[string]any{"title": "two", "status": "done"},
+			map[string]any{"id": "one-id", "title": "one", "status": "done"},
+			map[string]any{"id": "two-id", "title": "two", "status": "done"},
 		},
 	})
 	if progressed.IsError || progressed.Metadata["plan_delta"] != true {

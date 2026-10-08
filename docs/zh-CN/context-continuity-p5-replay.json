@@ -1,0 +1,67 @@
+{
+  "schema_version": 1,
+  "provider": "scripted; no billable usage",
+  "context_tokens": 131072,
+  "output_reserve_tokens": 128,
+  "semantic_quality_measured": false,
+  "rows": [
+    {
+      "configuration": "reference_explicit_tail_2",
+      "turns": 4,
+      "required_definitions": 3,
+      "definitions_retained": 3,
+      "numbering_retained": 3,
+      "progress_retained": 3,
+      "provider_calls": 4,
+      "recovery_calls": 0,
+      "file_reads": 0,
+      "background_jobs": 0,
+      "estimated_input_tokens": 6416,
+      "estimated_output_tokens": 121,
+      "nonmonotonic_prefixes": 2,
+      "elapsed_us": 10235,
+      "first_response_us": [
+        1651,
+        752,
+        852,
+        802
+      ],
+      "source_ids": [
+        "source:7a80e679f6f6ab8c349ff46ae1d64684830c1d6beb06fb0a43c14b59bfaf5790",
+        "source:af91bcaa36a8eec0d2b18e2f245c603c3e640dae24e24d11a9a1b624518d337b",
+        "source:bb3616d833d435898929f96d62bf64e7f25b52bf80994a9043c9d72ab7cfe96e",
+        "source:bf461fa1e048c9ecdafc38901360afafa872205d019ef157b8b47f09ba12c303"
+      ],
+      "cost_usd": null
+    },
+    {
+      "configuration": "p5_defaults",
+      "turns": 4,
+      "required_definitions": 3,
+      "definitions_retained": 3,
+      "numbering_retained": 3,
+      "progress_retained": 3,
+      "provider_calls": 4,
+      "recovery_calls": 0,
+      "file_reads": 0,
+      "background_jobs": 0,
+      "estimated_input_tokens": 6353,
+      "estimated_output_tokens": 121,
+      "nonmonotonic_prefixes": 2,
+      "elapsed_us": 8778,
+      "first_response_us": [
+        553,
+        946,
+        771,
+        795
+      ],
+      "source_ids": [
+        "source:7a80e679f6f6ab8c349ff46ae1d64684830c1d6beb06fb0a43c14b59bfaf5790",
+        "source:af91bcaa36a8eec0d2b18e2f245c603c3e640dae24e24d11a9a1b624518d337b",
+        "source:bb3616d833d435898929f96d62bf64e7f25b52bf80994a9043c9d72ab7cfe96e",
+        "source:bf461fa1e048c9ecdafc38901360afafa872205d019ef157b8b47f09ba12c303"
+      ],
+      "cost_usd": null
+    }
+  ]
+}

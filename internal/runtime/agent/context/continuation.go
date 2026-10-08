@@ -31,24 +31,29 @@ var ErrTurnContinuationUnavailable = errors.New(
 // Content is written to the context CAS first; the kernel commits only the
 // content reference afterwards, so a committed cursor always resolves.
 type TurnContinuation struct {
-	Version           int                `json:"version"`
-	TurnID            string             `json:"turn_id"`
-	Sequence          uint64             `json:"sequence"`
-	TurnNumber        uint64             `json:"turn_number"`
-	SessionRevision   uint64             `json:"session_revision"`
-	StateEpoch        uint64             `json:"state_epoch"`
-	SampleID          string             `json:"sample_id,omitempty"`
-	Step              int                `json:"step"`
-	WorkspaceIdentity string             `json:"workspace_identity"`
-	ProfileRevision   uint64             `json:"profile_revision"`
-	Provider          string             `json:"provider"`
-	Model             string             `json:"model"`
-	Messages          []provider.Message `json:"messages"`
+	Version               int                `json:"version"`
+	TurnID                string             `json:"turn_id"`
+	Sequence              uint64             `json:"sequence"`
+	TurnNumber            uint64             `json:"turn_number"`
+	SessionRevision       uint64             `json:"session_revision"`
+	StateEpoch            uint64             `json:"state_epoch"`
+	SampleID              string             `json:"sample_id,omitempty"`
+	Step                  int                `json:"step"`
+	WorkspaceIdentity     string             `json:"workspace_identity"`
+	ProfileRevision       uint64             `json:"profile_revision"`
+	Provider              string             `json:"provider"`
+	Model                 string             `json:"model"`
+	Messages              []provider.Message `json:"messages"`
+	ReferenceRecoveryOnly bool               `json:"reference_recovery_only,omitempty"`
+	ContextCaptured       bool               `json:"context_captured,omitempty"`
+	Conversation          *ConversationState `json:"conversation,omitempty"`
+	Plan                  *Plan              `json:"plan,omitempty"`
 }
 
 type storedContinuation struct {
 	TurnContinuation
-	MessageRefs []ContentRef `json:"message_refs"`
+	MessageRefs          []ContentRef          `json:"message_refs"`
+	ConversationManifest *ConversationManifest `json:"conversation_manifest,omitempty"`
 }
 
 // ContinuationEnvironment is the execution identity a restored Turn must
@@ -80,6 +85,12 @@ func (c TurnContinuation) Validate() error {
 	}
 	if len(c.Messages) == 0 {
 		return errors.New("turn continuation has no accepted messages")
+	}
+	if err := c.Conversation.Validate(); err != nil {
+		return err
+	}
+	if err := c.Conversation.ValidatePlan(c.Plan); err != nil {
+		return err
 	}
 	return nil
 }
@@ -153,7 +164,16 @@ func StoreTurnContinuation(
 	}
 	stored := storedContinuation{TurnContinuation: record}
 	stored.Messages = nil
+	stored.Conversation = nil
 	var children []string
+	manifest, err := buildConversationManifest(ctx, store, record.Conversation, nil, ManifestLimits{})
+	if err != nil {
+		return ContentRef{}, err
+	}
+	stored.ConversationManifest = manifest
+	if manifest != nil {
+		children = append(children, manifest.ContentIDs()...)
+	}
 	for _, message := range record.Messages {
 		ref, err := stageValue(ctx, store, "continuation-message", message)
 		if err != nil {
@@ -241,6 +261,18 @@ func LoadTurnContinuation(
 		)
 	}
 	record := stored.TurnContinuation
+	if record.Conversation != nil {
+		return TurnContinuation{}, errors.New("turn continuation must reference conversation content")
+	}
+	if stored.ConversationManifest != nil {
+		if err := stored.ConversationManifest.Validate(); err != nil {
+			return TurnContinuation{}, err
+		}
+		record.Conversation, err = loadConversationManifest(ctx, store, stored.ConversationManifest)
+		if err != nil {
+			return TurnContinuation{}, err
+		}
+	}
 	if len(record.Messages) != 0 || len(stored.MessageRefs) == 0 {
 		return TurnContinuation{}, errors.New("turn continuation message references are invalid")
 	}

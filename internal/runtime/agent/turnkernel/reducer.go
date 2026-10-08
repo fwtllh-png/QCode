@@ -229,6 +229,11 @@ func (Reducer) Apply(current State, command Command) (Transition, error) {
 			return Transition{}, err
 		}
 
+	case WorkspaceReconciled:
+		if err := applyWorkspaceReconciled(&transition, current, value); err != nil {
+			return Transition{}, err
+		}
+
 	case VerificationStarted:
 		if err := requirePhase(current, command, PhaseSampling); err != nil {
 			return Transition{}, err
@@ -239,8 +244,8 @@ func (Reducer) Apply(current State, command Command) (Transition, error) {
 		if len(current.OpenCalls) != 0 {
 			return Transition{}, illegal(current, command, "tool calls remain open")
 		}
-		if current.MutationRevision == 0 {
-			return Transition{}, illegal(current, command, "verification requires a mutation")
+		if current.MutationRevision == 0 && current.Workspace == nil {
+			return Transition{}, illegal(current, command, "verification requires a workspace observation")
 		}
 		move(&transition, PhaseVerifying)
 		requestEffect(

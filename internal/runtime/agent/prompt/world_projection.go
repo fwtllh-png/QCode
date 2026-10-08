@@ -74,7 +74,6 @@ type WorldProjectionInput struct {
 	PlanText     string
 	PlanReceipt  *Receipt
 	SessionState string
-	Narrative    string
 }
 
 type WorldProjectionResult struct {
@@ -192,14 +191,6 @@ func ProjectWorldState(
 			PartitionSessionState,
 			"session://session-state",
 			input.SessionState,
-			"",
-		)
-	}
-	if strings.TrimSpace(input.Narrative) != "" {
-		appendSection(
-			PartitionNarrative,
-			"session://narrative",
-			input.Narrative,
 			"",
 		)
 	}

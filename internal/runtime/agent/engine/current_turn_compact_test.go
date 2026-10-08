@@ -38,7 +38,7 @@ func TestMidTurnDegradesLatestBatchWhenNoClosedGroup(t *testing.T) {
 	snapshot := agentcontext.NewMessageLedger(agentcontext.LedgerInput{}).Snapshot()
 	window, err := engine.runCompactGate(
 		t.Context(), &history, snapshot, 128, CompactionPhaseMidTurn, true,
-		func(State, Event) error { return nil }, 0, engine.contextViewProject(nil),
+		func(State, Event) error { return nil }, 0, engine.projectSelectedHistoryForTest(nil),
 	)
 	if err != nil {
 		t.Fatalf("latest-batch turn failed: %v", err)
@@ -91,7 +91,7 @@ func TestMidTurnBoundsLatestPatchArguments(t *testing.T) {
 	snapshot := agentcontext.NewMessageLedger(agentcontext.LedgerInput{}).Snapshot()
 	window, err := engine.runCompactGate(
 		t.Context(), &history, snapshot, 128, CompactionPhaseMidTurn, true,
-		func(State, Event) error { return nil }, 0, engine.contextViewProject(nil),
+		func(State, Event) error { return nil }, 0, engine.projectSelectedHistoryForTest(nil),
 	)
 	if err != nil {
 		t.Fatalf("argument-pressure turn failed: %v", err)
@@ -137,7 +137,7 @@ func TestMidTurnBoundsExecCommandKeepsTruncatedCommand(t *testing.T) {
 	snapshot := agentcontext.NewMessageLedger(agentcontext.LedgerInput{}).Snapshot()
 	window, err := engine.runCompactGate(
 		t.Context(), &history, snapshot, 128, CompactionPhaseMidTurn, true,
-		func(State, Event) error { return nil }, 0, engine.contextViewProject(nil),
+		func(State, Event) error { return nil }, 0, engine.projectSelectedHistoryForTest(nil),
 	)
 	if err != nil {
 		t.Fatalf("command-pressure turn failed: %v", err)
@@ -165,7 +165,7 @@ func TestMidTurnStillFailsWhenUserRequestIsIrreducible(t *testing.T) {
 	snapshot := agentcontext.NewMessageLedger(agentcontext.LedgerInput{}).Snapshot()
 	window, err := engine.runCompactGate(
 		t.Context(), &history, snapshot, 128, CompactionPhaseMidTurn, true,
-		func(State, Event) error { return nil }, 0, engine.contextViewProject(nil),
+		func(State, Event) error { return nil }, 0, engine.projectSelectedHistoryForTest(nil),
 	)
 	if protocol.CodeOf(err) != protocol.CodeResourceExhausted ||
 		window.hardLimit == 0 || window.total <= window.hardLimit {
@@ -195,7 +195,7 @@ func TestMidTurnSummarizesHugeClosedRoundCommentary(t *testing.T) {
 	snapshot := agentcontext.NewMessageLedger(agentcontext.LedgerInput{}).Snapshot()
 	window, err := engine.runCompactGate(
 		t.Context(), &history, snapshot, 128, CompactionPhaseMidTurn, true,
-		func(State, Event) error { return nil }, 0, engine.contextViewProject(nil),
+		func(State, Event) error { return nil }, 0, engine.projectSelectedHistoryForTest(nil),
 	)
 	if err != nil {
 		t.Fatalf("commentary-pressure turn failed: %v", err)

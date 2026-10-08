@@ -146,6 +146,10 @@ type TrustedBinding struct {
 	// lets a plan gate ask once instead of holding.
 	VerificationField          string `json:"verification_field,omitempty"`
 	ValidateMissingWriteParent bool   `json:"validate_missing_write_parent,omitempty"`
+	// IsolatesWriteTrees promises that, when an Isolator is bound and a tree
+	// is declared, all workspace writes run in its copy and settle via the
+	// File Broker / Journal. Preparation failure must not fall back in place.
+	IsolatesWriteTrees bool `json:"isolates_write_trees,omitempty"`
 }
 
 type TrustedBindingProvider interface {
@@ -289,6 +293,10 @@ func (b TrustedBinding) Validate() error {
 	}
 	if b.ValidateMissingWriteParent && b.Capability != CapabilityProcess {
 		return errors.New("missing write targets require process capability")
+	}
+	if b.IsolatesWriteTrees && (b.Capability != CapabilityProcess ||
+		b.SandboxRequirement != SandboxStrong || b.ResourceResolver.PathsField == "") {
+		return errors.New("isolated write trees require a strong process sandbox and declared write paths")
 	}
 	if b.SandboxRequirement == SandboxStrong {
 		if b.Required.FilesystemRead == "" || b.Required.Network == "" {

@@ -229,12 +229,12 @@ export function App({client}: Props) {
   const snapshot = useWorkbenchSnapshot(client);
   const query = snapshot.sessionSearchQuery;
   const [sessionSearchOpen, setSessionSearchOpen] = useState(false);
+  const [composerMenuOpen, setComposerMenuOpen] = useState(false);
   const [collapsedWorkspaceIDs, setCollapsedWorkspaceIDs] =
     useState<ReadonlySet<string>>(() => new Set());
   const [workspaceDialogOpen, setWorkspaceDialogOpen] = useState(false);
   const [workspaceRemovalID, setWorkspaceRemovalID] = useState("");
   const [workspaceRemoving, setWorkspaceRemoving] = useState(false);
-  const [draft, setDraft] = useState("");
   const [contextOpen, setContextOpen] = useState(false);
   const [railCollapsed, setRailCollapsed] = useState(initialRailCollapsed);
   const [mobileRailOpen, setMobileRailOpen] = useState(false);
@@ -275,17 +275,9 @@ export function App({client}: Props) {
   const [themeMode, setThemeMode] = useState<ThemeMode>(readThemeMode);
   const [activityTarget, setActivityTarget] =
     useState<BackgroundActivityTarget>();
-  const [submitting, setSubmitting] = useState(false);
   const [creatingSession, setCreatingSession] = useState(false);
   const [creatingWorkspaceID, setCreatingWorkspaceID] = useState("");
   const [localError, setLocalError] = useState("");
-  const [composerAttachments, setComposerAttachments] =
-    useState<ComposerAttachment[]>([]);
-  const [draggingAttachment, setDraggingAttachment] = useState(false);
-  const [commandMenuOpen, setCommandMenuOpen] = useState(false);
-  const [commandQuery, setCommandQuery] = useState("");
-  const [commandMenuSource, setCommandMenuSource] =
-    useState<"button" | "slash">("button");
   const [sessionAction, setSessionAction] = useState<{
     sessionID: string;
     pending: boolean;
@@ -324,18 +316,7 @@ export function App({client}: Props) {
   const navigationHighlightTimerRef = useRef<number>();
   const atBottomRef = useRef(true);
   const [atBottom, setAtBottom] = useState(true);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const attachmentInputRef = useRef<HTMLInputElement>(null);
-  const composingRef = useRef(false);
-  const attachmentGenerationRef = useRef(0);
   const cancelPendingRef = useRef("");
-  const removedAttachmentIDs = useRef(new Set<string>());
-  const attachmentsRef = useRef(composerAttachments);
-  const selectedSessionRef = useRef(snapshot.selectedSessionID);
-  const draftRef = useRef(draft);
-  selectedSessionRef.current = snapshot.selectedSessionID;
-  draftRef.current = draft;
-  attachmentsRef.current = composerAttachments;
   const selected = snapshot.sessions.find(
     (item) => item.session_id === snapshot.selectedSessionID
   );
@@ -791,121 +772,11 @@ export function App({client}: Props) {
     setInspectPanelCallID(callID);
     void client.refreshTrace();
   }, [client]);
-  const attachmentBusy = composerAttachments.some(
-    (attachment) => attachment.status === "processing"
-  );
-  const attachmentFailed = composerAttachments.some(
-    (attachment) => attachment.status === "error"
-  );
   const visibleContextResources = snapshot.contextResources.filter(
     (resource) =>
       resource.kind !== "attachment" &&
       !(resource.kind === "image" && !resource.path)
   );
-
-  const attachFiles = (
-    values: FileList | readonly File[],
-    source: ComposerAttachmentSource
-  ) => {
-    const files = Array.from(values);
-    if (
-      files.length === 0 ||
-      !snapshot.selectedSessionID ||
-      snapshot.hydratingSessionID ||
-      submitting
-    ) {
-      return;
-    }
-    setLocalError("");
-    const processing = composerAttachments.filter(
-      (attachment) => attachment.status === "processing"
-    ).length;
-    const available = Math.max(
-      0,
-      maxComposerAttachments - snapshot.contextResources.length - processing
-    );
-    const countAccepted = files.slice(0, available);
-    let reservedBytes = composerAttachments
-      .filter((attachment) => attachment.status !== "error")
-      .reduce((total, attachment) => total + attachment.bytes, 0);
-    const accepted = countAccepted.filter((file) => {
-      if (reservedBytes + file.size > maxComposerAttachmentBytes) return false;
-      reservedBytes += file.size;
-      return true;
-    });
-    if (countAccepted.length < files.length) {
-      setLocalError(`A prompt accepts at most ${maxComposerAttachments} context items`);
-    } else if (accepted.length < countAccepted.length) {
-      setLocalError("Attachments exceed the 5 MiB total prompt limit");
-    }
-    const generation = attachmentGenerationRef.current;
-    const sessionID = snapshot.selectedSessionID;
-    const pending = accepted.map((file) => ({
-      file,
-      attachment: {
-        id: crypto.randomUUID(),
-        name: file.name || "Pasted image",
-        mediaType: file.type || "application/octet-stream",
-        bytes: file.size,
-        source,
-        status: "processing" as const
-      }
-    }));
-    setComposerAttachments((current) => [
-      ...current,
-      ...pending.map(({attachment}) => attachment)
-    ]);
-    const pipeline = import("./attachmentPipeline");
-    for (const {file, attachment} of pending) {
-      void pipeline.then(({prepareComposerAttachment}) =>
-        prepareComposerAttachment(file)
-      ).then((context) => {
-        if (
-          generation !== attachmentGenerationRef.current ||
-          sessionID !== selectedSessionRef.current ||
-          removedAttachmentIDs.current.has(attachment.id)
-        ) {
-          return;
-        }
-        if (client.getSnapshot().contextResources.some(
-          (resource) => resource.digest === context.digest
-        )) {
-          throw new Error(`${context.label || attachment.name} is already attached`);
-        }
-        client.addAttachmentContext(context);
-        setComposerAttachments((current) => current.map((value) =>
-          value.id === attachment.id
-            ? {
-                ...value,
-                name: context.label || value.name,
-                mediaType: context.media_type || value.mediaType,
-                digest: context.digest,
-                status: "ready",
-                error: undefined
-              }
-            : value
-        ));
-      }).catch((error) => {
-        if (generation !== attachmentGenerationRef.current) return;
-        setComposerAttachments((current) => current.map((value) =>
-          value.id === attachment.id
-            ? {
-                ...value,
-                status: "error",
-                error: error instanceof Error ? error.message : String(error)
-              }
-            : value
-        ));
-      });
-    }
-  };
-
-  const removeAttachment = (id: string) => {
-    removedAttachmentIDs.current.add(id);
-    const attachment = attachmentsRef.current.find((value) => value.id === id);
-    if (attachment?.digest) client.removeAttachmentContext(attachment.digest);
-    setComposerAttachments((current) => current.filter((value) => value.id !== id));
-  };
 
   useEffect(() => {
     writePreference("ch.sidebar.collapsed", String(railCollapsed));
@@ -975,13 +846,6 @@ export function App({client}: Props) {
     setConversationNavigatorOpen(false);
     setReaderEntryID(saved?.entryID ?? "");
     setContextOpen(false);
-    attachmentGenerationRef.current += 1;
-    removedAttachmentIDs.current.clear();
-    setComposerAttachments([]);
-    setDraggingAttachment(false);
-    setCommandMenuOpen(false);
-    setCommandQuery("");
-    setCommandMenuSource("button");
     atBottomRef.current = saved?.atBottom ?? true;
     setAtBottom(saved?.atBottom ?? true);
   }, [snapshot.selectedSessionID]);
@@ -1003,15 +867,6 @@ export function App({client}: Props) {
     document.addEventListener("visibilitychange", refresh);
     return () => document.removeEventListener("visibilitychange", refresh);
   }, [client, snapshot.phase]);
-
-  useEffect(() => {
-    setDraft(client.loadDraft(snapshot.selectedSessionID));
-  }, [client, snapshot.selectedSessionID, snapshot.selectedWorkspaceID]);
-
-  const updateDraft = (value: string) => {
-    client.saveDraft(value, snapshot.selectedSessionID);
-    setDraft(value);
-  };
 
   const restoreNavigationTarget = useCallback(() => {
     const node = transcriptRef.current;
@@ -1151,7 +1006,7 @@ export function App({client}: Props) {
         !editable &&
         !settingsOpen &&
         !contextOpen &&
-        !commandMenuOpen &&
+        !composerMenuOpen &&
         selected &&
         entries.length > 0
       ) {
@@ -1171,7 +1026,7 @@ export function App({client}: Props) {
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
   }, [
-    commandMenuOpen,
+    composerMenuOpen,
     contextOpen,
     entries.length,
     jumpToQuestion,
@@ -1194,39 +1049,6 @@ export function App({client}: Props) {
     }
   }, []);
 
-  // 草稿高度钳制：上限视口感知——紧凑视口（软键盘开启）下不能把
-  // Composer 底边推出 visualViewport；88px 为 Composer 铬件预算。
-  const clampDraftHeight = useCallback(() => {
-    const textarea = textareaRef.current;
-    if (!textarea) return;
-    textarea.style.height = "0";
-    const viewport = window.visualViewport?.height ?? window.innerHeight;
-    textarea.style.height =
-      `${Math.min(textarea.scrollHeight, 336, Math.max(120, viewport - 88))}px`;
-  }, []);
-
-  useEffect(() => {
-    clampDraftHeight();
-  }, [draft, clampDraftHeight]);
-
-  useEffect(() => {
-    const viewport = window.visualViewport;
-    if (!viewport) return;
-    const keepComposerVisible = () => {
-      clampDraftHeight();
-      if (document.activeElement !== textareaRef.current) return;
-      requestAnimationFrame(() => textareaRef.current?.scrollIntoView({
-        block: "nearest"
-      }));
-    };
-    viewport.addEventListener("resize", keepComposerVisible);
-    viewport.addEventListener("scroll", keepComposerVisible);
-    return () => {
-      viewport.removeEventListener("resize", keepComposerVisible);
-      viewport.removeEventListener("scroll", keepComposerVisible);
-    };
-  }, []);
-
   useEffect(() => {
     if (activeView !== "trajectory" || !activeTurn) return;
     void client.refreshTrace();
@@ -1242,37 +1064,6 @@ export function App({client}: Props) {
     media.addEventListener("change", apply);
     return () => media.removeEventListener("change", apply);
   }, [themeMode]);
-
-  const submit = async (activeAction: "queue" | "steer" = "queue") => {
-    const prompt = draft.trim();
-    if (!prompt || submitting || attachmentBusy || attachmentFailed) return;
-    const submittedSessionID = snapshot.selectedSessionID;
-    const submittedTurnID = activeTurn;
-    setSubmitting(true);
-    setLocalError("");
-    try {
-      if (submittedTurnID && activeAction === "steer") {
-        await client.steer(submittedTurnID, prompt);
-      } else if (submittedTurnID) {
-        await client.enqueue(submittedTurnID, prompt);
-      } else if (resumableTurnID) {
-        await client.recoverTurn(resumableTurnID, "continue", prompt);
-      } else {
-        await client.submitPrompt(prompt);
-      }
-      if (selectedSessionRef.current === submittedSessionID) {
-        setComposerAttachments([]);
-        removedAttachmentIDs.current.clear();
-        if (draftRef.current.trim() === prompt) {
-          updateDraft("");
-        }
-      }
-    } catch (error) {
-      setLocalError(error instanceof Error ? error.message : String(error));
-    } finally {
-      setSubmitting(false);
-    }
-  };
 
   const createSession = async (
     workspaceID = selectedWorkspace?.id,
@@ -1315,63 +1106,6 @@ export function App({client}: Props) {
       setWorkspaceRemoving(false);
     }
   };
-
-  const composerCommands: ComposerCommand[] = [
-    {
-      id: "attach",
-      label: "attach",
-      description: "Attach local text files or images",
-      argumentHint: "file",
-      icon: Paperclip,
-      run: () => attachmentInputRef.current?.click()
-    },
-    {
-      id: "context",
-      label: "context",
-      description: "Browse files, symbols, diagnostics, and diffs",
-      argumentHint: "file, symbol, or diff",
-      icon: FileCode2,
-      run: () => setContextOpen(true)
-    },
-    {
-      id: "compact",
-      label: "compact",
-      description: "Compact older conversation history",
-      icon: Braces,
-      disabled: Boolean(activeTurn) || !selected?.latest_turn_id,
-      run: async () => {
-        try {
-          await client.compactThread();
-        } catch (error) {
-          reportLocalError(error);
-        }
-      }
-    },
-    {
-      id: "suggest",
-      label: "suggest",
-      description: "Ask before consequential tool actions",
-      icon: AlertTriangle,
-      active: snapshot.profile?.profile.approval_posture === "suggest",
-      disabled: !profileMutable(snapshot, "approval_posture") ||
-        Boolean(profilePending),
-      run: () => updateComposerProfile({
-        approval_posture: "suggest"
-      }, "Updating approval")
-    },
-    {
-      id: "auto",
-      label: "auto",
-      description: "Approve actions allowed by the current policy",
-      icon: Check,
-      active: snapshot.profile?.profile.approval_posture === "auto",
-      disabled: !profileMutable(snapshot, "approval_posture") ||
-        Boolean(profilePending),
-      run: () => updateComposerProfile({
-        approval_posture: "auto"
-      }, "Updating approval")
-    }
-  ];
 
   const runSessionAction = async (
     session: SessionSummary,
@@ -2063,281 +1797,34 @@ export function App({client}: Props) {
                 onStop={() => requestCancel(activeTurn || pendingInput.turn_id)}
               />
             ) : (
-              <div
-                className="composer"
-                data-dragging={draggingAttachment || undefined}
-                onDragEnter={(event) => {
-                  if (!event.dataTransfer.types.includes("Files")) return;
-                  event.preventDefault();
-                  setDraggingAttachment(true);
+              <Composer
+                client={client}
+                snapshot={snapshot}
+                selected={selected}
+                activeTurn={activeTurn}
+                resumableTurnID={resumableTurnID}
+                cancelingTurnID={cancelingTurnID}
+                latestReceipt={latestReceipt}
+                latestReceiptTerminal={latestReceiptTerminal}
+                contextAttribution={contextAttribution}
+                selectedProvider={selectedProvider}
+                selectedModelValue={selectedModelValue}
+                selectedModelEntry={selectedModelEntry}
+                modelOptions={modelOptions}
+                advertisedReasoningValues={advertisedReasoningValues}
+                reasoningValues={reasoningValues}
+                profilePending={profilePending}
+                requestCancel={requestCancel}
+                reportLocalError={reportLocalError}
+                setLocalError={setLocalError}
+                updateComposerProfile={updateComposerProfile}
+                onOpenContext={() => setContextOpen(true)}
+                onConfigureModels={() => {
+                  setSettingsSection("models");
+                  setSettingsOpen(true);
                 }}
-                onDragOver={(event) => {
-                  if (!event.dataTransfer.types.includes("Files")) return;
-                  event.preventDefault();
-                  event.dataTransfer.dropEffect = "copy";
-                }}
-                onDragLeave={(event) => {
-                  if (event.currentTarget.contains(event.relatedTarget as Node)) return;
-                  setDraggingAttachment(false);
-                }}
-                onDrop={(event) => {
-                  event.preventDefault();
-                  setDraggingAttachment(false);
-                  attachFiles(event.dataTransfer.files, "drop");
-                }}
-              >
-                <input
-                  ref={attachmentInputRef}
-                  className="srOnly"
-                  type="file"
-                  multiple
-                  accept={composerAttachmentAccept}
-                  aria-label="Attach files"
-                  disabled={Boolean(snapshot.hydratingSessionID) || submitting}
-                  onChange={(event) => {
-                    if (event.target.files) {
-                      attachFiles(event.target.files, "picker");
-                    }
-                    event.target.value = "";
-                  }}
-                />
-                {composerAttachments.length > 0 && (
-                  <Suspense fallback={null}>
-                    <ComposerAttachments
-                      attachments={composerAttachments}
-                      onRemove={removeAttachment}
-                    />
-                  </Suspense>
-                )}
-                <div className="composerInputRow">
-                  <textarea
-                    ref={textareaRef}
-                    value={draft}
-                    rows={1}
-                    placeholder="Ask QCode"
-                    enterKeyHint="send"
-                    disabled={Boolean(snapshot.hydratingSessionID) || submitting}
-                    onChange={(event) => {
-                      const value = event.target.value;
-                      updateDraft(value);
-                      const slashQuery = composerSlashQuery(value);
-                      if (slashQuery !== undefined) {
-                        setCommandMenuSource("slash");
-                        setCommandQuery(slashQuery);
-                        setCommandMenuOpen(true);
-                      } else if (commandMenuSource === "slash") {
-                        setCommandMenuOpen(false);
-                        setCommandQuery("");
-                      }
-                    }}
-                    onCompositionStart={() => {
-                      composingRef.current = true;
-                    }}
-                    onCompositionEnd={() => {
-                      composingRef.current = false;
-                    }}
-                    onPaste={(event) => {
-                      const files = Array.from(event.clipboardData.files);
-                      if (files.length === 0) return;
-                      event.preventDefault();
-                      attachFiles(files, "paste");
-                    }}
-                    onKeyDown={(event) => {
-                      if (event.nativeEvent.isComposing || composingRef.current) return;
-                      if (
-                        commandMenuOpen &&
-                        commandMenuSource === "slash" &&
-                        composerSlashQuery(draft) !== undefined
-                      ) {
-                        if (event.key === "Enter") event.preventDefault();
-                        return;
-                      }
-                      if (event.key === "Enter" && !event.shiftKey) {
-                        event.preventDefault();
-                        void submit(
-                          activeTurn && (event.metaKey || event.ctrlKey)
-                            ? "steer"
-                            : "queue"
-                        );
-                      }
-                    }}
-                  />
-                  <div className="composerActions">
-                    {activeTurn && (
-                      <IconButton
-                        label="Stop turn"
-                        danger
-                        disabled={cancelingTurnID === activeTurn}
-                        icon={cancelingTurnID === activeTurn
-                          ? <LoaderCircle className="spin" size={19} />
-                          : <CircleStop size={19} />}
-                        onClick={() => requestCancel(activeTurn)}
-                      />
-                    )}
-                    {(!activeTurn || Boolean(draft.trim())) && (
-                      <>
-                        {activeTurn &&
-                          snapshot.contextResources.length === 0 &&
-                          composerAttachments.length === 0 && (
-                          <IconButton
-                            label="Steer current turn"
-                            disabled={submitting}
-                            icon={<Zap size={18} />}
-                            onClick={() => void submit("steer")}
-                          />
-                        )}
-                        <IconButton
-                          label={activeTurn
-                            ? "Queue next"
-                            : resumableTurnID
-                              ? "Continue"
-                              : "Send"}
-                          primary
-                          disabled={
-                            Boolean(snapshot.hydratingSessionID) ||
-                            !draft.trim() ||
-                            submitting ||
-                            attachmentBusy ||
-                            attachmentFailed ||
-                            Boolean(resumableTurnID && composerAttachments.length)
-                          }
-                          icon={submitting
-                            ? <LoaderCircle className="spin" size={19} />
-                            : activeTurn
-                              ? <ListPlus size={19} />
-                              : <Send size={19} />}
-                          onClick={() => void submit("queue")}
-                        />
-                      </>
-                    )}
-                  </div>
-                </div>
-                <div className="composerControls">
-                  <div>
-                    <IconButton
-                      label="Attach files"
-                      icon={<Paperclip size={15} />}
-                      disabled={
-                        Boolean(snapshot.hydratingSessionID) ||
-                        submitting ||
-                        Boolean(resumableTurnID) ||
-                        snapshot.contextResources.length >= maxComposerAttachments
-                      }
-                      onClick={() => attachmentInputRef.current?.click()}
-                    />
-                    <Suspense fallback={null}>
-                      <ComposerCommandMenu
-                        commands={composerCommands}
-                        disabled={Boolean(snapshot.hydratingSessionID) || submitting}
-                        open={commandMenuOpen}
-                        query={commandQuery}
-                        onOpenChange={(open) => {
-                          setCommandMenuOpen(open);
-                          if (open) {
-                            setCommandMenuSource("button");
-                            setCommandQuery("");
-                          } else if (commandMenuSource === "slash") {
-                            updateDraft("");
-                            setCommandQuery("");
-                            setCommandMenuSource("button");
-                          }
-                        }}
-                        onQueryChange={setCommandQuery}
-                        onSelect={() => {
-                          setCommandQuery("");
-                          if (commandMenuSource === "slash") {
-                            updateDraft("");
-                          }
-                          setCommandMenuSource("button");
-                        }}
-                        onRequestComposerFocus={
-                          commandMenuSource === "slash"
-                            ? () => textareaRef.current?.focus()
-                            : undefined
-                        }
-                      />
-                    </Suspense>
-                    <CompactSelect
-                      label="Approval"
-                      value={snapshot.profile?.profile.approval_posture ?? "auto"}
-                      values={["suggest", "auto", "never"]}
-                      disabled={!profileMutable(snapshot, "approval_posture") ||
-                        Boolean(profilePending)}
-                      onChange={(value) => void updateComposerProfile(
-                        {approval_posture: value},
-                        "Updating approval"
-                      )}
-                    />
-                  </div>
-                  <div>
-                    <ComposerStats
-                      key={snapshot.selectedSessionID}
-                      attribution={contextAttribution}
-                      capacity={selectedModelEntry?.capabilities.context_window}
-                      receipt={latestReceipt?.data}
-                      usage={snapshot.usage}
-                      running={Boolean(activeTurn)}
-                      previous={Boolean(latestReceipt && (
-                        activeTurn && activeTurn !== latestReceipt.turnID ||
-                        selected?.latest_turn_id && selected.latest_turn_id !== latestReceipt.turnID
-                      ))}
-                      terminal={latestReceiptTerminal}
-                    />
-                    <CompactCatalogSelect
-                      label="Model"
-                      value={selectedModelValue}
-                      options={[
-                        ...modelOptions,
-                        {value: "__configure__", label: "New model..."}
-                      ]}
-                      disabled={Boolean(profilePending)}
-                      onChange={(selection) => {
-                        if (selection === "__configure__") {
-                          // 只落到 Settings 的 Models 页；向导由用户在
-                          // 页面内自行打开。
-                          setSettingsSection("models");
-                          setSettingsOpen(true);
-                          return;
-                        }
-                        if (!profileMutable(snapshot, "model")) return;
-                        // 兼容无分隔符的裸 model id（视为当前 provider）。
-                        const separator = selection.indexOf("\u0000");
-                        const provider = separator < 0
-                          ? selectedProvider
-                          : selection.slice(0, separator);
-                        const model = separator < 0
-                          ? selection
-                          : selection.slice(separator + 1);
-                        const target = snapshot.models.find(
-                          (entry) =>
-                            entry.provider === provider &&
-                            entry.id === model
-                        );
-                        void updateComposerProfile({
-                          ...(provider !== selectedProvider ? {provider} : {}),
-                          model,
-                          reasoning_effort:
-                            target?.capabilities.default_reasoning_effort ?? ""
-                        }, "Updating model");
-                      }}
-                    />
-                    {advertisedReasoningValues.length > 0 && (
-                      <ReasoningMenu
-                        value={snapshot.profile?.profile.reasoning_effort ?? ""}
-                        defaultValue={
-                          selectedModelEntry?.capabilities.default_reasoning_effort
-                        }
-                        values={reasoningValues}
-                        disabled={!profileMutable(snapshot, "reasoning_effort") ||
-                          Boolean(profilePending)}
-                        onChange={(value) => void updateComposerProfile({
-                          reasoning_effort: value
-                        }, "Updating reasoning")}
-                      />
-                    )}
-                  </div>
-                </div>
-              </div>
+                onCommandMenuOpenChange={setComposerMenuOpen}
+              />
             )}
           </div>}
         </div>
@@ -2477,6 +1964,619 @@ export function App({client}: Props) {
     </div>
   );
 
+}
+
+// Composer 拥有草稿、命令菜单与附件等按键高频状态：状态局部化后，
+// 输入只重渲染 Composer 本身，不再触发 rail 会话列表与 transcript 窗口
+// 的重渲染。会话相关的展示数据由 App 以 props 传入；草稿每次变更都经
+// client.saveDraft 持久化，组件被审批/输入弹层替换后由 loadDraft 恢复。
+interface ComposerProps {
+  client: RuntimeClient;
+  snapshot: RuntimeSnapshot;
+  selected: SessionSummary | undefined;
+  activeTurn: RuntimeSnapshot["conversation"]["activeTurnID"];
+  resumableTurnID: string | undefined;
+  cancelingTurnID: string;
+  latestReceipt: Extract<ConversationNode, {kind: "receipt"}> | undefined;
+  latestReceiptTerminal: ReturnType<typeof usePresentationEvents>[number]["kind"] | undefined;
+  contextAttribution: ReturnType<typeof latestContextAttribution>;
+  selectedProvider: string;
+  selectedModelValue: string;
+  selectedModelEntry: RuntimeSnapshot["models"][number] | undefined;
+  modelOptions: {value: string; label: string; disabled: boolean}[];
+  advertisedReasoningValues: string[];
+  reasoningValues: string[];
+  profilePending: string;
+  requestCancel: (turnID: string) => void;
+  reportLocalError: (error: unknown) => void;
+  setLocalError: (value: string) => void;
+  updateComposerProfile: (patch: Record<string, unknown>, label: string) => Promise<void>;
+  onOpenContext: () => void;
+  onConfigureModels: () => void;
+  onCommandMenuOpenChange: (open: boolean) => void;
+}
+
+function Composer({
+  client,
+  snapshot,
+  selected,
+  activeTurn,
+  resumableTurnID,
+  cancelingTurnID,
+  latestReceipt,
+  latestReceiptTerminal,
+  contextAttribution,
+  selectedProvider,
+  selectedModelValue,
+  selectedModelEntry,
+  modelOptions,
+  advertisedReasoningValues,
+  reasoningValues,
+  profilePending,
+  requestCancel,
+  reportLocalError,
+  setLocalError,
+  updateComposerProfile,
+  onOpenContext,
+  onConfigureModels,
+  onCommandMenuOpenChange
+}: ComposerProps) {
+  const [draft, setDraft] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [composerAttachments, setComposerAttachments] =
+    useState<ComposerAttachment[]>([]);
+  const [draggingAttachment, setDraggingAttachment] = useState(false);
+  const [commandMenuOpen, setCommandMenuOpen] = useState(false);
+  const [commandQuery, setCommandQuery] = useState("");
+  const [commandMenuSource, setCommandMenuSource] =
+    useState<"button" | "slash">("button");
+
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const attachmentInputRef = useRef<HTMLInputElement>(null);
+  const composingRef = useRef(false);
+  const attachmentGenerationRef = useRef(0);
+  const removedAttachmentIDs = useRef(new Set<string>());
+  const attachmentsRef = useRef(composerAttachments);
+  const selectedSessionRef = useRef(snapshot.selectedSessionID);
+  const draftRef = useRef(draft);
+  selectedSessionRef.current = snapshot.selectedSessionID;
+  draftRef.current = draft;
+  attachmentsRef.current = composerAttachments;
+
+  const attachmentBusy = composerAttachments.some(
+    (attachment) => attachment.status === "processing"
+  );
+  const attachmentFailed = composerAttachments.some(
+    (attachment) => attachment.status === "error"
+  );
+
+  const attachFiles = (
+    values: FileList | readonly File[],
+    source: ComposerAttachmentSource
+  ) => {
+    const files = Array.from(values);
+    if (
+      files.length === 0 ||
+      !snapshot.selectedSessionID ||
+      snapshot.hydratingSessionID ||
+      submitting
+    ) {
+      return;
+    }
+    setLocalError("");
+    const processing = composerAttachments.filter(
+      (attachment) => attachment.status === "processing"
+    ).length;
+    const available = Math.max(
+      0,
+      maxComposerAttachments - snapshot.contextResources.length - processing
+    );
+    const countAccepted = files.slice(0, available);
+    let reservedBytes = composerAttachments
+      .filter((attachment) => attachment.status !== "error")
+      .reduce((total, attachment) => total + attachment.bytes, 0);
+    const accepted = countAccepted.filter((file) => {
+      if (reservedBytes + file.size > maxComposerAttachmentBytes) return false;
+      reservedBytes += file.size;
+      return true;
+    });
+    if (countAccepted.length < files.length) {
+      setLocalError(`A prompt accepts at most ${maxComposerAttachments} context items`);
+    } else if (accepted.length < countAccepted.length) {
+      setLocalError("Attachments exceed the 5 MiB total prompt limit");
+    }
+    const generation = attachmentGenerationRef.current;
+    const sessionID = snapshot.selectedSessionID;
+    const pending = accepted.map((file) => ({
+      file,
+      attachment: {
+        id: crypto.randomUUID(),
+        name: file.name || "Pasted image",
+        mediaType: file.type || "application/octet-stream",
+        bytes: file.size,
+        source,
+        status: "processing" as const
+      }
+    }));
+    setComposerAttachments((current) => [
+      ...current,
+      ...pending.map(({attachment}) => attachment)
+    ]);
+    const pipeline = import("./attachmentPipeline");
+    for (const {file, attachment} of pending) {
+      void pipeline.then(({prepareComposerAttachment}) =>
+        prepareComposerAttachment(file)
+      ).then((context) => {
+        if (
+          generation !== attachmentGenerationRef.current ||
+          sessionID !== selectedSessionRef.current ||
+          removedAttachmentIDs.current.has(attachment.id)
+        ) {
+          return;
+        }
+        if (client.getSnapshot().contextResources.some(
+          (resource) => resource.digest === context.digest
+        )) {
+          throw new Error(`${context.label || attachment.name} is already attached`);
+        }
+        client.addAttachmentContext(context);
+        setComposerAttachments((current) => current.map((value) =>
+          value.id === attachment.id
+            ? {
+                ...value,
+                name: context.label || value.name,
+                mediaType: context.media_type || value.mediaType,
+                digest: context.digest,
+                status: "ready",
+                error: undefined
+              }
+            : value
+        ));
+      }).catch((error) => {
+        if (generation !== attachmentGenerationRef.current) return;
+        setComposerAttachments((current) => current.map((value) =>
+          value.id === attachment.id
+            ? {
+                ...value,
+                status: "error",
+                error: error instanceof Error ? error.message : String(error)
+              }
+            : value
+        ));
+      });
+    }
+  };
+
+  const removeAttachment = (id: string) => {
+    removedAttachmentIDs.current.add(id);
+    const attachment = attachmentsRef.current.find((value) => value.id === id);
+    if (attachment?.digest) client.removeAttachmentContext(attachment.digest);
+    setComposerAttachments((current) => current.filter((value) => value.id !== id));
+  };
+
+  // 会话切换时丢弃未提交的附件与命令菜单状态（与 App 的 transcript
+  // 重置在同一个提交内生效）。
+  useLayoutEffect(() => {
+    attachmentGenerationRef.current += 1;
+    removedAttachmentIDs.current.clear();
+    setComposerAttachments([]);
+    setDraggingAttachment(false);
+    setCommandMenuOpen(false);
+    setCommandQuery("");
+    setCommandMenuSource("button");
+  }, [snapshot.selectedSessionID]);
+
+  useEffect(() => {
+    setDraft(client.loadDraft(snapshot.selectedSessionID));
+  }, [client, snapshot.selectedSessionID, snapshot.selectedWorkspaceID]);
+
+  const updateDraft = (value: string) => {
+    client.saveDraft(value, snapshot.selectedSessionID);
+    setDraft(value);
+  };
+
+  const composerCommands: ComposerCommand[] = [
+    {
+      id: "attach",
+      label: "attach",
+      description: "Attach local text files or images",
+      argumentHint: "file",
+      icon: Paperclip,
+      run: () => attachmentInputRef.current?.click()
+    },
+    {
+      id: "context",
+      label: "context",
+      description: "Browse files, symbols, diagnostics, and diffs",
+      argumentHint: "file, symbol, or diff",
+      icon: FileCode2,
+      run: onOpenContext
+    },
+    {
+      id: "compact",
+      label: "compact",
+      description: "Compact older conversation history",
+      icon: Braces,
+      disabled: Boolean(activeTurn) || !selected?.latest_turn_id,
+      run: async () => {
+        try {
+          await client.compactThread();
+        } catch (error) {
+          reportLocalError(error);
+        }
+      }
+    },
+    {
+      id: "suggest",
+      label: "suggest",
+      description: "Ask before consequential tool actions",
+      icon: AlertTriangle,
+      active: snapshot.profile?.profile.approval_posture === "suggest",
+      disabled: !profileMutable(snapshot, "approval_posture") ||
+        Boolean(profilePending),
+      run: () => updateComposerProfile({
+        approval_posture: "suggest"
+      }, "Updating approval")
+    },
+    {
+      id: "auto",
+      label: "auto",
+      description: "Approve actions allowed by the current policy",
+      icon: Check,
+      active: snapshot.profile?.profile.approval_posture === "auto",
+      disabled: !profileMutable(snapshot, "approval_posture") ||
+        Boolean(profilePending),
+      run: () => updateComposerProfile({
+        approval_posture: "auto"
+      }, "Updating approval")
+    }
+  ];
+
+  // 草稿高度钳制：上限视口感知——紧凑视口（软键盘开启）下不能把
+  // Composer 底边推出 visualViewport；88px 为 Composer 铬件预算。
+  const clampDraftHeight = useCallback(() => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    textarea.style.height = "0";
+    const viewport = window.visualViewport?.height ?? window.innerHeight;
+    textarea.style.height =
+      `${Math.min(textarea.scrollHeight, 336, Math.max(120, viewport - 88))}px`;
+  }, []);
+
+  useEffect(() => {
+    clampDraftHeight();
+  }, [draft, clampDraftHeight]);
+
+  useEffect(() => {
+    const viewport = window.visualViewport;
+    if (!viewport) return;
+    const keepComposerVisible = () => {
+      clampDraftHeight();
+      if (document.activeElement !== textareaRef.current) return;
+      requestAnimationFrame(() => textareaRef.current?.scrollIntoView({
+        block: "nearest"
+      }));
+    };
+    viewport.addEventListener("resize", keepComposerVisible);
+    viewport.addEventListener("scroll", keepComposerVisible);
+    return () => {
+      viewport.removeEventListener("resize", keepComposerVisible);
+      viewport.removeEventListener("scroll", keepComposerVisible);
+    };
+  }, []);
+
+  const submit = async (activeAction: "queue" | "steer" = "queue") => {
+    const prompt = draft.trim();
+    if (!prompt || submitting || attachmentBusy || attachmentFailed) return;
+    const submittedSessionID = snapshot.selectedSessionID;
+    const submittedTurnID = activeTurn;
+    setSubmitting(true);
+    setLocalError("");
+    try {
+      if (submittedTurnID && activeAction === "steer") {
+        await client.steer(submittedTurnID, prompt);
+      } else if (submittedTurnID) {
+        await client.enqueue(submittedTurnID, prompt);
+      } else if (resumableTurnID) {
+        await client.recoverTurn(resumableTurnID, "continue", prompt);
+      } else {
+        await client.submitPrompt(prompt);
+      }
+      if (selectedSessionRef.current === submittedSessionID) {
+        setComposerAttachments([]);
+        removedAttachmentIDs.current.clear();
+        if (draftRef.current.trim() === prompt) {
+          updateDraft("");
+        }
+      }
+    } catch (error) {
+      setLocalError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  // 命令菜单开合镜像给 App：Cmd+F 会话导航在菜单打开期间让位。
+  useEffect(() => {
+    onCommandMenuOpenChange(commandMenuOpen);
+  }, [commandMenuOpen, onCommandMenuOpenChange]);
+
+  return (
+    <div
+      className="composer"
+      data-dragging={draggingAttachment || undefined}
+      onDragEnter={(event) => {
+        if (!event.dataTransfer.types.includes("Files")) return;
+        event.preventDefault();
+        setDraggingAttachment(true);
+      }}
+      onDragOver={(event) => {
+        if (!event.dataTransfer.types.includes("Files")) return;
+        event.preventDefault();
+        event.dataTransfer.dropEffect = "copy";
+      }}
+      onDragLeave={(event) => {
+        if (event.currentTarget.contains(event.relatedTarget as Node)) return;
+        setDraggingAttachment(false);
+      }}
+      onDrop={(event) => {
+        event.preventDefault();
+        setDraggingAttachment(false);
+        attachFiles(event.dataTransfer.files, "drop");
+      }}
+    >
+      <input
+        ref={attachmentInputRef}
+        className="srOnly"
+        type="file"
+        multiple
+        accept={composerAttachmentAccept}
+        aria-label="Attach files"
+        disabled={Boolean(snapshot.hydratingSessionID) || submitting}
+        onChange={(event) => {
+          if (event.target.files) {
+            attachFiles(event.target.files, "picker");
+          }
+          event.target.value = "";
+        }}
+      />
+      {composerAttachments.length > 0 && (
+        <Suspense fallback={null}>
+          <ComposerAttachments
+            attachments={composerAttachments}
+            onRemove={removeAttachment}
+          />
+        </Suspense>
+      )}
+      <div className="composerInputRow">
+        <textarea
+          ref={textareaRef}
+          value={draft}
+          rows={1}
+          placeholder="Ask QCode"
+          enterKeyHint="send"
+          disabled={Boolean(snapshot.hydratingSessionID) || submitting}
+          onChange={(event) => {
+            const value = event.target.value;
+            updateDraft(value);
+            const slashQuery = composerSlashQuery(value);
+            if (slashQuery !== undefined) {
+              setCommandMenuSource("slash");
+              setCommandQuery(slashQuery);
+              setCommandMenuOpen(true);
+            } else if (commandMenuSource === "slash") {
+              setCommandMenuOpen(false);
+              setCommandQuery("");
+            }
+          }}
+          onCompositionStart={() => {
+            composingRef.current = true;
+          }}
+          onCompositionEnd={() => {
+            composingRef.current = false;
+          }}
+          onPaste={(event) => {
+            const files = Array.from(event.clipboardData.files);
+            if (files.length === 0) return;
+            event.preventDefault();
+            attachFiles(files, "paste");
+          }}
+          onKeyDown={(event) => {
+            if (event.nativeEvent.isComposing || composingRef.current) return;
+            if (
+              commandMenuOpen &&
+              commandMenuSource === "slash" &&
+              composerSlashQuery(draft) !== undefined
+            ) {
+              if (event.key === "Enter") event.preventDefault();
+              return;
+            }
+            if (event.key === "Enter" && !event.shiftKey) {
+              event.preventDefault();
+              void submit(
+                activeTurn && (event.metaKey || event.ctrlKey)
+                  ? "steer"
+                  : "queue"
+              );
+            }
+          }}
+        />
+        <div className="composerActions">
+          {activeTurn && (
+            <IconButton
+              label="Stop turn"
+              danger
+              disabled={cancelingTurnID === activeTurn}
+              icon={cancelingTurnID === activeTurn
+                ? <LoaderCircle className="spin" size={19} />
+                : <CircleStop size={19} />}
+              onClick={() => requestCancel(activeTurn)}
+            />
+          )}
+          {(!activeTurn || Boolean(draft.trim())) && (
+            <>
+              {activeTurn &&
+                snapshot.contextResources.length === 0 &&
+                composerAttachments.length === 0 && (
+                <IconButton
+                  label="Steer current turn"
+                  disabled={submitting}
+                  icon={<Zap size={18} />}
+                  onClick={() => void submit("steer")}
+                />
+              )}
+              <IconButton
+                label={activeTurn
+                  ? "Queue next"
+                  : resumableTurnID
+                    ? "Continue"
+                    : "Send"}
+                primary
+                disabled={
+                  Boolean(snapshot.hydratingSessionID) ||
+                  !draft.trim() ||
+                  submitting ||
+                  attachmentBusy ||
+                  attachmentFailed ||
+                  Boolean(resumableTurnID && composerAttachments.length)
+                }
+                icon={submitting
+                  ? <LoaderCircle className="spin" size={19} />
+                  : activeTurn
+                    ? <ListPlus size={19} />
+                    : <Send size={19} />}
+                onClick={() => void submit("queue")}
+              />
+            </>
+          )}
+        </div>
+      </div>
+      <div className="composerControls">
+        <div>
+          <IconButton
+            label="Attach files"
+            icon={<Paperclip size={15} />}
+            disabled={
+              Boolean(snapshot.hydratingSessionID) ||
+              submitting ||
+              Boolean(resumableTurnID) ||
+              snapshot.contextResources.length >= maxComposerAttachments
+            }
+            onClick={() => attachmentInputRef.current?.click()}
+          />
+          <Suspense fallback={null}>
+            <ComposerCommandMenu
+              commands={composerCommands}
+              disabled={Boolean(snapshot.hydratingSessionID) || submitting}
+              open={commandMenuOpen}
+              query={commandQuery}
+              onOpenChange={(open) => {
+                setCommandMenuOpen(open);
+                if (open) {
+                  setCommandMenuSource("button");
+                  setCommandQuery("");
+                } else if (commandMenuSource === "slash") {
+                  updateDraft("");
+                  setCommandQuery("");
+                  setCommandMenuSource("button");
+                }
+              }}
+              onQueryChange={setCommandQuery}
+              onSelect={() => {
+                setCommandQuery("");
+                if (commandMenuSource === "slash") {
+                  updateDraft("");
+                }
+                setCommandMenuSource("button");
+              }}
+              onRequestComposerFocus={
+                commandMenuSource === "slash"
+                  ? () => textareaRef.current?.focus()
+                  : undefined
+              }
+            />
+          </Suspense>
+          <CompactSelect
+            label="Approval"
+            value={snapshot.profile?.profile.approval_posture ?? "auto"}
+            values={["suggest", "auto", "never"]}
+            disabled={!profileMutable(snapshot, "approval_posture") ||
+              Boolean(profilePending)}
+            onChange={(value) => void updateComposerProfile(
+              {approval_posture: value},
+              "Updating approval"
+            )}
+          />
+        </div>
+        <div>
+          <ComposerStats
+            key={snapshot.selectedSessionID}
+            attribution={contextAttribution}
+            capacity={selectedModelEntry?.capabilities.context_window}
+            receipt={latestReceipt?.data}
+            usage={snapshot.usage}
+            running={Boolean(activeTurn)}
+            previous={Boolean(latestReceipt && (
+              activeTurn && activeTurn !== latestReceipt.turnID ||
+              selected?.latest_turn_id && selected.latest_turn_id !== latestReceipt.turnID
+            ))}
+            terminal={latestReceiptTerminal}
+          />
+          <CompactCatalogSelect
+            label="Model"
+            value={selectedModelValue}
+            options={[
+              ...modelOptions,
+              {value: "__configure__", label: "New model..."}
+            ]}
+            disabled={Boolean(profilePending)}
+            onChange={(selection) => {
+              if (selection === "__configure__") {
+                // 只落到 Settings 的 Models 页；向导由用户在
+                // 页面内自行打开。
+                onConfigureModels();
+                return;
+              }
+              if (!profileMutable(snapshot, "model")) return;
+              // 兼容无分隔符的裸 model id（视为当前 provider）。
+              const separator = selection.indexOf("\u0000");
+              const provider = separator < 0
+                ? selectedProvider
+                : selection.slice(0, separator);
+              const model = separator < 0
+                ? selection
+                : selection.slice(separator + 1);
+              const target = snapshot.models.find(
+                (entry) =>
+                  entry.provider === provider &&
+                  entry.id === model
+              );
+              void updateComposerProfile({
+                ...(provider !== selectedProvider ? {provider} : {}),
+                model,
+                reasoning_effort:
+                  target?.capabilities.default_reasoning_effort ?? ""
+              }, "Updating model");
+            }}
+          />
+          {advertisedReasoningValues.length > 0 && (
+            <ReasoningMenu
+              value={snapshot.profile?.profile.reasoning_effort ?? ""}
+              defaultValue={
+                selectedModelEntry?.capabilities.default_reasoning_effort
+              }
+              values={reasoningValues}
+              disabled={!profileMutable(snapshot, "reasoning_effort") ||
+                Boolean(profilePending)}
+              onChange={(value) => void updateComposerProfile({
+                reasoning_effort: value
+              }, "Updating reasoning")}
+            />
+          )}
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function readTranscriptPosition(

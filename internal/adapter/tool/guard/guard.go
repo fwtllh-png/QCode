@@ -507,17 +507,27 @@ func invocationWriteTrees(invocation Invocation) []string {
 	return trees
 }
 
-func (g *Guard) settleWritePaths(invocation Invocation) ([]string, error) {
+func (g *Guard) isolatesWrites(invocation Invocation) bool {
+	return g.isolator != nil && invocation.Binding.IsolatesWriteTrees &&
+		len(invocationWriteTrees(invocation)) != 0
+}
+
+func (g *Guard) settleWritePaths(ctx context.Context, invocation Invocation) ([]string, error) {
+	// The isolator owns the baseline and journals only the actual settlement.
+	// Recording every dependency in the parent journal would duplicate that
+	// baseline and attribute unrelated concurrent edits to this command.
+	if g.isolatesWrites(invocation) {
+		return nil, nil
+	}
 	paths := invocationWritePaths(invocation)
 	seen := make(map[string]bool, len(paths))
 	for _, path := range paths {
 		seen[path] = true
 	}
-	remaining := sandbox.MaxExactWorkspaceWritePaths - len(paths)
 	for _, tree := range invocationWriteTrees(invocation) {
-		files, err := sandbox.CollectWriteTreeFiles(g.workspace, tree, remaining)
+		files, err := sandbox.CollectWriteTreeFiles(ctx, g.workspace, tree)
 		if err != nil {
-			return nil, err
+			return nil, writeTreePrecondition(tree, err)
 		}
 		for _, path := range files {
 			if seen[path] {
@@ -525,11 +535,20 @@ func (g *Guard) settleWritePaths(invocation Invocation) ([]string, error) {
 			}
 			seen[path] = true
 			paths = append(paths, path)
-			remaining--
 		}
 	}
 	sort.Strings(paths)
 	return paths, nil
+}
+
+func writeTreePrecondition(path string, err error) error {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
+	return tool.Precondition(tool.WithRecoveryHint(err, tool.RecoveryHint{
+		ErrorCategory: "write_tree_unavailable", RequiredAction: "check_write_paths",
+		Path: path, RetryOriginal: false,
+	}))
 }
 
 func (g *Guard) prepareFileWrites(
@@ -626,6 +645,15 @@ func (g *Guard) recordExactEditProofs(
 }
 
 func (g *Guard) preflightFileWrites(invocation Invocation) error {
+	for _, tree := range invocationWriteTrees(invocation) {
+		info, err := os.Lstat(tree)
+		if err != nil {
+			return writeTreePrecondition(tree, err)
+		}
+		if !info.IsDir() {
+			return writeTreePrecondition(tree, fmt.Errorf("write tree %q is no longer a directory", tree))
+		}
+	}
 	for _, path := range invocationWritePaths(invocation) {
 		fingerprint, _, _, err := workspacejournal.Snapshot(path)
 		if err != nil {
@@ -827,10 +855,9 @@ func (g *Guard) observeWriteTreeCreations(
 	for _, path := range known {
 		seen[path] = true
 	}
-	remaining := sandbox.MaxExactWorkspaceWritePaths - len(known)
 	var changes []FileChange
 	for _, tree := range trees {
-		files, err := sandbox.CollectWriteTreeFiles(g.workspace, tree, remaining)
+		files, err := sandbox.CollectWriteTreeFiles(ctx, g.workspace, tree)
 		if err != nil {
 			return err
 		}
@@ -839,7 +866,6 @@ func (g *Guard) observeWriteTreeCreations(
 				continue
 			}
 			seen[path] = true
-			remaining--
 			change, changed, err := g.observeFileChange(
 				ctx, workspacejournal.Fingerprint{Path: path}, path,
 			)

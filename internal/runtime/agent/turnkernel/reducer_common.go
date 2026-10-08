@@ -56,12 +56,7 @@ func applyEvaluateTurnStep(
 	}
 	switch {
 	case current.Completion != nil && current.Completion.Accepted:
-		if current.Policy.VerificationRequired &&
-			current.MutationRevision != 0 &&
-			(current.Verification.Mutation != current.MutationRevision ||
-				(current.Verification.Action != VerificationActionPassed &&
-					current.Verification.Action != VerificationActionReported &&
-					current.Verification.Action != VerificationActionReverted)) {
+		if verificationPending(current) {
 			transition.State.NextAction = StepActionVerify
 		} else {
 			transition.State.NextAction = StepActionComplete
@@ -114,8 +109,7 @@ func applyEvaluateTurnStep(
 		); err != nil {
 			return err
 		}
-	case current.Intent == protocol.TurnIntentWorkspaceChange &&
-		current.MutationRevision == 0:
+	case workspaceCompletionMissing(current):
 		if err := spend(
 			RepairWorkspace,
 			current.Policy.WorkspaceRepairLimit,
@@ -132,12 +126,7 @@ func applyEvaluateTurnStep(
 		); err != nil {
 			return err
 		}
-	case current.Policy.VerificationRequired &&
-		current.MutationRevision != 0 &&
-		(current.Verification.Mutation != current.MutationRevision ||
-			(current.Verification.Action != VerificationActionPassed &&
-				current.Verification.Action != VerificationActionReported &&
-				current.Verification.Action != VerificationActionReverted)):
+	case verificationPending(current):
 		transition.State.NextAction = StepActionVerify
 	default:
 		transition.State.NextAction = StepActionComplete
@@ -148,7 +137,7 @@ func applyEvaluateTurnStep(
 func completionRejectionAction(reason string) string {
 	switch reason {
 	case "no_observed_changes":
-		return "perform_workspace_mutation"
+		return "perform_workspace_mutation_or_explain_no_change"
 	case "verification_evidence_required":
 		return "exec_command"
 	case "pending_actions":

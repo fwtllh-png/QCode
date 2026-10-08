@@ -234,6 +234,7 @@ type Runtime struct {
 	closed bool
 
 	contextManifests sync.Map
+	narrativeWorkers sync.WaitGroup
 }
 
 // EnsurePlanExecutionReady closes the terminal-publication race.
@@ -401,7 +402,9 @@ func (r *Runtime) loop() {
 	r.cancelActive()
 	r.TurnService.waitWorkers()
 	r.SessionService.waitTitleWorkers()
-	_ = errors.Join(closeEngine(r.engine), r.hub.Close(context.Background()))
+	engineErr := closeEngine(r.engine)
+	r.narrativeWorkers.Wait()
+	_ = errors.Join(engineErr, r.hub.Close(context.Background()))
 	_ = r.content.Close(context.Background())
 	r.lifecycleMu.Lock()
 	r.closed = true

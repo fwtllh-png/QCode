@@ -184,6 +184,18 @@ func (r *Repository) CommitCurrentContext(
 		if currentErr != nil && !errors.Is(currentErr, sql.ErrNoRows) {
 			return currentErr
 		}
+		if commit.BaseRevision != nil {
+			// Business terminals advance the context without writing the
+			// maintenance root. Compare the same effective revision as recovery.
+			terminalRevision, err := r.latestTerminalContextRevision(ctx, tx, commit.ThreadID)
+			if err != nil {
+				return err
+			}
+			revision = max(revision, terminalRevision)
+			if revision != *commit.BaseRevision {
+				return errors.New("current context base revision conflict")
+			}
+		}
 		if currentErr == nil && revision >= commit.Snapshot.Revision {
 			return errors.New("current context revision conflict")
 		}
@@ -233,6 +245,42 @@ func (r *Repository) CommitCurrentContext(
 		r.releaseNewRefs(context.Background(), prior, manifest)
 	}
 	return nil
+}
+
+func (r *Repository) latestTerminalContextRevision(
+	ctx context.Context,
+	tx *sql.Tx,
+	threadID protocol.ThreadID,
+) (uint64, error) {
+	raw, err := r.turnFacts.LatestSessionDeltaTx(ctx, tx, threadID)
+	if err != nil || len(raw) == 0 {
+		return 0, err
+	}
+	var probe struct {
+		Manifest json.RawMessage `json:"manifest"`
+	}
+	if err := json.Unmarshal(raw, &probe); err != nil {
+		return 0, err
+	}
+	if len(probe.Manifest) != 0 {
+		envelope, err := agentcontext.DecodeContextEnvelope(raw)
+		if err != nil {
+			return 0, fmt.Errorf("decode terminal context: %w", err)
+		}
+		if envelope.Manifest.ThreadID != threadID {
+			return 0, errors.New("terminal context thread is inconsistent")
+		}
+		return envelope.Manifest.Revision, nil
+	}
+	delta, err := agentcontext.DecodeSessionDelta(raw)
+	if err != nil {
+		return 0, err
+	}
+	snapshot, err := delta.ContextSnapshot()
+	if err != nil {
+		return 0, err
+	}
+	return snapshot.Revision, nil
 }
 
 func (r *Repository) DeleteCurrentContext(
@@ -377,7 +425,12 @@ func (r *Repository) commitContextRebase(
 		if currentErr != nil && !errors.Is(currentErr, sql.ErrNoRows) {
 			return currentErr
 		}
-		if currentErr == nil && revision != envelope.BaseRevision {
+		terminalRevision, err := r.latestTerminalContextRevision(ctx, tx, envelope.ThreadID)
+		if err != nil {
+			return err
+		}
+		revision = max(revision, terminalRevision)
+		if (currentErr == nil || terminalRevision != 0) && revision != envelope.BaseRevision {
 			return errors.New("context rebase revision conflict")
 		}
 		if _, insertErr := tx.ExecContext(

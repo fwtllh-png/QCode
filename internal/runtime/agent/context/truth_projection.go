@@ -90,10 +90,14 @@ func PlanTruthEntities(plan Plan, turn uint64) []TruthEntity {
 			"runtime.plan",
 		))
 	}
-	for _, step := range plan.Steps {
+	for index, step := range plan.Steps {
+		key := step.ID
+		if key == "" {
+			key = fmt.Sprintf("unidentified:%d:%s", index, step.Title)
+		}
 		entity := NewTruthEntity(
 			EntityTodo,
-			strings.Join(strings.Fields(step.Title), " "),
+			key,
 			step.Title,
 			"runtime.plan",
 		)

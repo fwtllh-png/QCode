@@ -6,6 +6,10 @@
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <link rel="apple-touch-icon" href="/icon-192.png" />
     <link rel="manifest" href="/manifest.webmanifest" />
+    <!-- Inter 唯一字体面（tokens.css @font-face，400-700 可变字体）：preload 把发现
+         从 CSS 解析期提前到 HTML 解析期，消首帧 FOUT；crossorigin 必需——字体请求
+         始终按匿名 CORS 模式发起，缺失会让预载与 CSS 字体请求分流双下载。 -->
+    <link rel="preload" href="/fonts/Inter-latin-400-700.woff2" as="font" type="font/woff2" crossorigin />
     <title>QCode</title>
   </head>
   <body>

@@ -198,7 +198,7 @@ func TestHistoryReplacementAndCompactionInvalidateWorldBaseline(t *testing.T) {
 		messageWithText(provider.RoleAssistant, strings.Repeat("old answer ", 200), 2),
 		messageWithText(provider.RoleUser, "current", 3),
 	)
-	if receipt := engine.CompactForced(); receipt == nil {
+	if receipt := engine.compactForcedForTest(); receipt == nil {
 		t.Fatal("forced compaction did not produce a receipt")
 	}
 	if engine.context.World().Revision != 0 {
@@ -216,6 +216,7 @@ func TestPolicyAndSkillsChangesProduceTypedPatches(t *testing.T) {
 		textStream("one"), textStream("two"), textStream("three"),
 	}}
 	engine := newEngine(t, runtime, tool.NewRegistry(nil, nil))
+	engine.options.Context.RecentTailTurns = 2
 	skills := []SkillSummary{{
 		Name: "review", Description: "review code", Source: "builtin",
 		Path: "skills/review/SKILL.md",
@@ -247,8 +248,9 @@ func TestPolicyAndSkillsChangesProduceTypedPatches(t *testing.T) {
 	}
 	third := runtime.requests[2].Messages
 	if countWorldSection(third, "skills") != 1 ||
-		countWorldSection(third, promptcontext.PartitionSessionState) != 1 ||
-		countWorldMode(third, "patch") != 3 {
+		countWorldSection(third, promptcontext.PartitionSessionState) != 0 ||
+		countWorldMode(third, "patch") != 2 ||
+		!strings.Contains(joinMessageText(third), "turn=1 reason=recent_tail_turns") {
 		t.Fatalf("skills patch request=%+v", third)
 	}
 }

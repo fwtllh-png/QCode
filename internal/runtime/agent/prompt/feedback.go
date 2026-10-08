@@ -67,11 +67,13 @@ func ConvergenceFeedback(
 func WorkspaceChangeRequiredFeedback(turn uint64) provider.Message {
 	return feedback(turn,
 		"[completion_check]\n"+
-			"required_action=perform_workspace_mutation\n"+
+			"required_action=perform_workspace_mutation_or_explain_no_change\n"+
 			"observed_changes=0\n"+
 			"retry_original=false\n"+
 			"The workspace_change contract is not complete. Use a guarded mutation tool, "+
-			"then verify the observed changed paths before answering.")
+			"then verify the observed changed paths before answering. If no edit is needed, "+
+			"call turn_complete with no_change_reason and no_change_evidence citing successful file-read call IDs from this Turn. "+
+			"Do not manufacture a change just to satisfy this check.")
 }
 
 func CompletionDeclarationFeedback(turn uint64) provider.Message {

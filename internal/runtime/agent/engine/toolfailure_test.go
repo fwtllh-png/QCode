@@ -16,6 +16,7 @@ import (
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
 	toolresult "github.com/fwtllh-png/QCode/internal/adapter/tool/result"
 	"github.com/fwtllh-png/QCode/internal/adapter/tool/toolsearch"
+	"github.com/fwtllh-png/QCode/internal/common/workspacewrite"
 	"github.com/fwtllh-png/QCode/internal/persist/workspacejournal"
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
 	"github.com/fwtllh-png/QCode/internal/security/policy"
@@ -1103,5 +1104,56 @@ func TestToolSearchMaterializesForTheNextSample(t *testing.T) {
 	if contains(runtime.requests[0], "special_deploy") ||
 		!contains(runtime.requests[1], "special_deploy") {
 		t.Fatal("materialized tool was not added only after tool_search")
+	}
+}
+
+type scopedProcessFixture struct{ calls int }
+
+func (f *scopedProcessFixture) Descriptor() tool.Descriptor {
+	d := catalogFixtureTool("scope_process").Descriptor()
+	d.Capability = tool.CapabilityProcess
+	d.InputSchema = map[string]any{"type": "object", "properties": map[string]any{
+		"write_paths": map[string]any{"type": "array", "maxItems": workspacewrite.MaxDeclaredPaths, "items": map[string]any{"type": "string"}},
+	}}
+	return d
+}
+func (f *scopedProcessFixture) Execute(context.Context, json.RawMessage) (tool.Result, error) {
+	f.calls++
+	return tool.Result{Content: "check passed"}, nil
+}
+
+func TestEngineRepairsRejectedWriteScopeWithoutBlockingTurn(t *testing.T) {
+	paths := make([]string, workspacewrite.MaxDeclaredPaths+1)
+	for i := range paths {
+		paths[i] = fmt.Sprintf("%d.txt", i)
+	}
+	raw, err := json.Marshal(map[string]any{"write_paths": paths})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime := &scriptedProvider{streams: []provider.Stream{
+		toolCallStream("too-many", "scope_process", string(raw)),
+		toolCallStream("fixed", "scope_process", `{"write_paths":[]}`),
+		textStream("验证已完成。"),
+	}}
+	fixture := &scopedProcessFixture{}
+	registry := tool.NewRegistry(nil, nil)
+	if err := registry.Register(fixture); err != nil {
+		t.Fatal(err)
+	}
+	result, err := newEngine(t, runtime, registry).Run(t.Context(), "run check", nil)
+	if err != nil || result.State != Completed || len(runtime.requests) != 3 || fixture.calls != 1 {
+		t.Fatalf("result=%+v err=%v requests=%d executions=%d", result, err, len(runtime.requests), fixture.calls)
+	}
+	found := false
+	for _, message := range runtime.requests[1].Messages {
+		for _, block := range message.Blocks {
+			if block.ToolResult != nil && block.ToolResult.CallID == "too-many" && block.ToolResult.IsError {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Fatal("repair sample did not receive the rejected tool result")
 	}
 }

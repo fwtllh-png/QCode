@@ -26,6 +26,20 @@ func validateTerminalReceipt(
 		}
 		return nil
 	}
+	if receipt.Intent == protocol.TurnIntentWorkspaceChange && receipt.Outcome == protocol.TurnOutcomeUnchanged {
+		if receipt.WorkspaceOutcome == nil || len(receipt.WorkspaceOutcome.Conflicts) != 0 {
+			return errors.New("unchanged outcome lacks settled workspace evidence")
+		}
+		switch receipt.WorkspaceOutcome.Status {
+		case "unchanged":
+			if len(receipt.Changes) == 0 {
+				return nil
+			}
+		case "restored":
+			return nil
+		}
+		return errors.New("unchanged outcome contradicts workspace changes")
+	}
 	want := protocol.OutcomeForIntent(receipt.Intent)
 	if receipt.Outcome != want {
 		return fmt.Errorf(

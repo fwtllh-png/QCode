@@ -200,7 +200,7 @@ describe("projectTranscript", () => {
       {
         kind: "status",
         title: "Checks passed",
-        text: "Changed files are covered by recorded checks.",
+        text: "Recorded checks passed for the current changes.",
         failed: false
       },
       {kind: "receipt", data: {outcome: "changed"}},

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"slices"
 	"sort"
 	"strings"
@@ -85,6 +86,7 @@ func (e *protocolExecutor) TrustedBinding() tool.TrustedBinding {
 	binding := tool.TrustedBindingFromDescriptor(e.runtime.Descriptor())
 	binding.Capability = tool.CapabilityProcess
 	binding.ValidateMissingWriteParent = e.validateMissingWriteParent
+	binding.IsolatesWriteTrees = e.expand
 	binding.Required.ProcessTree = securitymodel.ProcessTreeGroupKill
 	binding.ProducesVerificationEvidence = true
 	binding.VerificationField = e.verificationField
@@ -314,8 +316,9 @@ func execCommandDescriptor() tool.Descriptor {
 					"items": map[string]any{"type": "string", "minLength": 1},
 				},
 				"write_paths": map[string]any{
-					"type":  "array",
-					"items": map[string]any{"type": "string"},
+					"type": "array", "maxItems": sandbox.MaxExactWorkspaceWritePaths,
+					"items":       map[string]any{"type": "string"},
+					"description": "Exact file or existing directory grants. The item limit counts declared paths, not files inside a directory. Prefer the narrowest output or cache directory needed by the command.",
 				},
 				"settle": map[string]any{
 					"type": "string",
@@ -503,6 +506,25 @@ func (p *commandProtocol) execCommand(
 		}))
 	}
 	if isolated.session != nil {
+		// Model calls may use absolute parent paths. Preserve their workspace
+		// meaning when moving the command to the isolated execution root.
+		input.CWD, err = filepath.Rel(p.workspace.Root(), directory)
+		if err != nil {
+			_ = isolated.Close()
+			return tool.Result{}, tool.Precondition(err)
+		}
+		for index, path := range input.WritePaths {
+			resolved, resolveErr := p.workspace.Resolve(path, sandbox.AllowMissing)
+			if resolveErr != nil {
+				_ = isolated.Close()
+				return tool.Result{}, tool.Precondition(resolveErr)
+			}
+			input.WritePaths[index], err = filepath.Rel(p.workspace.Root(), resolved)
+			if err != nil {
+				_ = isolated.Close()
+				return tool.Result{}, tool.Precondition(err)
+			}
+		}
 		workspace = isolated.workspace
 		sandboxBackend = isolated.backend
 		defer func() {
@@ -520,14 +542,25 @@ func (p *commandProtocol) execCommand(
 	if err != nil {
 		return tool.Result{}, fmt.Errorf("open isolated cwd %q: %w", input.CWD, err)
 	}
-	// The outer defer closes directoryFile at exit; after the reassignment
-	// above it refers to this isolated handle, so no second defer here (the
-	// parent handle was closed explicitly).
+	defer directoryFile.Close()
 	writePaths, err := (&Tool{workspace: workspace}).resolveWritePaths(
 		input.WritePaths,
 	)
 	if err != nil {
 		return tool.Result{}, fmt.Errorf("resolve command write paths: %w", err)
+	}
+	processContext := ctx
+	if isolated.session != nil {
+		if execution, bound := sandbox.ExecutionAuthorityFromContext(ctx); bound {
+			projected, projectErr := execution.RelocateWorkspace(p.workspace.Root(), workspace.Root())
+			if projectErr != nil {
+				return tool.Result{}, tool.Precondition(projectErr)
+			}
+			processContext, err = sandbox.WithExecutionAuthority(ctx, projected)
+			if err != nil {
+				return tool.Result{}, err
+			}
+		}
 	}
 	sandboxBackend, requireStrong := processSandbox(ctx, sandboxBackend)
 	// Apply the covered_paths default before the set -e decision: a defaulted
@@ -585,7 +618,7 @@ func (p *commandProtocol) execCommand(
 		defer network.Gate().BindRuntimeApprover(egress.RuntimeApproverFrom(ctx))()
 	}
 	id, err := p.manager.Create(
-		context.WithoutCancel(ctx),
+		context.WithoutCancel(processContext),
 		process.SessionOptions{
 			Command:                command,
 			DisplayCommand:         input.Command,

@@ -2,6 +2,7 @@ package engine
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"strings"
 	"syscall"
@@ -14,7 +15,43 @@ import (
 	provideropenai "github.com/fwtllh-png/QCode/internal/adapter/provider/openai"
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
 	"github.com/fwtllh-png/QCode/internal/runtime/agent/turnkernel"
+	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
 )
+
+func TestDuplicateToolArgumentMembersFailWithoutRetryAndRetainDraft(t *testing.T) {
+	fixture := newVerifyGateFixture(t, VerifyOptions{}, &scriptedVerifier{}, 0, 4)
+	fixture.engine.options.MaxRetries = 3
+	malformed := &eventErrorStream{events: []provider.StreamEvent{
+		{Type: provider.EventToolCallDelta, ToolCall: &provider.ToolCallFragment{
+			ID: "invalid-edit", Name: "file_edit",
+			Arguments: `{"path":"value.txt","old":"after","new":"must not execute","new"`,
+		}},
+	}}
+	fixture.provider.streams[2] = malformed
+	var states []State
+	result, err := fixture.engine.RunForTurn(t.Context(), "duplicate-members", "edit", func(event Event) error {
+		states = append(states, event.State)
+		return nil
+	})
+	var failure *provider.Failure
+	if err == nil || result.State != Failed || !errors.As(err, &failure) ||
+		failure.Code != provider.FailureMalformedResponse {
+		t.Fatalf("state = %s, error = %v", result.State, err)
+	}
+	assertOneTerminal(t, states, Failed)
+	problem := protocol.ProblemOf(err)
+	if problem == nil || problem.Fault == nil || problem.Fault.Disposition != protocol.FaultRetryTurn ||
+		problem.Fault.RetryOwner != protocol.FaultRetryOwnerHost ||
+		!strings.Contains(problem.Fault.RecoveryAction, "fresh model response") {
+		t.Fatalf("recovery problem = %+v", problem)
+	}
+	if len(fixture.provider.requests) != 3 || len(result.Tools) != 2 {
+		t.Fatalf("requests = %d, executed tools = %d", len(fixture.provider.requests), len(result.Tools))
+	}
+	if !fixture.journal.HasDraft("duplicate-members") || fixture.contents(t) != "after\n" {
+		t.Fatal("failure did not retain the preceding valid edit as a draft")
+	}
+}
 
 func TestR3DisconnectAfterConfirmedChunkContinuesWithoutLoss(t *testing.T) {
 	runtime := &scriptedProvider{streams: []provider.Stream{

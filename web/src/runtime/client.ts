@@ -252,6 +252,44 @@ function catalogHasActivatingWorkspace(
     !catalog.workspaces.some((workspace) => workspace.ready);
 }
 
+/** Workspace 激活等待的公共配置。宿主协议未通告服务端激活预算
+ *  （Bootstrap 与 workspace/list 响应均无相应字段），因此以客户端
+ *  配置字段的形式暴露；默认值沿用既有行为（50 次 × 400ms ≈ 20s），
+ *  覆盖 bootstrap 目录快照与实时 workspace/list 之间的激活间隙。 */
+export interface RuntimeClientOptions {
+  /** 等待 Workspace 就绪的总预算（毫秒）；必须为正有限数。 */
+  workspaceReadyBudgetMs?: number;
+  /** 就绪轮询间隔（毫秒）；必须为正有限数且不超过总预算。 */
+  workspaceReadyPollIntervalMs?: number;
+}
+
+/** 就绪等待默认总预算（毫秒）：与既有 50 次 × 400ms 行为等值的时间上界。 */
+export const WORKSPACE_READY_BUDGET_MS = 20_000;
+
+/** 就绪轮询默认间隔（毫秒）：沿用既有取值。 */
+export const WORKSPACE_READY_POLL_INTERVAL_MS = 400;
+
+function validateWorkspaceReadinessOptions(
+  budgetMs: number,
+  intervalMs: number
+): void {
+  if (!Number.isFinite(budgetMs) || budgetMs <= 0) {
+    throw new RangeError(
+      "workspaceReadyBudgetMs must be a positive finite number"
+    );
+  }
+  if (!Number.isFinite(intervalMs) || intervalMs <= 0) {
+    throw new RangeError(
+      "workspaceReadyPollIntervalMs must be a positive finite number"
+    );
+  }
+  if (intervalMs > budgetMs) {
+    throw new RangeError(
+      "workspaceReadyPollIntervalMs must not exceed workspaceReadyBudgetMs"
+    );
+  }
+}
+
 export class RuntimeClient {
   private cursor = 0;
   private socket?: WebSocket;
@@ -302,9 +340,21 @@ export class RuntimeClient {
   private storageWrite: Promise<void> = Promise.resolve();
   private storageTimer?: number;
   private pendingStorage?: {scope: string; value: BrowserProjectionState};
+  private readonly workspaceReadyBudgetMs: number;
+  private readonly workspaceReadyPollIntervalMs: number;
   constructor(
-    private readonly storage: BrowserStorage = new IndexedDBBrowserStorage()
+    private readonly storage: BrowserStorage = new IndexedDBBrowserStorage(),
+    options: RuntimeClientOptions = {}
   ) {
+    this.workspaceReadyBudgetMs =
+      options.workspaceReadyBudgetMs ?? WORKSPACE_READY_BUDGET_MS;
+    this.workspaceReadyPollIntervalMs =
+      options.workspaceReadyPollIntervalMs ??
+      WORKSPACE_READY_POLL_INTERVAL_MS;
+    validateWorkspaceReadinessOptions(
+      this.workspaceReadyBudgetMs,
+      this.workspaceReadyPollIntervalMs
+    );
     if (typeof window !== "undefined") {
       window.addEventListener("pagehide", this.flushBrowserState);
       document.addEventListener("visibilitychange", this.flushWhenHidden);
@@ -1905,7 +1955,12 @@ export class RuntimeClient {
     if (!response.ok) {
       throw new Error(`Bootstrap failed (${response.status})`);
     }
-    return response.json() as Promise<Bootstrap>;
+    try {
+      return JSON.parse(await response.text()) as Bootstrap;
+    } catch {
+      // 反向代理/网关返回 HTML 错误页时，避免不可读的 JSON 解析错误冒泡。
+      throw new Error(`Bootstrap failed (${response.status}) with a non-JSON response`);
+    }
   }
 
   private async call<T>(
@@ -1938,7 +1993,11 @@ export class RuntimeClient {
         signal: options.signal
       });
     } catch (error) {
-      if (!options.retryNetwork) throw error;
+      // 已中止的请求重试必然立即失败；服务重启窗口内零间隔重试也会
+      // 二次必败，先等待事件流重连退避的第一档（reconnectDelay(0)，
+      // 出处 reconnect.ts，文档见 docs/zh-CN/usage.md）。
+      if (!options.retryNetwork || options.signal?.aborted) throw error;
+      await new Promise((resolve) => window.setTimeout(resolve, reconnectDelay(0)));
       response = await fetch(`/api/v1/${route}`, {
         method: "POST",
         headers,
@@ -1946,7 +2005,19 @@ export class RuntimeClient {
         signal: options.signal
       });
     }
-    const envelope = (await response.json()) as Envelope<T>;
+    let envelope: Envelope<T>;
+    try {
+      envelope = JSON.parse(await response.text()) as Envelope<T>;
+    } catch {
+      // 网关/代理返回 HTML 错误页等非 JSON 响应时，包装成带状态码的
+      // RuntimeProblem，与协议错误走相同的呈现路径。
+      throw new RuntimeProblem({
+        version: 1,
+        code: "internal",
+        message: `Request failed (${response.status}) with a non-JSON response`,
+        retryable: false
+      });
+    }
     if (!response.ok || envelope.problem) {
       throw new RuntimeProblem(
         envelope.problem ?? {
@@ -2357,7 +2428,8 @@ export class RuntimeClient {
   private serverBuild = "";
 
   private async awaitWorkspaceReady(workspaceID: string, scope: RequestScope): Promise<void> {
-    for (let attempt = 0; attempt < 50; attempt += 1) {
+    const deadline = Date.now() + this.workspaceReadyBudgetMs;
+    for (;;) {
       if (!scope.live) return;
       const catalog = await this.call<WorkspaceCatalog>(
         "workspace/list",
@@ -2374,8 +2446,12 @@ export class RuntimeClient {
       if (workspace.problem) {
         throw new Error(workspace.problem);
       }
-      // 仍在激活中：400ms 后重试，约 20s 上限。
-      await new Promise((resolve) => window.setTimeout(resolve, 400));
+      // 仍在激活中：按配置间隔轮询；下一轮会超出预算即停止并失败。
+      // 参数出处与默认值见 RuntimeClientOptions 与 WORKSPACE_READY_* 常量。
+      if (Date.now() + this.workspaceReadyPollIntervalMs > deadline) break;
+      await new Promise((resolve) =>
+        window.setTimeout(resolve, this.workspaceReadyPollIntervalMs)
+      );
     }
     throw new Error("Workspace Runtime is not ready");
   }

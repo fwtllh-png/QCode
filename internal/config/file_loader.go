@@ -11,6 +11,7 @@ import (
 )
 
 type executionFileConfig struct {
+	WorkspaceMergeMaxDiffBytes *int     `toml:"workspace_merge_max_diff_bytes"`
 	Provider                   *string  `toml:"provider"`
 	Model                      *string  `toml:"model"`
 	Protocol                   *string  `toml:"protocol"`
@@ -456,6 +457,7 @@ func applyExecutionFile(
 	applyDurationString(input.ResponseHeaderTimeout, &execution.ResponseHeaderTimeout, fieldResponseHeaderTimeout, source, provenance)
 	applyDurationString(input.IdleTimeout, &execution.IdleTimeout, fieldIdleTimeout, source, provenance)
 	applyInt(input.MaxConcurrent, &execution.MaxConcurrent, fieldMaxConcurrent, source, provenance)
+	applyInt(input.WorkspaceMergeMaxDiffBytes, &execution.WorkspaceMergeMaxDiffBytes, fieldWorkspaceMergeMaxDiffBytes, source, provenance)
 	applyFloat64(input.RateLimit, &execution.RateLimit, fieldRateLimit, source, provenance)
 	applyInt(input.ProviderRetryLimit, &execution.ProviderRetryLimit, fieldProviderRetryLimit, source, provenance)
 	applyInt(input.RateLimitRetryLimit, &execution.RateLimitRetryLimit, fieldRateLimitRetryLimit, source, provenance)

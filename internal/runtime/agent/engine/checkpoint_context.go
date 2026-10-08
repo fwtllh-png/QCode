@@ -134,6 +134,15 @@ func (e *Engine) ForkFromContextSnapshot(
 	}
 	forked.mu.Lock()
 	forked.applyContextSnapshot(reconciled)
+	// Inherited turn identities remain valid archive pointers in the child.
+	for turnID, number := range reconciled.HistoryTurns {
+		forked.turnIDs[turnID] = number
+	}
+	if reconciled.Conversation != nil {
+		for _, source := range reconciled.Conversation.Sources {
+			forked.turnIDs[source.TurnID] = source.Turn
+		}
+	}
 	forked.mu.Unlock()
 	return forked, receipt, nil
 }
@@ -156,6 +165,7 @@ func (e *Engine) currentWorkspaceBinding(
 // applyContextSnapshot changes only live Context state. Usage and cost remain
 // monotonic accounting owned by the receiving Engine.
 func (e *Engine) applyContextSnapshot(snapshot agentcontext.ContextSnapshot) {
+	e.invalidatePendingNarrative()
 	e.history = cloneMessages(snapshot.History)
 	for index, turn := range snapshot.MessageTurns {
 		if index < len(e.history) {
@@ -173,6 +183,7 @@ func (e *Engine) applyContextSnapshot(snapshot agentcontext.ContextSnapshot) {
 		snapshot.Window,
 		snapshot.History,
 	)
+	e.context.SetConversation(snapshot.Conversation)
 	if snapshot.Plan != nil {
 		e.setPlan(snapshot.Plan.Clone())
 	} else {

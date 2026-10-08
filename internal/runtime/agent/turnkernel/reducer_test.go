@@ -455,7 +455,7 @@ func TestReducerOwnsCompletionAcceptanceAndRuntimeBindings(t *testing.T) {
 			state:     startSampling(t, protocol.TurnIntentWorkspaceChange),
 			candidate: base,
 			reason:    "no_observed_changes",
-			action:    "perform_workspace_mutation",
+			action:    "perform_workspace_mutation_or_explain_no_change",
 		},
 		{
 			name:  "incomplete work becomes resumable blocked outcome",

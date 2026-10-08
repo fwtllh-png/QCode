@@ -201,9 +201,6 @@ func ParseTruthCapsule(text string) (TruthCapsule, bool, error) {
 
 type Narrative struct {
 	Items []NarrativeItem `json:"items,omitempty"`
-	// Lines is retained only for deterministic legacy render callers. New
-	// semantic artifacts always use Items and never recursively summarize Lines.
-	Lines []string `json:"-"`
 }
 
 type StructuredRender struct {
@@ -291,9 +288,6 @@ func RenderStructured(
 }
 
 func (n Narrative) renderLines() []string {
-	if len(n.Items) == 0 {
-		return append([]string(nil), n.Lines...)
-	}
 	result := make([]string, 0, len(n.Items))
 	for _, item := range n.Items {
 		result = append(result, item.Kind+": "+item.Text)

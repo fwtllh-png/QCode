@@ -106,8 +106,8 @@ type CurrentContextStore interface {
 type ContextMaintenanceEngine interface {
 	// PreparePostTurnNarrative captures the narrative input synchronously and
 	// returns a runner that settles it off the turn queue's critical path. A
-	// nil runner with a nil error means no narrative is scheduled. The engine
-	// joins the pending narrative before its next turn starts.
+	// nil runner with a nil error means no narrative is scheduled. The next
+	// turn consumes ready candidates without joining generation.
 	PreparePostTurnNarrative(
 		protocol.ThreadID,
 		protocol.TurnID,

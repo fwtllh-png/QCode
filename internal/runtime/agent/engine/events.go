@@ -47,32 +47,34 @@ type Event struct {
 	// Sample is which provider call within the turn a usage report belongs to.
 	// Usage is cumulative within a sample, so a consumer keeps the last report
 	// per sample rather than adding them up.
-	Sample             uint32                            `json:"sample,omitempty"`
-	SampleID           string                            `json:"sample_id,omitempty"`
-	SampleContext      *protocol.SampleContextData       `json:"sample_context,omitempty"`
-	ErrorCode          protocol.ErrorCode                `json:"error_code,omitempty"`
-	Error              string                            `json:"error,omitempty"`
-	Fault              *protocol.FaultMetadata           `json:"fault,omitempty"`
-	Convergence        *protocol.TurnConvergence         `json:"convergence,omitempty"`
-	CancelReason       string                            `json:"cancel_reason,omitempty"`
-	SecondaryIssues    []TerminalIssue                   `json:"secondary_issues,omitempty"`
-	Compaction         *CompactionReceipt                `json:"compaction,omitempty"`
-	ContextBudget      *ContextBudgetSnapshot            `json:"context_budget,omitempty"`
-	Approval           *toolguard.ApprovalRequest        `json:"approval,omitempty"`
-	ApprovalResolution *ApprovalResolution               `json:"approval_resolution,omitempty"`
-	Input              *interact.Request                 `json:"input,omitempty"`
-	Diagnostics        []verify.DiagnosticReceipt        `json:"diagnostics,omitempty"`
-	FileChanges        []tool.WorkspaceChange            `json:"file_changes,omitempty"`
-	Verification       *VerificationReceipt              `json:"verification,omitempty"`
-	Completion         *tool.CompletionDeclaration       `json:"completion,omitempty"`
-	ProviderRetry      *ProviderRetry                    `json:"provider_retry,omitempty"`
-	ModelExecution     *ModelExecution                   `json:"model_execution,omitempty"`
-	ReasoningCompleted *ModelReasoning                   `json:"reasoning_completed,omitempty"`
-	OutputDiscarded    *ModelOutputDiscarded             `json:"output_discarded,omitempty"`
-	Commentary         *protocol.CommentaryCompletedData `json:"commentary,omitempty"`
-	ToolOutput         *ToolOutput                       `json:"tool_output,omitempty"`
-	CatalogChanged     *CatalogChanged                   `json:"catalog_changed,omitempty"`
-	MCPHealthChanged   *MCPHealthChanged                 `json:"mcp_health_changed,omitempty"`
+	Sample             uint32                             `json:"sample,omitempty"`
+	SampleID           string                             `json:"sample_id,omitempty"`
+	SampleContext      *protocol.SampleContextData        `json:"sample_context,omitempty"`
+	ContextProjection  *protocol.ReceiptContextProjection `json:"context_projection,omitempty"`
+	InputContext       *protocol.SampleContextData        `json:"input_context,omitempty"`
+	ErrorCode          protocol.ErrorCode                 `json:"error_code,omitempty"`
+	Error              string                             `json:"error,omitempty"`
+	Fault              *protocol.FaultMetadata            `json:"fault,omitempty"`
+	Convergence        *protocol.TurnConvergence          `json:"convergence,omitempty"`
+	CancelReason       string                             `json:"cancel_reason,omitempty"`
+	SecondaryIssues    []TerminalIssue                    `json:"secondary_issues,omitempty"`
+	Compaction         *CompactionReceipt                 `json:"compaction,omitempty"`
+	ContextBudget      *ContextBudgetSnapshot             `json:"context_budget,omitempty"`
+	Approval           *toolguard.ApprovalRequest         `json:"approval,omitempty"`
+	ApprovalResolution *ApprovalResolution                `json:"approval_resolution,omitempty"`
+	Input              *interact.Request                  `json:"input,omitempty"`
+	Diagnostics        []verify.DiagnosticReceipt         `json:"diagnostics,omitempty"`
+	FileChanges        []tool.WorkspaceChange             `json:"file_changes,omitempty"`
+	Verification       *VerificationReceipt               `json:"verification,omitempty"`
+	Completion         *tool.CompletionDeclaration        `json:"completion,omitempty"`
+	ProviderRetry      *ProviderRetry                     `json:"provider_retry,omitempty"`
+	ModelExecution     *ModelExecution                    `json:"model_execution,omitempty"`
+	ReasoningCompleted *ModelReasoning                    `json:"reasoning_completed,omitempty"`
+	OutputDiscarded    *ModelOutputDiscarded              `json:"output_discarded,omitempty"`
+	Commentary         *protocol.CommentaryCompletedData  `json:"commentary,omitempty"`
+	ToolOutput         *ToolOutput                        `json:"tool_output,omitempty"`
+	CatalogChanged     *CatalogChanged                    `json:"catalog_changed,omitempty"`
+	MCPHealthChanged   *MCPHealthChanged                  `json:"mcp_health_changed,omitempty"`
 }
 
 func modelMetadataProvenance(

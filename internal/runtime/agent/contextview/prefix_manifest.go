@@ -7,7 +7,6 @@ import (
 	"fmt"
 
 	"github.com/fwtllh-png/QCode/internal/adapter/model"
-	"github.com/fwtllh-png/QCode/internal/adapter/provider"
 	agentcontext "github.com/fwtllh-png/QCode/internal/runtime/agent/context"
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
 )
@@ -54,38 +53,6 @@ func PrefixRequestIdentity(
 		NativeSearch:    nativeSearch,
 	})
 	return routeDigest, prefixDigest(properties)
-}
-
-func BuildPrefixManifest(
-	snapshot agentcontext.MessageSnapshot,
-	estimate agentcontext.Estimator,
-	routeDigest string,
-	propertyDigest string,
-) (PrefixManifest, error) {
-	contextDigest, err := snapshot.Digest()
-	if err != nil {
-		return PrefixManifest{}, err
-	}
-	items := snapshot.Items()
-	manifest := PrefixManifest{
-		RouteDigest: routeDigest, PropertyDigest: propertyDigest,
-		ContextDigest: contextDigest, Items: make([]PrefixItem, 0, len(items)),
-	}
-	for _, item := range items {
-		tokens, estimateErr := estimate.Estimate([]provider.Message{item.Message})
-		if estimateErr != nil {
-			return PrefixManifest{}, estimateErr
-		}
-		manifest.Items = append(manifest.Items, PrefixItem{item.ID, item.Kind, tokens})
-	}
-	if definitions := snapshot.Definitions(); len(definitions) != 0 {
-		encoded, encodeErr := json.Marshal(definitions)
-		if encodeErr != nil {
-			return PrefixManifest{}, encodeErr
-		}
-		manifest.ToolDefinitionDigest = prefixDigest(encoded)
-	}
-	return manifest, nil
 }
 
 // BuildPrefixManifestFromMeasurement builds the manifest from a measurement

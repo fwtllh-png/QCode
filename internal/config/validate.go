@@ -215,8 +215,9 @@ func (s Snapshot) Validate() error {
 			"must be positive")
 	}
 	view := s.Config.Context.View
-	if err := checkRange(fieldViewRecentTailTurns, view.RecentTailTurns, 128); err != nil {
-		return err
+	if view.RecentTailTurns < 0 || view.RecentTailTurns > 128 {
+		return fieldError(fieldViewRecentTailTurns, s.Provenance,
+			"must be between 0 and 128 (zero selects by capacity)")
 	}
 	if view.KeepRecentToolResults < 0 || view.KeepRecentToolResults > 128 {
 		return fieldError(fieldViewKeepRecentToolResults, s.Provenance,
@@ -245,10 +246,6 @@ func (s Snapshot) Validate() error {
 		return fieldError(fieldViewNarrativeMode, s.Provenance,
 			"must be off or post_turn")
 	}
-	if view.Digest == "ledger+narrative" && view.NarrativeMode != "post_turn" {
-		return fieldError(fieldViewNarrativeMode, s.Provenance,
-			"must be post_turn when digest is ledger+narrative")
-	}
 	for _, limit := range []struct {
 		field   string
 		value   int
@@ -260,6 +257,9 @@ func (s Snapshot) Validate() error {
 		{fieldCompactOwnerDeltaMaxSegments, compaction.OwnerDeltaMaxSegments, 1024},
 		{fieldCompactOwnerDeltaMaxBytes, compaction.OwnerDeltaMaxBytes, 16 << 20},
 	} {
+		if limit.value == 0 && (limit.field == fieldCompactSemanticNarrativeMaxInputTokens || limit.field == fieldCompactSemanticNarrativeMaxItems || limit.field == fieldCompactSemanticNarrativeItemMaxBytes) {
+			continue
+		}
 		if err := checkRange(limit.field, limit.value, limit.maximum); err != nil {
 			return err
 		}
@@ -301,6 +301,9 @@ func (s Snapshot) Validate() error {
 	}
 	if execution.Workspace == "" {
 		return fieldError(fieldWorkspace, s.Provenance, "must not be empty")
+	}
+	if execution.WorkspaceMergeMaxDiffBytes <= 0 {
+		return fieldError(fieldWorkspaceMergeMaxDiffBytes, s.Provenance, "must be positive")
 	}
 	if execution.MaxSteps < 0 {
 		return fieldError(fieldMaxSteps, s.Provenance, "must be non-negative")

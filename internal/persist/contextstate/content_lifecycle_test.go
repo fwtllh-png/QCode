@@ -32,6 +32,14 @@ func TestSessionDeletionPreservesSharedContextUntilLastOwner(t *testing.T) {
 		History:   []provider.Message{provider.TextMessage(provider.RoleUser, "shared conversation")},
 		Workspace: agentcontext.WorkspaceBinding{WorkspaceIdentity: "workspace:test"},
 	}
+	source := agentcontext.IndexConversationAnswer("first", "report", 1, "1. 共享报告第一项\n2. 最后一个所有者仍需引用的定义")
+	snapshot.Conversation = &agentcontext.ConversationState{}
+	if err := snapshot.Conversation.Add(source); err != nil {
+		t.Fatal(err)
+	}
+	if err := snapshot.Conversation.Select(agentcontext.NewConversationSelection(nil, []string{source.Items[1].ID}, 1, "report", "第二项"), nil); err != nil {
+		t.Fatal(err)
+	}
 	if err := snapshot.Seal(); err != nil {
 		t.Fatal(err)
 	}
@@ -51,6 +59,9 @@ func TestSessionDeletionPreservesSharedContextUntilLastOwner(t *testing.T) {
 	got, found, err := repo.TurnBaseline(t.Context(), "second", "turn")
 	if err != nil || !found || got.Digest != snapshot.Digest {
 		t.Fatalf("shared baseline lost: found=%v err=%v", found, err)
+	}
+	if got.Conversation == nil || got.Conversation.Sources[source.ID].Text != source.Text || got.Conversation.Selection.ItemIDs[0] != source.Items[1].ID {
+		t.Fatal("shared conversation source or focus was collected")
 	}
 	if _, err := sessions.DiscardLifecycle(t.Context(), "second", 1); err != nil {
 		t.Fatal(err)

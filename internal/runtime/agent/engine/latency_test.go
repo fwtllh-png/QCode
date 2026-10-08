@@ -3,6 +3,8 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -81,9 +83,9 @@ func (s *timedStream) Recv() (provider.StreamEvent, error) {
 func (*timedStream) Close() error { return nil }
 
 // latencyTool needs approval (it writes) and takes a known amount of time. It
-// reports a file change without touching the disk so the verify gate has
-// something to verify.
+// writes a real file so the journal and verify gate observe the same change.
 type latencyTool struct {
+	root  string
 	clock *latencyClock
 	spent time.Duration
 }
@@ -109,6 +111,9 @@ func (latencyTool) Descriptor() tool.Descriptor {
 
 func (t latencyTool) Execute(_ context.Context, raw json.RawMessage) (tool.Result, error) {
 	t.clock.advance(t.spent)
+	if err := os.WriteFile(filepath.Join(t.root, "a.txt"), []byte("changed\n"), 0o600); err != nil {
+		return tool.Result{}, err
+	}
 	return tool.Result{
 		Content: string(raw),
 		Outcome: &tool.Outcome{Facts: &tool.OutcomeFacts{
@@ -358,7 +363,12 @@ type latencyEngineOptions struct {
 
 func newLatencyEngine(t *testing.T, options latencyEngineOptions) *Engine {
 	t.Helper()
+	root := t.TempDir()
 	registry := tool.NewRegistry(nil, nil)
+	if value, ok := options.tool.(latencyTool); ok {
+		value.root = root
+		options.tool = value
+	}
 	if options.tool != nil {
 		if err := registry.Register(options.tool); err != nil {
 			t.Fatal(err)
@@ -368,7 +378,6 @@ func newLatencyEngine(t *testing.T, options latencyEngineOptions) *Engine {
 	if posture == "" {
 		posture = policy.PermissionBypass
 	}
-	root := t.TempDir()
 	engineOptions := Options{ProviderConfig: ProviderConfig{Provider: &timedProvider{clock: options.clock, calls: options.calls},
 		Route: testRoute(t), MaxOutputTokens: 128, MaxSteps: 8}, ToolConfig: ToolConfig{Tools: registry,
 

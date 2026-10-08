@@ -136,8 +136,8 @@ func TestBoundToolCallArgumentsKeepsDeclaredCommandShape(t *testing.T) {
 		Blocks: []provider.ContentBlock{{
 			Type: provider.ContentToolCall,
 			ToolCall: &provider.ToolCall{
-				ID:   "exec-1",
-				Name: "exec_command",
+				ID:        "exec-1",
+				Name:      "exec_command",
 				Arguments: `{"command":"` + command + `","cwd":".","timeout_ms":10000}`,
 			},
 		}},
@@ -275,4 +275,10 @@ func TestSummarizeClosedAssistantTextRewritesOlderLongCommentary(t *testing.T) {
 
 func ptrMessage(message provider.Message) *provider.Message {
 	return &message
+}
+
+func textTurn(role provider.Role, text string, turn uint64) provider.Message {
+	message := provider.TextMessage(role, text)
+	message.Turn = turn
+	return message
 }

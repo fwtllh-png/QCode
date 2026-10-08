@@ -60,7 +60,7 @@ func TestTaskCapsuleRedactsAndExcludesParentTranscript(t *testing.T) {
 		t.Fatalf("task capsule = %s", fork.Prompt)
 	}
 	if len(fork.Receipt.Digest) != 64 ||
-		fork.Receipt.Bytes > fork.Receipt.MaxBytes ||
+		fork.Receipt.MaxBytes > 0 && fork.Receipt.Bytes > fork.Receipt.MaxBytes ||
 		fork.Receipt.TokenEstimate > int(fork.Receipt.MaxTokens) {
 		t.Fatalf("receipt budget = %+v", fork.Receipt)
 	}
@@ -100,7 +100,7 @@ func TestTaskCapsuleUsesParentRemainingCapacityAndChildBudget(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fork.Receipt.MaxTokens != 600 || fork.Receipt.MaxBytes != 2400 {
+	if fork.Receipt.MaxTokens != 600 || fork.Receipt.MaxBytes != 0 {
 		t.Fatalf("parent-derived receipt = %+v", fork.Receipt)
 	}
 	request.Agent.Budget.MaxTokens = 400
@@ -108,7 +108,7 @@ func TestTaskCapsuleUsesParentRemainingCapacityAndChildBudget(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fork.Receipt.MaxTokens != 400 || fork.Receipt.MaxBytes != 1600 {
+	if fork.Receipt.MaxTokens != 400 || fork.Receipt.MaxBytes != 0 {
 		t.Fatalf("child-bounded receipt = %+v", fork.Receipt)
 	}
 }
@@ -196,8 +196,8 @@ func TestContextBudgetIsDeterministicAndUTF8Safe(t *testing.T) {
 	forker := NewContextForker(policy)
 	snapshot := contextsnapshot.Snapshot{
 		SourceThread: "thread-parent", SourceTurn: "turn-parent",
-		ParentGoal:  strings.Repeat("目标", 400),
-		UserRequest: strings.Repeat("请求", 400),
+		ParentGoal:  "完整目标",
+		UserRequest: "完整请求",
 	}
 	for index := 0; index < 20; index++ {
 		snapshot.RelevantFiles = append(snapshot.RelevantFiles, contextsnapshot.RelevantFile{
@@ -524,5 +524,74 @@ func TestSubagentDoesNotImportRuntimeImplementation(t *testing.T) {
 				t.Errorf("%s imports %s: subagent must use shared contracts and injected interfaces", name, imported)
 			}
 		}
+	}
+}
+
+func TestP4ContextModesPreserveSelectedReferences(t *testing.T) {
+	for _, mode := range []ContextMode{ContextFresh, ContextTaskCapsule, ContextLastNTurns, ContextFull} {
+		t.Run(string(mode), func(t *testing.T) {
+			snapshot := contextsnapshot.Snapshot{SourceThread: "parent", SourceTurn: "last", References: []contextsnapshot.Reference{{
+				SourceID: "report", SourceThread: "parent", SourceTurn: "old", ContentDigest: "source-digest",
+				ItemIDs: []string{"item:2"}, Start: 10, End: 40, Text: "2. 保留原编号的定义 token=private-value",
+			}}}
+			for i := 1; i <= 20; i++ {
+				snapshot.Messages = append(snapshot.Messages, contextsnapshot.Message{Role: "assistant", Turn: uint64(i), Blocks: []contextsnapshot.Block{{Kind: "text", Text: strings.Repeat("optional history ", 500)}}})
+			}
+			forker := NewContextForker(ContextPolicy{MaxBytes: 4096, MaxTokens: 10000})
+			forker.BindSource(contextFixtureSource{snapshot: snapshot})
+			request := contextRequest(mode)
+			request.Role.FullContext = true
+			fork, err := forker.Fork(t.Context(), request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if mode == ContextFresh {
+				if len(fork.Capsule.References) != 0 {
+					t.Fatal("fresh inherited parent definitions")
+				}
+				return
+			}
+			if len(fork.Capsule.References) != 1 {
+				t.Fatal("budget dropped necessary definition")
+			}
+			ref := fork.Capsule.References[0]
+			if !strings.Contains(ref.Text, "保留原编号的定义") || strings.Contains(ref.Text, "private-value") || !ref.Redacted || ref.ContentDigest != "source-digest" || ref.ItemIDs[0] != "item:2" {
+				t.Fatalf("invalid inherited reference: %+v", ref)
+			}
+			fork.Capsule.References[0].ItemIDs[0] = "mutated"
+			if snapshot.References[0].ItemIDs[0] != "item:2" {
+				t.Fatal("child mutated parent reference")
+			}
+			if fork.Receipt.MaxTokens != request.Role.DefaultBudget.MaxTokens {
+				t.Fatal("explicit policy bypassed child budget")
+			}
+		})
+	}
+}
+
+func TestP4ContextRefusesToClipRequiredMaterial(t *testing.T) {
+	for _, kind := range []string{"reference", "user_request", "parent_goal", "role_instructions", "workspace_rule"} {
+		t.Run(kind, func(t *testing.T) {
+			text := strings.Repeat("不可静默丢失的约束", 500)
+			snapshot := contextsnapshot.Snapshot{}
+			request := contextRequest(ContextTaskCapsule)
+			switch kind {
+			case "reference":
+				snapshot.References = []contextsnapshot.Reference{{SourceID: "report", Text: text}}
+			case "user_request":
+				snapshot.UserRequest = text
+			case "parent_goal":
+				snapshot.ParentGoal = text
+			case "role_instructions":
+				request.Agent.RoleInstructions = text
+			case "workspace_rule":
+				snapshot.WorkspaceRules = []string{text}
+			}
+			forker := NewContextForker(ContextPolicy{MaxBytes: 2000})
+			forker.BindSource(contextFixtureSource{snapshot: snapshot})
+			if _, err := forker.Fork(t.Context(), request); err == nil || !strings.Contains(err.Error(), "does not fit") {
+				t.Fatalf("required material clipped: %v", err)
+			}
+		})
 	}
 }

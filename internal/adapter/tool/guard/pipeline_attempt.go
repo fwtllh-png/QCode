@@ -426,7 +426,13 @@ func (g *Guard) runAttempt(
 		releaseClaims()
 		releaseAdmission()
 	}
-	writePaths, err := g.settleWritePaths(invocation)
+	if err := g.preflightFileWrites(invocation); err != nil {
+		release()
+		run.err = err
+		run.receipt = attemptReceipt(sequence, mode, started, g.now(), tool.OutcomeRejected, "prepare_writes", run.profile)
+		return run
+	}
+	writePaths, err := g.settleWritePaths(ctx, invocation)
 	if err != nil {
 		release()
 		run.err = err
@@ -494,6 +500,9 @@ func (g *Guard) runAttempt(
 		return run
 	}
 	runContext = tool.WithIsolator(runContext, g.isolator)
+	if g.isolatesWrites(invocation) {
+		runContext = tool.RequireWriteIsolation(runContext)
+	}
 	runContext = environment.WithPreparationFacts(runContext, g.preparationFacts)
 	// Network tools get the connect-time approver so redirect chains and
 	// runtime-discovered origins ask once mid-fetch instead of failing the
@@ -578,7 +587,7 @@ func (g *Guard) runAttempt(
 			run.err = recordErr
 		}
 	}
-	if !fileBrokerAware && !isolatedThreeWaySettlement(run.result) {
+	if !fileBrokerAware && !g.isolatesWrites(invocation) && !isolatedThreeWaySettlement(run.result) {
 		if len(writePaths) != 0 {
 			if finishErr := g.finishFileWrites(
 				ctx,

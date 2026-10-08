@@ -13,6 +13,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/fwtllh-png/QCode/internal/common/contextsnapshot"
+	"github.com/fwtllh-png/QCode/internal/common/tokenestimate"
 	"github.com/fwtllh-png/QCode/internal/observability/telemetry"
 )
 
@@ -126,6 +127,7 @@ type TaskCapsule struct {
 	Evidence           []contextsnapshot.Evidence     `json:"evidence,omitempty"`
 	WorkspaceRules     []string                       `json:"workspace_rules,omitempty"`
 	RecentTurns        []ContextTurn                  `json:"recent_turns,omitempty"`
+	References         []contextsnapshot.Reference    `json:"references,omitempty"`
 	Exclusions         []string                       `json:"exclusions"`
 	ProhibitedActions  []string                       `json:"prohibited_actions"`
 }
@@ -234,24 +236,10 @@ func (f *ContextForker) Fork(
 	if request.Agent.Budget.MaxCostUSD > 0 {
 		budget.MaxCostUSD = request.Agent.Budget.MaxCostUSD
 	}
-	if policy.MaxTokens == 0 {
-		policy.MaxTokens = snapshot.AvailableTokens
-		if budget.MaxTokens != 0 {
-			if policy.MaxTokens == 0 {
-				policy.MaxTokens = budget.MaxTokens
-			} else {
-				policy.MaxTokens = min(policy.MaxTokens, budget.MaxTokens)
-			}
+	for _, limit := range []uint64{snapshot.AvailableTokens, budget.MaxTokens} {
+		if limit != 0 && (policy.MaxTokens == 0 || limit < policy.MaxTokens) {
+			policy.MaxTokens = limit
 		}
-	}
-	if policy.MaxBytes <= 0 && policy.MaxTokens != 0 {
-		const bytesPerEstimatedToken = 4
-		maxInt := uint64(^uint(0) >> 1)
-		bytes := maxInt
-		if policy.MaxTokens <= maxInt/bytesPerEstimatedToken {
-			bytes = policy.MaxTokens * bytesPerEstimatedToken
-		}
-		policy.MaxBytes = int(bytes)
 	}
 	if policy.MaxToolResultBytes <= 0 {
 		policy.MaxToolResultBytes = policy.MaxBytes
@@ -293,6 +281,13 @@ func (f *ContextForker) Fork(
 		capsule.RelevantFiles = sanitizeFiles(snapshot.RelevantFiles, policy.MaxFiles, sanitize)
 		capsule.Evidence = sanitizeEvidence(snapshot.Evidence, policy.MaxEvidence, sanitize)
 		capsule.WorkspaceRules = sanitizeStrings(snapshot.WorkspaceRules, sanitize)
+		for _, reference := range snapshot.References {
+			reference.ItemIDs = slices.Clone(reference.ItemIDs)
+			text := sanitize(reference.Text)
+			reference.Redacted = reference.Redacted || text != reference.Text
+			reference.Text = text
+			capsule.References = append(capsule.References, reference)
+		}
 	}
 	switch mode {
 	case ContextTaskCapsule:
@@ -543,7 +538,7 @@ func fitCapsule(
 	policy ContextPolicy,
 ) (string, TaskCapsule, []ContextItem, error) {
 	limit := effectiveMaxBytes(policy)
-	if limit <= 0 {
+	if limit <= 0 && policy.MaxTokens == 0 {
 		prompt, err := renderCapsule(capsule)
 		return prompt, capsule, excluded, err
 	}
@@ -552,7 +547,7 @@ func fitCapsule(
 		if err != nil {
 			return "", TaskCapsule{}, nil, err
 		}
-		if len(prompt) <= limit {
+		if (limit <= 0 || len(prompt) <= limit) && (policy.MaxTokens == 0 || tokenestimate.Text(prompt) <= policy.MaxTokens) {
 			return prompt, capsule, excluded, nil
 		}
 		switch {
@@ -577,36 +572,14 @@ func fitCapsule(
 			excluded = append(excluded, ContextItem{
 				Kind: "relevant_file", Count: 1, Reason: "context budget",
 			})
-		case len(capsule.WorkspaceRules) > 0:
-			capsule.WorkspaceRules = capsule.WorkspaceRules[:len(capsule.WorkspaceRules)-1]
-			excluded = append(excluded, ContextItem{
-				Kind: "workspace_rule", Count: 1, Reason: "context budget",
-			})
-		case len(capsule.ParentGoal) > 256:
-			capsule.ParentGoal, _ = boundedText(capsule.ParentGoal, len(capsule.ParentGoal)/2)
-			excluded = append(excluded, ContextItem{
-				Kind: "parent_goal", Count: 1, Reason: "context budget",
-			})
-		case len(capsule.UserRequest) > 256:
-			capsule.UserRequest, _ = boundedText(capsule.UserRequest, len(capsule.UserRequest)/2)
-			excluded = append(excluded, ContextItem{
-				Kind: "user_request", Count: 1, Reason: "context budget",
-			})
-		case len(capsule.RoleInstructions) > 256:
-			capsule.RoleInstructions, _ = boundedText(
-				capsule.RoleInstructions, len(capsule.RoleInstructions)/2,
-			)
-			excluded = append(excluded, ContextItem{
-				Kind: "role_instructions", Count: 1, Reason: "context budget",
-			})
 		default:
 			// Only the non-trimmable task contract (objective, expected
-			// output, role, authority, limits) remains: refuse the delegation
+			// output, source definitions, instructions, authority and limits)
+			// remains: refuse the delegation
 			// rather than executing a task whose contract was clipped.
 			return "", TaskCapsule{}, nil, fmt.Errorf(
-				"delegation task contract does not fit the %d-byte context "+
-					"budget; split the objective or raise the agent budget",
-				limit,
+				"delegation context (task contract and selected references) does not fit context budgets (bytes=%d, tokens=%d); narrow references, split the objective or raise the agent budget",
+				limit, policy.MaxTokens,
 			)
 		}
 	}
@@ -637,16 +610,11 @@ func renderCapsule(capsule TaskCapsule) (string, error) {
 }
 
 func effectiveMaxBytes(policy ContextPolicy) int {
-	maxBytes := policy.MaxBytes
-	if tokenBytes := int(policy.MaxTokens) * 4; tokenBytes > 0 &&
-		(maxBytes == 0 || tokenBytes < maxBytes) {
-		maxBytes = tokenBytes
-	}
-	return maxBytes
+	return policy.MaxBytes
 }
 
 func estimateTokens(value string) int {
-	return (utf8.RuneCountInString(value) + 3) / 4
+	return int(tokenestimate.Text(value))
 }
 
 func boundedText(value string, maxBytes int) (string, bool) {
@@ -684,6 +652,9 @@ func includedItems(capsule TaskCapsule) []ContextItem {
 	appendItem("evidence", len(capsule.Evidence), 0)
 	appendItem("workspace_rule", len(capsule.WorkspaceRules), 0)
 	appendItem("history_turn", len(capsule.RecentTurns), 0)
+	for _, reference := range capsule.References {
+		items = append(items, ContextItem{Kind: "conversation_reference", Ref: reference.SourceID, Bytes: len(reference.Text)})
+	}
 	return items
 }
 

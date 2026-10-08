@@ -163,6 +163,11 @@ func compatibleDelta(
 	buffered *provider.StreamEvent,
 	next provider.StreamEvent,
 ) bool {
+	// ResponseAssembly deduplicates identified events. Merging would discard
+	// their identities and could append a replayed argument fragment twice.
+	if buffered.Sequenced || next.Sequenced || buffered.EventID != "" || next.EventID != "" {
+		return false
+	}
 	if buffered.Type != provider.EventToolCallDelta {
 		return true
 	}

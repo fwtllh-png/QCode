@@ -1,0 +1,33 @@
+{
+  "schema_version": 2,
+  "description": "P2 中文多问题逐项接续。回答由脚本固定提供，仅用于检查实际 Provider 输入，不代表执行或验证证据。每个被引用问题的定义与来源均须可见，默认正值轮数与显式容量模式都必须通过。",
+  "context_tokens": 131072,
+  "output_reserve_tokens": 128,
+  "recent_tail_turns": 2,
+  "turns": [
+    {
+      "prompt": "请分析这段代码，列出三个需要优化的问题，暂时只给出分析报告。",
+      "answer": "分析报告：\n1. 缓存更新缺少互斥保护，并发写入会覆盖新值。\n2. 重试时丢弃原始请求参数，导致第二次请求缺少过滤条件。\n3. 分页游标未随结果推进，下一页会重复返回上一页的数据。",
+      "source_turn": 0,
+      "required_definition": ""
+    },
+    {
+      "prompt": "先优化第 1 个问题。",
+      "answer": "第 1 项已处理。其余两项尚未处理。",
+      "source_turn": 1,
+      "required_definition": "缓存更新缺少互斥保护，并发写入会覆盖新值。"
+    },
+    {
+      "prompt": "继续优化第 2 个问题。",
+      "answer": "第 2 项已处理。第 3 项尚未处理。",
+      "source_turn": 1,
+      "required_definition": "重试时丢弃原始请求参数，导致第二次请求缺少过滤条件。"
+    },
+    {
+      "prompt": "继续优化第 3 个问题。",
+      "answer": "三项问题均已处理。",
+      "source_turn": 1,
+      "required_definition": "分页游标未随结果推进，下一页会重复返回上一页的数据。"
+    }
+  ]
+}

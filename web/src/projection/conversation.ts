@@ -239,6 +239,8 @@ export class ConversationProjection {
   private readonly approvals = new Map<string, RuntimeEvent>();
   private readonly inputs = new Map<string, RuntimeEvent>();
   private readonly receipts = new Map<string, Readonly<Record<string, unknown>>>();
+  private readonly receiptNodes = new Map<string, string>();
+  private readonly contextMaintenance = new Map<string, Map<string, Readonly<Record<string, unknown>>>>();
   private readonly deliverablesByPath = new Map<string, Set<string>>();
   private readonly agentByThread = new Map<string, string>();
   private revision = 0;
@@ -424,16 +426,20 @@ export class ConversationProjection {
       case "turn.verification":
         {
           const status = stringValue(data.verdict ?? data.status);
-          const label = status === "passed"
-            ? "Checks passed"
-            : status === "failed"
-              ? "Checks failed"
-              : "Not fully verified";
-          const message = status === "passed"
-            ? "Changed files are covered by recorded checks."
-            : status === "failed"
-              ? stringValue(data.message) || label
-              : "No structured check covered every changed file.";
+          const label = status === "not_required"
+            ? "No verification required"
+            : status === "passed"
+              ? "Checks passed"
+              : status === "failed"
+                ? "Checks failed"
+                : status === "unavailable"
+                  ? "Verification unavailable"
+                  : "Verification not evaluated";
+          const message = status === "not_required"
+            ? "No net workspace changes remain. No checks were run."
+            : status === "passed"
+              ? "Recorded checks passed for the current changes."
+              : stringValue(data.message) || "No structured check covered every changed file.";
           this.put({
             id: `verification-${event.turn_id}`,
             kind: "status",
@@ -447,7 +453,9 @@ export class ConversationProjection {
         }
         break;
       case "turn.receipt":
-        this.receipts.set(event.turn_id, Object.freeze({...data}));
+        this.receipts.set(event.turn_id, Object.freeze({...data,
+          context_maintenance: [...(this.contextMaintenance.get(event.turn_id)?.values() ?? [])]}));
+        this.receiptNodes.set(event.turn_id, event.id);
         this.markPriorDeliverablesStale(
           event.thread_id,
           event.turn_id,
@@ -458,11 +466,24 @@ export class ConversationProjection {
           kind: "receipt",
           turnID: event.turn_id,
           sequence: event.sequence,
-          data: Object.freeze({...data})
+          data: this.receipts.get(event.turn_id)!
         });
         break;
       case "thread.compacted":
       case "turn.compaction":
+        if (event.kind === "turn.compaction" && stringValue(data.phase) === "post_turn") {
+          const jobs = this.contextMaintenance.get(event.turn_id) ?? new Map<string, Readonly<Record<string, unknown>>>();
+          jobs.set(stringValue(data.compaction_id) || event.id, Object.freeze({...data}));
+          this.contextMaintenance.set(event.turn_id, jobs);
+          const id = this.receiptNodes.get(event.turn_id);
+          const node = id ? this.nodes.get(id) : undefined;
+          if (node?.kind === "receipt") {
+            const updated = Object.freeze({...node.data, context_maintenance: [...jobs.values()]});
+            this.receipts.set(event.turn_id, updated);
+            this.put({...node, data: updated});
+          }
+          break;
+        }
         if (event.kind === "turn.compaction" && hideTranscriptCompaction(data)) {
           break;
         }

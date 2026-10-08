@@ -41,7 +41,8 @@ func (*Tool) Descriptor() tool.Descriptor {
 			"keeps the captured response and appends summary instead of " +
 			"rewriting it. With status=incomplete, summary is a progress " +
 			"summary and pending_actions records the concrete resumable " +
-			"remainder as a blocked outcome.",
+			"remainder as a blocked outcome. If a requested workspace change is unnecessary, " +
+			"supply no_change_reason and no_change_evidence (successful file-read call IDs from this Turn).",
 		Visibility:         tool.VisibleModel,
 		Capability:         tool.CapabilityRead,
 		AccessMode:         tool.AccessRead,
@@ -63,6 +64,15 @@ func (*Tool) Descriptor() tool.Descriptor {
 					"type":        "string",
 					"enum":        []string{"exact", "preserve_provisional"},
 					"description": "Use preserve_provisional when captured narration from this Turn already states the answer; it is rejected when nothing was captured.",
+				},
+				"no_change_reason": map[string]any{
+					"type": "string", "minLength": 1,
+					"description": "Why the requested workspace change is already satisfied or unnecessary.",
+				},
+				"no_change_evidence": map[string]any{
+					"type": "array", "minItems": 1, "uniqueItems": true,
+					"items":       map[string]any{"type": "string", "minLength": 1},
+					"description": "Successful file-read call IDs from this Turn supporting no_change_reason.",
 				},
 				"pending_actions": map[string]any{
 					"type": "array", "maxItems": 32,
@@ -120,6 +130,12 @@ func (t *Tool) typedExecutor() (tool.Executor, error) {
 }
 
 func validateDeclaration(declaration tool.CompletionDeclaration) error {
+	if (strings.TrimSpace(declaration.NoChangeReason) != "") != (len(declaration.NoChangeEvidence) != 0) {
+		return errors.New("no-change reason and evidence must be supplied together")
+	}
+	if declaration.NoChangeReason != "" && declaration.Status != "complete" {
+		return errors.New("no-change conclusion requires complete status")
+	}
 	switch declaration.OutputMode {
 	case "", "exact", "preserve_provisional":
 	default:

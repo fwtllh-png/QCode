@@ -51,6 +51,7 @@ func TestNarrativeGenerationUsesSummaryRouteWithoutTools(t *testing.T) {
 	}}
 	engine := newEngine(t, runtime, tool.NewRegistry(nil, nil))
 	engine.options.Context.SemanticNarrative = "post_turn"
+	engine.options.Context.Digest = "ledger+narrative"
 	routeDigest, err := engine.SummaryRouteDigest()
 	if err != nil {
 		t.Fatal(err)
@@ -83,7 +84,7 @@ func TestNarrativeGenerationUsesSummaryRouteWithoutTools(t *testing.T) {
 					input.Excerpts[0].MessageID + `"]}],"unresolved":[]}`
 		}
 	}
-	result, err := engine.GenerateNarrative(
+	result, err := engine.generateNarrativeForTest(
 		t.Context(),
 		truth,
 		input,
@@ -126,16 +127,16 @@ func TestNarrativeGenerationHonorsOperatorOutputCeiling(t *testing.T) {
 	}}
 	engine := newEngine(t, runtime, tool.NewRegistry(nil, nil))
 	engine.options.Context.SemanticNarrative = "post_turn"
+	engine.options.Context.Digest = "ledger+narrative"
 	engine.options.Context.NarrativeLimits.MaxOutputBytes = 512 * 4
 	truth, input := mustNarrativeRequest(t, engine)
 	runtime.streams[0].(*providerfixture.SliceStream).Events[0].Text =
 		narrativePreferenceJSON(input.Excerpts[0].MessageID)
-	result, err := engine.GenerateNarrative(t.Context(), truth, input, 2, "")
-	// 2048 output bytes are a ceil(2048/3) = 683-token ceiling at
-	// dense-script density.
+	result, err := engine.generateNarrativeForTest(t.Context(), truth, input, 2, "")
+	// Byte limits do not alter the model token budget.
 	if err != nil || result.Fallback ||
 		len(runtime.requests) != 1 ||
-		runtime.requests[0].MaxOutputTokens != 683 {
+		runtime.requests[0].MaxOutputTokens != engine.options.Route.Model().Limits.MaxOutputTokens {
 		t.Fatalf("result=%+v request=%+v err=%v", result, runtime.requests, err)
 	}
 }
@@ -162,11 +163,12 @@ func TestNarrativeRetriesCompatibleQuota429ThenSucceeds(t *testing.T) {
 	}}
 	engine := newEngine(t, runtime, tool.NewRegistry(nil, nil))
 	engine.options.Context.SemanticNarrative = "post_turn"
+	engine.options.Context.Digest = "ledger+narrative"
 	engine.options.Context.NarrativeTimeout = time.Second
 	truth, input := mustNarrativeRequest(t, engine)
 	runtime.streams[1].(*providerfixture.SliceStream).Events[0].Text =
 		narrativePreferenceJSON(input.Excerpts[0].MessageID)
-	result, err := engine.GenerateNarrative(t.Context(), truth, input, 2, "")
+	result, err := engine.generateNarrativeForTest(t.Context(), truth, input, 2, "")
 	if err != nil || result.Fallback || result.Attempt != 2 {
 		t.Fatalf("result=%+v err=%v", result, err)
 	}
@@ -192,8 +194,9 @@ func TestNarrativeDoesNotRetryHardQuota(t *testing.T) {
 	}}
 	engine := newEngine(t, runtime, tool.NewRegistry(nil, nil))
 	engine.options.Context.SemanticNarrative = "post_turn"
+	engine.options.Context.Digest = "ledger+narrative"
 	truth, input := mustNarrativeRequest(t, engine)
-	_, err := engine.GenerateNarrative(t.Context(), truth, input, 2, "")
+	_, err := engine.generateNarrativeForTest(t.Context(), truth, input, 2, "")
 	if err == nil || !strings.Contains(err.Error(), "billing hard limit") {
 		t.Fatalf("err = %v", err)
 	}
@@ -345,6 +348,7 @@ func TestPostTurnNarrativeTimeoutDoesNotBlockNextSample(t *testing.T) {
 	}
 	engine := newEngine(t, runtime, tool.NewRegistry(nil, nil))
 	engine.options.Context.SemanticNarrative = "post_turn"
+	engine.options.Context.Digest = "ledger+narrative"
 	engine.options.Context.NarrativeTimeout = 40 * time.Millisecond
 	engine.options.Workspace = t.TempDir()
 	seedOmittedHistory(engine)
@@ -359,7 +363,7 @@ func TestPostTurnNarrativeTimeoutDoesNotBlockNextSample(t *testing.T) {
 	before := joinMessageText(engine.History())
 	done := make(chan NarrativeGenerationResult, 1)
 	go func() {
-		result, err := engine.RunPostTurnNarrative(
+		result, err := engine.runPreparedNarrativeForTest(
 			t.Context(), "thread-1", "turn-1",
 		)
 		if err != nil {
@@ -401,12 +405,13 @@ func TestPostTurnNarrativeSkipsCanceledTurnWithoutProviderCall(t *testing.T) {
 	}}
 	engine := newEngine(t, runtime, tool.NewRegistry(nil, nil))
 	engine.options.Context.SemanticNarrative = "post_turn"
+	engine.options.Context.Digest = "ledger+narrative"
 	engine.options.Workspace = t.TempDir()
 	seedOmittedHistory(engine)
 	engine.sealClosedTurnMemory(
 		agentcontext.CheckpointCanceled, nil, "canceled",
 	)
-	result, err := engine.RunPostTurnNarrative(
+	result, err := engine.runPreparedNarrativeForTest(
 		t.Context(), "thread-1", "turn-3",
 	)
 	if err != nil || result.Receipt != nil || result.Usage.Total() != 0 {
@@ -427,6 +432,7 @@ func TestPostTurnNarrativeSuccessIsPartitionNotReplacement(t *testing.T) {
 	}
 	engine := newEngine(t, runtime, tool.NewRegistry(nil, nil))
 	engine.options.Context.SemanticNarrative = "post_turn"
+	engine.options.Context.Digest = "ledger+narrative"
 	engine.options.Workspace = t.TempDir()
 	seedOmittedHistory(engine)
 	if err := engine.ApplyPlan(interact.Plan{
@@ -437,7 +443,7 @@ func TestPostTurnNarrativeSuccessIsPartitionNotReplacement(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	result, err := engine.RunPostTurnNarrative(
+	result, err := engine.runPreparedNarrativeForTest(
 		t.Context(), "thread-1", "turn-1",
 	)
 	if err != nil || result.Fallback || result.Receipt == nil ||
@@ -464,6 +470,7 @@ func TestManualCompactPassesFocusToNarrative(t *testing.T) {
 	runtime := &sourceEchoNarrativeProvider{}
 	engine := newEngine(t, runtime, tool.NewRegistry(nil, nil))
 	engine.options.Context.SemanticNarrative = "post_turn"
+	engine.options.Context.Digest = "ledger+narrative"
 	engine.options.Workspace = t.TempDir()
 	engine.history = []provider.Message{
 		messageWithText(
@@ -504,6 +511,7 @@ func TestManualCompactPassesFocusToNarrative(t *testing.T) {
 func TestCompactForcedDurableAppliesHistoryWithoutRebaseCommit(t *testing.T) {
 	engine := newEngine(t, &scriptedProvider{}, tool.NewRegistry(nil, nil))
 	engine.options.Context.SemanticNarrative = "post_turn"
+	engine.options.Context.Digest = "ledger+narrative"
 	engine.options.Workspace = t.TempDir()
 	engine.options.WorkspaceIdentity = "workspace:test"
 	engine.history = []provider.Message{
@@ -544,10 +552,12 @@ func TestCompactForcedDurableAppliesHistoryWithoutRebaseCommit(t *testing.T) {
 }
 
 func seedOmittedHistory(engine *Engine) {
+	// This fixture deliberately requests an operator history ceiling.
+	engine.options.Context.RecentTailTurns = 2
 	engine.history = []provider.Message{
 		messageWithText(
 			provider.RoleUser,
-			"I prefer deterministic state "+strings.Repeat("old ", 20),
+			"I prefer deterministic state "+strings.Repeat("old ", 200),
 			1,
 		),
 		messageWithText(provider.RoleAssistant, "first answer", 1),
@@ -615,6 +625,10 @@ func (p *sourceEchoNarrativeProvider) Stream(
 	if len(payload.Input.Excerpts) == 0 {
 		return nil, errors.New("narrative request has no excerpts")
 	}
+	var allSources []string
+	for _, excerpt := range payload.Input.Excerpts {
+		allSources = append(allSources, excerpt.MessageID)
+	}
 	source := payload.Input.Excerpts[0].MessageID
 	for _, excerpt := range payload.Input.Excerpts {
 		if excerpt.Role == provider.RoleTool {
@@ -648,10 +662,8 @@ func (p *sourceEchoNarrativeProvider) Stream(
 		"decisions":        []any{},
 		"rationale":        []any{},
 		"preferences": []map[string]any{{
-			"text": "Prefer deterministic state.",
-			"source_message_ids": []string{
-				payload.Input.Excerpts[0].MessageID,
-			},
+			"text":               "Prefer deterministic state.",
+			"source_message_ids": allSources,
 		}},
 		"unresolved": []any{},
 	})
@@ -664,7 +676,7 @@ func (p *sourceEchoNarrativeProvider) Stream(
 	}}, nil
 }
 
-func TestPreparePostTurnNarrativeJoinIsBounded(t *testing.T) {
+func TestPreparePostTurnNarrativeCancellationReleasesSlot(t *testing.T) {
 	runtime := &hangingSummaryProvider{
 		started: make(chan struct{}),
 		scriptedProvider: scriptedProvider{streams: []provider.Stream{
@@ -673,6 +685,7 @@ func TestPreparePostTurnNarrativeJoinIsBounded(t *testing.T) {
 	}
 	engine := newEngine(t, runtime, tool.NewRegistry(nil, nil))
 	engine.options.Context.SemanticNarrative = "post_turn"
+	engine.options.Context.Digest = "ledger+narrative"
 	engine.options.Context.NarrativeTimeout = 40 * time.Millisecond
 	engine.options.Workspace = t.TempDir()
 	seedOmittedHistory(engine)
@@ -693,8 +706,8 @@ func TestPreparePostTurnNarrativeJoinIsBounded(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("narrative provider was not entered")
 	}
-	// Execute joins the hanging narrative and waits for its settlement; the
-	// wait is bounded by the narrative timeout that unblocks the provider.
+	// The foreground cancels optional work; its provider lease is released
+	// when the canceled provider returns. The barrier test covers no join.
 	started := time.Now()
 	if _, err := engine.Run(t.Context(), "continue now", nil); err != nil {
 		t.Fatal(err)
@@ -726,6 +739,7 @@ func TestPreparePostTurnNarrativeSnapshotExcludesLaterTurns(t *testing.T) {
 	}
 	engine := newEngine(t, runtime, tool.NewRegistry(nil, nil))
 	engine.options.Context.SemanticNarrative = "post_turn"
+	engine.options.Context.Digest = "ledger+narrative"
 	engine.options.Context.NarrativeTimeout = 40 * time.Millisecond
 	engine.options.Workspace = t.TempDir()
 	seedOmittedHistory(engine)
@@ -734,8 +748,8 @@ func TestPreparePostTurnNarrativeSnapshotExcludesLaterTurns(t *testing.T) {
 	if prepared == nil {
 		t.Fatal("prepared narrative is nil for a completed turn")
 	}
-	// A follow-up turn joins the pending narrative and then appends fresh
-	// history; the settled input must still be the prepared snapshot.
+	// A follow-up turn appends fresh history independently; generation must
+	// still use only the prepared snapshot.
 	settled := make(chan struct{})
 	go func() {
 		defer close(settled)
@@ -758,4 +772,17 @@ func TestPreparePostTurnNarrativeSnapshotExcludesLaterTurns(t *testing.T) {
 	if strings.Contains(payload, "brand new request text") {
 		t.Fatalf("narrative snapshot captured a later turn: %s", payload)
 	}
+}
+
+func (e *Engine) generateNarrativeForTest(ctx context.Context, truth agentcontext.TruthCapsule, input agentcontext.NarrativeInputArtifact, turn uint64, focus string) (NarrativeGenerationResult, error) {
+	return e.generateNarrative(ctx, e.options, truth, input, turn, focus, false, "test-narrative")
+}
+
+// Exercise the same prepare/run lifecycle used by the application.
+func (e *Engine) runPreparedNarrativeForTest(ctx context.Context, thread protocol.ThreadID, turn protocol.TurnID) (NarrativeGenerationResult, error) {
+	job := e.PreparePostTurnNarrative(thread, turn)
+	if job == nil {
+		return NarrativeGenerationResult{}, nil
+	}
+	return job.Run(ctx)
 }

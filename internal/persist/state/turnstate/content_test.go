@@ -110,6 +110,16 @@ func TestContinuationStageTransfersOwnershipOnlyWithCommittedFact(t *testing.T) 
 				WorkspaceIdentity: "workspace:test", Provider: "test", Model: "test",
 				Messages: []provider.Message{provider.TextMessage(provider.RoleUser, "accepted message")},
 			}
+			source := agentcontext.IndexConversationAnswer("thread", "source-turn", 1, "1. 第一项\n2. 续跑点持有的原始定义")
+			record.Conversation = &agentcontext.ConversationState{}
+			if err := record.Conversation.Add(source); err != nil {
+				t.Fatal(err)
+			}
+			if err := record.Conversation.Select(agentcontext.NewConversationSelection(nil, []string{source.Items[1].ID}, 1, "continuation-turn", "第二项"), nil); err != nil {
+				t.Fatal(err)
+			}
+			record.ContextCaptured = true
+			record.ReferenceRecoveryOnly = true
 			ref, err := agentcontext.StoreTurnContinuation(ctx, blobs, record)
 			if err != nil {
 				t.Fatal(err)
@@ -146,6 +156,9 @@ func TestContinuationStageTransfersOwnershipOnlyWithCommittedFact(t *testing.T) 
 				restored, err := agentcontext.LoadTurnContinuation(t.Context(), blobs, ref.Handle, ref.Digest)
 				if err != nil || len(restored.Messages) != len(record.Messages) {
 					t.Fatalf("committed continuation unavailable: %+v %v", restored, err)
+				}
+				if !restored.ReferenceRecoveryOnly || restored.Conversation == nil || restored.Conversation.Sources[source.ID].Text != source.Text {
+					t.Fatal("committed continuation lost source body after GC")
 				}
 				if _, err := store.database.DB().ExecContext(t.Context(),
 					"DELETE FROM turn_domain_facts WHERE turn_id = ?", record.TurnID); err != nil {

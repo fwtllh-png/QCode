@@ -31,7 +31,7 @@ func buildChildOrchestration(
 	if err := os.MkdirAll(agentRoot, 0o700); err != nil {
 		return fmt.Errorf("agent root: %w", err)
 	}
-	broker, err := workspacebroker.New(execution.Workspace, state.platform.leaseAuthority, execution.LeaseTimeout)
+	broker, err := workspacebroker.New(execution.Workspace, state.platform.leaseAuthority, execution.LeaseTimeout, state.platform.backend)
 	if err != nil {
 		return fmt.Errorf("workspace broker: %w", err)
 	}

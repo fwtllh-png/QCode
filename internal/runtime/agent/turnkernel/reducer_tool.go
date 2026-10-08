@@ -167,6 +167,7 @@ func applyToolResult(
 	})
 	if len(command.Changes) != 0 {
 		transition.State.MutationRevision++
+		transition.State.Workspace = nil
 		transition.State.Changes = append(
 			transition.State.Changes,
 			command.Changes...,

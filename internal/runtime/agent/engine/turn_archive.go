@@ -24,9 +24,6 @@ type turnArchiveSnapshot struct {
 
 // snapshotTurnArchive runs under Engine.mu or during Engine construction.
 func (e *Engine) snapshotTurnArchive() turnArchiveSnapshot {
-	if e.options.TurnTranscriptArchive == nil {
-		return turnArchiveSnapshot{}
-	}
 	return turnArchiveSnapshot{
 		archive: e.options.TurnTranscriptArchive,
 		turnIDs: maps.Clone(e.turnIDs),
@@ -34,9 +31,6 @@ func (e *Engine) snapshotTurnArchive() turnArchiveSnapshot {
 }
 
 func (s turnArchiveSnapshot) source(turn uint64) (TurnTranscriptArchive, string) {
-	if s.archive == nil {
-		return nil, ""
-	}
 	for turnID, number := range s.turnIDs {
 		if number == turn && turnID != "" {
 			return s.archive, turnID

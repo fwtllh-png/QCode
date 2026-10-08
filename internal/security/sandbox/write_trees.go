@@ -1,6 +1,7 @@
 package sandbox
 
 import (
+	"context"
 	"fmt"
 	"io/fs"
 	"path/filepath"
@@ -11,11 +12,9 @@ import (
 
 // CollectWriteTreeFiles lists regular files under an existing workspace write
 // tree. Symlinks are not followed. Protected control-plane directories are
-// skipped. The walk fails if it would exceed limit.
-func CollectWriteTreeFiles(root, tree string, limit int) ([]string, error) {
-	if limit < 0 {
-		return nil, fmt.Errorf("write tree %q exceeds the %d-file limit", tree, MaxExactWorkspaceWritePaths)
-	}
+// skipped. Directory contents do not consume the declared-path allowance.
+// Cancellation bounds the walk using the caller's execution lifetime.
+func CollectWriteTreeFiles(ctx context.Context, root, tree string) ([]string, error) {
 	classifier, err := securitypaths.NewControlPlane(root)
 	if err != nil {
 		return nil, err
@@ -34,6 +33,9 @@ func CollectWriteTreeFiles(root, tree string, limit int) ([]string, error) {
 	}
 	var files []string
 	err = filepath.WalkDir(absolute, func(path string, entry fs.DirEntry, walkErr error) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if walkErr != nil {
 			return walkErr
 		}
@@ -54,13 +56,6 @@ func CollectWriteTreeFiles(root, tree string, limit int) ([]string, error) {
 		}
 		if entry.IsDir() || !entry.Type().IsRegular() {
 			return nil
-		}
-		if len(files) >= limit {
-			return fmt.Errorf(
-				"write tree %q exceeds the %d-file limit",
-				tree,
-				MaxExactWorkspaceWritePaths,
-			)
 		}
 		files = append(files, path)
 		return nil

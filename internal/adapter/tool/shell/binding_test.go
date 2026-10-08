@@ -25,6 +25,9 @@ func TestOnlyExecCommandDeclaresVerification(t *testing.T) {
 			t.Fatal(err)
 		}
 		binding := executor.(tool.TrustedBindingProvider).TrustedBinding()
+		if binding.IsolatesWriteTrees != (name == "exec_command") {
+			t.Fatalf("%s isolation contract = %v", name, binding.IsolatesWriteTrees)
+		}
 		if binding.VerificationField != want {
 			t.Fatalf("%s verification field = %q, want %q", name, binding.VerificationField, want)
 		}

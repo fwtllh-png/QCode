@@ -95,6 +95,7 @@ const (
 	fieldImplementNoProgressSamples = "execution.implement_no_progress_samples"
 	fieldTimeout                    = "execution.timeout"
 	fieldLeaseTimeout               = "execution.lease_timeout"
+	fieldWorkspaceMergeMaxDiffBytes = "execution.workspace_merge_max_diff_bytes"
 	fieldApprovalTimeout            = "execution.approval_timeout"
 	fieldConnectionTimeout          = "execution.connection_timeout"
 	fieldTLSHandshakeTimeout        = "execution.tls_handshake_timeout"
@@ -254,6 +255,7 @@ func defaultProvenance() map[string]Source {
 		fieldImplementNoProgressSamples: SourceDefault,
 		fieldTimeout:                    SourceDefault,
 		fieldLeaseTimeout:               SourceDefault,
+		fieldWorkspaceMergeMaxDiffBytes: SourceDefault,
 		fieldApprovalTimeout:            SourceDefault,
 		fieldConnectionTimeout:          SourceDefault,
 		fieldTLSHandshakeTimeout:        SourceDefault,

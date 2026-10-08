@@ -169,6 +169,17 @@ func (r *turnRun) openConversation(
 	continuationUsable bool,
 ) {
 	if continuationUsable {
+		r.scope.mu.Lock()
+		r.scope.state.referenceRecoveryOnly = continuation.ReferenceRecoveryOnly
+		r.scope.mu.Unlock()
+		if continuation.ContextCaptured {
+			r.e.contextAuthority().SetConversation(continuation.Conversation)
+			plan := agentcontext.Plan{}
+			if continuation.Plan != nil {
+				plan = continuation.Plan.Clone()
+			}
+			r.e.setPlan(plan)
+		}
 		// A restored Turn's accepted conversation already contains its
 		// opening user request; re-appending the submitted prompt would
 		// duplicate the goal the continuation carries.
@@ -568,20 +579,25 @@ func (r *turnRun) persistContinuation(sampleID string, step int) {
 		return
 	}
 	record := agentcontext.TurnContinuation{
-		Version:           agentcontext.ContinuationVersion,
-		TurnID:            r.turnID,
-		Sequence:          r.kernel.NextContinuationSequence(),
-		TurnNumber:        e.turn,
-		SessionRevision:   e.sessionRevision,
-		StateEpoch:        max(uint64(1), e.stateEpoch),
-		SampleID:          sampleID,
-		Step:              step,
-		WorkspaceIdentity: e.options.WorkspaceIdentity,
-		ProfileRevision:   r.spec.Identity.ProfileRevision,
-		Provider:          r.spec.Provider,
-		Model:             r.spec.Model,
-		Messages:          messages,
+		Version:               agentcontext.ContinuationVersion,
+		TurnID:                r.turnID,
+		Sequence:              r.kernel.NextContinuationSequence(),
+		TurnNumber:            e.turn,
+		SessionRevision:       e.sessionRevision,
+		StateEpoch:            max(uint64(1), e.stateEpoch),
+		SampleID:              sampleID,
+		Step:                  step,
+		WorkspaceIdentity:     e.options.WorkspaceIdentity,
+		ProfileRevision:       r.spec.Identity.ProfileRevision,
+		Provider:              r.spec.Provider,
+		Model:                 r.spec.Model,
+		Messages:              messages,
+		ContextCaptured:       true,
+		ReferenceRecoveryOnly: e.referenceRecoveryOnly(),
+		Conversation:          e.contextAuthority().Conversation(),
 	}
+	plan := e.currentPlan()
+	record.Plan = &plan
 	stageCtx, finishStage := agentcontext.BeginContentStage(r.ctx, blobs)
 	defer func() {
 		if err := finishStage(); err != nil {
@@ -614,6 +630,9 @@ func (r *turnRun) invalidateCompletion(reason string) error {
 // repair sample, verification, convergence finalization, or a terminal step.
 func (r *turnRun) advanceTurn() (bool, error) {
 	e, kernel := r.e, r.kernel
+	if err := e.reconcileWorkspace(kernel); err != nil {
+		return false, err
+	}
 	var outcome verifyOutcome
 	action, actionErr := kernel.EvaluateTurnStep(kernel.RepairProgressKey())
 	if actionErr != nil {
@@ -682,7 +701,10 @@ func (r *turnRun) advanceTurn() (bool, error) {
 			r.transaction = append(r.transaction, verifyFeedback(outcome.receipt, e.turn))
 			r.sampleReason = promptcontext.SampleVerificationRepair
 			return false, nil
-		case verifyActionBlocked, verifyActionFailed:
+		case verifyActionBlocked:
+			return false, protocol.NewFault(protocol.CodeConflict, outcome.receipt.ProblemMessage(), true,
+				protocol.FaultMetadata{Origin: protocol.FaultOriginVerification, Disposition: protocol.FaultResumeTurn, SideEffects: protocol.SideEffectDraft, RecoveryAction: "satisfy verification and continue the retained draft"}, nil)
+		case verifyActionFailed:
 			return false, protocol.NewProblem(
 				protocol.CodeConflict,
 				outcome.receipt.ProblemMessage(),

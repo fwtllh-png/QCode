@@ -57,6 +57,12 @@ func TestWithdrawTurnRestoresContextWithoutUndoingFilesOrAccounting(t *testing.T
 	}); err != nil {
 		t.Fatal(err)
 	}
+	baselineSource := agentcontext.IndexConversationAnswer("thread", "previous", 1, "1. valid definition")
+	conversation := &agentcontext.ConversationState{}
+	if err := conversation.Add(baselineSource); err != nil {
+		t.Fatal(err)
+	}
+	engine.context.SetConversation(conversation)
 	baseline, err := engine.ExportContextSnapshot()
 	if err != nil {
 		t.Fatal(err)
@@ -67,6 +73,10 @@ func TestWithdrawTurnRestoresContextWithoutUndoingFilesOrAccounting(t *testing.T
 	engine.history = append(engine.history, messageWithText(provider.RoleUser, "mistaken request", 2))
 	engine.historyTurns["mistake"] = 2
 	engine.turnIDs["mistake"] = 2
+	if err := conversation.Add(agentcontext.IndexConversationAnswer("thread", "mistake", 2, "1. mistaken source")); err != nil {
+		t.Fatal(err)
+	}
+	engine.context.SetConversation(conversation)
 	engine.usage.InputTokens, engine.costUSD = 123, 1.25
 	if err := engine.ApplyPlan(interact.Plan{
 		Objective: "mistaken plan", Steps: []interact.PlanStep{{Title: "mistaken step", Status: interact.StepPending}},
@@ -97,6 +107,9 @@ func TestWithdrawTurnRestoresContextWithoutUndoingFilesOrAccounting(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
+	if restored.Conversation == nil || len(restored.Conversation.Sources) != 1 || restored.Conversation.Sources[baselineSource.ID].Text != baselineSource.Text {
+		t.Fatal("withdrawal did not restore source baseline")
+	}
 	raw, err := json.Marshal(restored)
 	if err != nil {
 		t.Fatal(err)
@@ -117,7 +130,7 @@ func TestWithdrawTurnRestoresContextWithoutUndoingFilesOrAccounting(t *testing.T
 	if len(restored.TurnCheckpoints) != 0 || restored.Epoch <= baseline.Epoch || restored.Revision <= 2 {
 		t.Fatal("stale checkpoints or state fence")
 	}
-	if messages, err := engine.lookupTurnHistory(t.Context(), 2); err != nil || len(messages) != 0 {
+	if messages, _, err := engine.lookupTurnHistoryData(t.Context(), 2); err != nil || len(messages) != 0 {
 		t.Fatal("withdrawn turn remained retrievable")
 	}
 	// The next real model request must not contain the rejected instruction.

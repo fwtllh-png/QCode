@@ -2,6 +2,7 @@ import {X} from "lucide-react";
 import {useEffect, useId, useLayoutEffect, useRef, useState} from "react";
 import type {UsageRollup} from "../protocol";
 import type {ContextAttribution} from "./ConversationChrome";
+import {ContextDiagnostics} from "./ContextDiagnostics";
 
 interface Props {
   attribution?: ContextAttribution;
@@ -179,6 +180,7 @@ export function ComposerStats({attribution, capacity, receipt, usage, running, p
                 : used !== undefined ? "Last recorded context" : "Context usage has not been recorded yet."}
             </p>
           </section>
+          <ContextDiagnostics receipt={receipt} />
           {receipt ? <section aria-label={`${label} details`}>
             <header>
               <div>

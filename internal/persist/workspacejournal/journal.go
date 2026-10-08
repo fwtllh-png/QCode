@@ -545,6 +545,23 @@ func (m *Manager) Changes() []Change {
 	return changes
 }
 
+// ObservedChanges returns every journaled path, including paths restored to
+// the turn baseline (Kind is empty). The identity check prevents an absent or
+// unrelated journal from being interpreted as evidence of no changes.
+func (m *Manager) ObservedChanges(turnID string) ([]Change, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.active == nil || m.active.id != turnID {
+		return nil, errors.New("workspace journal active turn does not match observation")
+	}
+	changes := make([]Change, 0, len(m.active.order))
+	for _, path := range m.active.order {
+		record := m.active.records[path]
+		changes = append(changes, Change{Path: record.Path, Kind: record.Kind(), Before: record.Before, After: record.After})
+	}
+	return changes, nil
+}
+
 // BeforeImage returns the bytes recorded before the active turn first wrote
 // path. found is false when the turn has no record for the path, and existed is
 // false when the path did not exist before the turn.

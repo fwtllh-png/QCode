@@ -321,6 +321,23 @@ func Validate(state State) error {
 			return fmt.Errorf("invalid observed change at index %d", index)
 		}
 	}
+	if state.Workspace != nil {
+		if state.Workspace.Mutation != state.MutationRevision {
+			return errors.New("workspace observation is stale")
+		}
+		seen := make(map[string]bool)
+		for _, change := range state.Workspace.Changes {
+			if strings.TrimSpace(change.Path) == "" || seen[change.Path] {
+				return errors.New("invalid effective change path")
+			}
+			seen[change.Path] = true
+			switch change.Kind {
+			case "created", "modified", "deleted":
+			default:
+				return errors.New("invalid effective change kind")
+			}
+		}
+	}
 	if state.Completion != nil {
 		if state.Completion.OutputMode != "" &&
 			state.Completion.OutputMode != "exact" &&
@@ -333,6 +350,9 @@ func Validate(state State) error {
 			}
 		}
 		if state.Completion.Accepted {
+			if (state.Completion.NoChangeReason != "" || len(state.Completion.NoChangeEvidence) != 0) && !validNoChange(state, state.Completion.NoChangeReason, state.Completion.NoChangeEvidence) {
+				return errors.New("accepted no-change completion lacks evidence")
+			}
 			if state.Completion.Mutation != state.MutationRevision {
 				return errors.New("accepted completion is not bound to current mutation")
 			}
@@ -341,7 +361,7 @@ func Validate(state State) error {
 			}
 			if !samePaths(
 				state.Completion.ChangedPaths,
-				changedPaths(state.Changes),
+				changedPaths(effectiveChanges(state)),
 			) {
 				return errors.New("accepted completion paths do not match changes")
 			}
@@ -355,9 +375,12 @@ func Validate(state State) error {
 			state.Verification.Action != "" {
 			return errors.New("unevaluated verification has a mutation revision")
 		}
+	case VerificationNotRequired:
+		if state.Workspace == nil || hasEffectiveChanges(state) || state.Verification.Mutation != state.MutationRevision || state.Verification.Action != VerificationActionNotRequired || len(state.Verification.EvidenceCalls) != 0 {
+			return errors.New("invalid not_required verification")
+		}
 	case VerificationPassed, VerificationFailed, VerificationUnavailable:
-		if state.MutationRevision == 0 ||
-			state.Verification.Mutation != state.MutationRevision {
+		if state.Verification.Mutation != state.MutationRevision {
 			return errors.New("verification is not bound to current mutation")
 		}
 		switch state.Verification.Action {
@@ -373,7 +396,7 @@ func Validate(state State) error {
 	default:
 		return errors.New("verification status is invalid")
 	}
-	if state.Phase == PhaseVerifying && state.MutationRevision == 0 {
+	if state.Phase == PhaseVerifying && state.MutationRevision == 0 && state.Workspace == nil {
 		return errors.New("verifying phase has no mutation")
 	}
 	if state.Phase == PhaseCommitting {
@@ -429,14 +452,10 @@ func validateTerminalState(state State) error {
 		if !state.OutputEligibility || len(state.FinalOutput) == 0 {
 			return errors.New("completed turn has no eligible final output")
 		}
-		if state.Intent == protocol.TurnIntentWorkspaceChange && !hasChanges {
-			return errors.New("completed workspace_change has no mutation")
+		if err := validateCompletionPolicy(state); err != nil {
+			return err
 		}
 		if !hasChanges {
-			if RequiresCompletion(state) &&
-				(state.Completion == nil || !state.Completion.Accepted) {
-				return errors.New("completed integration turn has no accepted completion")
-			}
 			expected := JournalNone
 			if state.Policy.JournalRequired {
 				expected = JournalCommitted
@@ -446,19 +465,7 @@ func validateTerminalState(state State) error {
 			}
 			return nil
 		}
-		if RequiresCompletion(state) &&
-			(state.Completion == nil ||
-				!state.Completion.Accepted ||
-				state.Completion.Mutation != state.MutationRevision) {
-			return errors.New("completed mutation has no current completion")
-		}
-		if state.Policy.VerificationRequired &&
-			(state.Verification.Mutation != state.MutationRevision ||
-				(state.Verification.Action != VerificationActionPassed &&
-					state.Verification.Action != VerificationActionReported &&
-					state.Verification.Action != VerificationActionReverted)) {
-			return errors.New("completed mutation has no current verification")
-		}
+
 		expectedJournal := JournalCommitted
 		if state.Verification.Action == VerificationActionReverted {
 			expectedJournal = JournalRolledBack
@@ -516,6 +523,11 @@ func cloneState(state State) State {
 		cloned.ClosedCalls[id] = result
 	}
 	cloned.Changes = append([]ObservedChange(nil), state.Changes...)
+	if state.Workspace != nil {
+		value := *state.Workspace
+		value.Changes = append([]ObservedChange(nil), state.Workspace.Changes...)
+		cloned.Workspace = &value
+	}
 	cloned.ProvisionalOutput = append(
 		[]string(nil),
 		state.ProvisionalOutput...,
@@ -582,6 +594,7 @@ func cloneState(state State) State {
 	}
 	if state.Completion != nil {
 		value := *state.Completion
+		value.NoChangeEvidence = append([]string(nil), state.Completion.NoChangeEvidence...)
 		value.PendingActions = append(
 			[]string(nil),
 			state.Completion.PendingActions...,

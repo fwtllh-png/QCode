@@ -505,6 +505,22 @@ func TestReceiptReportsVerificationGateVerdict(t *testing.T) {
 			},
 			wantVerif: protocol.ReceiptPassed, wantTests: protocol.ReceiptPassed,
 		},
+		"repository net-zero gate": {
+			receipt: &agentengine.VerificationReceipt{
+				Receipt:   verify.Receipt{Scope: verify.ScopeRepository, Status: verify.StatusNotRequired},
+				Action:    "not_required",
+				Workspace: &agentengine.VerificationWorkspace{Status: "unchanged"},
+			},
+			wantVerif: protocol.ReceiptNotRequired, wantTests: protocol.ReceiptNotEvaluated,
+		},
+		"affected net-zero gate": {
+			receipt: &agentengine.VerificationReceipt{
+				Receipt:   verify.Receipt{Scope: verify.ScopeAffected, Status: verify.StatusNotRequired},
+				Action:    "not_required",
+				Workspace: &agentengine.VerificationWorkspace{Status: "unchanged"},
+			},
+			wantVerif: protocol.ReceiptNotRequired, wantTests: protocol.ReceiptNotEvaluated,
+		},
 	}
 	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {

@@ -1,6 +1,9 @@
 package execsettle
 
 import (
+	"context"
+	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -219,10 +222,10 @@ func TestPrepareBackendInheritsParentToolchainsAndEnvironment(t *testing.T) {
 	}
 }
 
-func newTestService(t *testing.T, workspace string) *Service {
+func newTestService(t *testing.T, workspace string, maxDiffBytes ...int) *Service {
 	t.Helper()
 	leases := authority.NewLeaseAuthority(authority.LeaseAuthorityOptions{})
-	brokers, err := builtin.NewWorkspaceBroker(workspace, leases, time.Minute)
+	brokers, err := builtin.NewWorkspaceBroker(workspace, leases, time.Minute, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -245,14 +248,19 @@ func newTestService(t *testing.T, workspace string) *Service {
 	if err := journal.Begin("exec-settle-test"); err != nil {
 		t.Fatal(err)
 	}
+	budget := 0
+	if len(maxDiffBytes) != 0 {
+		budget = maxDiffBytes[0]
+	}
 	service := New(Options{
-		Repository: workspace,
-		Scratch:    t.TempDir(),
-		Parent:     parent,
-		Journal:    journal,
-		Gate:       agentengine.NewWorkspaceTurnGate(),
-		Brokers:    brokers,
-		AllowApply: true,
+		MaxMergeDiffBytes: budget,
+		Repository:        workspace,
+		Scratch:           t.TempDir(),
+		Parent:            parent,
+		Journal:           journal,
+		Gate:              agentengine.NewWorkspaceTurnGate(),
+		Brokers:           brokers,
+		AllowApply:        true,
 	})
 	if service == nil {
 		t.Fatal("execsettle service is nil")
@@ -352,7 +360,7 @@ func TestCopyWorkspaceRecreatesSymlinks(t *testing.T) {
 		t.Fatal(err)
 	}
 	target := t.TempDir()
-	if err := copyWorkspace(source, target); err != nil {
+	if err := copyWorkspace(t.Context(), source, target); err != nil {
 		t.Fatal(err)
 	}
 	if link, err := os.Readlink(filepath.Join(target, "link.txt")); err != nil ||
@@ -366,5 +374,165 @@ func TestCopyWorkspaceRecreatesSymlinks(t *testing.T) {
 	if body, err := os.ReadFile(filepath.Join(target, "link.txt")); err != nil ||
 		string(body) != "data" {
 		t.Fatalf("linked read = %q err=%v", body, err)
+	}
+}
+
+func TestCommandBaselinePreservesLargeIgnoredTreesAndEmptyDirectories(t *testing.T) {
+	workspace := newGitWorkspace(t)
+	if err := os.WriteFile(filepath.Join(workspace, ".gitignore"), []byte("deps/\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tree := filepath.Join(workspace, "deps")
+	if err := os.MkdirAll(filepath.Join(tree, "cache"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for i := range sandbox.MaxExactWorkspaceWritePaths + 1 {
+		if err := os.WriteFile(filepath.Join(tree, fmt.Sprintf("%04d.txt", i)), []byte("base\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(tree, "binary"), []byte{0xff, 0}, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	service := newTestService(t, workspace)
+	isolated, err := service.Begin(t.Context(), "ignored-tree", []string{"deps"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = isolated.Close() })
+	for _, name := range []string{"cache", "binary", "0000.txt", fmt.Sprintf("%04d.txt", sandbox.MaxExactWorkspaceWritePaths)} {
+		if _, err := os.Stat(filepath.Join(isolated.Root(), "deps", name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Existing ignored files and newly created ignored files both participate
+	// in settlement; concurrent parent writes remain outside the agent diff.
+	for _, name := range []string{"0000.txt", "cache/result.txt"} {
+		if err := os.WriteFile(filepath.Join(isolated.Root(), "deps", name), []byte("agent\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(tree, "0001.txt"), []byte("user\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	changes, err := isolated.Settle(t.Context())
+	if err != nil || len(changes) != 2 {
+		t.Fatalf("changes=%+v err=%v", changes, err)
+	}
+	if body, err := os.ReadFile(filepath.Join(tree, "0001.txt")); err != nil || string(body) != "user\n" {
+		t.Fatalf("user change=%q err=%v", body, err)
+	}
+	if body, err := os.ReadFile(filepath.Join(tree, "cache/result.txt")); err != nil || string(body) != "agent\n" {
+		t.Fatalf("new output=%q err=%v", body, err)
+	}
+	// Ignored dependency snapshots belong only to the command's private Git
+	// database and never become objects in the parent's repository.
+	cmd := exec.Command("git", "ls-files", "deps")
+	cmd.Dir = workspace
+	if body, err := cmd.Output(); err != nil || len(body) != 0 {
+		t.Fatalf("parent index=%q err=%v", body, err)
+	}
+	object := exec.Command("git", "rev-parse", "HEAD:deps/binary")
+	object.Dir = isolated.Root()
+	digest, err := object.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	parentObject := exec.Command("git", "cat-file", "-e", strings.TrimSpace(string(digest)))
+	parentObject.Dir = workspace
+	if err := parentObject.Run(); err == nil {
+		t.Fatal("ignored dependency object leaked into parent Git database")
+	}
+}
+
+func TestCommandSettlementSupportsMoreFilesThanDeclaredPathLimit(t *testing.T) {
+	workspace := newGitWorkspace(t)
+	if err := os.Mkdir(filepath.Join(workspace, "generated"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	service := newTestService(t, workspace)
+	isolated, err := service.Begin(t.Context(), "many-changes", []string{"generated"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = isolated.Close() })
+	count := sandbox.MaxExactWorkspaceWritePaths + 1
+	for i := range count {
+		if err := os.WriteFile(filepath.Join(isolated.Root(), "generated", fmt.Sprintf("%04d.txt", i)), []byte("x\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	changes, err := isolated.Settle(t.Context())
+	if err != nil || len(changes) != count {
+		t.Fatalf("changes=%d err=%v", len(changes), err)
+	}
+}
+
+func TestCommandSettlementHonorsConfiguredDiffBudgetAtBoundary(t *testing.T) {
+	workspace := newGitWorkspace(t)
+	if err := os.Mkdir(filepath.Join(workspace, "generated"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	probeService := newTestService(t, workspace)
+	probe, err := probeService.BeginShadow(t.Context(), "budget-probe", []string{"generated"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = probe.Close() })
+	if err := os.WriteFile(filepath.Join(probe.Root(), "generated", "out.txt"), []byte("output\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := probeService.merger.PlanPaths(t.Context(), probe.Root(), []string{"generated"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, budget := range []int{len(plan.Diff) - 1, len(plan.Diff), len(plan.Diff) + 1} {
+		t.Run(fmt.Sprint(budget), func(t *testing.T) {
+			service := newTestService(t, workspace, budget)
+			isolated, err := service.BeginShadow(t.Context(), "budget", []string{"generated"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = isolated.Close() })
+			if err := os.WriteFile(filepath.Join(isolated.Root(), "generated", "out.txt"), []byte("output\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			_, err = isolated.Settle(t.Context())
+			if budget < len(plan.Diff) {
+				if err == nil || !strings.Contains(err.Error(), "execution.workspace_merge_max_diff_bytes=") {
+					t.Fatalf("budget error=%v", err)
+				}
+			} else if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := os.Stat(filepath.Join(workspace, "generated", "out.txt")); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("shadow changed parent: %v", err)
+			}
+		})
+	}
+}
+
+func TestCopyWorkspaceCanceledBeforeSnapshot(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if err := copyWorkspace(ctx, t.TempDir(), t.TempDir()); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancellation=%v", err)
+	}
+}
+
+func TestCanceledIsolationCleansPrivateWorkspace(t *testing.T) {
+	workspace := newGitWorkspace(t)
+	service := newTestService(t, workspace)
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if _, err := service.Begin(ctx, "canceled-copy", []string{"generated"}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancellation=%v", err)
+	}
+	root := filepath.Join(service.scratch, "exec-isolate", isolateID("canceled-copy"))
+	if _, err := os.Lstat(root); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("canceled isolation left a private workspace: %v", err)
+	}
+	if len(service.live) != 0 {
+		t.Fatal("canceled isolation retained a live session")
 	}
 }

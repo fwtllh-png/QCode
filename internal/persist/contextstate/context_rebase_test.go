@@ -2,8 +2,11 @@ package contextstate
 
 import (
 	"context"
+	"encoding/json"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/fwtllh-png/QCode/internal/adapter/provider"
 	sessionstate "github.com/fwtllh-png/QCode/internal/persist/session"
@@ -14,6 +17,222 @@ import (
 	"github.com/fwtllh-png/QCode/internal/runtime/agent/turnkernel"
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
 )
+
+func TestNarrativeCurrentContextCommitAfterTerminal(t *testing.T) {
+	for _, encoding := range []string{"manifest", "session_delta"} {
+		t.Run(encoding, func(t *testing.T) {
+			store, err := state.Open(t.Context(), state.Options{DataDir: filepath.Join(t.TempDir(), "state")})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = store.CloseAll(context.Background()) })
+			workspace := t.TempDir()
+			if err := ensureContextThread(t.Context(), store, "thread", "session", workspace); err != nil {
+				t.Fatal(err)
+			}
+			window, err := agentcontext.NewWindowLedger("window", 1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			binding, err := agentcontext.CaptureWorkspaceBinding(workspace, "workspace:test", 1, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			snapshot := agentcontext.ContextSnapshot{Version: agentcontext.ContextSnapshotVersion, Epoch: 1, Revision: 1, Turn: 1, History: []provider.Message{provider.TextMessage(provider.RoleUser, "source")}, Workspace: binding, Window: window}
+			if err := snapshot.Seal(); err != nil {
+				t.Fatal(err)
+			}
+			repository := NewRepository(store)
+			maintenance := func(id string, base uint64) agentcontext.CurrentContextCommit {
+				candidate := snapshot
+				candidate.Revision = base + 1
+				candidate.Compaction.NarrativeAttempts = []string{id}
+				if err := candidate.Seal(); err != nil {
+					t.Fatal(err)
+				}
+				return agentcontext.CurrentContextCommit{ID: id, ThreadID: "thread", TurnID: "turn", BaseRevision: &base, Snapshot: candidate}
+			}
+			reject := func(commit agentcontext.CurrentContextCommit) {
+				t.Helper()
+				if err := repository.CommitCurrentContext(t.Context(), commit); err == nil || !strings.Contains(err.Error(), "revision conflict") {
+					t.Fatalf("commit %s: expected base conflict, got %v", commit.ID, err)
+				}
+			}
+			// A missing root does not authorize skipping the first revision.
+			reject(maintenance("missing-base", 1))
+			terminal := func(threadID protocol.ThreadID, turnID string, revision uint64) {
+				t.Helper()
+				terminalSnapshot := snapshot
+				terminalSnapshot.Revision = revision
+				if err := terminalSnapshot.Seal(); err != nil {
+					t.Fatal(err)
+				}
+				raw := narrativeTerminalContext(t, store, threadID, turnID, terminalSnapshot, encoding)
+				commitNarrativeTerminal(t, store, threadID, turnID, raw)
+			}
+			terminal("thread", "turn-1", 1)
+			if err := repository.CommitCurrentContext(t.Context(), maintenance("first", 1)); err != nil {
+				t.Fatalf("first maintenance after terminal: %v", err)
+			}
+			stale := maintenance("stale", 2)
+			terminal("thread", "turn-2", 3)
+			terminal("other-thread", "other-turn", 9)
+			reject(stale)
+			reject(maintenance("skipped", 4))
+			next := maintenance("after-terminal", 3)
+			for range 2 {
+				if err := repository.CommitCurrentContext(t.Context(), next); err != nil {
+					t.Fatalf("maintenance after interleaved terminal: %v", err)
+				}
+			}
+			reject(maintenance("competing", 3))
+			restored, found, err := repository.LatestContextSnapshot(t.Context(), "thread")
+			if err != nil || !found || restored.Revision != 4 || len(restored.Compaction.NarrativeAttempts) != 1 || restored.Compaction.NarrativeAttempts[0] != next.ID {
+				t.Fatalf("restore after interleaved commits: revision=%d found=%v err=%v", restored.Revision, found, err)
+			}
+			// Valid JSON with an invalid context must fail closed, not become
+			// revision zero and permit overwriting the damaged terminal.
+			commitNarrativeTerminal(t, store, "thread", "corrupt", json.RawMessage(`{"version":1,"digest":"invalid"}`))
+			if err := repository.CommitCurrentContext(t.Context(), maintenance("after-corrupt", 4)); err == nil || !strings.Contains(err.Error(), "digest") {
+				t.Fatalf("corrupt terminal context: %v", err)
+			}
+			validManifest := narrativeTerminalContext(t, store, "thread", "corrupt-manifest", snapshot, "manifest")
+			var corruptManifest agentcontext.ContextEnvelope
+			if err := json.Unmarshal(validManifest, &corruptManifest); err != nil {
+				t.Fatal(err)
+			}
+			corruptManifest.Digest = "invalid"
+			invalidManifest, err := json.Marshal(corruptManifest)
+			if err != nil {
+				t.Fatal(err)
+			}
+			commitNarrativeTerminal(t, store, "thread", "corrupt-manifest", invalidManifest)
+			if err := repository.CommitCurrentContext(t.Context(), maintenance("after-corrupt-manifest", 4)); err == nil || !strings.Contains(err.Error(), "digest") {
+				t.Fatalf("corrupt terminal manifest: %v", err)
+			}
+			wrongThread := narrativeTerminalContext(t, store, "other-thread", "wrong-thread", snapshot, "manifest")
+			commitNarrativeTerminal(t, store, "thread", "wrong-thread", wrongThread)
+			if err := repository.CommitCurrentContext(t.Context(), maintenance("after-wrong-thread", 4)); err == nil || !strings.Contains(err.Error(), "thread is inconsistent") {
+				t.Fatalf("cross-thread manifest: %v", err)
+			}
+		})
+	}
+}
+
+func narrativeTerminalContext(t *testing.T, store *state.Store, threadID protocol.ThreadID, turnID string, snapshot agentcontext.ContextSnapshot, encoding string) json.RawMessage {
+	t.Helper()
+	accounting := agentcontext.AccountingDelta{TurnID: turnID}
+	accounting.Seal()
+	if encoding == "manifest" {
+		manifest, err := agentcontext.BuildContextManifest(t.Context(), store.Content(), threadID, protocol.TurnID(turnID), snapshot, nil, agentcontext.ManifestLimits{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw, err := agentcontext.EncodeContextEnvelope(manifest, accounting)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return raw
+	}
+	delta, err := agentcontext.NewSessionDelta(snapshot, accounting)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(delta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}
+
+func commitNarrativeTerminal(t *testing.T, store *state.Store, threadID protocol.ThreadID, turnID string, raw json.RawMessage) {
+	t.Helper()
+	reducer := turnkernel.Reducer{}
+	kernelState := turnkernel.NewState(protocol.TurnIntentAnswer, "act", 1)
+	for _, command := range []turnkernel.Command{turnkernel.StartTurn{}, turnkernel.PreparationFinished{}, turnkernel.ModelTextReceived{Text: "done"}, turnkernel.ReleaseProvisionalOutput{}, turnkernel.TerminalRequested{}, turnkernel.FinishTerminal{}} {
+		transition, err := reducer.Apply(kernelState, command)
+		if err != nil {
+			t.Fatal(err)
+		}
+		kernelState = transition.State
+	}
+	digest, err := turnkernel.Digest(kernelState)
+	if err != nil {
+		t.Fatal(err)
+	}
+	measurement, err := turnkernel.NewTerminalMeasurementSnapshot(time.Unix(1, 0), nil, kernelState.Usage, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	envelope := turnkernel.TerminalEnvelope{
+		TurnID: turnID, EffectID: "terminal:" + turnID, FrozenState: kernelState,
+		DomainFacts:  []turnkernel.DomainFact{{TurnID: turnID, Sequence: 1, Command: "finish_terminal", State: kernelState, StateDigest: digest}},
+		SessionDelta: raw, Measurement: measurement,
+		Receipt:     &protocol.ExecutionReceiptData{Goal: "answer", Intent: protocol.TurnIntentAnswer, Outcome: protocol.TurnOutcomeAnswered, MeasurementDigest: measurement.Digest, UsageDigest: measurement.UsageDigest},
+		FinalOutput: kernelState.FinalOutput, TerminalEvent: turnkernel.Event{Kind: turnkernel.EventTerminalCommitted, Terminal: kernelState.Terminal},
+		OperationCommit: turnkernel.OperationCommitFact{OperationID: protocol.OperationID("operation:" + turnID), Status: "committed"},
+		Outbox: []turnkernel.ProjectionOutboxEntry{{
+			ID: "terminal", EventID: protocol.EventID("event:" + turnID),
+			OperationID: protocol.OperationID("operation:" + turnID),
+			ThreadID:    threadID, TurnID: protocol.TurnID(turnID),
+			ItemID: protocol.ItemID("item:" + turnID), Kind: "turn.completed", Payload: []byte(`{}`),
+		}},
+	}
+	if _, err := turnstate.NewSQLiteRepository(store.SQLite()).CommitTerminal(t.Context(), envelope); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestNarrativeCurrentContextCommitChecksBaseAndRetainsOwner(t *testing.T) {
+	store, err := state.Open(t.Context(), state.Options{DataDir: filepath.Join(t.TempDir(), "state")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.CloseAll(context.Background()) })
+	workspace := t.TempDir()
+	if err := ensureContextThread(t.Context(), store, "thread", "session", workspace); err != nil {
+		t.Fatal(err)
+	}
+	window, err := agentcontext.NewWindowLedger("window", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding, err := agentcontext.CaptureWorkspaceBinding(workspace, "workspace:test", 1, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot := agentcontext.ContextSnapshot{Version: agentcontext.ContextSnapshotVersion, Epoch: 1, Revision: 1, Turn: 1, History: []provider.Message{provider.TextMessage(provider.RoleUser, "source")}, Workspace: binding, Window: window}
+	if err := snapshot.Seal(); err != nil {
+		t.Fatal(err)
+	}
+	repository := NewRepository(store)
+	if err := repository.CommitCurrentContext(t.Context(), agentcontext.CurrentContextCommit{ID: "base", ThreadID: "thread", TurnID: "turn", Snapshot: snapshot}); err != nil {
+		t.Fatal(err)
+	}
+	wrongBase := uint64(2)
+	snapshot.Revision = 3
+	_ = snapshot.Seal()
+	if err := repository.CommitCurrentContext(t.Context(), agentcontext.CurrentContextCommit{ID: "stale", ThreadID: "thread", TurnID: "turn", BaseRevision: &wrongBase, Snapshot: snapshot}); err == nil {
+		t.Fatal("maintenance skipped current revision")
+	}
+	base := uint64(1)
+	snapshot.Revision = 2
+	snapshot.Compaction.NarrativeAttempts = []string{"source-digest"}
+	_ = snapshot.Seal()
+	commit := agentcontext.CurrentContextCommit{ID: "narrative", ThreadID: "thread", TurnID: "turn", BaseRevision: &base, Snapshot: snapshot}
+	for range 2 {
+		if err := repository.CommitCurrentContext(t.Context(), commit); err != nil {
+			t.Fatal(err)
+		}
+	}
+	restored, found, err := repository.LatestContextSnapshot(t.Context(), "thread")
+	if err != nil || !found {
+		t.Fatalf("restore: %v, %v", found, err)
+	}
+	if restored.Revision != 2 || len(restored.Compaction.NarrativeAttempts) != 1 || restored.Compaction.NarrativeAttempts[0] != "source-digest" {
+		t.Fatal("maintenance owner was not restored")
+	}
+}
 
 func TestContextRebaseCommitIsAtomicIdempotentAndRecoverable(t *testing.T) {
 	store, err := state.Open(t.Context(), state.Options{
@@ -226,6 +445,48 @@ func TestContextRebaseCommitIsAtomicIdempotentAndRecoverable(t *testing.T) {
 		envelope,
 	); err == nil {
 		t.Fatal("superseded context rebase replay succeeded")
+	}
+
+	// A new business terminal may advance beyond the maintenance root before
+	// the next explicit compaction; its base must use the terminal revision.
+	terminalSnapshot, found, err := repository.LatestContextSnapshot(t.Context(), "thread-1")
+	if err != nil || !found {
+		t.Fatalf("load current context: found=%v err=%v", found, err)
+	}
+	terminalSnapshot.Revision = 4
+	if err := terminalSnapshot.Seal(); err != nil {
+		t.Fatal(err)
+	}
+	raw := narrativeTerminalContext(t, store, "thread-1", "turn-terminal", terminalSnapshot, "manifest")
+	commitNarrativeTerminal(t, store, "thread-1", "turn-terminal", raw)
+	for _, base := range []uint64{3, 4} {
+		candidate := terminalSnapshot
+		candidate.Revision = base + 1
+		compactionState := *candidate.Compaction.State
+		compactionState.ID = "compact-after-terminal"
+		compactionState.TurnID = "turn-after-terminal"
+		compactionState.SourceContextDigest = terminalSnapshot.Digest
+		candidate.Compaction.State = &compactionState
+		if err := candidate.Seal(); err != nil {
+			t.Fatal(err)
+		}
+		afterTerminal := agentcontext.ContextRebaseEnvelope{
+			CompactionID: compactionState.ID, ThreadID: "thread-1", TurnID: compactionState.TurnID,
+			BaseRevision: base, SourceWindowID: compactionState.SourceWindowID,
+			TargetWindowID: compactionState.TargetWindowID, SourceContextDigest: terminalSnapshot.Digest,
+			AuthorityDigest: envelope.AuthorityDigest, Snapshot: candidate,
+		}
+		if err := afterTerminal.Seal(); err != nil {
+			t.Fatal(err)
+		}
+		err := repository.CommitContextRebase(t.Context(), afterTerminal)
+		if base == 3 {
+			if err == nil || !strings.Contains(err.Error(), "revision conflict") {
+				t.Fatalf("stale rebase after terminal: %v", err)
+			}
+		} else if err != nil {
+			t.Fatalf("rebase after interleaved terminal: %v", err)
+		}
 	}
 }
 

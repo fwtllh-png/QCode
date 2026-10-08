@@ -25,6 +25,18 @@ type IsolatedWorkspace interface {
 }
 
 type isolatorKey struct{}
+type requiredWriteIsolationKey struct{}
+
+// RequireWriteIsolation records Guard's settlement decision. The executor
+// must fail closed if the declared directory disappears before preparation.
+func RequireWriteIsolation(ctx context.Context) context.Context {
+	return context.WithValue(ctx, requiredWriteIsolationKey{}, true)
+}
+
+func WriteIsolationRequired(ctx context.Context) bool {
+	required, _ := ctx.Value(requiredWriteIsolationKey{}).(bool)
+	return required
+}
 
 func WithIsolator(ctx context.Context, isolator Isolator) context.Context {
 	if ctx == nil || isolator == nil {

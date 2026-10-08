@@ -56,16 +56,19 @@ type Context struct {
 // remaining hard input, explicit operator values, or this protocol. There is
 // no hidden window percent.
 type View struct {
+	// Zero selects raw history by capacity. Positive values additionally bound
+	// the candidate turns, including the current turn. The default is zero.
 	RecentTailTurns int `json:"recent_tail_turns" toml:"recent_tail_turns"`
 	// KeepRecentToolResults is retained on the public view contract and
 	// snapshots. Model-visible tool results are finalized at first Admit
 	// and are not rewritten on later samples.
-	KeepRecentToolResults int    `json:"keep_recent_tool_results" toml:"keep_recent_tool_results"`
-	HistoryTokenCeiling   int    `json:"history_token_ceiling" toml:"history_token_ceiling"`
-	Digest                string `json:"digest" toml:"digest"`
-	NarrativeMode         string `json:"narrative_mode" toml:"narrative_mode"`
-	// CheckpointMaxBytes bounds one write-once closed-turn Dynamic block.
-	// Zero inherits summary_max_bytes, then semantic_narrative_item_max_bytes.
+	KeepRecentToolResults int `json:"keep_recent_tool_results" toml:"keep_recent_tool_results"`
+	HistoryTokenCeiling   int `json:"history_token_ceiling" toml:"history_token_ceiling"`
+	// Digest selects cached representations; NarrativeMode controls new work.
+	Digest        string `json:"digest" toml:"digest"`
+	NarrativeMode string `json:"narrative_mode" toml:"narrative_mode"`
+	// CheckpointMaxBytes bounds the total optional checkpoint projection.
+	// Zero uses remaining request capacity after required context.
 	CheckpointMaxBytes int `json:"checkpoint_max_bytes" toml:"checkpoint_max_bytes"`
 }
 
@@ -74,20 +77,22 @@ type View struct {
 // bounded by context.view, and replacement runs only when a request cannot
 // fit hard input. Scope is total or body_after_prefix.
 type Compact struct {
-	PrepareTokens                    int           `json:"prepare_tokens" toml:"prepare_tokens"`
-	AutoCompactTokens                int           `json:"auto_compact_tokens" toml:"auto_compact_tokens"`
-	EmergencyTokens                  int           `json:"emergency_tokens" toml:"emergency_tokens"`
-	Scope                            string        `json:"scope" toml:"scope"`
-	SummaryMaxBytes                  int           `json:"summary_max_bytes" toml:"summary_max_bytes"`
-	MaxDigestEntries                 int           `json:"max_digest_entries" toml:"max_digest_entries"`
-	TruthMaxBytes                    int           `json:"truth_max_bytes" toml:"truth_max_bytes"`
-	TruthMaxEntities                 int           `json:"truth_max_entities" toml:"truth_max_entities"`
-	MandatoryMaxEntities             int           `json:"mandatory_max_entities" toml:"mandatory_max_entities"`
-	FactMaxEntities                  int           `json:"fact_max_entities" toml:"fact_max_entities"`
-	VerifiedChangeRetentionTurns     int           `json:"verified_change_retention_turns" toml:"verified_change_retention_turns"`
-	FailureMaxEntities               int           `json:"failure_max_entities" toml:"failure_max_entities"`
-	HandleMaxEntities                int           `json:"handle_max_entities" toml:"handle_max_entities"`
-	OmissionSampleMaxEntities        int           `json:"omission_sample_max_entities" toml:"omission_sample_max_entities"`
+	PrepareTokens                int    `json:"prepare_tokens" toml:"prepare_tokens"`
+	AutoCompactTokens            int    `json:"auto_compact_tokens" toml:"auto_compact_tokens"`
+	EmergencyTokens              int    `json:"emergency_tokens" toml:"emergency_tokens"`
+	Scope                        string `json:"scope" toml:"scope"`
+	SummaryMaxBytes              int    `json:"summary_max_bytes" toml:"summary_max_bytes"`
+	MaxDigestEntries             int    `json:"max_digest_entries" toml:"max_digest_entries"`
+	TruthMaxBytes                int    `json:"truth_max_bytes" toml:"truth_max_bytes"`
+	TruthMaxEntities             int    `json:"truth_max_entities" toml:"truth_max_entities"`
+	MandatoryMaxEntities         int    `json:"mandatory_max_entities" toml:"mandatory_max_entities"`
+	FactMaxEntities              int    `json:"fact_max_entities" toml:"fact_max_entities"`
+	VerifiedChangeRetentionTurns int    `json:"verified_change_retention_turns" toml:"verified_change_retention_turns"`
+	FailureMaxEntities           int    `json:"failure_max_entities" toml:"failure_max_entities"`
+	HandleMaxEntities            int    `json:"handle_max_entities" toml:"handle_max_entities"`
+	OmissionSampleMaxEntities    int    `json:"omission_sample_max_entities" toml:"omission_sample_max_entities"`
+	// Zero narrative ceilings allocate within the route's measured input/output
+	// and job budget. Positive values are additional operator limits.
 	SemanticNarrativeMaxInputTokens  int           `json:"semantic_narrative_max_input_tokens" toml:"semantic_narrative_max_input_tokens"`
 	SemanticNarrativeMaxOutputTokens int           `json:"semantic_narrative_max_output_tokens" toml:"semantic_narrative_max_output_tokens"`
 	SemanticNarrativeMaxItems        int           `json:"semantic_narrative_max_items" toml:"semantic_narrative_max_items"`
@@ -250,6 +255,8 @@ type Execution struct {
 	Verify           Verify               `json:"verify" toml:"verify"`
 	Subagent         Subagent             `json:"subagent" toml:"subagent"`
 	Journal          Journal              `json:"journal" toml:"journal"`
+	// WorkspaceMergeMaxDiffBytes bounds actual settlement previews, not directory contents. Must be positive.
+	WorkspaceMergeMaxDiffBytes int `json:"workspace_merge_max_diff_bytes" toml:"workspace_merge_max_diff_bytes"`
 }
 
 const (

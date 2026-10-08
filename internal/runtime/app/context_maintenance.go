@@ -1,7 +1,6 @@
 package app
 
 import (
-	"context"
 	"crypto/sha256"
 	"encoding/binary"
 	"strconv"
@@ -39,12 +38,24 @@ func (s *runtimeSink) publishPostTurnContextMaintenance(
 	if narrative == nil {
 		return
 	}
-	// The business terminal is already durable. Settle the non-authoritative
-	// narrative off the queue's critical path so queued turns drain now; the
-	// engine joins the pending narrative before its next turn starts, and a
-	// missing narrative falls back to deterministic truth plus the raw tail.
+	_, observed := narrative.(interface {
+		Observe(func(agentengine.NarrativeGenerationResult))
+	})
+	if source, ok := narrative.(interface {
+		Observe(func(agentengine.NarrativeGenerationResult))
+	}); ok {
+		source.Observe(func(result agentengine.NarrativeGenerationResult) {
+			s.publishNarrativeMaintenance(operationID, threadID, turnID, itemID, result, nil)
+		})
+	}
+	// Generation is optional; the engine installs candidates at a safe boundary.
+	s.runtime.narrativeWorkers.Add(1)
 	go func() {
-		result, runErr := narrative.Run(context.Background())
+		defer s.runtime.narrativeWorkers.Done()
+		result, runErr := narrative.Run(s.runtime.ctx)
+		if observed {
+			result.Receipt = nil
+		}
 		s.publishNarrativeMaintenance(
 			operationID, threadID, turnID, itemID, result, runErr,
 		)
@@ -72,29 +83,13 @@ func (s *runtimeSink) publishNarrativeMaintenance(
 	case result.Receipt != nil:
 		data = ProtocolCompactionData(result.Receipt)
 	}
-	if result.Receipt != nil && result.Usage.Total() != 0 {
-		_ = s.runtime.publish(
-			operationID,
-			threadID,
-			turnID,
-			itemID,
-			&protocol.UsageData{
-				Sample: contextCompactionSample(
-					result.Receipt.CompactionID,
-					result.Attempt,
-				),
-				Provider:        result.Provider,
-				Model:           result.Model,
-				ModelMetadata:   &result.ModelMetadata,
-				InputTokens:     result.Usage.InputTokens,
-				OutputTokens:    result.Usage.OutputTokens,
-				ReasoningTokens: result.Usage.ReasoningTokens,
-				CachedTokens:    result.Usage.CachedTokens,
-				CostMicrounits:  CostMicrounits(result.CostUSD),
-				CostKnown:       result.CostKnown,
-			},
-		)
+	for _, call := range result.Calls {
+		if call.Usage.Total() == 0 {
+			continue
+		}
+		_ = s.runtime.publish(operationID, threadID, turnID, itemID, narrativeUsageData(call))
 	}
+
 	if data == nil {
 		return
 	}
@@ -107,6 +102,26 @@ func (s *runtimeSink) publishNarrativeMaintenance(
 		itemID,
 		data,
 	)
+}
+
+func narrativeUsageData(call agentengine.NarrativeUsage) *protocol.UsageData {
+	return &protocol.UsageData{
+		Sample: contextCompactionSample(call.ID, call.Attempt), Provider: call.Provider, Model: call.Model,
+		ModelMetadata: &call.ModelMetadata, InputTokens: call.Usage.InputTokens, OutputTokens: call.Usage.OutputTokens,
+		ReasoningTokens: call.Usage.ReasoningTokens, CachedTokens: call.Usage.CachedTokens,
+		CostMicrounits: CostMicrounits(call.CostUSD), CostKnown: call.CostKnown,
+	}
+}
+
+func emitNarrativeUsage(sink EngineSink, result agentengine.NarrativeGenerationResult) error {
+	for _, call := range result.Calls {
+		if call.Usage.Total() != 0 {
+			if err := sink.Emit(narrativeUsageData(call)); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func contextCompactionSample(compactionID string, attempt uint32) uint32 {

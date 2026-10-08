@@ -33,6 +33,8 @@ func NewCompletionCandidate(
 	candidate.DeclarationValid = true
 	candidate.Status = declaration.Status
 	candidate.Summary = declaration.Summary
+	candidate.NoChangeReason = declaration.NoChangeReason
+	candidate.NoChangeEvidence = append([]string(nil), declaration.NoChangeEvidence...)
 	candidate.OutputMode = declaration.OutputMode
 	candidate.PendingActions = append(
 		[]string(nil),

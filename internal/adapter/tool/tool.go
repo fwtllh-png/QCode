@@ -300,6 +300,8 @@ const MetadataCompletionDeclaration = "completion_declaration"
 
 // CompletionDeclaration binds completion to observed mutation state.
 type CompletionDeclaration struct {
+	NoChangeReason      string   `json:"no_change_reason,omitempty"`
+	NoChangeEvidence    []string `json:"no_change_evidence,omitempty"`
 	Status              string   `json:"status"`
 	Summary             string   `json:"summary"`
 	OutputMode          string   `json:"output_mode,omitempty"`
@@ -1639,7 +1641,8 @@ func ModelResult(name string, result Result) Result {
 			// continue at the advertised line instead of counting the lines
 			// it received. They are facts about what the tool returned, so
 			// they stay valid even when admission truncates the content.
-			"has_more", "next_start_line", "returned_lines":
+			"has_more", "next_start_line", "returned_lines",
+			"offset", "end_offset", "next_offset", "previous_offset", "content_digest":
 			metadata[key] = value
 		case "session_id", "cursor", "running", "exit_code", "timed_out",
 			"tty", "archived", "pending_bytes", "omitted_bytes":

@@ -1,11 +1,7 @@
 import react from "@vitejs/plugin-react";
 import {readdirSync, readFileSync, statSync, writeFileSync} from "node:fs";
 import {join, resolve} from "node:path";
-import {
-  brotliCompressSync,
-  constants,
-  gzipSync
-} from "node:zlib";
+import {brotliCompressSync, constants} from "node:zlib";
 import {defineConfig, type Plugin} from "vite";
 
 export default defineConfig({
@@ -32,10 +28,12 @@ function precompress(): Plugin {
       outputRoot = resolve(config.root, config.build.outDir);
     },
     closeBundle() {
+      // 只预压缩 brotli：宿主（internal/host/server.go）按 Accept-Encoding 协商，
+      // 缺失对应编码时回落 identity 原始产物。再写一份 gzip 会让 webbundle 构建
+      // 把同一资产内嵌三份（raw+gz+br）；gzip-only 客户端回落原始文件即可。
       for (const path of filesUnder(outputRoot)) {
         if (!path.endsWith(".js") && !path.endsWith(".css")) continue;
         const content = readFileSync(path);
-        writeFileSync(`${path}.gz`, gzipSync(content, {level: 9}));
         writeFileSync(`${path}.br`, brotliCompressSync(content, {
           params: {[constants.BROTLI_PARAM_QUALITY]: 11}
         }));

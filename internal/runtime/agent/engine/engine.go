@@ -98,15 +98,17 @@ type Engine struct {
 	checkpointMu     sync.Mutex
 	turnCheckpoints  []agentcontext.TurnCheckpoint
 	narrativeMu      sync.Mutex
-	pendingNarrative chan struct{}
+	pendingNarrative *PostTurnNarrative
+	narrativeClosed  bool
 	titleState       sessionTitleState
 
-	context         agentcontext.Authority
-	prefixMu        sync.Mutex
-	prefixManifest  contextview.PrefixManifest
-	promptCacheBase string
-	profileReadOnly bool
-	enabledTools    map[string]struct{}
+	conversationOrigin string
+	context            agentcontext.Authority
+	prefixMu           sync.Mutex
+	prefixManifest     contextview.PrefixManifest
+	promptCacheBase    string
+	profileReadOnly    bool
+	enabledTools       map[string]struct{}
 
 	approvalRecovery turnkernel.RecoveredInteraction[toolguard.ApprovalDecision]
 	inputRecovery    turnkernel.RecoveredInteraction[interact.Reply]
@@ -256,14 +258,15 @@ func New(options Options) (*Engine, error) {
 	}
 	engine := &Engine{
 		options: options, guard: options.Guard, journal: options.Journal,
-		promptCacheBase:  options.PromptCacheKey,
-		profileReadOnly:  profileReadOnlyFromOptions(options),
-		tokenCalibration: calibration,
-		turnIDs:          make(map[string]uint64),
-		appliedDeltas:    make(map[string]string),
-		readResults:      make(map[string]readResultEntry),
-		stateEpoch:       1,
-		context:          agentcontext.NewAuthority(),
+		promptCacheBase:    options.PromptCacheKey,
+		profileReadOnly:    profileReadOnlyFromOptions(options),
+		tokenCalibration:   calibration,
+		turnIDs:            make(map[string]uint64),
+		appliedDeltas:      make(map[string]string),
+		readResults:        make(map[string]readResultEntry),
+		stateEpoch:         1,
+		context:            agentcontext.NewAuthority(),
+		conversationOrigin: window.ID,
 	}
 	engine.context.SetWindow(window)
 	engine.seedWorkingSet()

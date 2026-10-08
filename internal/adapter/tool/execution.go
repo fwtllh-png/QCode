@@ -304,6 +304,7 @@ func CloneOutcome(source *Outcome) *Outcome {
 		}
 		if source.Facts.Completion != nil {
 			completion := *source.Facts.Completion
+			completion.NoChangeEvidence = append([]string(nil), source.Facts.Completion.NoChangeEvidence...)
 			completion.ChangedPaths = append(
 				[]string(nil),
 				source.Facts.Completion.ChangedPaths...,

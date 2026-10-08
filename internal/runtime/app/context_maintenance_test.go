@@ -1,12 +1,82 @@
 package app
 
 import (
+	"context"
 	"testing"
 
+	"github.com/fwtllh-png/QCode/internal/adapter/provider"
 	agentcontext "github.com/fwtllh-png/QCode/internal/runtime/agent/context"
 	agentengine "github.com/fwtllh-png/QCode/internal/runtime/agent/engine"
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
 )
+
+type closingNarrativeRunner struct{ started chan struct{} }
+
+func (r *closingNarrativeRunner) Run(ctx context.Context) (agentengine.NarrativeGenerationResult, error) {
+	close(r.started)
+	<-ctx.Done()
+	return agentengine.NarrativeGenerationResult{Fallback: true, Calls: []agentengine.NarrativeUsage{{ID: "closing-call", Attempt: 1, Provider: "fixture", Model: "summary", Usage: provider.Usage{InputTokens: 9}, ModelMetadata: protocol.ModelMetadataProvenance{CanonicalID: "fixture", WireID: "fixture", Limits: "fixture", Capabilities: "fixture", Pricing: "fixture"}}}}, nil
+}
+
+type closingMaintenanceEngine struct {
+	NoopEngine
+	runner *closingNarrativeRunner
+}
+
+func (e *closingMaintenanceEngine) PreparePostTurnNarrative(protocol.ThreadID, protocol.TurnID) (agentengine.PostTurnNarrativeRunner, error) {
+	return e.runner, nil
+}
+
+func TestRuntimeCloseSettlesNarrativeUsageBeforeClosingEventStore(t *testing.T) {
+	events := NewMemoryEventStore(32)
+	runner := &closingNarrativeRunner{started: make(chan struct{})}
+	runtime := NewRuntime(Options{EventStore: events, Engine: &closingMaintenanceEngine{runner: runner}})
+	sink := &runtimeSink{runtime: runtime, terminal: &protocol.TurnCompletedData{Text: "done"}}
+	sink.publishPostTurnContextMaintenance("operation", "thread", "turn", "item")
+	<-runner.started
+	closeRuntime(t, runtime)
+	events.mu.Lock()
+	defer events.mu.Unlock()
+	for _, event := range events.events {
+		if usage, ok := event.Data.(*protocol.UsageData); ok && usage.InputTokens == 9 {
+			return
+		}
+	}
+	t.Fatal("runtime closed its store before settling observed narrative usage")
+}
+
+func TestNarrativeFailedAttemptsPublishSeparateUsageWithoutReceipt(t *testing.T) {
+	events := NewMemoryEventStore(32)
+	runtime := NewRuntime(Options{EventStore: events})
+	t.Cleanup(func() { closeRuntime(t, runtime) })
+	sink := &runtimeSink{runtime: runtime}
+	result := agentengine.NarrativeGenerationResult{Fallback: true, FailureReason: "invalid JSON", Calls: []agentengine.NarrativeUsage{
+		{ID: "source-call", Attempt: 1, Provider: "fixture", Model: "summary", Usage: provider.Usage{InputTokens: 7, OutputTokens: 2}, CostKnown: true, CostUSD: 0.000009},
+		{ID: "source-call", Attempt: 2, Provider: "fixture", Model: "summary", Usage: provider.Usage{InputTokens: 8, OutputTokens: 3}, CostKnown: true, CostUSD: 0.000011},
+	}}
+	for i := range result.Calls {
+		result.Calls[i].ModelMetadata = protocol.ModelMetadataProvenance{CanonicalID: "fixture", WireID: "fixture", Limits: "fixture", Capabilities: "fixture", Pricing: "fixture"}
+	}
+	sink.publishNarrativeMaintenance("operation", "thread", "turn", "item", result, nil)
+	stored, err := events.Replay(t.Context(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[uint32]bool{}
+	var tokens uint64
+	for _, event := range stored {
+		if usage, ok := event.Data.(*protocol.UsageData); ok {
+			if seen[usage.Sample] {
+				t.Fatal("physical attempts share usage identity")
+			}
+			seen[usage.Sample] = true
+			tokens += usage.InputTokens + usage.OutputTokens
+		}
+	}
+	if len(seen) != 2 || tokens != 20 {
+		t.Fatalf("usage events=%d tokens=%d", len(seen), tokens)
+	}
+}
 
 func TestContextCompactionUsageSampleIsStablePerAttempt(t *testing.T) {
 	first := contextCompactionSample("compact-1", 1)

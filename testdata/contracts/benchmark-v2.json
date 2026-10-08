@@ -2,6 +2,12 @@
   "schema_version": 2,
   "journeys": [
     {
+      "id": "context_continuity",
+      "lane": "hermetic",
+      "evidence": ["internal/runtime/agent/engine/testdata/context_continuity_zh.json", "internal/runtime/agent/engine/context_p5_test.go"],
+      "command": "make context-continuity-replay"
+    },
+    {
       "id": "cross_file_edit",
       "lane": "platform-capability",
       "capabilities": ["strong_sandbox"],

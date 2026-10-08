@@ -501,6 +501,8 @@ func (s *RuntimeKernel) CompletionDeclaration() *tool.CompletionDeclaration {
 	}
 	decision := s.state.Completion
 	return &tool.CompletionDeclaration{
+		NoChangeReason:      s.state.Completion.NoChangeReason,
+		NoChangeEvidence:    append([]string(nil), s.state.Completion.NoChangeEvidence...),
 		Status:              "complete",
 		Summary:             decision.Summary,
 		OutputMode:          decision.OutputMode,
@@ -837,27 +839,8 @@ func (s *RuntimeKernel) RepairSteps(
 func (s *RuntimeKernel) ValidateFinalReadiness() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if RequiresCompletion(s.state) &&
-		(s.state.Completion == nil || !s.state.Completion.Accepted) {
-		return protocol.NewProblem(
-			protocol.CodeConflict,
-			"kernel final readiness requires accepted completion",
-			false,
-			nil,
-		)
-	}
-	if s.state.Policy.VerificationRequired &&
-		s.state.MutationRevision != 0 &&
-		(s.state.Verification.Mutation != s.state.MutationRevision ||
-			(s.state.Verification.Action != VerificationActionPassed &&
-				s.state.Verification.Action != VerificationActionReported &&
-				s.state.Verification.Action != VerificationActionReverted)) {
-		return protocol.NewProblem(
-			protocol.CodeConflict,
-			"kernel final readiness requires passed verification",
-			false,
-			nil,
-		)
+	if err := validateCompletionPolicy(s.state); err != nil {
+		return protocol.NewProblem(protocol.CodeConflict, "kernel final readiness: "+err.Error(), false, err)
 	}
 	return nil
 }
