@@ -1189,7 +1189,6 @@ test("navigates long conversations by stable semantic anchors", async ({page}) =
 
 test("captures the approval state", async ({page}) => {
   await createSession(page);
-  await enableAutomaticPlanApproval(page);
   await submitPrompt(page, "visual approval");
   await expect(page.getByText("exec_command requires approval")).toBeVisible();
   await expect(page).toHaveScreenshot("canonical-approval.png");
@@ -1216,7 +1215,6 @@ test("captures the implementation plan", async ({page}) => {
 
 test("captures a complex edit and approval workflow", async ({page}) => {
   await createSession(page);
-  await enableAutomaticPlanApproval(page);
   await submitPrompt(page, "visual edit approval");
 
   await expect(page.getByText("Waiting for approval")).toBeVisible();
@@ -1367,7 +1365,6 @@ test("keeps background work visible and opens its completion notification", asyn
     .toContainText("Review complete. Runtime evidence is consistent.");
 
   await createSession(page);
-  await enableAutomaticPlanApproval(page);
   await submitPrompt(page, "visual background approval");
   await expect(page.getByText("Working", {exact: true})).toBeVisible();
   await createSession(page);
@@ -1466,15 +1463,6 @@ async function createSession(page: Page): Promise<void> {
   await expect(sessions).toHaveCount(count + 1);
   await expect(page.getByPlaceholder("Ask QCode")).toBeEnabled();
   await page.getByLabel("Permissions").selectOption("auto");
-}
-
-async function enableAutomaticPlanApproval(page: Page): Promise<void> {
-  await page.getByRole("button", {name: "Settings"}).click();
-  await page.getByRole("button", {name: "Agent preset"}).click();
-  await page.getByLabel("Plan approval").selectOption("auto");
-  await page.getByRole("button", {name: "Apply changes"}).click();
-  await expect(page.getByText("Applied", {exact: true})).toBeVisible();
-  await page.getByRole("button", {name: "Close settings"}).click();
 }
 
 async function submitPrompt(page: Page, prompt: string): Promise<void> {
