@@ -153,8 +153,13 @@ func (r *Runtime) decide(invocation Invocation) Decision {
 		}
 	}
 	decision = r.bindingLayer(invocation, decision)
+	// Auto review may only satisfy a default Posture Ask whose approval
+	// requirement is still reusable after binding. User/Repository/Managed
+	// Ask, Surface tightening, Fresh/FreshOnce requirements, and binding
+	// overrides all preserve their explicit approval demand.
 	if eligible && decision.Action == ActionAsk &&
-		(decision.Layer == LayerPosture || decision.Layer == LayerUser) {
+		decision.Layer == LayerPosture &&
+		decision.Approval == ApprovalReusable {
 		decision = Decision{
 			Action: ActionAllow, Code: "auto_review_allowed",
 			Reason: "bounded medium-risk effect has an exact typed grant",
