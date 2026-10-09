@@ -106,7 +106,7 @@ func (r *DiagnosticCommandRunner) Run(ctx context.Context, path string) (Diagnos
 	defer directory.Close()
 	result, runErr := process.Run(ctx, process.Options{
 		Path: binary, Args: args, Dir: policy.WorkspaceRoot, DirFile: directory, Sandbox: backend,
-		RequireSandbox: true, Env: []string{"OPENSSL_CONF=/dev/null"},
+		RequireSandbox: true,
 	})
 	if runErr != nil {
 		return DiagnosticReceipt{}, runErr

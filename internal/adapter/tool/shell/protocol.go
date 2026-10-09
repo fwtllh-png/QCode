@@ -87,6 +87,7 @@ func (e *protocolExecutor) TrustedBinding() tool.TrustedBinding {
 	binding.Capability = tool.CapabilityProcess
 	binding.ValidateMissingWriteParent = e.validateMissingWriteParent
 	binding.IsolatesWriteTrees = e.expand
+	binding.SupportsFullAccess = e.expand
 	binding.Required.ProcessTree = securitymodel.ProcessTreeGroupKill
 	binding.ProducesVerificationEvidence = true
 	binding.VerificationField = e.verificationField
@@ -241,13 +242,19 @@ func execCommandDescriptor() tool.Descriptor {
 			"the process group without extending the first wait; a started " +
 			"server or daemon never exits, so verify its startup output and " +
 			"close the session rather than polling. The workspace is " +
-			"read-only unless write_paths declares exact regular files in " +
+			"read-only in Auto/Read only unless write_paths declares exact regular files in " +
 			"existing directories, or one existing directory as a bounded " +
 			"write tree; write_paths does not permit the workspace root or a " +
 			"missing directory. Creating or deleting files inside an " +
 			"approved tree needs no per-file listing; paths in missing " +
 			"directories belong to file_write or file_apply, which create " +
-			"parent directories safely. " +
+			"parent directories safely. In Full Access, omit write_paths and network_targets " +
+			"for direct host file/network access; ordinary tests and builds need no resource " +
+			"declarations. Explicit write_paths/network_targets/allow_loopback narrow the command " +
+			"back to the scoped sandbox. Protected metadata, credential locations and explicit " +
+			"rules remain enforced. Unscoped Full Access commands and declared verification " +
+			"need no routine approval or plan gate. When Full Access is active, diagnose " +
+			"failures instead of asking the user to select it again. " +
 			"Verification evidence: declare verification (test, build, lint, " +
 			"or check) with exact workspace-relative covered_paths; any write " +
 			"to a command's own covered_paths invalidates its evidence. " +
@@ -255,11 +262,11 @@ func execCommandDescriptor() tool.Descriptor {
 			"drops its writes (shadow verification). Declared verification " +
 			"runs under POSIX set -e; chain checks with &&. Only a natural " +
 			"exit on unchanged inputs passes; running or terminated " +
-			"processes never count as passed. Network access requires every " +
+			"processes never count as passed. Scoped network access requires every " +
 			"destination in network_targets. HTTPS control is at the CONNECT " +
 			"tunnel endpoint only; declared methods are enforced per method " +
 			"for plaintext HTTP. Undeclared egress is denied by the managed " +
-			"proxy. Set allow_loopback only for binding or connecting to a " +
+			"proxy. Full Access uses direct sockets. Set allow_loopback only for binding or connecting to a " +
 			"local development server; do not put localhost or port 0 in " +
 			"network_targets. Git metadata is protected: use the dedicated " +
 			"git_* tools for mutations. Related probes chained into one " +
@@ -489,6 +496,8 @@ func (p *commandProtocol) execCommand(
 	defer directoryFile.Close()
 	workspace := p.workspace
 	sandboxBackend := p.backend
+	execution, authorityBound := sandbox.ExecutionAuthorityFromContext(ctx)
+	fullAccess := authorityBound && execution.FullAccess
 	isolated, inPlaceDegraded, err := p.beginIsolatedCommand(
 		ctx, input.WritePaths, input.Settle == "discard",
 	)
@@ -575,7 +584,7 @@ func (p *commandProtocol) execCommand(
 	}
 	if result, denied := p.preflightExecutables(
 		sandboxBackend, command, directory, input.CoveredPaths, input.Env,
-	); denied {
+	); denied && !fullAccess {
 		return result, nil
 	}
 	identity := tool.InvocationIdentityFrom(ctx)
@@ -599,10 +608,14 @@ func (p *commandProtocol) execCommand(
 	}
 	sessionTargets := resolveProcessNetworkTargets(sandboxBackend, input.NetworkTargets)
 	// All process modes use declared or inherited targets and explicit loopback authority.
-	denyNetwork := len(sessionTargets) == 0 && !input.AllowLoopback
+	denyNetwork := !fullAccess && len(sessionTargets) == 0 && !input.AllowLoopback
+	// Full Access uses direct sockets; scoped commands keep the session gate.
+	if fullAccess {
+		sessionTargets = nil
+	}
 	network, err := openProcessNetwork(
 		sandboxBackend,
-		denyNetwork,
+		denyNetwork || fullAccess,
 		sessionTargets,
 	)
 	if err != nil {
@@ -634,7 +647,7 @@ func (p *commandProtocol) execCommand(
 			Timeout:                timeout,
 			Sandbox:                sandboxBackend,
 			RequireSandbox:         requireStrong,
-			WorkspaceReadOnly:      true,
+			WorkspaceReadOnly:      !fullAccess,
 			WorkspaceWritePaths:    writePaths,
 			DenyNetwork:            denyNetwork,
 			SessionProxyPort:       sessionPort,

@@ -101,8 +101,8 @@ export function ReasoningMenu({
       >
         <span>{reasoningLabel(selected)}</span>
         {open
-          ? <ChevronUp size={13} aria-hidden="true" />
-          : <ChevronDown size={13} aria-hidden="true" />}
+          ? <ChevronUp size={16} aria-hidden="true" />
+          : <ChevronDown size={16} aria-hidden="true" />}
       </button>
       <Presence open={open}>
         <div

@@ -65,9 +65,12 @@ func ManagedProxyURL(port uint16, credential string) string {
 
 type Options struct {
 	WorkspaceRoot string
-	HostReadRoots []string
-	HostReadFiles []string
-	PrivateTemp   string
+	// RuntimeStateRoots are trusted runtime-owned directories. Full Access
+	// preserves only the existing environment grants inside these roots.
+	RuntimeStateRoots []string
+	HostReadRoots     []string
+	HostReadFiles     []string
+	PrivateTemp       string
 	// AllowNetwork permits outbound/inbound sockets inside the OS sandbox.
 	// qcode enables it for the interactive tool session so host processes like
 	// ubomcli can reach their APIs.
@@ -112,9 +115,12 @@ type EnvironmentNetworkTarget struct {
 }
 
 type Policy struct {
+	// FullAccess is command-local, derived only from a bound execution authority.
+	FullAccess          bool                       `json:"-"`
 	Version             int                        `json:"version"`
 	ID                  string                     `json:"id"`
 	WorkspaceRoot       string                     `json:"workspace_root"`
+	RuntimeStateRoots   []string                   `json:"runtime_state_roots,omitempty"`
 	PrivateTemp         string                     `json:"private_temp"`
 	RuntimeReadRoots    []string                   `json:"runtime_read_roots"`
 	HostReadRoots       []string                   `json:"host_read_roots"`
@@ -290,7 +296,7 @@ func BuildPolicy(options Options) (Policy, error) {
 	if err := envpolicy.ValidatePreparedEnvironment(toolchains.Environment); err != nil {
 		return Policy{}, err
 	}
-	environmentValues, err = envpolicy.Merge(toolchains.Environment, environmentValues)
+	environmentValues, err = envpolicy.Merge(envpolicy.SandboxDefaults(), toolchains.Environment, environmentValues)
 	if err != nil {
 		return Policy{}, err
 	}
@@ -330,9 +336,19 @@ func BuildPolicy(options Options) (Policy, error) {
 			"injected %q overlaps the private sandbox temp", violating,
 		)
 	}
+	stateRoots := make([]string, 0, len(options.RuntimeStateRoots))
+	for _, root := range options.RuntimeStateRoots {
+		canonical, err := ExternalStateDirectory(workspace, root)
+		if err != nil {
+			return Policy{}, fmt.Errorf("runtime state root: %w", err)
+		}
+		stateRoots = append(stateRoots, canonical)
+	}
+	slices.Sort(stateRoots)
 	policy := Policy{
 		Version: policyVersion, WorkspaceRoot: workspace, PrivateTemp: privateTemp,
-		RuntimeReadRoots: runtimeRoots, HostReadRoots: hostRoots,
+		RuntimeStateRoots: slices.Compact(stateRoots),
+		RuntimeReadRoots:  runtimeRoots, HostReadRoots: hostRoots,
 		HostReadFiles:       hostFiles,
 		Toolchains:          toolchains,
 		AllowNetwork:        options.AllowNetwork,
@@ -535,6 +551,12 @@ func CanEnforceNetwork(capability Capability, desired securitymodel.Network) boo
 // CommandNetworkPolicy narrows the base policy for one execution. The base
 // identity is retained; the command's authority digest binds the reduction.
 func CommandNetworkPolicy(policy Policy, command Command) Policy {
+	if command.FullAccess {
+		policy.FullAccess = true
+		policy.AllowNetwork = true
+		policy.ManagedProxyPort = 0
+		policy.ManagedProxyCredential = ""
+	}
 	if command.DenyNetwork || command.LoopbackOnly {
 		policy.AllowNetwork = false
 		policy.ManagedProxyPort = 0
@@ -563,6 +585,13 @@ func CommandControls(
 ) (securitymodel.Controls, error) {
 	policy = CommandNetworkPolicy(policy, command)
 	controls := capability.Effective
+	if command.FullAccess {
+		if !capability.Available || capability.Backend != "seatbelt" || command.AuthorityDigest == "" {
+			return securitymodel.Controls{}, errors.New("full access requires an authorized Seatbelt execution")
+		}
+		controls.FilesystemRead = securitymodel.FilesystemReadUnrestricted
+		controls.FilesystemWrite = securitymodel.FilesystemWriteUnrestricted
+	}
 	// These are the flags the backend actually emits. For an authorized
 	// execution they validate the already-compiled network ceiling; they do
 	// not reinterpret resource declarations or select a new authority.
@@ -580,7 +609,7 @@ func CommandControls(
 		if command.CompiledNetwork == "" {
 			return securitymodel.Controls{}, errors.New("command has no compiled network control")
 		}
-		if !CanEnforceNetwork(capability, requested) {
+		if !CanEnforceNetwork(capability, requested) && !(command.FullAccess && requested == securitymodel.NetworkDirect) {
 			return securitymodel.Controls{}, errors.New("backend cannot enforce the command network control")
 		}
 		controls.Network = requested
@@ -602,7 +631,7 @@ func CommandControls(
 			desiredWrite = securitymodel.FilesystemWriteExactPaths
 		}
 	}
-	if securitymodel.CanEnforceFilesystemWrite(
+	if !command.FullAccess && securitymodel.CanEnforceFilesystemWrite(
 		controls.FilesystemWrite,
 		desiredWrite,
 	) {
@@ -835,9 +864,26 @@ func platformRuntimeRoots(goos string) []string {
 // at open time. Callers use it to fail fast with a structured denial
 // instead of letting the child die on a bare EPERM errno.
 func (p Policy) ExecutableReadable(path string, additionalReadPaths []string) bool {
-	candidate := filepath.Clean(path)
-	if resolved, err := filepath.EvalSymlinks(candidate); err == nil {
-		candidate = resolved
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return os.IsNotExist(err) && p.executablePathReadable(path, additionalReadPaths)
+	}
+	for _, candidate := range dependencyReadPaths(path, resolved) {
+		if !p.executablePathReadable(candidate, additionalReadPaths) {
+			return false
+		}
+	}
+	return true
+}
+
+func (p Policy) executablePathReadable(candidate string, additionalReadPaths []string) bool {
+	if validateSensitivePath(candidate) != nil {
+		return false
+	}
+	// Resolve directory aliases (such as /var) but preserve the last link:
+	// the OS must be allowed to traverse that intermediate alias itself.
+	if parent, err := filepath.EvalSymlinks(filepath.Dir(candidate)); err == nil {
+		candidate = filepath.Join(parent, filepath.Base(candidate))
 	}
 	roots := make([]string, 0, 8)
 	roots = append(roots, p.RuntimeReadRoots...)

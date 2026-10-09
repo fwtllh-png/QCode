@@ -122,7 +122,8 @@ func (e *executor) Descriptor() tool.Descriptor {
 			Name: e.name,
 			Description: "Request required user input and block the current Turn until the host replies. " +
 				"Resolve discoverable facts first, include options for finite choices, and never ask " +
-				"for required input in ordinary final text.",
+				"for required input in ordinary final text. Keep every option a short, self-contained " +
+				"label; put context and trade-offs in the prompt.",
 			DiscoveryTerms: []string{"ask user", "clarify", "询问用户", "澄清"},
 			Visibility:     tool.VisibleModel, Capability: tool.CapabilityRead,
 			AccessMode: tool.AccessRead, ParallelPolicy: tool.ParallelSerial,
@@ -133,10 +134,15 @@ func (e *executor) Descriptor() tool.Descriptor {
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"prompt": map[string]any{"type": "string", "minLength": float64(1)},
+					"prompt": map[string]any{
+						"type":        "string",
+						"minLength":   float64(1),
+						"description": "Question shown to the user; carry context, trade-offs and consequences here, not inside options.",
+					},
 					"options": map[string]any{
 						"type": "array", "maxItems": float64(12), "uniqueItems": true,
-						"items": map[string]any{"type": "string", "minLength": float64(1)},
+						"description": "Short, distinct labels for finite choices: a few words each, no full sentences or trailing punctuation.",
+						"items":       map[string]any{"type": "string", "minLength": float64(1)},
 					},
 				},
 				"required":             []string{"prompt"},

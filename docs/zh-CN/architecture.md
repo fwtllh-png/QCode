@@ -148,6 +148,15 @@ Child Engine，统一完成 Security Clone、Guard Factory 绑定、Workspace Id
 适配和构造失败回滚；Child 的 Role、Budget、Toolset 与 Worktree Authority 仍以显式
 `ChildSpec` 覆盖，不能扩大 Parent Authority。
 
+Web 的 Session 默认审批姿态为 `auto`，可选权限上限通过
+`ExecOptions.ProfilePermissionCeiling=bypass` 显式传入。默认值与上限分别绑定，用户
+选择 Full Access 后，Guard 为支持此能力的内置命令绑定会话权限事实，Authority 编译为
+宿主文件读写和直接联网的逐次执行授权，由同一 Seatbelt 后端落实；普通命令与声明的验证
+不再触发常规审批或计划审批。显式资源范围仍使用原有的受限授权。
+Guard、显式拒绝、强制一次审批、执行租约和审计链路保持一致；任意宿主写入不承诺
+文件 before-image 回滚。未声明上限的构造方继续以启动姿态为上限，子 Agent
+以父级当前权限收紧。用户界面合并 `suggest` 到 Auto；内部 `suggest` 权限上限仍有效。
+
 `internal/security/authority` 拥有执行授权数据模型。`authority.Compile` 从
 Guard 提交的 `model.PreparedInvocation` 一次编译出 `Authority`：Effective Permission
 Profile、Required Controls，以及带 Resource Namespace、Root Generation、Subject
@@ -373,6 +382,8 @@ ReplacementHistory。保存精确 Checkpoint 也直接读取 ContextSnapshot，�
 `terminal_publisher.go` 使用 Runtime 已有资源完成提交，`event_terminal.go` 负责投影，
 Event Hub 不承担终态事务。`persistence/coordinator.go` 管理持久化 Turn 租约及心跳，
 Wire 只构造和注册该协调器。
+终态与 Operation 已原子提交后，先清除本地 pending 投影再发布终态事件，确保客户端
+收到取消或完成事件后立即恢复时不会被旧的 running 状态拒绝；发布失败仍由 Outbox 重放。
 
 Web 直接调用 Runtime 的窄化 Session、Operation、History 与 Artifact Service。
 浏览器 Transport 不复制 Agent 循环，也不存在第二条兼容执行路径。
@@ -1417,8 +1428,13 @@ SDK（`SDKROOT`），不再按语言名探测安装根。PATH 目录里指向目
 Cellar 这类布局；证书发现走准备链。平台适配器还会解析可执行文件的传递运行时依赖；
 macOS 读取 Mach-O 依赖和 RPATH，递归绑定实际动态库及加载所需的符号链接别名，
 只授予精确文件读取；不因动态库依赖开放相邻目录、包配置或共享状态。非 Mach-O
-文件和凭证路径不能作为依赖绑定。工具额外需要的配置（例如 OpenSSL 配置）仍须
-显式声明。凭证目录和整个宿主 Home 始终不开放。主 Agent 与子 Agent 使用同一模型，
+文件和凭证路径不能作为依赖绑定。工具额外需要的宿主配置仍须显式声明；没有显式
+设置时，受控环境默认 `OPENSSL_CONF=`，按 OpenSSL `config(5)` 的空值语义不加载
+宿主配置，避免 Node/npm 等程序启动时反复访问未授权的 `openssl.cnf`。该默认值
+统一进入准备结果和 Sandbox Policy，显式来源、资源声明及命令变量依次覆盖；
+诊断工具不再单独覆盖配置。证书信任与 TLS 校验保持启用，定制加密 Provider、FIPS
+或其它宿主加密策略须通过原有配置声明绑定。凭证目录和整个宿主 Home 始终不开放。
+主 Agent 与子 Agent 使用同一模型，
 但各自拥有独立的 Workspace 范围私有 Home。临时 Runtime 也会在声明编译前建立
 独立环境状态目录，子 Agent 在其中分配各自的 Home；会话关闭或构造回滚时清理。
 

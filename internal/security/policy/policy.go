@@ -340,6 +340,17 @@ func ruleMatches(rule Rule, invocation Invocation) bool {
 	}
 	if rule.Resource != "" && rule.Resource != "*" {
 		matched := false
+		// An unrestricted process can reach any host path or network target.
+		// It cannot evade a scoped restriction by omitting resources. A caller
+		// can select exact write/network scopes for a narrower authorization.
+		if invocation.Assessment.Facets().FullAccess {
+			// A scoped allow is not a grant for an unrestricted process, even
+			// when one of its covered paths happens to match that allow.
+			if rule.Action == ActionAllow {
+				return false
+			}
+			matched = true
+		}
 		for _, resource := range invocation.Assessment.Resources() {
 			if rule.RequireWrite && !resource.Access.Writes() {
 				continue

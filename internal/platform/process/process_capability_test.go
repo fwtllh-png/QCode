@@ -64,7 +64,7 @@ func TestSandboxNodeUsesValidatedCertificateDependencies(t *testing.T) {
 			ManagedProxyCredential: proxy.Credential(),
 			PrivateTemp:            t.TempDir(),
 		},
-		Declarations: []environment.ResourceRequest{declaredTLSConfig(t)},
+		SourceEnv: []string{"PATH=" + os.Getenv("PATH"), "NODE_EXTRA_CA_CERTS=" + caPath},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -95,7 +95,7 @@ const auth=Buffer.from(decodeURIComponent(proxy.username)+':'+decodeURIComponent
 const req=http.request({hostname:proxy.hostname,port:proxy.port,method:'CONNECT',path:target.host,headers:{'Proxy-Authorization':'Basic '+auth}});
 req.on('connect',(res,socket)=>{
  if(res.statusCode!==200) process.exit(91);
- const secure=tls.connect({socket,servername:'example.com'},()=>{
+ const secure=tls.connect({socket,servername:process.argv[3]},()=>{
   if(!secure.authorized) process.exit(92);
   secure.end();console.log('verified');
  });
@@ -103,13 +103,22 @@ req.on('connect',(res,socket)=>{
 });req.on('error',e=>{console.error(e.code);process.exitCode=1});req.end();`
 	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
 	defer cancel()
-	result, err := process.Run(ctx, process.Options{
-		Path: node, Args: []string{"-e", script, string(files), server.URL},
-		Dir: policy.WorkspaceRoot, DirFile: pinned, Sandbox: backend,
-		RequireSandbox: true, WorkspaceReadOnly: true,
-	})
-	if err != nil || result.ExitCode != 0 || result.Stdout != "verified\n" {
-		t.Fatalf("sandbox TLS verification: %+v %v", result, err)
+	for _, hostname := range []string{"example.com", "untrusted.example.invalid"} {
+		result, err := process.Run(ctx, process.Options{
+			Path: node, Args: []string{"-e", script, string(files), server.URL, hostname},
+			Dir: policy.WorkspaceRoot, DirFile: pinned, Sandbox: backend,
+			RequireSandbox: true, WorkspaceReadOnly: true,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if hostname == "example.com" {
+			if result.ExitCode != 0 || result.Stdout != "verified\n" {
+				t.Fatalf("sandbox TLS verification: %+v", result)
+			}
+		} else if result.ExitCode == 0 || !strings.Contains(result.Stderr, "ERR_TLS_CERT_ALTNAME_INVALID") {
+			t.Fatalf("sandbox accepted invalid TLS hostname: %+v", result)
+		}
 	}
 }
 
@@ -233,9 +242,16 @@ func TestDeclaredHostToolchainIsReusableInSandbox(t *testing.T) {
 	}
 }
 
-func TestDeclaredNodeRuntimeIsReusableInSandbox(t *testing.T) {
+func TestSandboxNodeRuntimeWorksWithoutCryptoDeclaration(t *testing.T) {
 	root := t.TempDir()
-	backend, err := declaredToolBackend(t, root, []environment.ResourceRequest{declaredTLSConfig(t)})
+	prepared, err := envprep.Prepare(t.Context(), envprep.Options{
+		Sandbox:   sandbox.Options{WorkspaceRoot: root, PrivateTemp: t.TempDir(), EnvironmentProfile: environment.ProfileIsolated},
+		SourceEnv: []string{"PATH=" + os.Getenv("PATH")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend, err := sandbox.NewPlatformBackend(prepared.Sandbox)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -259,24 +275,44 @@ func TestDeclaredNodeRuntimeIsReusableInSandbox(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	result, err := process.Run(ctx, process.Options{
-		Dir: ws.Root(), DirFile: pinned,
-		Command: `node --version && npm --version && ` +
-			`node -e 'const c=require("node:child_process");` +
-			`const r=c.spawnSync("/bin/sh",["-c","exit 0"]);` +
-			`if(r.error)throw r.error;process.exit(r.status??1)'`,
-		Sandbox: backend, RequireSandbox: true,
-	})
+	for attempt := range 2 {
+		result, err := process.Run(ctx, process.Options{
+			Dir: ws.Root(), DirFile: pinned,
+			Command: `node --version && npm --version && ` +
+				`node -e 'const c=require("node:child_process");` +
+				`const r=c.spawnSync("/bin/sh",["-c","exit 0"]);` +
+				`if(r.error)throw r.error;process.exit(r.status??1)'`,
+			Sandbox: backend, RequireSandbox: true,
+		})
+		if err != nil || result.ExitCode != 0 {
+			t.Fatalf("Node.js invocation %d: %+v %v", attempt, result, err)
+		}
+	}
+	// A default environment value grants no host file authority, and an
+	// explicit per-command config must not be replaced by the default.
+	unbound := filepath.Join(t.TempDir(), "unapproved.cnf")
+	if err := os.WriteFile(unbound, []byte("# unapproved host configuration\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	node, err := exec.LookPath("node")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.ExitCode != 0 {
-		t.Fatalf(
-			"host Node.js runtime was not reusable: exit=%d stdout=%s stderr=%s",
-			result.ExitCode,
-			result.Stdout,
-			result.Stderr,
-		)
+	script := `try { require('fs').readFileSync(process.argv[1]); process.exit(90); }
+catch(e) { if(e.code!=='EPERM'&&e.code!=='EACCES') throw e; console.log('denied'); }`
+	result, err := process.Run(ctx, process.Options{
+		Path: node, Args: []string{"-e", script, unbound}, Dir: ws.Root(), DirFile: pinned,
+		Sandbox: backend, RequireSandbox: true,
+	})
+	if err != nil || result.ExitCode != 0 || result.Stdout != "denied\n" {
+		t.Fatalf("undeclared host config became readable: %+v %v", result, err)
+	}
+	result, err = process.Run(ctx, process.Options{
+		Path: node, Args: []string{"-e", "console.log('must not run')"}, Dir: ws.Root(), DirFile: pinned,
+		Sandbox: backend, RequireSandbox: true, Env: []string{"OPENSSL_CONF=" + unbound},
+	})
+	if err != nil || result.ExitCode == 0 || result.Stdout != "" || !strings.Contains(result.Stderr, "OpenSSL configuration error") {
+		t.Fatalf("explicit unapproved config was ignored: %+v %v", result, err)
 	}
 }
 
@@ -305,17 +341,6 @@ func declaredToolBackend(t *testing.T, workspace string, declarations []environm
 		return nil, err
 	}
 	return sandbox.NewPlatformBackend(prepared.Sandbox)
-}
-
-// Runtime crypto configuration is an explicit file declaration, separate from
-// automatically bound library files and validated public trust certificates.
-func declaredTLSConfig(t *testing.T) environment.ResourceRequest {
-	t.Helper()
-	path := filepath.Join(t.TempDir(), "crypto.cnf")
-	if err := os.WriteFile(path, []byte("# test crypto configuration\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	return environment.ResourceRequest{Name: "crypto-config", Namespace: environment.NamespaceHostConfig, Access: environment.AccessRead, Path: path, Env: "OPENSSL_CONF"}
 }
 
 func TestIsolatedSandboxEnvironmentBaseline(t *testing.T) {

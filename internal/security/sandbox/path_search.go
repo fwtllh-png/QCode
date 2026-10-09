@@ -58,6 +58,12 @@ func exposePATHExecutables(
 			continue
 		}
 		resolved = filepath.Clean(resolved)
+		// Seatbelt checks intermediate aliases as well as the final file.
+		for _, alias := range dependencyReadPaths(path, resolved) {
+			if alias != path && alias != resolved {
+				addToolchainReadFile(&exposure.ReadFiles, alias, workspace)
+			}
+		}
 		for _, dependency := range executableRuntimeDependencies(resolved) {
 			addToolchainReadFile(&exposure.ReadFiles, dependency, workspace)
 		}

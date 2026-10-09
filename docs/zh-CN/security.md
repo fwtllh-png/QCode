@@ -70,13 +70,14 @@ Guard 解析并校验参数、路径和可信 Binding 后，通过 `tool.AssessR
 | 7 | `read` | Read 能力 | workspace.read / low / reversible |
 | 8 | `plan_only` | Write 能力且唯一副作用是会话计划 | session.mutation / low / reversible |
 | 9 | `agent` | Agent 资源 | agent.lifecycle / high / bounded |
-| 10 | `loopback_only` | Strong Sandbox 进程，仅 loopback、无工作区写 | network.read / medium / bounded |
-| 11 | `network_read` | 有网络能力或目标，Access=Read、无工作区写；进程还须出网仅安全读 | network.read / medium / bounded |
-| 12 | `network_mutating` | 其余网络能力或目标 | network.mutating / high / irreversible |
-| 13 | `process_read_only` | Strong Sandbox 进程且无工作区写 | process.read_only / low / reversible |
-| 14 | `process_mutating` | 其余进程能力或资源 | process.mutating / high / bounded |
-| 15 | `journaled_edit` | Write 能力、工作区写且有 Journal | workspace.edit / low / reversible |
-| 16 | `external` | 其余已声明操作 | external.mutation / high / irreversible |
+| 10 | `process_full_access` | Guard 从 Full Access 会话与可信命令 Binding 绑定的进程权限 | process.mutating / high / irreversible |
+| 11 | `loopback_only` | Strong Sandbox 进程，仅 loopback、无工作区写 | network.read / medium / bounded |
+| 12 | `network_read` | 有网络能力或目标，Access=Read、无工作区写；进程还须出网仅安全读 | network.read / medium / bounded |
+| 13 | `network_mutating` | 其余网络能力或目标 | network.mutating / high / irreversible |
+| 14 | `process_read_only` | Strong Sandbox 进程且无工作区写 | process.read_only / low / reversible |
+| 15 | `process_mutating` | 其余进程能力或资源 | process.mutating / high / bounded |
+| 16 | `journaled_edit` | Write 能力、工作区写且有 Journal | workspace.edit / low / reversible |
+| 17 | `external` | 其余已声明操作 | external.mutation / high / irreversible |
 
 loopback 是独立资源类，作用域为本机任意端口，不是端口为零的网络端点。
 Profile 用 Loopback 标志，Operation 的 Network Intent 用 `loopback_any` 标志表达；
@@ -142,14 +143,36 @@ Darwin `/bin/sh` here-document 的平台例外由
 `internal/security/sandbox/executable_contract.go` 中的包内数据表维护，包含来源说明；
 沙箱编译器查询该表，不按具体可执行文件名分支。
 
-## Posture 建议
+## 权限模式
 
-- `never`：首次检查仓库和不可信 Workspace 最安全。
-- `suggest`：日常交互开发推荐。
-- `auto`：适合已知 Policy 和确定性 Fixture；被拒绝的操作可能不弹审批。
+- `Read only`（`never`）：检查仓库，不允许修改。
+- `Auto`（`auto`）：日常开发默认选择；普通操作自动执行，需要时请求审批。
+- `Full Access`（`bypass`）：普通命令可读写宿主文件并直接联网，跳过常规 Posture 和验证计划审批。
 
-Web 不接受 `bypass`；该内部 Posture 仅用于受控测试与隔离执行，并仍受硬约束和
-Sandbox Availability 限制。
+Full Access 由可信 Binding 声明能力，Guard 在每次授权时从会话权限绑定事实，不能由模型
+参数开启。Authority 将该事实编译进不可变 Profile、租约与执行回执的 `full_access`，
+同一 Seatbelt 后端应用文件读写和直接网络授权。普通测试与构建无需枚举输出目录、缓存
+或网络目标；原有环境契约仍负责 HOME、临时目录、PATH 和选定的环境变量。
+
+显式 `write_paths`、`network_targets`、`allow_loopback` 或 `settle=discard` 会收窄为
+原有的范围沙箱，`shell_read` 始终只读。Full Access 保留 Guard、Constitution、Managed
+Grant、仓库和用户 deny/hold/ask、强制一次审批、执行租约、审计以及 Sandbox。
+由于无范围命令可能访问任何资源，带资源条件的限制规则会保守匹配；需要限制到其他范围
+时可显式声明资源；范围受限的 Managed Allow 也不能授予无范围命令权限。
+凭据文件与目录、工作区各层控制目录和可信 Host 指定的 Runtime 状态根仍
+受保护；状态根内仅保留已有环境明确选定的目录授权，子 Agent 继承这些保护。
+
+Full Access 的任意宿主副作用按高风险、不可逆进程记录，不生成全宿主 before-image，
+也不保证其所有写入出现在文件工具的 Turn Diff 中。需要逐文件变更归因、Journal 回滚或
+隔离结算时应使用文件工具或显式写入范围。验证证据在完成时比较覆盖文件指纹，使用旧
+证据判定任务完成前再次核验，命令修改自身覆盖文件或之后文件变化均不能沿用通过状态。
+切换权限影响后续新授权命令；已启动进程保留启动时冻结的权限，需停止后重新启动才能收紧。
+
+Web 的默认姿态仍为 Auto；Host 显式声明 Session 可选上限为 Full Access，默认值与
+权限上限分别传入 Runtime。其他调用方不声明上限时仍以启动姿态为上限，子 Agent
+始终以父级当前有效权限收紧，Read-only Role 保持只读。
+`suggest` 不再作为用户模式；旧 Session 加载后更新为 Auto。策略引擎仍保留该级别
+作为内部权限上限，不能把这种硬上限自动放宽到 Auto。
 
 Web Markdown 不执行原始 HTML 或危险 URL。同源图片可以直接显示；跨域图片只有在
 用户点击加载后才会请求，并且只允许 HTTPS、使用 `no-referrer`，避免模型输出静默
@@ -169,6 +192,10 @@ Web Markdown 不执行原始 HTML 或危险 URL。同源图片可以直接显示
   依照可信的 `resources` 声明与平台事实绑定。启动时不执行语言探测，不读取包清单。
   来源在准备时冻结，进程启动不重新读取宿主环境。`shared_user_temp` 默认关闭。
   Git 适配器在 native 下声明已存在的精确用户配置，凭证文件继续禁止暴露。
+  OpenSSL 未显式配置时使用 `OPENSSL_CONF=`，按其公开空值语义不加载宿主配置；
+  普通 Node/npm 启动不因此扩大文件读取权限。显式加密配置继续覆盖缺省值并接受
+  资源授权，诊断工具也遵循同一配置。此行为不关闭证书验证；自定义 Provider、FIPS
+  与宿主加密策略需要显式配置和文件授权。
   内置 GOPROXY 服务和 `auth_services` 配置已删除；私有制品认证由显式接入的受限
   外部服务负责。`credential/use` 只表达使用身份，无绑定器时报告未绑定。
   详见[执行环境配置](./configuration.md#执行环境)与[执行环境通用化方案](./environment-language-neutral-plan.md)。
@@ -311,8 +338,7 @@ Web Markdown 不执行原始 HTML 或危险 URL。同源图片可以直接显示
   通过 Runtime-owned loopback proxy，并要求用 `network_targets` 显式声明 Host、
   Port、Protocol、传输 Method 和私网权限。HTTPS 目标必须使用 `CONNECT`，HTTP
   目标使用普通 HTTP Method。已声明的 Process Network Resource 会先于 Process
-  Effect 被归类：`suggest` 必须经过人工 Network Approval，`auto` 才可以自动
-  Review 精确的只读目标。只读目标仅指限定为 `GET`、`HEAD`、`OPTIONS` 的明文
+  Effect 被归类：`Auto` 可以自动 Review 满足条件的精确只读目标。只读目标仅指限定为 `GET`、`HEAD`、`OPTIONS` 的明文
   HTTP 目标；HTTPS 的 CONNECT 隧道无法约束方法、可以上传任意数据，未限定方法或
   含其他方法的目标同理，都归类为 Network Mutating（高风险），`auto` 下也必须人工
   审批。运行时发现的 CONNECT 使用同一分类。Sandbox 只能连接代理端口，直连和未声明目标均 Fail
@@ -328,8 +354,8 @@ Web Markdown 不执行原始 HTML 或危险 URL。同源图片可以直接显示
   该能力默认关闭。Seatbelt 只能按“本机任意端口”放行，无法限定到 Fixture 端口，
   因此 Loopback Grant 如实建模为可连接本机任意端口：它同样能连到其他本地服务，
   以及其他 Session 和 Workspace 的代理通道。Strong Sandbox 内仅包含 Localhost
-  Grant 且没有 Workspace 写入的调用仍归类为 Network Read，但 `suggest` 和 `auto`
-  都必须人工审批，`auto` 不会自动 Review。代理通道之间的隔离不依赖端口不可达，
+  Grant 且没有 Workspace 写入的调用仍归类为 Network Read，但 `Auto`
+  必须人工审批，不会自动 Review。代理通道之间的隔离不依赖端口不可达，
   而依赖各通道的独立凭据，见“网络与服务暴露”一节。
   macOS Profile 只增加 Localhost Inbound/Outbound Seatbelt Rule；非 Loopback
   流量仍必须声明精确 Proxy Target。Loopback-only Effective Profile 不绑定托管
@@ -520,7 +546,7 @@ make secret-leak-test
     6to4 形式按内嵌的 IPv4 地址分类。判断"主机名是否直接指向本机"用的也是这套分类，
     所以 `::ffff:127.0.0.1`、`64:ff9b::7f00:1` 与 `127.0.0.1` 一样需要人工审批。
   - 已知残余风险：在 `auto` 下，解析到内网地址的外部域名仍会获得内网访问权限。
-    需要隔离内网时应使用 `suggest` Posture。
+    需要隔离内网时应配置显式网络限制；审批模式不替代网络隔离。
   Darwin 上每个 Process Session 绑定独立 loopback 端口和 Session Gate；兄弟命令、
   子 Agent 和 Workspace 共享端口不能消费该 Session 的目标。
   每个代理通道（Workspace 通道和每个 Session 通道）在创建时生成独立的随机凭据，

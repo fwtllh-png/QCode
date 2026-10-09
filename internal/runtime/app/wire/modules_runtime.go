@@ -74,6 +74,10 @@ func (agentModule) Build(ctx context.Context, state *buildState) error {
 		execution.Workspace,
 	)
 	workspaceTurnGate, approvalPosture := engineSecurityPolicy(state)
+	approvalCeiling, err := sessionPermissionCeiling(state.options.ProfilePermissionCeiling, approvalPosture)
+	if err != nil {
+		return err
+	}
 	reasoningEffort := effectiveReasoningEffort(route, execution.ReasoningEffort)
 	if err := validateRouteReasoning(route, reasoningEffort); err != nil {
 		return err
@@ -188,7 +192,7 @@ func (agentModule) Build(ctx context.Context, state *buildState) error {
 			}
 			return session.mcpPrewarm.SyncCatalog()
 		}}, SecurityConfig: agentengine.SecurityConfig{Security: state.security.runtime,
-		ProfilePermissionCeiling: approvalPosture,
+		ProfilePermissionCeiling: approvalCeiling,
 		Workspace:                execution.Workspace,
 		WorkspaceIdentity:        workspaceID,
 		WorkspaceIsolation:       "shared",
@@ -248,7 +252,7 @@ func (agentModule) Build(ctx context.Context, state *buildState) error {
 	)
 	mutableFields := mutableSessionProfileFields(
 		modelFields, modelCapabilities.ToolCalls,
-		approvalPosture != policy.PermissionNever,
+		approvalCeiling != policy.PermissionNever,
 	)
 	profileCapabilities := protocol.SessionProfileCapabilities{
 		Provider:          defaultProfile.Provider,

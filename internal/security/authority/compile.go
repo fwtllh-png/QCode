@@ -63,6 +63,10 @@ func Compile(input CompileInput) (Authority, error) {
 		return Authority{}, errors.New("prepared invocation does not match the policy invocation")
 	}
 	assessment := input.Invocation.Assessment
+	if assessment.Facets().FullAccess && (input.Runtime.Permission != policy.PermissionBypass ||
+		input.Prepared.Subject.Kind != securitymodel.SubjectBuiltin || input.Invocation.Capability() != securitymodel.CapabilityProcess) {
+		return Authority{}, errors.New("full access requires a builtin process and Full Access permission")
+	}
 	resources := assessment.Resources()
 	reach := assessedNetworkReach(assessment.Facets())
 	profile, err := compileProfile(input, resources, reach)
@@ -70,6 +74,11 @@ func Compile(input CompileInput) (Authority, error) {
 		return Authority{}, err
 	}
 	required := requiredControls(input.Prepared.Required, assessment.Facets(), reach)
+	if assessment.Facets().FullAccess {
+		required.FilesystemRead = securitymodel.FilesystemReadUnrestricted
+		required.FilesystemWrite = securitymodel.FilesystemWriteUnrestricted
+		required.Network = securitymodel.NetworkDirect
+	}
 	roots := make(map[string]string)
 	for _, candidate := range profileHostRoots(profile) {
 		roots[candidate] = canonicalRoot(candidate)

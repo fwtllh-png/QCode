@@ -35,8 +35,8 @@ open dist/QCode.app
 | `--version` | 输出构建版本 |
 | `--help` | 输出参数帮助 |
 
-监听地址固定为 `127.0.0.1`。Workspace、连接、模型和 Approval 在界面管理；
-新 Session 默认使用 `auto`，不接受 `bypass`。内置工具默认启用，显式的
+监听地址固定为 `127.0.0.1`。Workspace、连接、模型和 Permissions 在界面管理；
+新 Session 默认使用 `auto`，可在 Permissions 中选择 Full Access（`bypass`）。内置工具默认启用，显式的
 `execution.tools` / `QCODE_TOOLS` 配置仍生效。自动化场景可通过 TOML 或环境变量
 声明 Workspace、模型和凭证引用。会话、审批、输入、工具执行和持久化仍由 Runtime 负责。
 
@@ -285,7 +285,31 @@ Plan Artifact 不接受 Markdown 或 XML 标签输出。交付方案显示为
 Composer、设置页和命令菜单不提供模式切换。`act` 固定使用自适应规划：
 非高风险且非不可逆的 Workspace 操作直接执行，不按文件数量升级；高风险、不可逆、
 网络写、外部写或 Agent 生命周期操作先提交计划。界面不再暴露独立的 Planning
-Policy。只读操作限制由 `never` 工具审批姿态执行。
+Policy。Permissions 提供三档：
+
+| 模式 | 行为 |
+| --- | --- |
+| `Read only`（`never`） | 允许检查，禁止修改与其他写副作用 |
+| `Auto`（`auto`，默认） | 普通操作自动执行，需要审批的操作仍请求用户确认 |
+| `Full Access`（`bypass`） | 普通命令可读写宿主文件并直接联网，无需常规审批；保留凭据、控制目录和显式策略保护 |
+
+Full Access 下普通测试、构建与安装依赖无需枚举缓存目录或网络目标；例如执行 Go 和
+Vitest 时可以写入正常缓存及 `.vite-temp`。命令仍通过 Guard、执行审计与 Seatbelt。
+显式提供 `write_paths`、`network_targets`、`allow_loopback` 或 `settle=discard` 时
+按声明范围执行；`shell_read` 保持只读。Git 元数据变更继续使用专用 Git 工具。
+输入区持续显示当前权限。切换模式影响后续命令，已启动进程保留原权限，停止并重新启动
+后才应用新模式。任意宿主写入不保证 Journal 回滚或完整 Turn Diff；需要这些能力时
+使用文件工具或显式写入范围。验证会检查覆盖文件是否变化，旧结果不能证明修改后的代码。
+旧 `suggest` 与 Auto 对普通编辑、低风险命令处理相同，主要差别是满足有界自动审查
+条件的公网读取；因此不再作为用户可选模式。旧 Session 在加载时将 `suggest` 原子更新为
+`auto` 并递增 Profile Revision；重复加载不重复更新。旧预设应用时同样使用 Auto。
+`never` 和 `bypass` 的已有选择保持不变。
+
+只读模式会在输入区持续提示。若 Turn 因只读拒绝必需操作而声明未完成，界面显示
+`Permission change required`，提供 `Use Auto and continue` 与
+`Use Full Access and continue`。用户选择后先保存会话权限，再从原 Turn 继续；保存失败不启动
+恢复，运行时强制只读时不提供提权入口。普通任务失败、仓库规则拒绝和高危操作拒绝
+不会被当作可通过切换模式解决的只读问题。
 
 执行 Plan 提交后自动批准并继续当前 Turn；用户无需选择 `Implement` 或 `Autopilot`。
 交付 Plan 只保存产物，不授权实施、不覆盖当前执行清单，也不能直接转换为执行。
@@ -306,8 +330,8 @@ Profile Revision 判断是否过期；模型、工具集、审批姿态或执行
 `incomplete`，而不是反复改同一份计划。Checkpoint 和 Continue/Retry 只恢复原执行清单
 及有效执行授权，不会自动启动交付方案。
 
-创建新 Session 时，Web 会继承当前 Session 的 Approval Posture；因此用户选择 `auto`
-后，新建 Session 不会重新回到 `suggest`。显式的新建参数仍优先于继承值。
+创建新 Session 时，Web 会继承当前 Session 的 Approval Posture；包括用户已选择的
+Full Access。显式的新建参数仍优先于继承值。
 
 声明 Image Input 与 Vision 能力的模型可直接在请求中发送图片。支持图片的 Session 会在模型上下文中明确声明该能力，
 避免模型仅凭通用身份说明误判为纯文本环境。实际交给模型的图片同时随
@@ -451,6 +475,8 @@ Web Settings 将 Workspace Connection 与 Session 配置分开：Connection 展�
 Provider、Endpoint、Protocol 和 Keyring Credential；Models、Reasoning、Mode、
 Approval、执行目标和 Tool allowlist 属于当前 Session。Session 配置先进入 Draft，
 点击 Apply 后才通过 Runtime `profile/update` 原子生效，并显示具体变更摘要。
+Composer、设置页或 Agent Preset 正在保存 Session 配置时，发送、队列、Steer 和
+Continue/Retry 等执行入口等待保存及配置刷新完成，避免新 Turn 使用旧审批姿态。
 
 每个 Session 独立持久化准确的 (Provider, Model)，并可在 Composer 中跨全部
 已配置连接切换可用 Model（选项只显示模型名，内部以 Provider 与 Model 区分连接），

@@ -272,13 +272,13 @@ func TestRecoverResultStructuresPolicyDenialForWriteTools(t *testing.T) {
 	if !result.IsError {
 		t.Fatal("recovered denial is not an error result")
 	}
-	if action, _ := result.Metadata["required_action"].(string); action != "choose_read_only_alternative" {
+	if action, _ := result.Metadata["required_action"].(string); action != "review_permissions" {
 		t.Fatalf("required_action = %v", result.Metadata["required_action"])
 	}
 	if result.Metadata["retry_original"] != false {
 		t.Fatalf("retry_original = %v", result.Metadata["retry_original"])
 	}
-	if !strings.Contains(result.Content, "required_action=choose_read_only_alternative") {
+	if !strings.Contains(result.Content, "required_action=review_permissions") {
 		t.Fatalf("content = %q", result.Content)
 	}
 

@@ -196,6 +196,11 @@ func NewCommand(ctx context.Context, options Options) (*exec.Cmd, error) {
 	if err != nil {
 		return nil, err
 	}
+	if authorityBound && executionAuthority.FullAccess {
+		// The managed proxy is a sandbox contract, not a host proxy setting.
+		// A direct-network command must not inherit its credentials or port.
+		environment = envpolicy.WithoutManagedProxy(environment)
+	}
 	if options.TrustedRuntimeHelper {
 		environment = append(environment, tracecontext.Environment(ctx)...)
 	}
@@ -230,6 +235,7 @@ func NewCommand(ctx context.Context, options Options) (*exec.Cmd, error) {
 		SessionProxyCredential: options.SessionProxyCredential,
 	}
 	if authorityBound {
+		commandSpec.FullAccess = executionAuthority.FullAccess
 		commandSpec.AuthorityDigest = executionAuthority.Digest
 		commandSpec.CompiledNetwork = executionAuthority.EffectiveControls.Network
 	}
@@ -314,6 +320,9 @@ func NewCommand(ctx context.Context, options Options) (*exec.Cmd, error) {
 				ReasonCode: sandbox.ReasonAuthorityUnverified,
 			}, errors.New("sandbox backend returned an unverified execution authority"))
 		}
+		if authorityBound && commandSpec.FullAccess != executionAuthority.FullAccess {
+			return nil, unenforcedRestriction(options.Sandbox, "execution_access")
+		}
 		if options.WorkspaceReadOnly && !commandSpec.PreparedReadOnly {
 			return nil, unenforcedRestriction(options.Sandbox, "workspace_read_only")
 		}
@@ -336,7 +345,7 @@ func NewCommand(ctx context.Context, options Options) (*exec.Cmd, error) {
 			return nil, unenforcedRestriction(options.Sandbox, "loopback_network")
 		}
 		expectedProxyPort := policy.ManagedProxyPort
-		if options.DenyNetwork {
+		if options.DenyNetwork || executionAuthority.FullAccess {
 			expectedProxyPort = 0
 		}
 		if commandSpec.SessionProxyPort != 0 {
@@ -434,7 +443,7 @@ func validateExecutionAuthority(
 		// bind/connect is a seatbelt grant, not a proxy-routed destination.
 		if !options.DenyNetwork &&
 			authority.ManagedProxyPort != policyValue.ManagedProxyPort &&
-			!authority.LoopbackOnly() {
+			!authority.LoopbackOnly() && !authority.FullAccess {
 			return sandbox.Denied(sandbox.Denial{
 				Operation: sandbox.DenialNetwork, Resource: "managed_proxy",
 				ReasonCode: sandbox.ReasonAuthorityUnverified,

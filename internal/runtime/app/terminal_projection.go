@@ -30,6 +30,12 @@ func (s *TurnService) finishTerminal(
 	payload *protocol.StartTurnPayload,
 ) {
 	r := s.runtime
+	if sink.committed != nil && sink.committed.OperationCommitted {
+		// The terminal envelope already committed the operation atomically.
+		// Clear the local pending projection before publishing the terminal:
+		// clients may request recovery as soon as they receive that event.
+		r.commitLocal(operation.ID)
+	}
 	err := sink.publishTerminal()
 	if err == nil {
 		s.settleProjectedTerminal(payload.ThreadID, payload.TurnID)

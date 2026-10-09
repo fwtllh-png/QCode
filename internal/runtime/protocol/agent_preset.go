@@ -38,7 +38,7 @@ func NewAgentPresetProfile(profile SessionProfile) AgentPresetProfile {
 		Provider: profile.Provider, Model: profile.Model,
 		ReasoningEffort: profile.ReasoningEffort,
 		EnabledToolIDs:  sortedToolIDs(profile.EnabledToolIDs),
-		ApprovalPosture: profile.ApprovalPosture,
+		ApprovalPosture: NormalizeSessionApprovalPosture(profile.ApprovalPosture),
 		ExecutionTarget: profile.ExecutionTarget,
 		MaxSteps:        profile.MaxSteps,
 	}
@@ -61,7 +61,7 @@ func (p AgentPresetProfile) Patch(current SessionProfile) SessionProfilePatch {
 	if !slices.Equal(tools, currentTools) {
 		patch.EnabledToolIDs = &tools
 	}
-	setStringPatch(&patch.ApprovalPosture, p.ApprovalPosture, current.ApprovalPosture)
+	setStringPatch(&patch.ApprovalPosture, NormalizeSessionApprovalPosture(p.ApprovalPosture), current.ApprovalPosture)
 	setStringPatch(&patch.ExecutionTarget, p.ExecutionTarget, current.ExecutionTarget)
 	if p.MaxSteps != current.MaxSteps {
 		value := p.MaxSteps

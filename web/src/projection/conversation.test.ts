@@ -257,6 +257,33 @@ describe("ConversationProjection", () => {
     });
   });
 
+  it.each([
+    ["never", "permission_denied", true],
+    ["never", "repository_rule_denied", false],
+    ["auto", "permission_denied", false]
+  ])(
+    "distinguishes %s / %s when unfinished work needs a permission change",
+    (posture, category, permissionRequired) => {
+      const snapshot = projectConversation([
+        event(0, "turn.started", {posture}),
+        event(1, "tool.start", {call_id: "write", tool: "file_apply"}),
+        event(2, "tool.result", {
+          call_id: "write", tool: "file_apply", is_error: true,
+          recovery: {error_category: category, retry_original: false}
+        }),
+        event(3, "turn.failed", {
+          message: "turn declared incomplete with resumable pending actions",
+          convergence: {cause: "declared_incomplete", summary: "Changes remain."}
+        })
+      ]);
+      const status = snapshot.nodes.get(snapshot.order.at(-1)!);
+      expect(status).toMatchObject({
+        title: permissionRequired ? "Permission change required" : "Blocked",
+        recovery: {action: permissionRequired ? "change_approval_posture" : ""}
+      });
+    }
+  );
+
   it("presents recoverable Runtime faults as blocked work", () => {
     const snapshot = projectConversation([
       event(1, "turn.failed", {

@@ -36,6 +36,7 @@ type NetworkAuthority struct {
 }
 
 type ProcessAuthority struct {
+	FullAccess  bool                `json:"full_access,omitempty"`
 	Allowed     bool                `json:"allowed"`
 	Enforcement sandbox.Enforcement `json:"enforcement"`
 	Backend     string              `json:"backend"`
@@ -88,6 +89,16 @@ func compileProfile(
 	}
 	compileResources(&profile, input.Invocation, resources)
 	compileSandboxCeiling(&profile, input, reach)
+	if input.Invocation.Assessment.Facets().FullAccess {
+		profile.Access = securitymodel.Write
+		profile.Process.FullAccess = true
+		profile.Filesystem.WorkspaceBaseWrite = true
+		profile.Filesystem.ReadRoots = []string{"/"}
+		profile.Controls.FilesystemRead = securitymodel.FilesystemReadUnrestricted
+		profile.Controls.FilesystemWrite = securitymodel.FilesystemWriteUnrestricted
+		profile.Controls.Network = securitymodel.NetworkDirect
+		profile.Network = NetworkAuthority{}
+	}
 	profile.Provenance = provenance(input)
 	normalize(&profile)
 	digest, err := profileDigest(profile)
@@ -113,6 +124,11 @@ func (p EffectivePermissionProfile) Validate() error {
 	if !p.Process.Enforcement.Valid() {
 		return errors.New("effective permission profile enforcement is invalid")
 	}
+	if p.Process.FullAccess && (p.Process.Enforcement != sandbox.EnforcementStrong || !p.Process.Allowed ||
+		!p.Filesystem.WorkspaceBaseWrite || p.Controls.Network != securitymodel.NetworkDirect || p.Network.ProxyPort != 0 ||
+		p.Controls.FilesystemRead != securitymodel.FilesystemReadUnrestricted || p.Controls.FilesystemWrite != securitymodel.FilesystemWriteUnrestricted) {
+		return errors.New("full access profile has inconsistent process controls")
+	}
 	if p.Process.Enforcement == sandbox.EnforcementStrong && p.Process.Backend == "" {
 		return errors.New("controlled profile has no sandbox backend")
 	}
@@ -126,6 +142,7 @@ func (p EffectivePermissionProfile) executionAuthority(
 	required RequiredControls,
 ) sandbox.ExecutionAuthority {
 	return sandbox.ExecutionAuthority{
+		FullAccess:    p.Process.FullAccess,
 		Digest:        p.Digest,
 		Enforcement:   p.Process.Enforcement,
 		WorkspaceRoot: p.Filesystem.WorkspaceRoot,

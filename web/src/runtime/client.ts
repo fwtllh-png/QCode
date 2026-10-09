@@ -131,6 +131,7 @@ export interface RuntimeSnapshot {
   workspaces: readonly WorkspaceDescriptor[];
   selectedWorkspaceID: string;
   profile?: SessionProfileSnapshot;
+  profileUpdatingSessionIDs?: readonly string[];
   tools: Readonly<ToolCatalog["tools"]>;
   checkpoints: Readonly<CheckpointList["checkpoints"]>;
   plan?: SessionPlanArtifact;
@@ -1160,7 +1161,7 @@ export class RuntimeClient {
   }
 
   async submitPrompt(prompt: string): Promise<OperationReceipt> {
-    const sessionID = this.requireSession();
+    const sessionID = this.requireProfileReady();
     const key = crypto.randomUUID();
     const receipt = await this.call<OperationReceipt>("operation/submit", {
       session_id: sessionID,
@@ -1259,6 +1260,7 @@ export class RuntimeClient {
   }
 
   async steer(turnID: string, prompt: string): Promise<OperationReceipt> {
+    this.requireProfileReady();
     const normalized = prompt.trim();
     if (!normalized) throw new Error("Steering prompt is required");
     return this.call<OperationReceipt>("operation/submit", {
@@ -1270,6 +1272,7 @@ export class RuntimeClient {
   }
 
   async enqueue(turnID: string, prompt: string): Promise<OperationReceipt> {
+    this.requireProfileReady();
     const normalized = prompt.trim();
     if (!normalized) throw new Error("Queued prompt is required");
     const receipt = await this.call<OperationReceipt>("operation/submit", {
@@ -1379,7 +1382,7 @@ export class RuntimeClient {
     return this.call<OperationReceipt>("turn/recover", {
       version: 1,
       action,
-      session_id: this.requireSession(),
+      session_id: this.requireProfileReady(),
       source_turn_id: sourceTurnID,
       prompt,
       idempotency_key: crypto.randomUUID()
@@ -1389,6 +1392,7 @@ export class RuntimeClient {
   async updateProfile(
     patch: Record<string, unknown>
   ): Promise<SessionProfileUpdateResult> {
+    this.requireProfileReady();
     const scope = this.selection.current;
     const snapshot = this.state.profile;
     const profile = snapshot?.profile;
@@ -1398,27 +1402,29 @@ export class RuntimeClient {
     if (!profile || !session) {
       throw new Error("No active session");
     }
-    const result = await this.call<SessionProfileUpdateResult>("profile/update", {
-      session_id: session.session_id,
-      thread_id: session.thread_id,
-      expected_revision: profile.revision,
-      patch
+    return this.withProfileUpdate(session.session_id, async () => {
+      const result = await this.call<SessionProfileUpdateResult>("profile/update", {
+        session_id: session.session_id,
+        thread_id: session.thread_id,
+        expected_revision: profile.revision,
+        patch
+      });
+      const [authoritative, catalog] = await Promise.all([
+        this.call<SessionProfileSnapshot>("profile/get", {
+          session_id: session.session_id
+        }),
+        this.call<ToolCatalog>("tool/catalog", {
+          session_id: session.session_id
+        })
+      ]);
+      if (!scope.live ||
+          session.session_id !== this.state.selectedSessionID) {
+        return result;
+      }
+      this.update({profile: authoritative, tools: catalog.tools ?? []});
+      await this.refreshModelCatalog();
+      return {...result, profile: authoritative.profile};
     });
-    const [authoritative, catalog] = await Promise.all([
-      this.call<SessionProfileSnapshot>("profile/get", {
-        session_id: session.session_id
-      }),
-      this.call<ToolCatalog>("tool/catalog", {
-        session_id: session.session_id
-      })
-    ]);
-    if (!scope.live ||
-        session.session_id !== this.state.selectedSessionID) {
-      return result;
-    }
-    this.update({profile: authoritative, tools: catalog.tools ?? []});
-    await this.refreshModelCatalog();
-    return {...result, profile: authoritative.profile};
   }
 
   async listAgentPresets(): Promise<AgentPresetList> {
@@ -1459,30 +1465,33 @@ export class RuntimeClient {
   }
 
   async applyAgentPreset(presetID: string): Promise<AgentPresetApplyResult> {
+    this.requireProfileReady();
     const session = this.state.sessions.find(
       (item) => item.session_id === this.state.selectedSessionID
     );
     const profile = this.state.profile?.profile;
     if (!session || !profile) throw new Error("No active session");
     const scope = this.selection.current;
-    const result = await this.call<AgentPresetApplyResult>("agent-preset/apply", {
-      session_id: session.session_id,
-      thread_id: session.thread_id,
-      preset_id: presetID,
-      expected_profile_revision: profile.revision
+    return this.withProfileUpdate(session.session_id, async () => {
+      const result = await this.call<AgentPresetApplyResult>("agent-preset/apply", {
+        session_id: session.session_id,
+        thread_id: session.thread_id,
+        preset_id: presetID,
+        expected_profile_revision: profile.revision
+      });
+      const [authoritative, catalog] = await Promise.all([
+        this.call<SessionProfileSnapshot>("profile/get", {
+          session_id: session.session_id
+        }),
+        this.call<ToolCatalog>("tool/catalog", {
+          session_id: session.session_id
+        })
+      ]);
+      if (scope.live && session.session_id === this.state.selectedSessionID) {
+        this.update({profile: authoritative, tools: catalog.tools ?? []});
+      }
+      return result;
     });
-    const [authoritative, catalog] = await Promise.all([
-      this.call<SessionProfileSnapshot>("profile/get", {
-        session_id: session.session_id
-      }),
-      this.call<ToolCatalog>("tool/catalog", {
-        session_id: session.session_id
-      })
-    ]);
-    if (scope.live && session.session_id === this.state.selectedSessionID) {
-      this.update({profile: authoritative, tools: catalog.tools ?? []});
-    }
-    return result;
   }
 
   loadEarlierHistory(limit = 200): Promise<number> {
@@ -2563,6 +2572,26 @@ export class RuntimeClient {
             retryable: true
           };
     this.update({phase, socketConnected: false, problem});
+  }
+
+  private async withProfileUpdate<T>(sessionID: string, update: () => Promise<T>): Promise<T> {
+    this.update({profileUpdatingSessionIDs: [
+      ...(this.state.profileUpdatingSessionIDs ?? []), sessionID
+    ]});
+    try {
+      return await update();
+    } finally {
+      this.update({profileUpdatingSessionIDs:
+        this.state.profileUpdatingSessionIDs?.filter((id) => id !== sessionID)});
+    }
+  }
+
+  private requireProfileReady(): string {
+    const sessionID = this.requireSession();
+    if (this.state.profileUpdatingSessionIDs?.includes(sessionID)) {
+      throw new Error("Session settings are still updating. Wait for them to finish before continuing.");
+    }
+    return sessionID;
   }
 
   private requireSession(): string {

@@ -54,7 +54,7 @@ button:disabled,
 select:disabled,
 textarea:disabled {
   cursor: not-allowed;
-  opacity: 0.48;
+  opacity: var(--ch-disabled-opacity);
 }
 
 :focus-visible {
@@ -399,13 +399,17 @@ textarea:disabled {
 .sessionRow {
   position: relative;
   width: 100%;
-  border-radius: var(--ch-radius);
+  border-radius: var(--ch-radius-control);
   animation: session-row-in var(--ch-motion-disclosure) var(--ch-ease-in-out);
 }
 
-.sessionRow:hover,
-.sessionRow[data-active] {
+.sessionRow:hover {
   background: var(--ch-panel-subtle);
+}
+
+.sessionRow[data-active] {
+  color: var(--ch-business);
+  background: var(--ch-business-soft);
 }
 
 .sessionRow[data-error] {
@@ -437,6 +441,7 @@ textarea:disabled {
   width: 14px;
   height: 14px;
   color: var(--ch-business);
+  animation: ui-enter var(--ch-motion-enter) var(--ch-ease-enter);
 }
 
 .sessionStatusMark[data-tone="warning"] {
@@ -463,6 +468,7 @@ textarea:disabled {
 
 .sessionRow:hover .sessionActions,
 .sessionRow:focus-within .sessionActions,
+.sessionRow:has(.sessionMenu) .sessionActions,
 .sessionRow[data-menu-open] .sessionActions {
   visibility: visible;
   opacity: 1;
@@ -490,7 +496,7 @@ textarea:disabled {
   color: var(--ch-text);
   background: var(--ch-panel-raised);
   border: 1px solid var(--ch-border);
-  border-radius: var(--ch-radius);
+  border-radius: var(--ch-radius-panel);
   box-shadow: var(--ch-shadow);
 }
 
@@ -551,6 +557,10 @@ textarea:disabled {
   line-height: 20px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.sessionRow[data-active] .sessionTitle {
+  font-weight: 600;
 }
 
 .sessionAge {
@@ -673,6 +683,7 @@ textarea:disabled {
   min-height: 0;
   overflow: hidden;
   background: var(--ch-panel);
+  container-type: inline-size;
 }
 
 .setupBanner {
@@ -718,8 +729,9 @@ textarea:disabled {
   min-width: 0;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 16px;
+  gap: var(--ch-space-3);
   padding: 12px 28px 0 20px;
+  background: var(--ch-panel);
   border-bottom: 1px solid var(--ch-border);
 }
 
@@ -741,7 +753,7 @@ textarea:disabled {
 .conversationHeader h1 {
   margin: 0;
   font-size: 14px;
-  font-weight: 500;
+  font-weight: 600;
   line-height: 20px;
 }
 
@@ -829,6 +841,11 @@ textarea:disabled {
   overflow-anchor: none;
 }
 
+.conversationScrollport[data-view="trajectory"] > .trajectory,
+.conversationScrollport[data-view="chat"] > .transcript {
+  animation: ui-enter var(--ch-motion-enter) var(--ch-ease-in-out);
+}
+
 .transcript {
   gap: 16px;
   width: min(var(--ch-chat-width), calc(100% - 40px));
@@ -845,6 +862,10 @@ textarea:disabled {
   gap: 16px;
 }
 
+.turnExecutionItems {
+  padding-top: var(--ch-space-2);
+}
+
 .turnExecution {
   display: flex;
   min-width: 0;
@@ -855,13 +876,13 @@ textarea:disabled {
 .turnExecutionToggle {
   display: inline-flex;
   width: fit-content;
-  min-height: 28px;
+  min-height: var(--ch-control-height);
   align-items: center;
   gap: 6px;
-  padding: 3px 6px;
+  padding: var(--ch-space-1) var(--ch-space-2);
   color: var(--ch-text-muted);
   background: transparent;
-  border-radius: var(--ch-radius);
+  border-radius: var(--ch-radius-control);
   font-size: 12px;
   line-height: 20px;
 }
@@ -869,7 +890,7 @@ textarea:disabled {
 .turnExecutionToggle:hover,
 .turnExecutionToggle:focus-visible {
   color: var(--ch-text-secondary);
-  background: var(--ch-panel-subtle);
+  background: var(--ch-state-hover);
 }
 
 .turnExecutionToggle small {
@@ -1037,7 +1058,7 @@ textarea:disabled {
 }
 
 .workspaceRemovalActions .workspaceRemovalConfirm {
-  color: var(--ch-on-accent);
+  color: var(--ch-on-danger);
   background: var(--ch-danger);
   border-color: var(--ch-danger);
 }
@@ -1243,14 +1264,22 @@ textarea:disabled {
   align-items: center;
   gap: 7px;
   padding: 0 14px;
-  color: var(--ch-on-accent);
-  background: var(--ch-accent);
+  color: var(--ch-on-accent-strong);
+  background: var(--ch-accent-strong);
+  border-color: var(--ch-accent-strong);
   font-size: 12px;
   font-weight: 600;
 }
 
 .startupCreate:hover:not(:disabled) {
-  background: var(--ch-accent-hover);
+  background: var(--ch-accent-strong-hover);
+}
+
+.startupCreate:disabled {
+  color: var(--ch-text-muted);
+  background: var(--ch-accent-soft);
+  border-color: var(--ch-border);
+  opacity: 1;
 }
 
 /* ===== 用户消息：气泡、操作与撤回折叠 ===== */
@@ -1273,7 +1302,7 @@ textarea:disabled {
   line-height: 24px;
   white-space: pre-wrap;
   background: var(--ch-business-soft);
-  border-radius: var(--ch-radius-conversation);
+  border-radius: var(--ch-radius-conversation) var(--ch-radius-conversation) var(--ch-radius) var(--ch-radius-conversation);
 }
 
 .userMessageActions {
@@ -1385,7 +1414,7 @@ textarea:disabled {
 
 .messageActions button:hover,
 .messageActions button:focus-visible {
-  color: var(--ch-text-secondary);
+  color: var(--ch-text);
   background: var(--ch-panel-subtle);
 }
 
@@ -1417,15 +1446,15 @@ textarea:disabled {
 .disclosureRow {
   display: flex;
   width: 100%;
-  height: 24px;
+  min-height: var(--ch-control-height);
   align-items: center;
   gap: 0;
-  padding: 0;
+  padding: 6px 10px;
   overflow: hidden;
   text-align: left;
   color: var(--ch-text-secondary);
   background: transparent;
-  border-radius: var(--ch-radius);
+  border-radius: var(--ch-radius-control);
   font-size: 14px;
   line-height: 24px;
 }
@@ -1433,7 +1462,7 @@ textarea:disabled {
 .disclosure > button:hover,
 .disclosureRow:hover {
   color: var(--ch-text);
-  background: transparent;
+  background: var(--ch-state-hover);
 }
 
 .disclosure > button:hover .disclosureTitle,
@@ -1459,6 +1488,7 @@ textarea:disabled {
 
 .disclosureTitle,
 .disclosure small {
+  font-size: 13px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1467,14 +1497,13 @@ textarea:disabled {
 .disclosureTitle {
   flex: 0 0 auto;
   color: var(--ch-text-secondary);
-  font-weight: 400;
+  font-weight: 500;
 }
 
 .disclosure small {
   min-width: 0;
   flex: 1;
   color: var(--ch-text-muted);
-  font-size: 14px;
   line-height: 24px;
 }
 
@@ -1653,9 +1682,18 @@ textarea:disabled {
   cursor: pointer;
 }
 
+.toolDisclosure > .disclosureRow {
+  background: var(--ch-panel-subtle);
+}
+
+.toolDisclosure[data-failed] > .disclosureRow {
+  background: var(--ch-danger-soft);
+}
+
 .toolExpanded {
   display: flex;
   flex-direction: column;
+  padding-top: var(--ch-space-2);
 }
 
 .thinkBody,
@@ -1674,10 +1712,17 @@ textarea:disabled {
   color: var(--ch-text-secondary);
   background: var(--ch-code);
   border: 1px solid var(--ch-border);
-  border-radius: var(--ch-radius);
   font-family: var(--ch-font-mono);
   font-size: 12px;
   line-height: 18px;
+}
+
+.toolSurface {
+  border-radius: var(--ch-radius-control);
+}
+
+.toolIOCard {
+  border-radius: var(--ch-radius);
 }
 
 .toolSurfaceHeader,
@@ -2024,7 +2069,6 @@ textarea:disabled {
   gap: 10px;
   padding: 10px 12px;
   border: 1px solid var(--ch-border);
-  border-radius: var(--ch-radius);
 }
 
 .terminalState {
@@ -2032,6 +2076,7 @@ textarea:disabled {
   margin: 0;
   padding: 3px 7px;
   border-color: transparent;
+  border-radius: var(--ch-radius);
   color: var(--ch-business);
 }
 
@@ -2078,6 +2123,12 @@ textarea:disabled {
 .turnRecoveryStatus {
   min-width: 0;
   color: var(--ch-text-muted);
+}
+
+.composerPermissionNotice {
+  margin: 0 12px 6px;
+  color: var(--ch-text-muted);
+  font-size: 12px;
 }
 
 .turnRecovery .artifactActions {
@@ -2130,6 +2181,7 @@ textarea:disabled {
 .inlineProblem {
   align-items: center;
   margin-bottom: 18px;
+  border-radius: var(--ch-radius-control);
 }
 
 .inlineProblem span {
@@ -2201,8 +2253,13 @@ textarea:disabled {
   box-shadow: var(--ch-composer-shadow);
 }
 
+.composer {
+  background: var(--ch-panel);
+}
+
 .composer:focus-within {
   border-color: var(--ch-focus);
+  box-shadow: 0 0 0 2px var(--ch-accent-soft), var(--ch-composer-shadow);
 }
 
 .composerInputRow,
@@ -2233,7 +2290,6 @@ textarea:disabled {
 
 .sessionProgress {
   margin: 0 auto 8px;
-  border-block: 1px solid var(--ch-border);
 }
 
 .sessionProgressBody {
@@ -2607,12 +2663,12 @@ textarea:disabled {
 
 .turnQueueActions button:hover:not(:disabled),
 .turnQueueActions button:focus-visible {
-  background: var(--ch-hover);
+  background: var(--ch-state-hover);
   color: var(--ch-text);
 }
 
 .turnQueueActions button:disabled {
-  opacity: 0.45;
+  opacity: var(--ch-disabled-opacity);
 }
 
 .composerControls {
@@ -2626,8 +2682,10 @@ textarea:disabled {
 }
 
 .composerControls .iconButton {
-  width: 30px;
-  height: 30px;
+  width: 32px;
+  height: 32px;
+  color: var(--ch-text-secondary);
+  background: var(--ch-panel-subtle);
 }
 
 .composer textarea {
@@ -2635,7 +2693,7 @@ textarea:disabled {
   min-width: 0;
   min-height: 48px;
   max-height: 336px;
-  padding: 10px 8px;
+  padding: 10px 0;
   resize: none;
   background: transparent;
   border: 0;
@@ -2662,28 +2720,27 @@ textarea:disabled {
   appearance: none;
   min-width: 0;
   max-width: 142px;
-  height: 30px;
-  padding: 0 22px 0 8px;
-  color: var(--ch-text-muted);
-  background: transparent;
+  height: 32px;
+  padding: 0 26px 0 9px;
+  color: var(--ch-text-secondary);
+  background: var(--ch-panel-subtle);
   border: 0;
-  border-radius: var(--ch-radius);
+  border-radius: var(--ch-radius-control);
   font-size: 12px;
 }
 
 .compactSelect > svg {
   position: absolute;
-  right: 5px;
+  right: 6px;
   flex: 0 0 auto;
-  color: var(--ch-text-muted);
+  color: var(--ch-text-secondary);
   pointer-events: none;
 }
 
 .compactSelect select:hover,
 .compactSelect select:focus {
   color: var(--ch-text);
-  background: var(--ch-panel-subtle);
-  outline: 0;
+  background: var(--ch-state-hover);
 }
 
 .reasoningMenuRoot {
@@ -2696,13 +2753,13 @@ textarea:disabled {
 .reasoningMenuTrigger {
   display: inline-flex;
   min-width: 0;
-  height: 24px;
+  height: 32px;
   align-items: center;
-  gap: 3px;
-  padding: 0 4px 0 5px;
-  color: var(--ch-text-muted);
-  background: transparent;
-  border-radius: var(--ch-radius);
+  gap: 4px;
+  padding: 0 9px;
+  color: var(--ch-text-secondary);
+  background: var(--ch-panel-subtle);
+  border-radius: var(--ch-radius-control);
   font-size: 12px;
 }
 
@@ -2710,7 +2767,7 @@ textarea:disabled {
 .reasoningMenuTrigger:focus-visible,
 .reasoningMenuTrigger[aria-expanded="true"] {
   color: var(--ch-text);
-  background: var(--ch-panel-subtle);
+  background: var(--ch-state-hover);
 }
 
 .reasoningMenu {
@@ -2724,7 +2781,7 @@ textarea:disabled {
   color: var(--ch-text);
   background: var(--ch-panel-raised);
   border: 1px solid var(--ch-border-strong);
-  border-radius: var(--ch-radius-control);
+  border-radius: var(--ch-radius-panel);
   box-shadow: var(--ch-elevation-2);
 }
 
@@ -2753,17 +2810,6 @@ textarea:disabled {
   color: var(--ch-text);
 }
 
-.composerValue {
-  max-width: 142px;
-  padding: 0 5px;
-  overflow: hidden;
-  color: var(--ch-text-muted);
-  font-size: 12px;
-  line-height: 24px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .contextMeterRoot {
   position: relative;
   display: inline-flex;
@@ -2772,22 +2818,22 @@ textarea:disabled {
 
 .contextMeter {
   display: grid;
-  width: 28px;
-  height: 28px;
+  width: 32px;
+  height: 32px;
   padding: 0;
   place-items: center;
   color: var(--ch-text-secondary);
-  background: transparent;
+  background: var(--ch-panel-subtle);
   border-radius: 50%;
 }
 
 .contextMeter:hover,
 .contextMeter[aria-expanded="true"] {
-  background: var(--ch-panel-subtle);
+  background: var(--ch-state-hover);
 }
 
 .contextMeter:focus-visible {
-  outline: 2px solid var(--ch-text-secondary);
+  outline: 2px solid var(--ch-focus);
   outline-offset: 2px;
 }
 
@@ -2809,6 +2855,7 @@ textarea:disabled {
 .contextFill {
   stroke: var(--ch-text-muted);
   stroke-linecap: round;
+  transition: stroke-dasharray var(--ch-motion-feedback) var(--ch-ease-in-out);
 }
 
 .contextBar {
@@ -3088,6 +3135,55 @@ textarea:disabled {
   line-height: 16px;
 }
 
+/* —— 上下文连续性诊断(P5 选择目录) —— */
+.contextDiagnostics {
+  display: grid;
+  gap: 2px;
+}
+
+.contextDiagnostics > button {
+  justify-self: start;
+  min-height: 24px;
+  padding: 0 6px;
+  margin-left: -6px;
+  color: var(--ch-text-secondary);
+  background: transparent;
+  border-radius: var(--ch-radius);
+  font-size: 11px;
+}
+
+.contextDiagnostics > button:hover,
+.contextDiagnostics > button:focus-visible,
+.contextDiagnostics > button[aria-expanded="true"] {
+  color: var(--ch-text);
+  background: var(--ch-state-hover);
+}
+
+.contextDiagnostics summary {
+  width: fit-content;
+  margin-top: 8px;
+  color: var(--ch-text-caption);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.contextDiagnostics summary:hover {
+  color: var(--ch-text-secondary);
+}
+
+.contextDiagnostics pre {
+  max-height: 220px;
+  margin: 6px 0 0;
+  padding: 8px 10px;
+  overflow: auto;
+  color: var(--ch-text);
+  background: var(--ch-panel-subtle);
+  border-radius: var(--ch-radius);
+  font-family: var(--ch-font-mono);
+  font-size: 10px;
+  line-height: 15px;
+}
+
 /* —— 上下文托盘条目 —— */
 .contextTray {
   display: flex;
@@ -3131,6 +3227,10 @@ textarea:disabled {
   padding: 11px 12px;
 }
 
+.pendingComposer[data-error] {
+  border-color: var(--ch-danger);
+}
+
 .approvalComposer {
   max-height: min(520px, calc(100vh - 96px));
   gap: 0;
@@ -3145,8 +3245,8 @@ textarea:disabled {
   align-items: center;
   gap: 8px;
   padding: 0 10px 0 15px;
-  color: color-mix(in srgb, var(--ch-warning) 72%, var(--ch-text));
-  background: color-mix(in srgb, var(--ch-warning) 10%, var(--ch-panel));
+  color: var(--ch-warning);
+  background: var(--ch-warning-soft);
   font-size: 12px;
 }
 
@@ -3267,15 +3367,12 @@ textarea:disabled {
 }
 
 .pendingMeta {
-  color: var(--ch-text-muted);
-  font-size: 12px;
-  line-height: 16px;
-}
-
-.pendingMeta {
   display: flex;
   flex-wrap: wrap;
   gap: 4px 12px;
+  color: var(--ch-text-muted);
+  font-size: 12px;
+  line-height: 16px;
 }
 
 .pendingActions {
@@ -3328,10 +3425,17 @@ textarea:disabled {
 }
 
 /* ===== 选项型输入响应（primaryText/inputOption） ===== */
-.primaryText {
-  color: var(--ch-on-accent);
-  background: var(--ch-accent) !important;
-  border-color: var(--ch-accent) !important;
+.pendingActions .primaryText {
+  color: var(--ch-on-accent-strong);
+  background: var(--ch-accent-strong);
+  border-color: var(--ch-accent-strong);
+}
+
+.pendingActions .primaryText:disabled {
+  color: var(--ch-text-muted);
+  background: var(--ch-accent-soft);
+  border-color: var(--ch-border);
+  opacity: 1;
 }
 
 .inputResponse {
@@ -3342,103 +3446,73 @@ textarea:disabled {
   display: grid;
   width: 100%;
   min-width: 0;
-  gap: 8px;
+  gap: 6px;
   flex: 1 0 100%;
-  padding: 10px;
-  background: var(--ch-panel);
-  border: 1px solid var(--ch-border);
-  border-radius: calc(var(--ch-radius) + 2px);
 }
 
 .inputOptionHeading {
-  display: flex;
-  min-width: 0;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 12px;
-  color: var(--ch-text-secondary);
-  font-size: 12px;
-  font-weight: 600;
-  line-height: 16px;
-}
-
-.inputOptionHeading small {
-  overflow: hidden;
+  margin: 0;
   color: var(--ch-text-caption);
-  font-size: 12px;
-  font-weight: 400;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  font-size: 11px;
+  line-height: 16px;
 }
 
 .inputOptionList {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr));
+  grid-template-columns: minmax(0, 1fr);
   gap: 6px;
 }
 
-.inputOptionRoot .inputOptionCard {
+.inputOptionCard {
   display: flex;
   width: 100%;
-  min-height: 42px;
+  min-height: 36px;
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-  padding: 8px 10px;
+  padding: 0 12px;
   color: var(--ch-text-secondary);
   background: var(--ch-panel-subtle);
-  border: 1px solid transparent;
-  border-radius: var(--ch-radius);
+  border: 0;
+  border-radius: var(--ch-radius-control);
   text-align: left;
-  transition: background var(--ch-motion-disclosure) var(--ch-ease-in-out),
-    border-color var(--ch-motion-disclosure) var(--ch-ease-in-out),
-    color var(--ch-motion-disclosure) var(--ch-ease-in-out);
+  transition: background-color var(--ch-motion-feedback) var(--ch-ease-in-out),
+    color var(--ch-motion-feedback) var(--ch-ease-in-out);
 }
 
-.inputOptionRoot .inputOptionCard:hover:not(:disabled),
-.inputOptionRoot .inputOptionCard:focus-visible {
+.inputOptionCard:hover:not(:disabled),
+.inputOptionCard:focus-visible {
   color: var(--ch-text);
-  background: color-mix(in srgb, var(--ch-accent-soft) 62%, var(--ch-panel-subtle));
-  border-color: color-mix(in srgb, var(--ch-accent) 44%, var(--ch-border));
-  outline: 0;
+  background: var(--ch-state-hover);
 }
 
-.inputOptionRoot .inputOptionCard[data-selected] {
-  color: var(--ch-text);
-  background: var(--ch-accent-soft);
-  border-color: color-mix(in srgb, var(--ch-accent) 58%, var(--ch-border));
+.inputOptionCard[data-selected],
+.inputOptionCard[data-selected]:hover:not(:disabled) {
+  color: var(--ch-on-accent-strong);
+  background: var(--ch-accent-strong);
+}
+
+.inputOptionCard:disabled {
+  color: var(--ch-text-muted);
+  background: var(--ch-panel-subtle);
+  opacity: var(--ch-disabled-opacity);
 }
 
 .inputOptionText {
-  display: flex;
+  display: -webkit-box;
   min-width: 0;
-  align-items: flex-start;
-  gap: 8px;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  font-size: 13px;
   line-height: 18px;
   overflow-wrap: anywhere;
 }
 
-.inputOptionIndex {
-  display: grid;
-  width: 18px;
-  height: 18px;
-  flex: 0 0 auto;
-  place-items: center;
-  color: var(--ch-text-caption);
-  background: var(--ch-panel-raised);
-  border-radius: 50%;
-  font-size: 12px;
-  font-variant-numeric: tabular-nums;
-}
-
-.inputOptionCard[data-selected] .inputOptionIndex {
-  color: var(--ch-on-accent);
-  background: var(--ch-accent);
-}
-
 .inputOptionCheck {
   flex: 0 0 auto;
-  color: var(--ch-accent-strong);
+  color: var(--ch-on-accent-strong);
 }
 
 .inputResponse input {
@@ -3455,32 +3529,46 @@ textarea:disabled {
 .iconButton {
   display: grid;
   flex: 0 0 auto;
-  width: 34px;
-  height: 34px;
+  width: var(--ch-control-height);
+  height: var(--ch-control-height);
   padding: 0;
   place-items: center;
   color: var(--ch-text-muted);
   background: transparent;
-  border-radius: var(--ch-radius);
+  border-radius: var(--ch-radius-control);
 }
 
 .iconButton:hover:not(:disabled) {
-  color: var(--ch-text);
-  background: var(--ch-panel-subtle);
+  color: var(--ch-business);
+  background: var(--ch-state-hover);
+}
+
+.iconButton:disabled {
+  box-shadow: none;
 }
 
 .iconButton[data-primary] {
-  color: var(--ch-on-accent);
-  background: var(--ch-accent);
+  color: var(--ch-on-accent-strong);
+  background: var(--ch-accent-strong);
 }
 
 .iconButton[data-primary]:hover:not(:disabled) {
-  color: var(--ch-on-accent);
-  background: var(--ch-accent-hover);
+  color: var(--ch-on-accent-strong);
+  background: var(--ch-accent-strong-hover);
+}
+
+.iconButton[data-primary]:disabled {
+  color: var(--ch-text-muted);
+  background: var(--ch-accent-soft);
+  opacity: 1;
 }
 
 .iconButton[data-danger] {
   color: var(--ch-danger);
+  background: var(--ch-danger-soft);
+}
+
+.iconButton[data-danger]:hover:not(:disabled) {
   background: var(--ch-danger-soft);
 }
 
@@ -3511,8 +3599,8 @@ textarea:disabled {
   align-items: center;
   gap: 6px;
   padding: 0 9px;
-  color: var(--ch-on-accent);
-  background: var(--ch-accent);
+  color: var(--ch-on-accent-strong);
+  background: var(--ch-accent-strong);
   border-radius: var(--ch-radius);
   font-size: 12px;
 }
@@ -3547,7 +3635,7 @@ textarea:disabled {
 
 .viewTabs {
   display: flex;
-  height: 35px;
+  height: 36px;
   align-items: end;
   gap: 36px;
   padding-left: 8px;
@@ -3555,7 +3643,7 @@ textarea:disabled {
 
 .viewTabs button {
   position: relative;
-  height: auto;
+  min-height: var(--ch-control-height);
   padding: 0 0 11px;
   color: var(--ch-text-muted);
   background: transparent;
@@ -3564,19 +3652,25 @@ textarea:disabled {
   line-height: 16px;
 }
 
+.viewTabs button::after {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  height: 3px;
+  background: var(--ch-business);
+  border-radius: var(--ch-radius) var(--ch-radius) 0 0;
+  content: "";
+  transform: scaleX(0);
+  transition: transform var(--ch-motion-enter) var(--ch-ease-in-out);
+}
+
 .viewTabs button[aria-current="page"] {
   color: var(--ch-business);
 }
 
 .viewTabs button[aria-current="page"]::after {
-  position: absolute;
-  right: 0;
-  bottom: 0;
-  left: 0;
-  height: 2px;
-  content: "";
-  background: var(--ch-business);
-  border-radius: 2px;
+  transform: scaleX(1);
 }
 
 /* ===== 启动/连接状态屏与全局 keyframes ===== */
@@ -3612,7 +3706,7 @@ textarea:disabled {
 }
 
 .bootState[data-failed] .bootSignal {
-  color: var(--ch-on-accent);
+  color: var(--ch-on-danger);
   background: var(--ch-danger);
 }
 
@@ -3814,20 +3908,6 @@ textarea:disabled {
     flex-wrap: wrap;
   }
 
-  .inputOptionRoot {
-    padding: 9px;
-  }
-
-  .inputOptionHeading {
-    align-items: flex-start;
-    flex-direction: column;
-    gap: 2px;
-  }
-
-  .inputOptionHeading small {
-    white-space: normal;
-  }
-
   .pendingComposer:not(.inputComposer) {
     align-items: stretch;
   }
@@ -3838,14 +3918,202 @@ textarea:disabled {
 
 }
 
+/* ===== 懒加载浮层协调：Settings 等组件后载入样式的主题基础 ===== */
+.app .settingsOverlay,
+.app .contextDialogOverlay,
+.app .conversationNavigatorBackdrop {
+  backdrop-filter: none;
+}
+
+.settingsNav button,
+.settingsApplyBar button,
+.settingsHeaderAction,
+.credentialInput button,
+.settingsButtonRow button,
+.contextHeader button {
+  border-radius: var(--ch-radius-control);
+}
+
+.app .settingsNav button[aria-current="page"] {
+  background: var(--ch-business-soft);
+  color: var(--ch-business);
+}
+
+.settingsClose,
+.settingsSelect,
+.settingsNumber {
+  border-radius: var(--ch-radius-control);
+}
+
+.settingsApplyBar {
+  gap: var(--ch-space-3);
+}
+
+.app .settingsApplyBar .settingsApply {
+  background: var(--ch-accent-strong);
+  color: var(--ch-on-accent-strong);
+  border-color: var(--ch-accent-strong);
+}
+
+.app .settingsApplyBar .settingsApply:hover:not(:disabled) {
+  background: var(--ch-accent-strong-hover);
+}
+
+.app .settingsApplyBar .settingsApply:disabled {
+  color: var(--ch-text-muted);
+  background: var(--ch-accent-soft);
+  border-color: var(--ch-border);
+  opacity: 1;
+}
+
+.settingsContent .settingsCatalogRow {
+  border-radius: var(--ch-radius-control);
+}
+
+.settingsContent .settingsError {
+  border-radius: var(--ch-radius);
+}
+
+.themeChoices button {
+  border-radius: var(--ch-radius-control);
+}
+
+.app .themeChoices button[aria-checked="true"] {
+  background: var(--ch-business-soft);
+  color: var(--ch-business);
+  border-color: var(--ch-business);
+  box-shadow: none;
+}
+
+.settingsPreferenceControl input,
+.settingsCatalogRow > input,
+.settingsToggle input {
+  accent-color: var(--ch-business);
+}
+
+.settingsSection {
+  animation: ui-enter var(--ch-motion-enter) var(--ch-ease-enter);
+}
+
+/* 容器宽度（而非窗口宽度）决定对话头部与 composer 控件换行。 */
+@container (max-width: 640px) {
+  .conversationHeader { padding: 10px 12px; }
+  .conversationIdentity { gap: 8px; flex-wrap: wrap; }
+  .conversationIdentity h1 { max-width: 240px; font-size: 14px; }
+  .conversationHeader p { display: none; }
+  .headerActions { gap: 2px; }
+  .headerActions .iconButton { width: 30px; height: 32px; }
+  .conversationNavigationPosition span { display: none; }
+  .composerControls { flex-wrap: wrap; gap: 8px; }
+  .composerControls > div { flex-wrap: wrap; }
+  .composerControls > div:last-child { margin-left: auto; }
+}
+
+/* ===== 紧凑视口补充：抽屉式侧栏与对话头部适配 ===== */
+@media (max-width: 720px) {
+  .sessionRail {
+    position: fixed;
+    inset: 0 auto 0 0;
+    z-index: var(--ch-layer-popover);
+    width: min(var(--ch-rail-width), calc(100vw - 48px));
+    transform: translateX(-100%);
+    visibility: hidden;
+    transition: transform var(--ch-motion-exit) var(--ch-ease-exit), visibility 0s var(--ch-motion-exit);
+    box-shadow: var(--ch-modal-shadow);
+  }
+
+  .app[data-mobile-rail] .sessionRail {
+    transform: translateX(0);
+    visibility: visible;
+    transition: transform var(--ch-motion-panel) var(--ch-ease-enter), visibility 0s;
+  }
+
+  .app .sessionRail .brandRow {
+    flex-direction: row;
+    padding: 0 16px;
+    height: var(--ch-header-height);
+  }
+
+  .app .sessionRail .brandName,
+  .app .sessionRail .sessionSectionHeader,
+  .app .sessionRail .searchBox,
+  .app .sessionRail .sessionList {
+    display: flex;
+  }
+
+  .app .sessionRail .sessionList {
+    display: block;
+    width: 100%;
+  }
+
+  .app .sessionRail .sessionTitle {
+    display: block;
+    width: auto;
+    font-size: 14px;
+    text-align: left;
+    white-space: nowrap;
+    line-height: 20px;
+  }
+
+  .app .sessionRail .railFooter {
+    flex-direction: row;
+    width: 100%;
+  }
+
+  .app .sessionRail .connectionState {
+    display: inline-flex;
+    margin-right: auto;
+  }
+
+  .sessionRail > .resizeHandle {
+    display: none;
+  }
+
+  .conversationHeader {
+    --ch-header-height: 88px;
+    height: auto;
+    min-height: var(--ch-header-height);
+  }
+
+  .conversationIdentity {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 0;
+  }
+
+  .conversationIdentity > div {
+    display: block;
+  }
+
+  .conversationIdentity h1 {
+    max-width: 160px;
+  }
+
+  .viewTabs {
+    gap: 14px;
+  }
+
+  .viewTabs > button {
+    min-height: 28px;
+  }
+
+  .conversationHeader[data-hidden] {
+    display: flex;
+  }
+
+  .headerActions .conversationNavigationControls > .iconButton,
+  .headerActions .workingLabel {
+    display: none;
+  }
+}
+
 /* ===== 可访问性：减少动效与强制色模式 ===== */
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
   *::after {
+    animation: none !important;
     scroll-behavior: auto !important;
-    animation-duration: var(--ch-motion-none) !important;
-    animation-iteration-count: 1 !important;
     transition-duration: var(--ch-motion-none) !important;
   }
 }
@@ -3866,15 +4134,22 @@ textarea:disabled {
     --ch-accent: Highlight;
     --ch-accent-hover: Highlight;
     --ch-accent-soft: Canvas;
+    --ch-accent-strong: Highlight;
+    --ch-accent-strong-hover: Highlight;
     --ch-business: Highlight;
     --ch-business-soft: Canvas;
     --ch-reasoning: Highlight;
     --ch-tool: CanvasText;
     --ch-on-accent: HighlightText;
+    --ch-on-accent-strong: HighlightText;
     --ch-danger: Mark;
     --ch-danger-soft: Canvas;
     --ch-warning: CanvasText;
+    --ch-warning-soft: Canvas;
     --ch-success: Highlight;
+    --ch-success-soft: Canvas;
+    --ch-state-hover: Canvas;
+    --ch-state-pressed: Canvas;
     --ch-focus: Highlight;
     --ch-code: Canvas;
     --ch-shadow: none;
@@ -3885,6 +4160,10 @@ textarea:disabled {
   .iconButton[data-primary],
   .primaryText {
     forced-color-adjust: none;
+  }
+
+  .sessionRow[data-active] {
+    outline: 1px solid Highlight;
   }
 }
 

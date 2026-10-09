@@ -3,7 +3,6 @@ import {App} from "../../../src/ui/App";
 import {RuntimeClient} from "../../../src/runtime/client";
 import type {RuntimeEvent, SessionSummary} from "../../../src/protocol";
 import "../../../src/ui/styles.css";
-import "../../../src/ui/theme/components.css";
 
 const client = new RuntimeClient();
 const withdrawal = new URLSearchParams(location.search).has("withdrawal");

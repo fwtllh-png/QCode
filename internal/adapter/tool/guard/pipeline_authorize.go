@@ -43,12 +43,13 @@ func (g *Guard) authorize(
 		if _, err := g.registry.ResolveTrustedBinding(invocation.Ref); err != nil {
 			return preparedExecution{}, err
 		}
-		policyInvocation := g.policyInput(callID, invocation)
 		started := g.now()
 		runtime, err := g.samplePolicy()
 		if err != nil {
 			return preparedExecution{}, err
 		}
+		invocation = bindProcessAccess(invocation, runtime)
+		policyInvocation := g.policyInput(callID, invocation)
 		decision := runtime.Decide(policyInvocation)
 		reviewLatency := g.now().Sub(started)
 		prepared := preparedExecution{
@@ -91,6 +92,15 @@ func (g *Guard) authorize(
 		if authorized {
 			if _, err := g.registry.ResolveTrustedBinding(invocation.Ref); err != nil {
 				return prepared, err
+			}
+			current, err := g.samplePolicy()
+			if err != nil {
+				return prepared, err
+			}
+			if current.Revision != runtime.Revision || current.Permission != runtime.Permission {
+				// A one-shot approval cannot preserve a superseded permission
+				// profile. Rebind session authority before any process starts.
+				continue
 			}
 			if invocation.Binding.Capability == tool.CapabilityNetwork {
 				g.grantNetworkHosts(ctx, policyInvocation)

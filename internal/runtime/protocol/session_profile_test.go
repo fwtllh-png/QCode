@@ -74,6 +74,36 @@ func TestSessionProfileValidationRejectsUnsafeOrUnsupportedValues(t *testing.T) 
 	}
 }
 
+func TestSessionProfileFoldsRetiredSuggestIntoAuto(t *testing.T) {
+	current := testSessionProfile()
+	current.ApprovalPosture = "never"
+	for _, requested := range []string{"suggest", "auto", "bypass", "never"} {
+		updated, err := ApplySessionProfilePatch(current, SessionProfilePatch{ApprovalPosture: &requested})
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := requested
+		if requested == "suggest" {
+			want = "auto"
+		}
+		if updated.Profile.ApprovalPosture != want {
+			t.Fatalf("posture %q became %q; want %q", requested, updated.Profile.ApprovalPosture, want)
+		}
+	}
+
+	legacy := testSessionProfile()
+	legacy.ApprovalPosture = "suggest"
+	preset := NewAgentPresetProfile(legacy)
+	if preset.ApprovalPosture != "auto" {
+		t.Fatalf("saved preset posture = %q", preset.ApprovalPosture)
+	}
+	preset.ApprovalPosture = "suggest"
+	patch := preset.Patch(current)
+	if patch.ApprovalPosture == nil || *patch.ApprovalPosture != "auto" {
+		t.Fatalf("old preset did not request Auto: %+v", patch)
+	}
+}
+
 func TestSessionProfileAllowsUncappedExecutionSteps(t *testing.T) {
 	profile := testSessionProfile()
 	profile.MaxSteps = 0
@@ -177,7 +207,7 @@ func testSessionProfile() SessionProfile {
 		Provider:            "fixture",
 		Model:               "fixture-model",
 		ReasoningEffort:     "low",
-		ApprovalPosture:     "suggest",
+		ApprovalPosture:     "auto",
 		ExecutionTarget:     "local",
 		MaxSteps:            32,
 		PromptCacheRevision: 1,

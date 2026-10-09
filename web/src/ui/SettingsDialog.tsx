@@ -62,6 +62,7 @@ import {
   modelMetadataProblem,
   setupModelMetadata
 } from "./ModelMetadataFields";
+import {approvalPostureDescription, approvalPostureLabel, approvalPostures, normalizeApprovalPosture} from "./approvalPosture";
 import "./SettingsDialog.css";
 
 export type ThemeMode = "light" | "dark" | "system";
@@ -161,7 +162,8 @@ export function SettingsDialog({
   profileBaselineRef.current = profileBaseline;
   const dirty = !equalProfileDraft(profileDraft, profileBaseline);
   const profileDraftProblem = modelIDProblem(profileDraft.model);
-  const profileApplyBlocked = Boolean(snapshot.conversation.activeTurnID);
+  const profileUpdating = Boolean(snapshot.profileUpdatingSessionIDs?.includes(snapshot.selectedSessionID));
+  const profileApplyBlocked = Boolean(snapshot.conversation.activeTurnID) || profileUpdating;
   const reportError = useCallback((value: unknown) => {
     setError(value instanceof Error ? value.message : String(value));
     onError(value);
@@ -210,7 +212,7 @@ export function SettingsDialog({
   };
 
   const applyProfile = async () => {
-    if (!profileDraft || !profileBaseline || !dirty || applying) return;
+    if (!profileDraft || !profileBaseline || !dirty || applying || profileApplyBlocked) return;
     const patch = changedProfileFields(profileBaseline, profileDraft);
     setApplying(true);
     setError("");
@@ -353,6 +355,8 @@ export function SettingsDialog({
               {dirty
                 ? profileDraftProblem
                   ? profileDraftProblem
+                  : profileUpdating
+                  ? "Saving session settings..."
                   : profileApplyBlocked
                   ? "Unsaved changes · finish the active Turn to apply"
                   : "Unsaved changes"
@@ -384,7 +388,9 @@ export function SettingsDialog({
                   !dirty || applying || profileApplyBlocked ||
                   Boolean(profileDraftProblem)
                 }
-                title={profileApplyBlocked
+                title={profileUpdating
+                  ? "Wait for session settings to finish saving"
+                  : profileApplyBlocked
                   ? "Finish the active Turn before applying settings"
                   : "Apply changes to this Session"}
                 onClick={() => void applyProfile()}
@@ -1613,11 +1619,12 @@ function AgentSettings({
           </div>
         )}
       </div>
-      <SettingRow title="Approval" description="Control when consequential actions ask first.">
+      <SettingRow title="Permissions" description={approvalPostureDescription}>
         <SelectControl
-          label="Approval posture"
+          label="Permission mode"
           value={draft.approvalPosture}
-          values={["suggest", "auto", "never"]}
+          values={approvalPostures}
+          format={approvalPostureLabel}
           disabled={!mutable(snapshot, "approval_posture")}
           onChange={(approvalPosture) => onDraftChange({approvalPosture})}
         />
@@ -1983,7 +1990,7 @@ function settingsProfileDraftFromProfile(
     model: profile.model,
     reasoningEffort: profile.reasoning_effort ?? "",
     enabledToolIDs: enabledToolIDs.sort(),
-    approvalPosture: profile.approval_posture,
+    approvalPosture: normalizeApprovalPosture(profile.approval_posture),
     executionTarget: profile.execution_target,
     maxSteps: profile.max_steps
   };
@@ -2061,7 +2068,7 @@ function profileDraftFromPreset(
     enabledToolIDs: profile.enabled_tool_ids?.length
       ? [...profile.enabled_tool_ids].sort()
       : tools.filter((tool) => tool.enabled).map((tool) => tool.id).sort(),
-    approvalPosture: profile.approval_posture,
+    approvalPosture: normalizeApprovalPosture(profile.approval_posture),
     executionTarget: profile.execution_target,
     maxSteps: profile.max_steps
   };
@@ -2079,7 +2086,7 @@ function profileApplyNotice(
         after.reasoningEffort || "default"
       }`,
     before.approvalPosture !== after.approvalPosture &&
-      `Approval ${before.approvalPosture} → ${after.approvalPosture}`,
+      `Permissions ${approvalPostureLabel(before.approvalPosture)} → ${approvalPostureLabel(after.approvalPosture)}`,
     before.maxSteps !== after.maxSteps && `Maximum steps ${after.maxSteps}`,
     !arraysEqual(before.enabledToolIDs, after.enabledToolIDs) && "Tools updated"
   ].filter((value): value is string => Boolean(value)) : [];

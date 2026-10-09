@@ -12,7 +12,6 @@ import {
   FileCode2,
   FolderPlus,
   FolderOpen,
-  GitFork,
   GitBranch,
   LoaderCircle,
   ListPlus,
@@ -27,7 +26,6 @@ import {
   Pin,
   PinOff,
   Plus,
-  Play,
   RefreshCw,
   RotateCcw,
   Search,
@@ -58,6 +56,7 @@ import {useMediaQuery} from "./primitives/useMediaQuery";
 import {useLiveNode, useRuntimeEvents, useWorkbenchSnapshot} from "./useRuntimeView";
 import {useModalFocus} from "./primitives/useModalFocus";
 import {TurnWithdrawalAction} from "./TurnWithdrawalAction";
+import {TurnRecoveryActions} from "./TurnRecoveryActions";
 import {Presence} from "./primitives/Presence";
 import {useMotionEnabled} from "./primitives/motion";
 import {usePresentationEvents} from "./usePresentationEvents";
@@ -85,6 +84,7 @@ import {
 } from "./ConversationChrome";
 import type {ComposerCommand} from "./ComposerCommandMenu";
 import {experience} from "./experience";
+import {approvalPostureDescription, approvalPostureLabel, approvalPostures, normalizeApprovalPosture} from "./approvalPosture";
 import {InputOptionMenu} from "./InputOptionMenu";
 import {
   emptyModelMetadataDraft,
@@ -270,7 +270,14 @@ export function App({client}: Props) {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsSection, setSettingsSection] =
     useState<SettingsSection>("general");
-  const [profilePending, setProfilePending] = useState("");
+  const [composerProfileUpdate, setComposerProfileUpdate] = useState<{
+    sessionID: string;
+    label: string;
+  }>();
+  const profilePending = (composerProfileUpdate?.sessionID === snapshot.selectedSessionID
+    ? composerProfileUpdate.label : "") ||
+    (snapshot.profileUpdatingSessionIDs?.includes(snapshot.selectedSessionID)
+      ? "Updating session settings" : "");
   const [cancelingTurnID, setCancelingTurnID] = useState("");
   const [themeMode, setThemeMode] = useState<ThemeMode>(readThemeMode);
   const [activityTarget, setActivityTarget] =
@@ -520,16 +527,17 @@ export function App({client}: Props) {
     label: string
   ) => {
     if (profilePending) return;
-    setProfilePending(label);
+    const pending = {sessionID: snapshot.selectedSessionID, label};
+    setComposerProfileUpdate(pending);
     setLocalError("");
     try {
       await client.updateProfile(patch);
     } catch (error) {
       reportLocalError(error);
     } finally {
-      setProfilePending("");
+      setComposerProfileUpdate((current) => current === pending ? undefined : current);
     }
-  }, [client, profilePending, reportLocalError]);
+  }, [client, profilePending, reportLocalError, snapshot.selectedSessionID]);
   const captureReadingPosition = useCallback((includeNavigationLock = false) => {
     if (activeView !== "chat" || !snapshot.selectedSessionID) return undefined;
     if (navigationReaderLockRef.current && !includeNavigationLock) {
@@ -2207,15 +2215,15 @@ function Composer({
       }
     },
     {
-      id: "suggest",
-      label: "suggest",
-      description: "Ask before consequential tool actions",
+      id: "full-access",
+      label: "full-access",
+      description: "Allow host file changes and network access without routine approval",
       icon: AlertTriangle,
-      active: snapshot.profile?.profile.approval_posture === "suggest",
+      active: snapshot.profile?.profile.approval_posture === "bypass",
       disabled: !profileMutable(snapshot, "approval_posture") ||
         Boolean(profilePending),
       run: () => updateComposerProfile({
-        approval_posture: "suggest"
+        approval_posture: "bypass"
       }, "Updating approval")
     },
     {
@@ -2223,7 +2231,7 @@ function Composer({
       label: "auto",
       description: "Approve actions allowed by the current policy",
       icon: Check,
-      active: snapshot.profile?.profile.approval_posture === "auto",
+      active: normalizeApprovalPosture(snapshot.profile?.profile.approval_posture ?? "auto") === "auto",
       disabled: !profileMutable(snapshot, "approval_posture") ||
         Boolean(profilePending),
       run: () => updateComposerProfile({
@@ -2265,9 +2273,17 @@ function Composer({
     };
   }, []);
 
+  const permissionRequired = useMemo(() => snapshot.profile?.profile.approval_posture === "never" &&
+    Boolean(resumableTurnID) && [...snapshot.conversation.nodes.values()].some((node) =>
+      node.kind === "status" && node.turnID === resumableTurnID &&
+      node.recovery?.action === "change_approval_posture"),
+    [snapshot.profile?.profile.approval_posture, snapshot.conversation, resumableTurnID]);
+
   const submit = async (activeAction: "queue" | "steer" = "queue") => {
     const prompt = draft.trim();
-    if (!prompt || submitting || attachmentBusy || attachmentFailed) return;
+    if (!prompt || submitting || profilePending || permissionRequired || snapshot.hydratingSessionID ||
+        attachmentBusy || attachmentFailed ||
+        (resumableTurnID && composerAttachments.length)) return;
     const submittedSessionID = snapshot.selectedSessionID;
     const submittedTurnID = activeTurn;
     setSubmitting(true);
@@ -2408,8 +2424,8 @@ function Composer({
               danger
               disabled={cancelingTurnID === activeTurn}
               icon={cancelingTurnID === activeTurn
-                ? <LoaderCircle className="spin" size={19} />
-                : <CircleStop size={19} />}
+                ? <LoaderCircle className="spin" size={18} />
+                : <CircleStop size={18} />}
               onClick={() => requestCancel(activeTurn)}
             />
           )}
@@ -2420,7 +2436,7 @@ function Composer({
                 composerAttachments.length === 0 && (
                 <IconButton
                   label="Steer current turn"
-                  disabled={submitting}
+                  disabled={submitting || Boolean(profilePending)}
                   icon={<Zap size={18} />}
                   onClick={() => void submit("steer")}
                 />
@@ -2436,26 +2452,38 @@ function Composer({
                   Boolean(snapshot.hydratingSessionID) ||
                   !draft.trim() ||
                   submitting ||
+                  Boolean(profilePending) ||
+                  permissionRequired ||
                   attachmentBusy ||
                   attachmentFailed ||
                   Boolean(resumableTurnID && composerAttachments.length)
                 }
                 icon={submitting
-                  ? <LoaderCircle className="spin" size={19} />
+                  ? <LoaderCircle className="spin" size={18} />
                   : activeTurn
-                    ? <ListPlus size={19} />
-                    : <Send size={19} />}
+                    ? <ListPlus size={18} />
+                    : <Send size={18} />}
                 onClick={() => void submit("queue")}
               />
             </>
           )}
         </div>
       </div>
+      {snapshot.profile?.profile.approval_posture === "never" && (
+        <p className="composerPermissionNotice">
+          Read only allows inspection. Switch to Auto or Full Access to make changes.
+        </p>
+      )}
+      {snapshot.profile?.profile.approval_posture === "bypass" && (
+        <p className="composerPermissionNotice">
+          Full Access allows host file changes and network access. Protected paths and explicit rules still apply.
+        </p>
+      )}
       <div className="composerControls">
         <div>
           <IconButton
             label="Attach files"
-            icon={<Paperclip size={15} />}
+            icon={<Paperclip size={16} />}
             disabled={
               Boolean(snapshot.hydratingSessionID) ||
               submitting ||
@@ -2497,9 +2525,11 @@ function Composer({
             />
           </Suspense>
           <CompactSelect
-            label="Approval"
-            value={snapshot.profile?.profile.approval_posture ?? "auto"}
-            values={["suggest", "auto", "never"]}
+            label="Permissions"
+            value={normalizeApprovalPosture(snapshot.profile?.profile.approval_posture ?? "auto")}
+            values={approvalPostures}
+            format={approvalPostureLabel}
+            description={approvalPostureDescription}
             disabled={!profileMutable(snapshot, "approval_posture") ||
               Boolean(profilePending)}
             onChange={(value) => void updateComposerProfile(
@@ -3146,7 +3176,6 @@ const TranscriptItem = memo(function TranscriptItem({
 }) {
   const entry = useLiveNode(client, projected);
   const [open, setOpen] = useState(false);
-  const [recoveryPending, setRecoveryPending] = useState("");
   const onFeedback = useCallback(
     (rating: MessageFeedbackRating) => client.toggleMessageFeedback(entry.id, rating),
     [client, entry.id]
@@ -3239,67 +3268,7 @@ const TranscriptItem = memo(function TranscriptItem({
         {entry.recoverable &&
           (!recoveryTurnID || entry.turnID === recoveryTurnID) &&
           entry.recovery && (
-          <div className="turnRecovery">
-            <span className="turnRecoveryStatus">
-              {recoverySummary(entry.recovery.sideEffects)}
-            </span>
-            <div className="artifactActions">
-              {entry.recovery.canRetry && (
-                <button
-                  disabled={Boolean(recoveryPending)}
-                  onClick={() => {
-                    setRecoveryPending("retry");
-                    void client.recoverTurn(entry.turnID, "retry")
-                      .catch(onError)
-                      .finally(() => setRecoveryPending(""));
-                  }}
-                >
-                  <RotateCcw size={13} />
-                  Retry
-                </button>
-              )}
-              {entry.recovery.canContinue && (
-                <button
-                  disabled={Boolean(recoveryPending)}
-                  onClick={() => {
-                    setRecoveryPending("continue");
-                    void client.recoverTurn(entry.turnID, "continue")
-                      .catch(onError)
-                      .finally(() => setRecoveryPending(""));
-                  }}
-                >
-                  <Play size={13} />
-                  Continue
-                </button>
-              )}
-              {checkpoint?.can_restore && (
-                <button
-                  disabled={Boolean(recoveryPending)}
-                  onClick={() => {
-                    setRecoveryPending("restore");
-                    void client.restoreCheckpoint(checkpoint.id)
-                      .catch(onError)
-                      .finally(() => setRecoveryPending(""));
-                  }}
-                >
-                  <RefreshCw size={13} /> Restore
-                </button>
-              )}
-              {checkpoint?.can_fork && (
-                <button
-                  disabled={Boolean(recoveryPending)}
-                  onClick={() => {
-                    setRecoveryPending("fork");
-                    void client.forkCheckpoint(checkpoint.id)
-                      .catch(onError)
-                      .finally(() => setRecoveryPending(""));
-                  }}
-                >
-                  <GitFork size={13} /> Fork
-                </button>
-              )}
-            </div>
-          </div>
+          <TurnRecoveryActions entry={entry} checkpoint={checkpoint} client={client} onError={onError} />
         )}
       </div>
     );
@@ -3334,21 +3303,6 @@ const TranscriptItem = memo(function TranscriptItem({
     }}
   />;
 });
-
-function recoverySummary(sideEffects: string): string {
-  switch (sideEffects) {
-    case "draft":
-      return "Draft saved. Continue from the last durable step.";
-    case "committed":
-      return "Workspace changes were kept.";
-    case "rolled_back":
-      return "Workspace changes were rolled back.";
-    case "none":
-      return "No workspace changes were made.";
-    default:
-      return "Review the workspace before continuing.";
-  }
-}
 
 function TurnStatus({
   events,
@@ -3600,8 +3554,8 @@ function InputComposer({
           danger
           disabled={submitting || stopping}
           icon={stopping
-            ? <LoaderCircle className="spin" size={17} />
-            : <CircleStop size={17} />}
+            ? <LoaderCircle className="spin" size={18} />
+            : <CircleStop size={18} />}
           onClick={onStop}
         />
         <button
@@ -3972,29 +3926,33 @@ function CompactSelect({
   value,
   values,
   disabled,
+  description,
+  format = (item: string) => item || "Default",
   onChange
 }: {
   label: string;
   value: string;
   values: string[];
   disabled?: boolean;
+  description?: string;
+  format?: (value: string) => string;
   onChange: (value: string) => void;
 }) {
   return (
-    <label className="compactSelect" title={`${label}: ${value || "Default"}`}>
+    <label className="compactSelect" title={description || `${label}: ${format(value)}`}>
       <span className="srOnly">{label}</span>
       <select
         aria-label={label}
         value={value}
-        style={compactSelectWidth(value || "Default")}
+        style={compactSelectWidth(format(value))}
         disabled={disabled}
         onChange={(event) => onChange(event.target.value)}
       >
         {values.map((item) => (
-          <option value={item} key={item}>{item || "Default"}</option>
+          <option value={item} key={item}>{format(item)}</option>
         ))}
       </select>
-      <ChevronDown size={13} aria-hidden="true" />
+      <ChevronDown size={16} aria-hidden="true" />
     </label>
   );
 }
@@ -4033,7 +3991,7 @@ function CompactCatalogSelect({
           </option>
         ))}
       </select>
-      <ChevronDown size={13} aria-hidden="true" />
+      <ChevronDown size={16} aria-hidden="true" />
     </label>
   );
 }

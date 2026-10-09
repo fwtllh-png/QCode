@@ -877,18 +877,19 @@ func prepareWebRuntime(
 	}
 	skillOptions := wire.SkillOptions{DataDir: loaded.Config.State.DataDir}
 	application, err := wire.NewExec(ctx, wire.ExecOptions{
-		ConfigPath:        options.configPath,
-		ConfigOverrides:   runtimeOverrides,
-		ExtraConnections:  extraConnections,
-		BaseURL:           active.BaseURL,
-		FixturePath:       options.providerFixture,
-		Permission:        "auto",
-		MCPConfigPath:     options.mcpConfig,
-		PersistentStore:   store,
-		CredentialControl: credentialControl,
-		WorkspaceIdentity: workspaceIdentity,
-		Skills:            skillOptions,
-		ModelMetadata:     setupModelMetadata(*active),
+		ConfigPath:               options.configPath,
+		ConfigOverrides:          runtimeOverrides,
+		ExtraConnections:         extraConnections,
+		BaseURL:                  active.BaseURL,
+		FixturePath:              options.providerFixture,
+		Permission:               "auto",
+		ProfilePermissionCeiling: "bypass",
+		MCPConfigPath:            options.mcpConfig,
+		PersistentStore:          store,
+		CredentialControl:        credentialControl,
+		WorkspaceIdentity:        workspaceIdentity,
+		Skills:                   skillOptions,
+		ModelMetadata:            setupModelMetadata(*active),
 	})
 	if err != nil {
 		return nil, err

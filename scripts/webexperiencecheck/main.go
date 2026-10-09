@@ -124,7 +124,6 @@ func validate(value contract, root string) error {
 		"web/src/ui/WorkspaceContextDialog.css",
 		"web/src/ui/Trajectory.css",
 		"web/src/ui/theme/tokens.css",
-		"web/src/ui/theme/components.css",
 		"web/src/ui/primitives/primitives.css",
 		"web/src/ui/GitTools.css",
 	}) {

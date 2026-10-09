@@ -65,11 +65,19 @@ func TestRequestUserInputDescriptorRequiresStructuredWait(t *testing.T) {
 	entry, ok := snapshot.Lookup("request_user_input")
 	if !ok ||
 		!strings.Contains(entry.Descriptor.Description, "block the current Turn") ||
-		!strings.Contains(entry.Descriptor.Description, "ordinary final text") {
+		!strings.Contains(entry.Descriptor.Description, "ordinary final text") ||
+		!strings.Contains(entry.Descriptor.Description, "short, self-contained") {
 		t.Fatalf("request_user_input descriptor = %+v", entry.Descriptor)
 	}
-	options := entry.Descriptor.InputSchema["properties"].(map[string]any)["options"].(map[string]any)
-	if options["uniqueItems"] != true || options["maxItems"] != float64(12) {
+	properties := entry.Descriptor.InputSchema["properties"].(map[string]any)
+	promptDescription, _ := properties["prompt"].(map[string]any)["description"].(string)
+	if !strings.Contains(promptDescription, "not inside options") {
+		t.Fatalf("request_user_input prompt description = %q", promptDescription)
+	}
+	options := properties["options"].(map[string]any)
+	optionsDescription, _ := options["description"].(string)
+	if options["uniqueItems"] != true || options["maxItems"] != float64(12) ||
+		!strings.Contains(optionsDescription, "Short, distinct labels") {
 		t.Fatalf("request_user_input options schema = %+v", options)
 	}
 }

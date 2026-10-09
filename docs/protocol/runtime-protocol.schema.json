@@ -6182,6 +6182,9 @@
                   "enforcement": {
                     "type": "string"
                   },
+                  "full_access": {
+                    "type": "boolean"
+                  },
                   "lease_attempt": {
                     "type": "integer"
                   },

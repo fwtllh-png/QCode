@@ -38,9 +38,17 @@ func newWorkspaceSandbox(
 		privateHome = filepath.Join(root, "sandbox-home")
 	}
 	environmentConfig := state.config.execution.Environment
+	var stateRoots []string
+	if root := securityStateDataDir(state); root != "" {
+		stateRoots = append(stateRoots, root)
+	}
+	if root := state.session.ephemeralStateDir; root != "" {
+		stateRoots = append(stateRoots, root)
+	}
 	options, prepareFacts, err := bindEnvironmentSandbox(
 		sandbox.Options{
 			WorkspaceRoot:       state.config.execution.Workspace,
+			RuntimeStateRoots:   stateRoots,
 			PrivateTemp:         privateHome,
 			HostReadRoots:       append([]string(nil), state.config.diagnosticReadRoots...),
 			HostReadFiles:       append([]string(nil), state.config.diagnosticReadFiles...),

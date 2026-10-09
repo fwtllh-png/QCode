@@ -100,6 +100,7 @@ func materializeSandbox(prepared *PreparedEnvironment, bind BindContext, sourceE
 		platformValues = options.Toolchains.Environment
 	}
 	values, err := envpolicy.Merge(
+		envpolicy.SandboxDefaults(),
 		envpolicy.WithoutManagedProxy(envpolicy.Baseline(sourceEnv)),
 		platformValues, baseline, declarations, flattenEnv(env),
 	)

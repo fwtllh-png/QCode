@@ -63,6 +63,6 @@
 
 .attachmentItem button:hover,
 .attachmentItem button:focus-visible {
-  background: var(--ch-hover);
+  background: var(--ch-state-hover);
   color: var(--ch-text);
 }

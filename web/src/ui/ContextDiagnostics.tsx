@@ -15,7 +15,7 @@ export function ContextDiagnostics({receipt}: {receipt?: Readonly<Record<string,
     const reason = record(omission)?.reason;
     if (typeof reason === "string") reasons.set(reason, (reasons.get(reason) ?? 0) + 1);
   }
-  return <section aria-label="Context continuity">
+  return <section className="contextDiagnostics" aria-label="Context continuity">
     <p className="composerStatsNote">{projection
       ? projection.recovery_only === true
         ? "Source definitions are being recovered before work continues."

@@ -108,6 +108,12 @@ func planningDecision(
 	if r.PlanningPolicy == PlanningOff {
 		return nil
 	}
+	// Full Access already authorizes ordinary command execution and declared
+	// verification. Repository/user rules are evaluated independently.
+	if r.Permission == PermissionBypass &&
+		(assessment.Facets().FullAccess || assessment.Facets().DeclaredVerification) {
+		return nil
+	}
 	required := r.PlanningPolicy == PlanningRequired ||
 		(r.PlanningPolicy == PlanningAdaptive &&
 			adaptivePlanningRequired(assessment))

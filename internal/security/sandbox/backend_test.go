@@ -357,6 +357,32 @@ func TestBuildPolicyRejectsHomeWriteRoot(t *testing.T) {
 	}
 }
 
+func TestBuildPolicyCryptoConfigurationPrecedence(t *testing.T) {
+	for _, tc := range []struct {
+		name, want          string
+		inherited, explicit []string
+	}{
+		{name: "default"},
+		{name: "inherited", inherited: []string{"OPENSSL_CONF=/inherited.cnf"}, want: "/inherited.cnf"},
+		{name: "explicit", inherited: []string{"OPENSSL_CONF=/inherited.cnf"}, explicit: []string{"OPENSSL_CONF=/declared.cnf"}, want: "/declared.cnf"},
+		{name: "explicit-empty", inherited: []string{"OPENSSL_CONF=/inherited.cnf"}, explicit: []string{"OPENSSL_CONF="}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			policy, err := BuildPolicy(Options{
+				WorkspaceRoot: t.TempDir(), PrivateTemp: t.TempDir(), SkipPATHReadRoots: true,
+				Toolchains:        &ToolchainExposure{Environment: tc.inherited},
+				EnvironmentValues: append([]string{}, tc.explicit...),
+			})
+			if err != nil || !slices.Contains(policy.EnvironmentValues, "OPENSSL_CONF="+tc.want) {
+				t.Fatalf("crypto configuration differs from %q: %v", tc.want, err)
+			}
+			if len(policy.HostReadFiles) != 0 || len(policy.HostReadRoots) != 0 {
+				t.Fatal("crypto configuration implicitly granted host reads")
+			}
+		})
+	}
+}
+
 func TestBuildPolicyRecordsDeclaredEnvironmentNetworkAndValues(t *testing.T) {
 	policy, err := BuildPolicy(Options{
 		WorkspaceRoot: t.TempDir(), PrivateTemp: t.TempDir(),

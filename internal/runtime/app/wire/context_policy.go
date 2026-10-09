@@ -71,6 +71,19 @@ func validateRouteReasoning(
 	return nil
 }
 
+func sessionPermissionCeiling(configured string, initial policy.Permission) (policy.Permission, error) {
+	if configured == "" {
+		return initial, nil
+	}
+	ceiling := policy.Permission(configured)
+	switch ceiling {
+	case policy.PermissionNever, policy.PermissionSuggest, policy.PermissionAuto, policy.PermissionBypass:
+		return ceiling, nil
+	default:
+		return "", fmt.Errorf("invalid session permission ceiling %q", configured)
+	}
+}
+
 func effectiveReasoningEffort(route model.ReadyRoute, configured string) string {
 	if configured != "" {
 		return configured

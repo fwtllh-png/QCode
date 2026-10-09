@@ -160,6 +160,10 @@ func migrateLegacyProfileDefaults(
 	current, defaults protocol.SessionProfile,
 ) (protocol.SessionProfile, bool, error) {
 	var patch protocol.SessionProfilePatch
+	if current.ApprovalPosture == "suggest" {
+		posture := protocol.NormalizeSessionApprovalPosture(current.ApprovalPosture)
+		patch.ApprovalPosture = &posture
+	}
 	if current.Revision == 1 && defaults.MaxSteps == 0 &&
 		(current.MaxSteps == 8 ||
 			current.MaxSteps == 64 ||
@@ -172,7 +176,7 @@ func migrateLegacyProfileDefaults(
 		planning := defaults.PlanningPolicy
 		patch.PlanningPolicy = &planning
 	}
-	if patch.MaxSteps == nil && patch.PlanningPolicy == nil {
+	if patch.MaxSteps == nil && patch.PlanningPolicy == nil && patch.ApprovalPosture == nil {
 		return current, false, nil
 	}
 	updated, err := protocol.ApplySessionProfilePatch(

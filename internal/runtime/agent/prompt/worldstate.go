@@ -53,7 +53,11 @@ func (p PolicySection) Digest() string { return digestJSON(p) }
 func (p PolicySection) Render() string {
 	var b strings.Builder
 	b.WriteString("Policy snapshot:\n")
-	b.WriteString(fmt.Sprintf("- mode=%s permission=%s\n", p.Mode, p.Permission))
+	permission := p.Permission
+	if p.Permission == "bypass" {
+		permission += " (Full Access)"
+	}
+	b.WriteString(fmt.Sprintf("- mode=%s permission=%s\n", p.Mode, permission))
 	b.WriteString(p.Guidance())
 	b.WriteString(fmt.Sprintf(
 		"- granular: sandbox=%s rules=%s skills=%s mcp=%s\n",

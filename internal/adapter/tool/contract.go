@@ -131,6 +131,9 @@ type RequestedEffects struct {
 // TrustedBinding is the Registry-owned authority contract. Guard projects its
 // security fields into the assessment instead of trusting the presentation descriptor.
 type TrustedBinding struct {
+	// SupportsFullAccess opts a builtin command executor into session-selected
+	// process authority. External descriptors cannot grant this capability.
+	SupportsFullAccess           bool               `json:"supports_full_access,omitempty"`
 	Capability                   Capability         `json:"capability"`
 	ResourceResolver             ResourceResolver   `json:"resource_resolver"`
 	AccessMode                   AccessMode         `json:"access_mode"`
@@ -297,6 +300,9 @@ func (b TrustedBinding) Validate() error {
 	if b.IsolatesWriteTrees && (b.Capability != CapabilityProcess ||
 		b.SandboxRequirement != SandboxStrong || b.ResourceResolver.PathsField == "") {
 		return errors.New("isolated write trees require a strong process sandbox and declared write paths")
+	}
+	if b.SupportsFullAccess && (b.Capability != CapabilityProcess || b.SandboxRequirement != SandboxStrong || b.Effect.Mode == EffectFixed) {
+		return errors.New("full access requires a strong process binding with derived effects")
 	}
 	if b.SandboxRequirement == SandboxStrong {
 		if b.Required.FilesystemRead == "" || b.Required.Network == "" {

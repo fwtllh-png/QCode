@@ -23,22 +23,25 @@ import (
 )
 
 type ExecOptions struct {
-	ConfigPath          string
-	ConfigOverrides     config.Overrides
-	BaseURL             string
-	APIKeyEnv           string
-	FixturePath         string
-	Permission          string
-	RepositoryRulesPath string
-	MCPConfigPath       string
-	MetricsPath         string
-	LogPath             string
-	ModelMetadata       ModelMetadataOptions
-	WorkingSet          []ContextFile
-	PromptBudgets       map[string]promptcontext.Budget
-	PersistentStore     *state.Store
-	CredentialControl   *credential.Control
-	Skills              SkillOptions
+	ConfigPath      string
+	ConfigOverrides config.Overrides
+	BaseURL         string
+	APIKeyEnv       string
+	FixturePath     string
+	Permission      string
+	// ProfilePermissionCeiling is the most permissive posture a Session may
+	// select. Empty preserves Permission as the ceiling; it is not a default.
+	ProfilePermissionCeiling string
+	RepositoryRulesPath      string
+	MCPConfigPath            string
+	MetricsPath              string
+	LogPath                  string
+	ModelMetadata            ModelMetadataOptions
+	WorkingSet               []ContextFile
+	PromptBudgets            map[string]promptcontext.Budget
+	PersistentStore          *state.Store
+	CredentialControl        *credential.Control
+	Skills                   SkillOptions
 	// TrustProbe lets probe "supported" observations widen catalog capabilities.
 	// Without it, probes may only tighten.
 	TrustProbe bool

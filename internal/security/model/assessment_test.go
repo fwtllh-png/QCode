@@ -28,6 +28,8 @@ func TestDecisionTableRows(t *testing.T) {
 	undeclared := func(capability Capability) AssessmentInput {
 		return AssessmentInput{Binding: AssessmentBinding{Capability: capability}}
 	}
+	fullAccess := derived(CapabilityProcess, Read, true)
+	fullAccess.Declared.FullAccess = true
 	tests := []struct {
 		name  string
 		input AssessmentInput
@@ -94,6 +96,7 @@ func TestDecisionTableRows(t *testing.T) {
 			rule: RuleAgent,
 			want: classified(AgentLifecycle, RiskHigh, Bounded),
 		},
+		{name: "full access process", input: fullAccess, rule: RuleProcessFullAccess, want: classified(ProcessMutating, RiskHigh, Irreversible)},
 		{
 			name: "strong process reaching only loopback",
 			input: derived(CapabilityProcess, Tree, true,

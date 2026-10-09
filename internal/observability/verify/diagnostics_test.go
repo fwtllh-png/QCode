@@ -110,3 +110,25 @@ func TestDiagnosticCommandRunnerReportsSignaledProcessAsUnavailableReceipt(t *te
 		t.Fatalf("receipt = %+v", receipt)
 	}
 }
+
+func TestDiagnosticCommandRunnerPreservesPreparedCryptoConfiguration(t *testing.T) {
+	root := t.TempDir()
+	command := filepath.Join(root, "crypto-check")
+	if err := os.WriteFile(command, []byte("#!/bin/sh\nprintf '%s:1:1: %s\\n' \"$1\" \"$OPENSSL_CONF\"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	backend, err := sandbox.BindPolicy(passthroughBackend{}, sandbox.Options{
+		WorkspaceRoot: root, PrivateTemp: t.TempDir(), SkipPATHReadRoots: true,
+		EnvironmentValues: []string{"OPENSSL_CONF=/declared-crypto.cnf"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := NewDiagnosticCommandRunner(root, backend, map[string]DiagnosticCommand{
+		".md": {Name: command, Args: []string{"{path}"}},
+	})
+	receipt, err := runner.Run(t.Context(), "README.md")
+	if err != nil || receipt.Status != "completed" || len(receipt.Diagnostics) != 1 || receipt.Diagnostics[0].Message != "/declared-crypto.cnf" {
+		t.Fatalf("diagnostics changed crypto configuration: %+v %v", receipt, err)
+	}
+}

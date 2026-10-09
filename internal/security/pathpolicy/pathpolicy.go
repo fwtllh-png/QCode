@@ -98,6 +98,11 @@ var credentialFileNames = []string{
 	"id_rsa", "id_ed25519", "id_ecdsa", "id_dsa",
 }
 
+// CredentialFileNames returns sensitive base names for OS-level deny rules.
+func CredentialFileNames() []string {
+	return slices.Clone(credentialFileNames)
+}
+
 // CredentialLocations returns the credential store table.
 func CredentialLocations() []CredentialLocation {
 	locations := make([]CredentialLocation, 0, len(credentialLocations))

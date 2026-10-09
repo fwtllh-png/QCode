@@ -24,6 +24,15 @@ var allowedEnvironment = map[string]bool{
 	"SYSTEMROOT": true, "COMSPEC": true, "PATHEXT": true, "WINDIR": true,
 }
 
+// SandboxDefaults is the lowest-precedence layer for controlled execution.
+// OpenSSL config(5) defines an empty OPENSSL_CONF as no configuration file.
+// Do not implicitly load host crypto policy or modules; explicit source,
+// resource and command settings still win and require their own file grants.
+// This does not disable certificate verification or alter trust-store values.
+func SandboxDefaults() []string {
+	return []string{"OPENSSL_CONF="}
+}
+
 // Baseline selects non-sensitive process settings from an explicit source.
 // It never captures the host environment; nil and empty both mean no source.
 func Baseline(source []string) []string {

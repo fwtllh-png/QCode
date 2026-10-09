@@ -65,7 +65,7 @@ func TestPlanningStateIsResetBetweenTurns(t *testing.T) {
 }
 
 func TestDeclaredVerificationDowngradesPlanGateToApproval(t *testing.T) {
-	runtime := DefaultRuntime(ModeAct, PermissionBypass)
+	runtime := DefaultRuntime(ModeAct, PermissionAuto)
 	runtime.ConfigurePlanning(PlanningRequired)
 	build := func(declared securitymodel.Declared) invocationFixture {
 		invocation := planningInvocation("run_command", tool.CapabilityProcess, []tool.Resource{
@@ -88,8 +88,8 @@ func TestDeclaredVerificationDowngradesPlanGateToApproval(t *testing.T) {
 		t.Fatalf("undeclared process decision = %+v", decision)
 	}
 	runtime.SubmitPlan()
-	if decision := runtime.Decide(resolveFixture(verification)); decision.Action == ActionAsk {
-		t.Fatalf("submitted plan still asks: %+v", decision)
+	if decision := runtime.Decide(resolveFixture(verification)); decision.Action != ActionAsk || decision.Layer != LayerPosture {
+		t.Fatalf("submitted plan must still respect Auto posture: %+v", decision)
 	}
 }
 

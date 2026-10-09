@@ -17,12 +17,9 @@ export function InputOptionMenu({
 }: Props) {
   return (
     <section className="inputOptionRoot" aria-label="Suggested answers">
-      <div className="inputOptionHeading">
-        <span>Suggested answers</span>
-        <small>Select one or write your own</small>
-      </div>
+      <p className="inputOptionHeading">Suggested answers</p>
       <div className="inputOptionList" role="group" aria-label="Suggested answers">
-        {options.map((option, index) => {
+        {options.map((option) => {
           const selected = option === value;
           return (
             <button
@@ -32,13 +29,11 @@ export function InputOptionMenu({
               aria-pressed={selected}
               disabled={disabled}
               data-selected={selected || undefined}
+              title={option}
               onClick={() => onChange(option)}
             >
               <span className="inputOptionText">
-                <span className="inputOptionIndex" aria-hidden="true">
-                  {index + 1}
-                </span>
-                <span>{option}</span>
+                {option}
               </span>
               {selected && <Check className="inputOptionCheck" size={16} aria-hidden="true" />}
             </button>

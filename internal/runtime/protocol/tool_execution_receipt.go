@@ -102,6 +102,7 @@ type ToolAttemptReceipt struct {
 	WritePaths              []string                        `json:"write_paths,omitempty"`
 	DeniedWriteRoots        []string                        `json:"denied_write_roots,omitempty"`
 	WorkspaceBaseWrite      bool                            `json:"workspace_base_write,omitempty"`
+	FullAccess              bool                            `json:"full_access,omitempty"`
 	NetworkMode             string                          `json:"network_mode,omitempty"`
 	NetworkTargets          []string                        `json:"network_targets,omitempty"`
 	ManagedProxyPort        uint16                          `json:"managed_proxy_port,omitempty"`

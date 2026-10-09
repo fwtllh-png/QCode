@@ -113,6 +113,32 @@ func TestBoundEvidenceMetadataMatchesFactsAndRejectsSameBatchProof(t *testing.T)
 	}
 }
 
+func TestVerificationRechecksInputsChangedOutsideFileTools(t *testing.T) {
+	engine := newEngine(t, &scriptedProvider{}, tool.NewRegistry(nil, nil))
+	engine.options.Workspace = t.TempDir()
+	path := filepath.Join(engine.options.Workspace, "a.go")
+	if err := os.WriteFile(path, []byte("before"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	result := commandEvidenceResult(verify.StatusPassed, []string{"a.go"})
+	digest, err := verify.InputDigest(engine.options.Workspace, []string{"a.go"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result.Outcome.Facts.Verification.InputDigest = digest
+	engine.bindVerificationEvidence(provider.ToolCall{ID: "verified", Name: "exec_command"}, &result, false, 1)
+	if got := engine.verificationEvidence(); len(got) != 1 || got[0].Status != verify.StatusPassed {
+		t.Fatalf("initial evidence = %+v", got)
+	}
+	// Full Access and host editors do not issue a file-tool mutation receipt.
+	if err := os.WriteFile(path, []byte("after"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if got := engine.verificationEvidence(); len(got) != 1 || got[0].Status != verify.StatusInvalidated {
+		t.Fatalf("stale evidence = %+v", got)
+	}
+}
+
 func TestVerificationRepairIdentityDoesNotDependOnInvocationID(t *testing.T) {
 	kernel := newEngineTurnKernel(protocol.TurnIntentWorkspaceChange, "act", nil, 0, nil, nil)
 	seedKernelMutation(t, kernel)

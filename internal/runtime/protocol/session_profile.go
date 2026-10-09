@@ -9,6 +9,15 @@ import (
 
 const SessionProfileVersion = 1
 
+// NormalizeSessionApprovalPosture folds the retired user-facing suggest mode
+// into Auto. Internal policy ceilings still distinguish suggest from auto.
+func NormalizeSessionApprovalPosture(posture string) string {
+	if posture == "suggest" {
+		return "auto"
+	}
+	return posture
+}
+
 type SessionProfile struct {
 	Version             int      `json:"version"`
 	Revision            uint64   `json:"revision"`
@@ -204,7 +213,7 @@ func ApplySessionProfilePatch(
 		next.EnabledToolIDs = tools
 	}
 	if patch.ApprovalPosture != nil {
-		next.ApprovalPosture = *patch.ApprovalPosture
+		next.ApprovalPosture = NormalizeSessionApprovalPosture(*patch.ApprovalPosture)
 	}
 	if patch.ExecutionTarget != nil {
 		next.ExecutionTarget = *patch.ExecutionTarget

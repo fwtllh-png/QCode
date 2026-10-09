@@ -988,6 +988,47 @@ describe("RuntimeClient", () => {
     client.stop();
   });
 
+  it.each(["profile", "preset"])("prevents execution until a %s update is refreshed", async (kind) => {
+    const client = new RuntimeClient();
+    await startClient(client);
+    let finish!: () => void;
+    holdNextProfile = new Promise<void>((resolve) => { finish = resolve; });
+    const updating = kind === "profile"
+      ? client.updateProfile({approval_posture: "auto"})
+      : client.applyAgentPreset("preset-review");
+    expect(client.getSnapshot().profileUpdatingSessionIDs).toEqual(["session"]);
+
+    await expect(client.submitPrompt("Fix it")).rejects.toThrow("Session settings are still updating");
+    await expect(client.recoverTurn("turn", "continue")).rejects.toThrow("Session settings are still updating");
+    await expect(client.enqueue("turn", "Next")).rejects.toThrow("Session settings are still updating");
+    await expect(client.steer("turn", "Change direction")).rejects.toThrow("Session settings are still updating");
+    await expect(client.updateProfile({approval_posture: "never"})).rejects.toThrow("Session settings are still updating");
+    expect(requests.filter((request) => request.route.endsWith("/turn/recover"))).toHaveLength(0);
+    expect(requests.filter((request) => request.route.endsWith("/operation/submit"))).toHaveLength(0);
+
+    finish();
+    await updating;
+    expect(client.getSnapshot().profileUpdatingSessionIDs).toEqual([]);
+    await client.recoverTurn("turn", "continue");
+    expect(requests.filter((request) => request.route.endsWith("/turn/recover"))).toHaveLength(1);
+    client.stop();
+  });
+
+  it("releases the profile update guard after a failed save", async () => {
+    const client = new RuntimeClient();
+    await startClient(client);
+    const originalFetch = globalThis.fetch;
+    vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL, init?: RequestInit) =>
+      String(input).endsWith("/profile/update")
+        ? Promise.resolve(envelopeProblem("conflict", "Profile revision changed", false))
+        : originalFetch(input, init)));
+    await expect(client.updateProfile({approval_posture: "auto"})).rejects.toThrow("Profile revision changed");
+    expect(client.getSnapshot().profileUpdatingSessionIDs).toEqual([]);
+    await client.submitPrompt("Inspect only");
+    expect(requests.some((request) => request.route.endsWith("/operation/submit"))).toBe(true);
+    client.stop();
+  });
+
   it("keeps the selected session usable when an auxiliary query fails", async () => {
     failToolCatalog = true;
     const client = new RuntimeClient();

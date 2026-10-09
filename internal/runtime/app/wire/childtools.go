@@ -206,13 +206,16 @@ func (c *childToolsets) open(
 	// Recompile configured resource paths against this child's isolated home.
 	sourceEnv := []string{}
 	var inherited *sandbox.ToolchainExposure
+	var stateRoots []string
 	if policy, ok := sandbox.BackendPolicy(parentSandbox); ok {
+		stateRoots = append(stateRoots, policy.RuntimeStateRoots...)
 		sourceEnv = append(sourceEnv, policy.EnvironmentValues...)
 		exposure := policy.Toolchains
 		inherited = &exposure
 	}
 	options, preparationFacts, err := bindEnvironmentSandbox(sandbox.Options{
 		WorkspaceRoot:          root,
+		RuntimeStateRoots:      stateRoots,
 		PrivateTemp:            stateLayout.SandboxHome,
 		ManagedProxyPort:       c.managedProxyPort,
 		ManagedProxyCredential: c.managedProxyCredential,

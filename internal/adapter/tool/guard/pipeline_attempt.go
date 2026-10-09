@@ -412,7 +412,13 @@ func (g *Guard) runAttempt(
 		return run
 	}
 	claimStarted := g.now()
-	releaseClaims, err := g.registry.Claims().AcquireResources(ctx, invocation.Resources)
+	claimResources := invocation.Resources
+	if invocation.Assessment.Facets().FullAccess {
+		claimResources = append(append([]tool.Resource(nil), claimResources...), tool.Resource{
+			Kind: "directory", Path: g.workspace, Access: tool.AccessWrite, Tree: true,
+		})
+	}
+	releaseClaims, err := g.registry.Claims().AcquireResources(ctx, claimResources)
 	run.claimWait = g.now().Sub(claimStarted)
 	if err != nil {
 		releaseAdmission()
@@ -948,6 +954,7 @@ func bindAttemptAuthority(
 		profile.Filesystem.DeniedWriteRoots...,
 	)
 	receipt.WorkspaceBaseWrite = profile.Filesystem.WorkspaceBaseWrite
+	receipt.FullAccess = profile.Process.FullAccess
 	receipt.NetworkMode = string(profile.Controls.Network)
 	receipt.NetworkTargets = append([]string(nil), profile.Network.Targets...)
 	receipt.ManagedProxyPort = profile.Network.ProxyPort

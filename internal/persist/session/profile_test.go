@@ -339,9 +339,63 @@ func persistedProfile() protocol.SessionProfile {
 		Mode:                "act",
 		Provider:            "fixture",
 		Model:               "fixture-model",
-		ApprovalPosture:     "suggest",
+		ApprovalPosture:     "auto",
 		ExecutionTarget:     "local",
 		MaxSteps:            32,
 		PromptCacheRevision: 1,
+	}
+}
+
+func TestRetiredSuggestProfileBecomesAutoExactlyOnce(t *testing.T) {
+	store, err := sqlitestate.Open(t.Context(), filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	repository := session.NewSQLiteRepository(store)
+	defaults := persistedProfile()
+	for _, posture := range []string{"suggest", "never", "auto", "bypass"} {
+		t.Run(posture, func(t *testing.T) {
+			if err := repository.EnsureSeed(t.Context(), posture, t.TempDir()); err != nil {
+				t.Fatal(err)
+			}
+			legacy := defaults
+			legacy.ApprovalPosture = posture
+			legacy.Revision = 5
+			metadata, err := json.Marshal(map[string]any{"profile": legacy, "transport": "web"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.DB().ExecContext(t.Context(), `UPDATE sessions SET metadata_json = ? WHERE id = ?`, metadata, posture); err != nil {
+				t.Fatal(err)
+			}
+			updated, err := repository.EnsureProfile(t.Context(), posture, defaults)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := legacy
+			if posture == "suggest" {
+				want.ApprovalPosture = "auto"
+				want.Revision++
+			}
+			if updated.ApprovalPosture != want.ApprovalPosture || updated.Revision != want.Revision || updated.PromptCacheRevision != want.PromptCacheRevision {
+				t.Fatalf("updated profile = %+v; want %+v", updated, want)
+			}
+			again, err := repository.EnsureProfile(t.Context(), posture, defaults)
+			if err != nil || again.Revision != updated.Revision {
+				t.Fatalf("repeated migration = %+v, %v", again, err)
+			}
+			record, err := repository.Get(t.Context(), posture)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var saved map[string]json.RawMessage
+			if err := json.Unmarshal(record.Metadata, &saved); err != nil {
+				t.Fatal(err)
+			}
+			if string(saved["transport"]) != `"web"` {
+				t.Fatal("unrelated metadata was changed")
+			}
+		})
 	}
 }

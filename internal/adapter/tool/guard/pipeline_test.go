@@ -161,6 +161,46 @@ func TestHostProcessApprovalIsFreshOnce(t *testing.T) {
 	}
 }
 
+func TestOneShotApprovalRechecksPermissionBeforeExecution(t *testing.T) {
+	descriptor := readDescriptor("fixture_host_process")
+	descriptor.Capability = tool.CapabilityProcess
+	descriptor.AccessMode = tool.AccessWrite
+	binding := tool.TrustedBindingFromDescriptor(descriptor)
+	binding.Effect = tool.EffectContract{
+		Mode: tool.EffectFixed, Kind: tool.EffectProcessMutating,
+		Risk: tool.RiskHigh, Reversibility: tool.Bounded,
+		WorkspaceTransaction: tool.TransactionNone, Approval: tool.ApprovalPolicyOnce,
+	}
+	executor := &testExecutor{descriptor: descriptor, binding: binding}
+	registry := newTestRegistry(t, nil, executor)
+	runtime := policy.DefaultRuntime(policy.ModeAct, policy.PermissionBypass)
+	requests := make(chan ApprovalRequest, 1)
+	guarded := newTestGuard(t, registry, runtime, func(_ context.Context, request ApprovalRequest) error {
+		requests <- request
+		return nil
+	})
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := guarded.Execute(ctx, "changed-permission", "fixture_host_process", json.RawMessage(`{}`))
+		done <- err
+	}()
+	select {
+	case request := <-requests:
+		runtime.SetPermission(policy.PermissionNever)
+		mustDecide(t, guarded, request, policy.ApprovalOnce, nil)
+	case err := <-done:
+		t.Fatalf("ended before approval: %v", err)
+	}
+	if err := <-done; err == nil || !strings.Contains(err.Error(), "permission_denied") {
+		t.Fatalf("changed permission must reject stale one-shot approval: %v", err)
+	}
+	if executor.calls.Load() != 0 {
+		t.Fatal("executed after permission was tightened")
+	}
+}
+
 func TestInitialApprovalDenialReturnsGuardTerminalReceipt(t *testing.T) {
 	descriptor := readDescriptor("approval_denied_receipt")
 	descriptor.Capability = tool.CapabilityProcess

@@ -46,7 +46,8 @@ func projectToolAttemptReceipt(
 	source tool.AttemptReceipt,
 ) protocol.ToolAttemptReceipt {
 	projected := protocol.ToolAttemptReceipt{
-		Sequence: source.Sequence, Sandbox: source.Sandbox,
+		FullAccess: source.FullAccess,
+		Sequence:   source.Sequence, Sandbox: source.Sandbox,
 		Status: string(source.Status), TerminalOwner: string(source.TerminalOwner),
 		Reason:                  source.Reason,
 		OperationSchemaVersion:  source.OperationSchemaVersion,

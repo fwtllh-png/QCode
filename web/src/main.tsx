@@ -4,7 +4,6 @@ import { App } from "./ui/App";
 import { ErrorBoundary } from "./ui/ErrorBoundary";
 import { RuntimeClient } from "./runtime/client";
 import "./ui/styles.css";
-import "./ui/theme/components.css";
 import "./ui/GitTools.css";
 
 const client = new RuntimeClient();

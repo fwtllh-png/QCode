@@ -718,10 +718,131 @@ describe("projectTranscript", () => {
     });
     expect(await screen.findByText("Updating model")).toBeTruthy();
     expect((screen.getByLabelText("Model") as HTMLSelectElement).disabled).toBe(true);
+    fireEvent.change(screen.getByPlaceholderText("Ask QCode"), {
+      target: {value: "Implement the change"}
+    });
+    expect((screen.getByRole("button", {name: "Send"}) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.keyDown(screen.getByPlaceholderText("Ask QCode"), {key: "Enter"});
+    expect(client.submitPrompt).not.toHaveBeenCalled();
     finish();
     await waitFor(() => {
       expect(screen.queryByText("Updating model")).toBeNull();
     });
+    fireEvent.keyDown(screen.getByPlaceholderText("Ask QCode"), {key: "Enter"});
+    await waitFor(() => expect(client.submitPrompt).toHaveBeenCalledWith("Implement the change"));
+  });
+
+  it("labels read-only approval consistently without changing permissions", async () => {
+    const value = snapshot();
+    value.profile!.profile.approval_posture = "never";
+    const client = mockClient(value);
+    render(<App client={client} />);
+
+    const approval = screen.getByLabelText("Permissions") as HTMLSelectElement;
+    expect(approval.selectedOptions[0]?.textContent).toBe("Read only");
+    expect(screen.getByText("Read only allows inspection. Switch to Auto or Full Access to make changes.")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", {name: "Settings"}));
+    await screen.findByRole("dialog", {name: "Settings"});
+    fireEvent.click(screen.getByRole("button", {name: "Agent preset"}));
+    const settingsApproval = screen.getByLabelText("Permission mode") as HTMLSelectElement;
+    expect(settingsApproval.selectedOptions[0]?.textContent).toBe("Read only");
+    expect(Array.from(settingsApproval.options, (option) => option.text)).toEqual([
+      "Read only", "Auto", "Full Access"
+    ]);
+    expect(client.updateProfile).not.toHaveBeenCalled();
+  });
+
+  it("prevents all Continue actions while the session profile is saving", () => {
+    const value = snapshot([event(1, "turn.failed", {
+      message: "pending work", fault: {disposition: "resume_turn", side_effects: "none"}
+    })]);
+    value.sessions = value.sessions.map((session) => ({...session, status: "blocked", latest_turn_id: "turn"}));
+    value.profileUpdatingSessionIDs = ["session"];
+    const client = mockClient(value);
+    render(<App client={client} />);
+    fireEvent.change(screen.getByPlaceholderText("Ask QCode"), {target: {value: "Continue fixing"}});
+
+    for (const button of screen.getAllByRole("button", {name: "Continue"})) {
+      expect((button as HTMLButtonElement).disabled).toBe(true);
+      fireEvent.click(button);
+    }
+    fireEvent.keyDown(screen.getByPlaceholderText("Ask QCode"), {key: "Enter"});
+    expect(client.recoverTurn).not.toHaveBeenCalled();
+  });
+
+  it("offers Full Access and removes the retired suggest command", async () => {
+    const value = snapshot();
+    value.profile!.profile.approval_posture = "suggest";
+    const client = mockClient(value);
+    render(<App client={client} />);
+    expect((screen.getByLabelText("Permissions") as HTMLSelectElement).selectedOptions[0]?.textContent).toBe("Auto");
+    fireEvent.change(screen.getByLabelText("Permissions"), {target: {value: "bypass"}});
+    await waitFor(() => expect(client.updateProfile).toHaveBeenCalledWith({approval_posture: "bypass"}));
+    fireEvent.click(screen.getByRole("button", {name: "Commands"}));
+    await screen.findByRole("menu", {name: "Commands"});
+    expect(screen.queryByRole("menuitem", {name: /^suggest\b/})).toBeNull();
+    expect(screen.getByRole("menuitem", {name: /full-access/})).toBeTruthy();
+  });
+
+  it.each(["auto", "bypass"])("switches to %s before continuing a read-only task", async (posture) => {
+    const value = permissionBlockedSnapshot();
+    const client = mockClient(value);
+    let finish!: () => void;
+    vi.mocked(client.updateProfile).mockImplementation(() => new Promise((resolve) => {
+      finish = () => {
+        value.profile!.profile = {...value.profile!.profile, approval_posture: posture, revision: 2};
+        resolve({profile: value.profile!.profile, prompt_cache_reset: false});
+      };
+    }));
+    render(<App client={client} />);
+    expect(screen.getByText("Permission change required")).toBeTruthy();
+    expect(client.updateProfile).not.toHaveBeenCalled();
+    fireEvent.change(screen.getByPlaceholderText("Ask QCode"), {target: {value: "Continue fixing"}});
+    expect((screen.getByRole("button", {name: "Continue"}) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.keyDown(screen.getByPlaceholderText("Ask QCode"), {key: "Enter"});
+    expect(client.recoverTurn).not.toHaveBeenCalled();
+    const button = screen.getByRole("button", {
+      name: posture === "auto" ? "Use Auto and continue" : "Use Full Access and continue"
+    });
+    fireEvent.click(button);
+    fireEvent.click(button);
+    expect(client.updateProfile).toHaveBeenCalledExactlyOnceWith({approval_posture: posture});
+    expect(client.recoverTurn).not.toHaveBeenCalled();
+    expect((button as HTMLButtonElement).disabled).toBe(true);
+
+    finish();
+    await waitFor(() => expect(client.recoverTurn).toHaveBeenCalledExactlyOnceWith("turn", "continue"));
+    expect(client.submitPrompt).not.toHaveBeenCalled();
+  });
+
+  it.each(["save failed", "runtime read only", "session changed"])(
+    "does not continue a permission-blocked turn when %s", async (failure) => {
+      const value = permissionBlockedSnapshot();
+      const client = mockClient(value);
+      vi.mocked(client.updateProfile).mockImplementation(async () => {
+        if (failure === "save failed") throw new Error("Unable to save settings");
+        if (failure === "session changed") value.selectedSessionID = "another-session";
+        return {
+          profile: {...value.profile!.profile,
+            approval_posture: failure === "runtime read only" ? "never" : "auto"},
+          prompt_cache_reset: false
+        };
+      });
+      render(<App client={client} />);
+      fireEvent.click(screen.getByRole("button", {name: "Use Auto and continue"}));
+      expect(await screen.findByRole("alert")).toBeTruthy();
+      expect(client.recoverTurn).not.toHaveBeenCalled();
+    }
+  );
+
+  it("does not offer a permission change outside the session capability", () => {
+    const value = permissionBlockedSnapshot();
+    value.profile!.capabilities.mutable_fields = [];
+    const client = mockClient(value);
+    render(<App client={client} />);
+    expect(screen.queryByRole("button", {name: "Use Auto and continue"})).toBeNull();
+    expect(screen.getByText("The runtime keeps this session read only. Change its permission setting before continuing.")).toBeTruthy();
+    expect(client.updateProfile).not.toHaveBeenCalled();
   });
 
   it("opens the models settings page for a fixed custom connection", async () => {
@@ -1508,6 +1629,7 @@ describe("projectTranscript", () => {
     await screen.findByDisplayValue("Review");
 
     fireEvent.click(screen.getByRole("button", {name: "Load into draft"}));
+    expect((screen.getByLabelText("Permission mode") as HTMLSelectElement).value).toBe("auto");
     expect(screen.getByText("Unsaved changes")).toBeTruthy();
     const applyPreset = screen.getByRole("button", {name: "Apply to session"});
     await waitFor(() => expect(applyPreset).toHaveProperty("disabled", false));
@@ -1532,7 +1654,7 @@ describe("projectTranscript", () => {
     await waitFor(() => {
       expect(client.saveAgentPreset).toHaveBeenCalledWith(expect.objectContaining({
         name: "Strict review copy",
-        profile: expect.objectContaining({mode: "act", max_steps: 16})
+        profile: expect.objectContaining({mode: "act", max_steps: 16, approval_posture: "auto"})
       }));
     });
 
@@ -3379,7 +3501,7 @@ function snapshot(events: RuntimeEvent[] = []): RuntimeSnapshot {
         planning_policy: "adaptive",
         provider: "fixture",
         model: "fixture",
-        approval_posture: "suggest",
+        approval_posture: "auto",
         execution_target: "local",
         max_steps: 32,
         enabled_tool_ids: ["read"]
@@ -3421,6 +3543,24 @@ function snapshot(events: RuntimeEvent[] = []): RuntimeSnapshot {
     tracePhase: "idle",
     socketConnected: true
   };
+}
+
+function permissionBlockedSnapshot(): RuntimeSnapshot {
+  const value = snapshot([
+    event(1, "turn.started", {prompt: "Fix the bugs", posture: "never"}),
+    event(2, "tool.start", {call_id: "write", tool: "file_apply"}),
+    event(3, "tool.result", {
+      call_id: "write", tool: "file_apply", is_error: true,
+      recovery: {error_category: "permission_denied", retry_original: false}
+    }),
+    event(4, "turn.failed", {
+      message: "turn declared incomplete with resumable pending actions",
+      convergence: {cause: "declared_incomplete", summary: "Permission prevents changes."}
+    })
+  ]);
+  value.profile!.profile.approval_posture = "never";
+  value.sessions = value.sessions.map((session) => ({...session, status: "blocked", latest_turn_id: "turn"}));
+  return value;
 }
 
 async function openContextDetails(): Promise<void> {

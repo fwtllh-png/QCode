@@ -27,6 +27,7 @@ func (e Enforcement) Valid() bool {
 }
 
 type ExecutionAuthority struct {
+	FullAccess          bool
 	Digest              string
 	Enforcement         Enforcement
 	WorkspaceRoot       string
@@ -48,6 +49,13 @@ func (a ExecutionAuthority) Validate() error {
 	}
 	if !a.Enforcement.Valid() {
 		return errors.New("execution authority enforcement is invalid")
+	}
+	if a.FullAccess && (a.Enforcement != EnforcementStrong || !a.AllowProcess ||
+		!a.WorkspaceBaseWrite || !a.AllowNetwork || a.ManagedProxyPort != 0 ||
+		a.EffectiveControls.FilesystemRead != securitymodel.FilesystemReadUnrestricted ||
+		a.EffectiveControls.FilesystemWrite != securitymodel.FilesystemWriteUnrestricted ||
+		a.EffectiveControls.Network != securitymodel.NetworkDirect) {
+		return errors.New("full access requires consistent compiled process controls")
 	}
 	if a.Enforcement == EnforcementStrong && strings.TrimSpace(a.WorkspaceRoot) == "" {
 		return errors.New("strong execution authority requires a workspace")

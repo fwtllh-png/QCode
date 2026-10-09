@@ -102,7 +102,15 @@ func policyDecisionHint(code string) (
 	action string, retryOriginal bool, guidance string, ok bool,
 ) {
 	switch code {
-	case "permission_denied", "permission_unknown", "mode_unknown":
+	case "permission_denied":
+		return "review_permissions", false,
+			"the permission policy prevents this action. In Read only mode, " +
+				"if the task requires changes, tell the user to select Auto or Full Access " +
+				"in Permissions and continue; declare the task incomplete until they change " +
+				"the permission mode. Otherwise use a permitted alternative; critical-risk " +
+				"denials cannot be resolved by changing approval mode. " +
+				"Do not retry the action under unchanged permissions", true
+	case "permission_unknown", "mode_unknown":
 		return "choose_read_only_alternative", false,
 			"the approval posture denies this side effect; use a read-only " +
 				"alternative or report the action blocked", true

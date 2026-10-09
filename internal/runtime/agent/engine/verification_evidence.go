@@ -127,6 +127,21 @@ func (e *Engine) verificationEvidence() []verify.Evidence {
 		return nil
 	}
 	scope.mu.Lock()
-	defer scope.mu.Unlock()
-	return append([]verify.Evidence(nil), scope.state.verification...)
+	evidence := append([]verify.Evidence(nil), scope.state.verification...)
+	scope.mu.Unlock()
+	// Full Access processes and external editors may change covered inputs
+	// without a file-tool mutation receipt. Recheck the authoritative bytes
+	// before using prior evidence to approve completion.
+	for index := range evidence {
+		item := &evidence[index]
+		if item.Status != verify.StatusPassed || item.InputDigest == "" {
+			continue
+		}
+		digest, err := verify.InputDigest(e.options.Workspace, item.CoveredPaths)
+		if err != nil || digest != item.InputDigest {
+			item.Status = verify.StatusInvalidated
+			item.InvalidationReason = "covered_paths changed after verification"
+		}
+	}
+	return evidence
 }

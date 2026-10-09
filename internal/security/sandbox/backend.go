@@ -41,6 +41,7 @@ type Capability struct {
 }
 
 type Command struct {
+	FullAccess              bool
 	Path                    string
 	Args                    []string
 	Dir                     string
@@ -232,6 +233,12 @@ func (b *seatbeltBackend) Policy() Policy { return b.policy }
 func (b *seatbeltBackend) Close() error { return closePolicyTemp(b.policy) }
 
 func (b *seatbeltBackend) Prepare(ctx context.Context, command Command) (Command, error) {
+	if command.FullAccess {
+		authority, ok := ExecutionAuthorityFromContext(ctx)
+		if !ok || !authority.FullAccess || authority.Digest != command.AuthorityDigest {
+			return Command{}, errors.New("full access requires the bound execution authority")
+		}
+	}
 	if _, err := b.workspace.ResolveDirectory(command.Dir); err != nil {
 		return Command{}, err
 	}
@@ -262,7 +269,7 @@ func (b *seatbeltBackend) Prepare(ctx context.Context, command Command) (Command
 	if err != nil {
 		return Command{}, err
 	}
-	if err := refuseUndeliveredManagedNetwork(b.policy, command); err != nil {
+	if err := refuseUndeliveredManagedNetwork(CommandNetworkPolicy(b.policy, command), command); err != nil {
 		return Command{}, err
 	}
 	controls, err := CommandControls(b.capability, b.policy, command)
@@ -291,7 +298,8 @@ func (b *seatbeltBackend) Prepare(ctx context.Context, command Command) (Command
 	args = append(args, command.Args[1:]...)
 	preparedProxyPort := policy.ManagedProxyPort
 	return Command{
-		Path: sandboxExec, Args: args, Dir: command.Dir, Env: command.Env,
+		FullAccess: command.FullAccess,
+		Path:       sandboxExec, Args: args, Dir: command.Dir, Env: command.Env,
 		DirectoryFD: command.DirectoryFD, PreparedPolicyID: b.policy.ID,
 		AuthorityDigest:         command.AuthorityDigest,
 		PreparedAuthorityDigest: command.AuthorityDigest,
@@ -353,6 +361,12 @@ func seatbeltProfileForCommand(
 	// boundary, not a grant this profile widens.
 	profile.WriteString("(allow process-exec process-fork process-info* signal)\n")
 	profile.WriteString("(allow sysctl-read)\n")
+	if policy.FullAccess {
+		profile.WriteString("(allow file-read*)\n")
+		if !workspaceReadOnly {
+			profile.WriteString("(allow file-write*)\n")
+		}
+	}
 	readRoots := append(append([]string{}, policy.RuntimeReadRoots...), policy.HostReadRoots...)
 	readRoots = append(readRoots, policy.HostReadFiles...)
 	readRoots = append(readRoots, additionalReadPaths...)
@@ -413,6 +427,9 @@ func seatbeltProfileForCommand(
 			)
 		}
 	}
+	if policy.FullAccess {
+		writeFullAccessProtections(&profile, policy)
+	}
 	for _, path := range workspaceHiddenPaths {
 		info, err := os.Stat(path)
 		if err == nil && info.IsDir() {
@@ -432,6 +449,9 @@ func seatbeltProfileForCommand(
 	if home, err := os.UserHomeDir(); err == nil {
 		for _, sensitive := range securitypaths.HomeCredentialRoots(home) {
 			fmt.Fprintf(&profile, "(deny file-read* file-write* (subpath %s))\n", seatbeltQuote(sensitive))
+			if canonical, err := securitypaths.CanonicalAllowMissing(sensitive); err == nil && canonical != sensitive {
+				fmt.Fprintf(&profile, "(deny file-read* file-write* (subpath %s))\n", seatbeltQuote(canonical))
+			}
 		}
 	}
 	if !denyNetwork && (policy.ManagedProxyPort != 0 || allowLoopback) {

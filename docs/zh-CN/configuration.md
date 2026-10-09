@@ -400,7 +400,8 @@ Worktree 的已完成 Child，`max_total` 则限制整棵 Durable Tree 的累计
 
 Child Authority 只能收紧当前 Session Profile。有效 Posture 遵循
 `never < suggest < auto < bypass`；写工具权限是 Parent Tool Catalog 与 Child Role
-Contract 的交集，Read-only Role 固定使用 `never`。在 `suggest` 下，Child Approval
+Contract 的交集，Read-only Role 固定使用 `never`；`suggest` 仅保留为内部收紧级别。
+在 `Auto` 下需要用户审批的 Child Approval
 会在 Host 中显示 Agent Path 与 Role。Host 通过 Parent Session 提交原 Request ID，
 Runtime 将决定路由到权威 Child Thread，并在重启后保留 Pending Approval。Deny 会向
 Child 返回结构化 Problem 与 `approval_denied` Tool Result。
@@ -650,8 +651,14 @@ Credential Control 的最新引用，因此页面完成 Keychain 轮换后无需
 
 ## Mode、Posture 与验证
 
-Mode 固定为 `act`；新 Session 的 Posture 默认为 `auto`，通过界面的 Approval
+Mode 固定为 `act`；新 Session 的 Posture 默认为 `auto`，通过界面的 Permissions
 或 Session 设置修改，不提供启动参数。二者互不替代。
+界面提供 `Read only`（`never`）、`Auto`（`auto`）和 `Full Access`（`bypass`）；
+Full Access 为未声明资源范围的普通命令授予宿主文件读写与直接联网权限，无需常规审批；
+显式 `write_paths`、`network_targets`、`allow_loopback` 或 `settle=discard` 保持范围限制。
+凭据、工作区控制目录、QCode 状态和显式策略仍受保护。旧 `suggest` 会话加载时合并到 Auto。
+`wire.ExecOptions.ProfilePermissionCeiling` 由可信 Host 声明可选上限；空值使用启动姿态，
+未知值拒绝构造。Web 声明 `bypass` 上限但保持 `auto` 默认值，Session 参数不能更改 Host 上限。
 
 验证模式：
 
@@ -752,12 +759,16 @@ Fail Closed。
 使用用户显式接入且已经授权的外部服务。
 
 PATH 可执行文件的实际动态库依赖由平台按精确文件只读绑定；这不会自动开放
-工具的配置目录。若工具依赖额外配置（例如 OpenSSL 配置文件），使用 `host_config`
-声明文件并通过对应变量指定；缓存使用 `cache` 声明。共享临时区的写权限包含
+工具的配置目录。受控环境在没有显式设置时提供 `OPENSSL_CONF=`：依据 OpenSSL
+`config(5)`，空字符串表示不加载配置文件，普通 Node/npm 命令不必先读取宿主
+`openssl.cnf`。它不关闭 TLS 证书校验，也不替换证书文件和信任库设置。
+若需要自定义 OpenSSL Provider、FIPS 或其它宿主配置，使用 `host_config` 声明
+文件并指定 `env = "OPENSSL_CONF"`；来源环境、资源声明和单次命令的显式值均可
+覆盖缺省值，读取权限仍需独立授权。缓存使用 `cache` 声明。共享临时区的写权限包含
 创建条目所需的元数据读取，已有共享文件的内容读取仍需单独授权。
 
 环境在准备时确定，后续受控命令不重新继承宿主环境变化。普通变量的优先级为
-平台与来源基线 < `resources` 声明 < 单次命令 `env`；同一层同名异值报错，
+受控环境缺省值 < 平台与来源基线 < `resources` 声明 < 单次命令 `env`；同一层同名异值报错，
 重复资源名也会报错，空字符串可以显式覆盖已有值。HOME、TMPDIR、TMP、TEMP
 由 Profile 与沙箱目录决定，不能通过普通声明改写；HTTP 代理变量由当前执行的
 受管通道生成。变量本身不授予路径或网络访问，相关资源仍需独立声明和授权。

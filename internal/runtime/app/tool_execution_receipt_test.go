@@ -22,7 +22,8 @@ func TestToolExecutionReceiptProjectsIntoDurableToolResult(t *testing.T) {
 		Source:      tool.InvocationSourceModel,
 		Disposition: tool.DispositionWaitForTeardown,
 		Attempts: []tool.AttemptReceipt{{
-			Sequence: 1, Sandbox: "strong", Status: tool.OutcomeRejected,
+			FullAccess: true,
+			Sequence:   1, Sandbox: "strong", Status: tool.OutcomeRejected,
 			TerminalOwner:          tool.TerminalOwnerGuard,
 			OperationSchemaVersion: 1, OperationDigest: digest,
 			LeaseID: "lease-1", LeaseState: "settled", LeaseAttempt: 1,
@@ -72,6 +73,7 @@ func TestToolExecutionReceiptProjectsIntoDurableToolResult(t *testing.T) {
 		}) ||
 		projected.TerminalOwner != "guard" ||
 		len(projected.Attempts) != 1 ||
+		!projected.Attempts[0].FullAccess ||
 		projected.Attempts[0].PermissionDigest != digest ||
 		projected.Attempts[0].OperationDigest != digest ||
 		projected.Attempts[0].LeaseState != "settled" ||
@@ -100,6 +102,7 @@ func TestToolExecutionReceiptProjectsIntoDurableToolResult(t *testing.T) {
 	}
 	result, ok := decoded.Data.(*protocol.ToolResultData)
 	if !ok || result.Execution == nil ||
+		!result.Execution.Attempts[0].FullAccess ||
 		result.Execution.Attempts[0].PermissionDigest != digest ||
 		result.Execution.Attempts[0].OperationDigest != digest ||
 		result.Execution.Attempts[0].LeaseID != "lease-1" ||

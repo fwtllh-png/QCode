@@ -25,6 +25,9 @@ type AssessmentBinding struct {
 // Declared carries binding declarations that Guard resolved against the
 // invocation's arguments.
 type Declared struct {
+	// FullAccess is selected by Guard from the session permission and a trusted
+	// process binding. It is never accepted from model arguments.
+	FullAccess bool
 	// ReadOnly reports that an argument matched the binding's read-only values.
 	ReadOnly bool
 	// Verification reports a declared verification run with covered paths.
@@ -48,6 +51,7 @@ const (
 
 // Facets are the classification-relevant properties of an invocation.
 type Facets struct {
+	FullAccess      bool
 	WritesWorkspace bool
 	Egress          Egress
 	// Network reports a network endpoint other than the loopback grant.
@@ -91,6 +95,7 @@ const (
 	RuleNetworkRead         = "network_read"
 	RuleNetworkMutating     = "network_mutating"
 	RuleProcessReadOnly     = "process_read_only"
+	RuleProcessFullAccess   = "process_full_access"
 	RuleProcessMutating     = "process_mutating"
 	RuleJournaledEdit       = "journaled_edit"
 	RuleExternal            = "external"
@@ -159,6 +164,11 @@ var table = []row{
 		RuleAgent,
 		func(_ AssessmentBinding, f Facets) bool { return f.Agent },
 		constant(AgentLifecycle, RiskHigh, Bounded),
+	},
+	{
+		RuleProcessFullAccess,
+		func(b AssessmentBinding, f Facets) bool { return b.Capability == CapabilityProcess && f.FullAccess },
+		constant(ProcessMutating, RiskHigh, Irreversible),
 	},
 	{
 		// The loopback grant reaches every local port, so it is never
@@ -245,6 +255,7 @@ func (a Assessment) Digest() string {
 
 func facetsOf(input AssessmentInput) Facets {
 	facets := Facets{
+		FullAccess:           input.Declared.FullAccess,
 		StrongSandbox:        input.Binding.StrongSandbox,
 		Journaled:            input.Binding.Journaled,
 		ReadOnlyDeclared:     input.Declared.ReadOnly,

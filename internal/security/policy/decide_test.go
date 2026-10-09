@@ -323,7 +323,7 @@ func TestDecideModeLayer(t *testing.T) {
 		},
 		{
 			name:  "declared verification asks",
-			setup: func(r *Runtime) { r.PlanningPolicy = PlanningRequired },
+			setup: func(r *Runtime) { r.Permission, r.PlanningPolicy = PermissionAuto, PlanningRequired },
 			call: func() invocationFixture {
 				call := invocation("run_command", "v-1", `{"command":"go test ./..."}`)
 				call.Resources = []tool.Resource{{Kind: "file", Path: "coverage.out", Access: tool.AccessWrite}}

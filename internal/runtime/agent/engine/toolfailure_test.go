@@ -143,7 +143,7 @@ func TestRecoverableToolFailureClassification(t *testing.T) {
 		},
 		"permission denied": {
 			err:             &policy.DecisionError{Code: "permission_denied", Reason: "write is denied"},
-			wantRecoverable: true, wantContains: "choose_read_only_alternative",
+			wantRecoverable: true, wantContains: "review_permissions",
 		},
 		"tool grant missing": {
 			err: &policy.DecisionError{

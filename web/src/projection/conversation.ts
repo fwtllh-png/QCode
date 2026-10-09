@@ -233,6 +233,7 @@ export class ConversationProjection {
   private readonly outputSegments = new Map<string, {sampleID: string; text: string}[]>();
   private readonly ids = new Map<string, string>();
   private readonly activeTurns = new Set<string>();
+  private readonly readOnlyTurns = new Set<string>();
   private latestTurnID = "";
   private readonly activities = new Map<string, string>();
   private readonly runningTools = new Map<string, Set<string>>();
@@ -272,6 +273,7 @@ export class ConversationProjection {
     }
     switch (event.kind) {
       case "turn.started":
+        if (data.posture === "never") this.readOnlyTurns.add(event.turn_id);
         this.ids.set(event.turn_id, event.operation_id);
         this.activeTurns.add(event.turn_id);
         this.latestTurnID = event.turn_id;
@@ -308,6 +310,7 @@ export class ConversationProjection {
         );
         break;
       case "turn.withdrawn":
+        this.readOnlyTurns.delete(event.turn_id);
         for (const node of this.nodes.values()) {
           if (node.turnID !== event.turn_id) continue;
           if (node.kind === "user") this.put({...node, withdrawn: true});
@@ -1078,6 +1081,7 @@ export class ConversationProjection {
   }
 
   private finishTurn(event: RuntimeEvent, failed: boolean): void {
+    const readOnly = this.readOnlyTurns.delete(event.turn_id);
     this.remove(providerStateID(event.turn_id));
     this.activeTurns.delete(event.turn_id);
     this.activities.delete(event.turn_id);
@@ -1121,6 +1125,11 @@ export class ConversationProjection {
       return;
     }
     const failure = failurePresentation(event);
+    const permissionChangeRequired = readOnly && event.kind === "turn.failed" &&
+      recordValue(event.data.convergence)?.cause === "declared_incomplete" &&
+      [...this.nodes.values()].some((node) => node.kind === "tool" &&
+        node.turnID === event.turn_id && node.state === "failed" &&
+        node.recovery?.error_category === "permission_denied");
     const blocked = failure.blocked === true;
     const warning = failure.warning === true;
     this.put({
@@ -1128,16 +1137,18 @@ export class ConversationProjection {
       kind: "status",
       turnID: event.turn_id,
       sequence: event.sequence,
-      title: failure.title,
-      text: failure.text,
+      title: permissionChangeRequired ? "Permission change required" : failure.title,
+      text: permissionChangeRequired
+        ? "Read only prevented a required action. Switch to Auto or Full Access, then continue."
+        : failure.text,
       failed: failed && !warning,
       blocked,
       warning,
       recoverable: failed,
-      recovery: failed ? recoveryOptions(
-        event,
-        this.receipts.get(event.turn_id)
-      ) : undefined
+      recovery: failed ? {
+        ...recoveryOptions(event, this.receipts.get(event.turn_id)),
+        ...(permissionChangeRequired ? {action: "change_approval_posture"} : {})
+      } : undefined
     });
     this.putDeliverables(event);
   }
