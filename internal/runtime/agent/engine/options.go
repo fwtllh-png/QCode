@@ -84,7 +84,10 @@ func normalizeEngineOptions(options *Options) error {
 		return err
 	}
 	if options.MaxRetries < 0 {
-		return errors.New("max retries cannot be negative")
+		return errors.New("provider retry limit cannot be negative")
+	}
+	if options.InfrastructureRetryLimit < -1 {
+		return errors.New("infrastructure retry limit cannot be less than -1")
 	}
 	if options.MaxRetryDelay < 0 {
 		return errors.New("max retry delay cannot be negative")

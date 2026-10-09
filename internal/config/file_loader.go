@@ -33,6 +33,7 @@ type executionFileConfig struct {
 	MaxConcurrent              *int     `toml:"max_concurrent"`
 	RateLimit                  *float64 `toml:"rate_limit"`
 	ProviderRetryLimit         *int     `toml:"provider_retry_limit"`
+	InfrastructureRetryLimit   *int     `toml:"infrastructure_retry_limit"`
 	RateLimitRetryLimit        *int     `toml:"rate_limit_retry_limit"`
 	RateLimitWait              *string  `toml:"rate_limit_wait"`
 	TokensPerMinute            *uint64  `toml:"tokens_per_minute"`
@@ -460,6 +461,7 @@ func applyExecutionFile(
 	applyInt(input.WorkspaceMergeMaxDiffBytes, &execution.WorkspaceMergeMaxDiffBytes, fieldWorkspaceMergeMaxDiffBytes, source, provenance)
 	applyFloat64(input.RateLimit, &execution.RateLimit, fieldRateLimit, source, provenance)
 	applyInt(input.ProviderRetryLimit, &execution.ProviderRetryLimit, fieldProviderRetryLimit, source, provenance)
+	applyInt(input.InfrastructureRetryLimit, &execution.InfrastructureRetryLimit, fieldInfrastructureRetryLimit, source, provenance)
 	applyInt(input.RateLimitRetryLimit, &execution.RateLimitRetryLimit, fieldRateLimitRetryLimit, source, provenance)
 	applyDurationString(input.RateLimitWait, &execution.RateLimitWait, fieldRateLimitWait, source, provenance)
 	applyUint64(input.TokensPerMinute, &execution.TokensPerMinute, fieldTokensPerMinute, source, provenance)

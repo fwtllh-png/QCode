@@ -2,6 +2,7 @@ package engine
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -15,13 +16,24 @@ import (
 
 const providerRetryPolicyRevision = providerwire.RetryPolicyRevision
 
+func exhaustedToolArgumentRepair(cause error, used, limit int) error {
+	message := fmt.Sprintf("provider tool argument regeneration budget exhausted (%d/%d); rejected tool calls were not executed", used, max(limit, 0))
+	return protocol.NewFault(protocol.CodeUnavailable, message, false, protocol.FaultMetadata{
+		Origin: protocol.FaultOriginProvider, Stage: protocol.FaultStageModelSample,
+		Reason:      protocol.ProblemReasonToolArgumentRepair,
+		Disposition: protocol.FaultResumeTurn, SideEffects: protocol.SideEffectUnchanged,
+		RetryOwner: protocol.FaultRetryOwnerHost, ResumeHint: protocol.FaultResumeResumeTurn,
+		RecoveryAction: "continue from the retained work after checking the provider or selecting another model; completed tools must not be repeated",
+	}, errors.Join(cause, &provider.Failure{Code: provider.FailureMalformedResponse, Message: message}))
+}
+
 func kernelProviderRetry(retry ProviderRetry) turnkernel.ProviderRetryRequested {
 	return turnkernel.ProviderRetryRequested{
-		Retry:            retry.Retry,
-		Failure:          retry.Failure,
-		EffectiveDelayMS: uint64(retry.EffectiveDelay / time.Millisecond),
-		RetryAt:          retry.RetryAt,
-		PolicyRevision:   retry.PolicyRevision,
+		Retry:          retry.Retry,
+		Failure:        retry.Failure,
+		EffectiveDelay: retry.EffectiveDelay,
+		RetryAt:        retry.RetryAt,
+		PolicyRevision: retry.PolicyRevision,
 	}
 }
 
@@ -48,9 +60,10 @@ func (e *Engine) providerRetry(
 	sampleID string,
 ) (ProviderRetry, bool) {
 	policy := providerwire.RetryPolicy{
-		MaxRetries:          e.options.MaxRetries,
-		MaxDelay:            e.options.MaxRetryDelay,
-		RateLimitMaxRetries: e.options.RateLimitMaxRetries,
+		MaxRetries:                e.options.MaxRetries,
+		MaxDelay:                  e.options.MaxRetryDelay,
+		InfrastructureRetryLimit:  e.options.InfrastructureRetryLimit,
+		RateLimitMaxRetries:       e.options.RateLimitMaxRetries,
 		RateLimitMaxWait:    e.options.RateLimitMaxWait,
 		RateLimitRetries:    budget.retries,
 		RateLimitWaited:     budget.waited,
@@ -79,47 +92,54 @@ func (e *Engine) retryJitterSeed(sampleID string) string {
 
 func exhaustedProviderRetry(err error) error {
 	failure := providerwire.ClassifyFailure(err, false)
-	if failure.Code == provider.FailureQuota {
-		problem := protocol.NewFault(
-			protocol.CodeResourceExhausted, failure.Message, false,
-			protocol.FaultMetadata{
-				Origin: protocol.FaultOriginProvider, Stage: protocol.FaultStageModelSample,
-				Disposition: protocol.FaultResumeTurn, SideEffects: protocol.SideEffectUnchanged,
-				RetryOwner: protocol.FaultRetryOwnerHost, ResumeHint: protocol.FaultResumeResumeTurn,
-				RecoveryAction: "wait for the provider quota reset or restore the subscription/balance, then continue from the durable checkpoint",
-			}, err,
-		)
-		if original := protocol.ProblemOf(err); original != nil {
-			problem.HTTPStatus, problem.RateLimit = original.HTTPStatus, original.RateLimit
-		}
-		return problem
+	code, retryable := protocol.CodeUnavailable, true
+	metadata := protocol.FaultMetadata{
+		Origin: protocol.FaultOriginProvider, Stage: protocol.FaultStageModelSample,
+		Disposition: protocol.FaultRetryTurn, SideEffects: protocol.SideEffectUnchanged,
+		RetryOwner: protocol.FaultRetryOwnerHost, ResumeHint: protocol.FaultResumeRetryTurn,
+		RecoveryAction: "check provider availability or select another model, then retry from the retained work",
 	}
-	if problem, ok := errors.AsType[*protocol.Problem](err); ok &&
-		!problem.Retryable {
-		recoveryAction := "correct the provider request or configuration, then retry from the durable checkpoint"
-		if failure.Code == provider.FailureMalformedResponse {
-			recoveryAction = "retry the turn to generate a fresh model response from the durable checkpoint"
-		}
-		problem.Fault = &protocol.FaultMetadata{
-			Origin:         protocol.FaultOriginProvider,
-			Stage:          protocol.FaultStageModelSample,
-			Disposition:    protocol.FaultRetryTurn,
-			SideEffects:    protocol.SideEffectUnchanged,
-			RetryOwner:     protocol.FaultRetryOwnerHost,
-			ResumeHint:     protocol.FaultResumeRetryTurn,
-			RecoveryAction: recoveryAction,
-		}
-		return err
+	if original := protocol.ProblemOf(err); original != nil {
+		code, retryable = original.Code, original.Retryable
 	}
-	fault := protocol.FaultMetadata{
-		Origin: protocol.FaultOriginProvider, Disposition: protocol.FaultRetryTurn, SideEffects: protocol.SideEffectUnchanged,
-		RecoveryAction: "retry the turn from its durable checkpoint",
+	switch failure.Code {
+	case provider.FailureServer, provider.FailureTransport, provider.FailureStreamClosed,
+		provider.FailureTimeout, provider.FailureEmptyResponse:
+		metadata.Reason = protocol.ProblemReasonProviderRetry
+	case provider.FailureQuota:
+		code, retryable = protocol.CodeResourceExhausted, false
+		metadata.Reason = protocol.ProblemReasonProviderQuota
+		metadata.Disposition, metadata.ResumeHint = protocol.FaultResumeTurn, protocol.FaultResumeResumeTurn
+		metadata.RecoveryAction = "wait for the provider quota reset or restore the subscription/balance, then continue from the durable checkpoint"
+	case provider.FailureAuth:
+		retryable = false
+		metadata.Reason = protocol.ProblemReasonProviderAuth
+		metadata.RecoveryAction = "check the API key and access permissions in Connection settings, then retry"
+	case provider.FailureInvalidRequest:
+		retryable = false
+		metadata.Reason = protocol.ProblemReasonProviderRequest
+		metadata.RecoveryAction = "correct the model or provider request configuration in Connection settings, then retry"
+	case provider.FailureUnsupportedContent:
+		retryable = false
+		metadata.Reason = protocol.ProblemReasonProviderContent
+		metadata.RecoveryAction = "review the provider's content restrictions and supported input types before retrying"
+	case provider.FailureMalformedResponse:
+		retryable = false
+		metadata.Reason = protocol.ProblemReasonProviderResponse
+		metadata.RecoveryAction = "inspect the provider response failure or select another model before retrying; rejected tool calls were not executed"
+	case provider.FailureContextWindowExceeded:
+		retryable = false
+		metadata.Reason = protocol.ProblemReasonContextWindow
+		metadata.RecoveryAction = "reduce required context or select a model with a larger context window, then continue"
+	case provider.FailureRateLimit:
+		metadata.Reason = protocol.ProblemReasonProviderRateLimited
+		metadata.RecoveryAction = "wait for the shared provider cooldown, then continue from the durable checkpoint"
 	}
-	if problem, ok := errors.AsType[*protocol.Problem](err); ok {
-		problem.Retryable, problem.Fault = true, &fault
-		return err
+	problem := protocol.NewFault(code, failure.Message, retryable, metadata, err)
+	if original := protocol.ProblemOf(err); original != nil {
+		problem.HTTPStatus, problem.RateLimit, problem.Details = original.HTTPStatus, original.RateLimit, original.Details
 	}
-	return protocol.NewFault(protocol.CodeUnavailable, "provider could not complete the model sample: "+errorText(err), true, fault, err)
+	return problem
 }
 
 func exhaustedRateLimitRetry(err error) error {

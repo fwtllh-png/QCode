@@ -113,6 +113,7 @@ func (agentModule) Build(ctx context.Context, state *buildState) error {
 		ImplementNoProgressSamples: execution.ImplementNoProgressSamples,
 		MaxRetries:                 execution.ProviderRetryLimit,
 		MaxRetryDelay:              execution.Timeout,
+		InfrastructureRetryLimit:   execution.InfrastructureRetryLimit,
 		RateLimitMaxRetries:        execution.RateLimitRetryLimit,
 		RateLimitMaxWait:           execution.RateLimitWaitBudget(),
 		SharedRateLimit:            sharedRateLimit,

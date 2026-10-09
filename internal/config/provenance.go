@@ -104,6 +104,7 @@ const (
 	fieldMaxConcurrent              = "execution.max_concurrent"
 	fieldRateLimit                  = "execution.rate_limit"
 	fieldProviderRetryLimit         = "execution.provider_retry_limit"
+	fieldInfrastructureRetryLimit   = "execution.infrastructure_retry_limit"
 	fieldRateLimitRetryLimit        = "execution.rate_limit_retry_limit"
 	fieldRateLimitWait              = "execution.rate_limit_wait"
 	fieldTokensPerMinute            = "execution.tokens_per_minute"

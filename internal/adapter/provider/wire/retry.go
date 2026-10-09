@@ -17,10 +17,16 @@ import (
 const RetryPolicyRevision = "provider-retry/v5"
 
 type RetryPolicy struct {
-	MaxRetries          int
-	MaxDelay            time.Duration
-	RateLimitMaxRetries int
-	RateLimitMaxWait    time.Duration
+	MaxRetries int
+	MaxDelay   time.Duration
+	// InfrastructureRetryLimit bounds retries for transport, server, timeout,
+	// and stream-closed failures. Zero inherits MaxRetries. -1 means unlimited:
+	// infrastructure outages retry at MaxDelay intervals until connectivity
+	// returns or the user cancels the turn. A positive value overrides
+	// MaxRetries for infrastructure failures only.
+	InfrastructureRetryLimit int
+	RateLimitMaxRetries      int
+	RateLimitMaxWait         time.Duration
 	RateLimitRetries    uint32
 	RateLimitWaited     time.Duration
 	// SharedRateLimitRetries / SharedRateLimitWaited are the session pot.
@@ -69,7 +75,18 @@ func (p RetryPolicy) Decide(
 		provider.FailureTransport,
 		provider.FailureStreamClosed,
 		provider.FailureTimeout:
-		eligible = limit > 0
+		switch p.InfrastructureRetryLimit {
+		case 0:
+			eligible = limit > 0 // inherit MaxRetries
+		case -1:
+			// Unlimited: retry at MaxDelay intervals until connectivity
+			// returns or the user cancels the turn.
+			limit = int(^uint32(0) >> 1)
+			eligible = true
+		default:
+			limit = p.InfrastructureRetryLimit
+			eligible = limit > 0
+		}
 	case provider.FailureContextWindowExceeded:
 		eligible = contextChanged && limit > 0
 	case provider.FailureEmptyResponse:

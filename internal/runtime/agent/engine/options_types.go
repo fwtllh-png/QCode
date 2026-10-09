@@ -29,6 +29,7 @@ type ProviderConfig struct {
 	ImplementNoProgressSamples int
 	MaxRetries                 int
 	MaxRetryDelay              time.Duration
+	InfrastructureRetryLimit   int
 	RateLimitMaxRetries        int
 	RateLimitMaxWait           time.Duration
 	SharedRateLimit            *SharedRateLimit
