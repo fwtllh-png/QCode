@@ -5,7 +5,7 @@ import {
   spawn,
   type ChildProcessByStdio
 } from "node:child_process";
-import {mkdtemp, rm, writeFile} from "node:fs/promises";
+import {mkdtemp, readFile, rm, writeFile} from "node:fs/promises";
 import {tmpdir} from "node:os";
 import path from "node:path";
 import type {Readable} from "node:stream";
@@ -89,13 +89,45 @@ test.beforeEach(async ({page}) => {
   await expect(page.locator(".app")).toBeVisible();
 });
 
+for (const mode of ["approve", "deny", "full access"] as const) {
+  test(`host commands use existing permissions: ${mode}`, async ({page}) => {
+    await createSession(page);
+    await expect(page.getByLabel("Host execution", {exact:true})).toHaveCount(0);
+    await page.getByLabel("Permissions", {exact:true}).selectOption(mode === "full access" ? "bypass" : "auto");
+    await submitPrompt(page, "visual host command");
+    const output = path.join(workspaceDir, "host-result.txt");
+    if (mode !== "full access") {
+      await expect(page.getByText("Run this command on your computer?", {exact:true})).toBeVisible();
+      await expect(page.getByText(/outside QCode's sandbox with your OS account/)).toBeVisible();
+      await expect(readFile(output, "utf8")).rejects.toThrow();
+      await page.setViewportSize({width:390, height:900});
+      const action = page.getByRole("button", {name:mode === "approve" ? "Approve once" : "Deny", exact:true});
+      await expect(action).toBeInViewport();
+      await action.click();
+    }
+    if (mode === "deny") {
+      await expect(page.getByText("Waiting for approval", {exact:true})).toHaveCount(0);
+      await expect(readFile(output, "utf8")).rejects.toThrow();
+    } else {
+      await expect.poll(() => readFile(output, "utf8").catch(() => "")).toBe("host-fixture");
+      await page.getByRole("button", {name:/Execution details/}).click();
+      const command = page.locator('.toolDisclosure[data-call-id="call_visual_host"]');
+      await command.locator(":scope > .disclosureRow .disclosureLeading").click();
+      await expect(page.getByText("Host · no sandbox", {exact:true})).toBeVisible();
+      await expect(page.getByText("Waiting for approval", {exact:true})).toHaveCount(0);
+    }
+  });
+}
+
 for (const width of [1440, 390]) {
   test(`automatic history scrolling preserves the anchor and bounds DOM at ${width}px`, async ({page}) => {
     await createSession(page);
     await installHistorySnapshot(page, 1, 500);
     await page.reload();
     await page.setViewportSize({width, height: 900});
-    await page.getByRole("button", {name: "Close Git tools", exact: true}).click();
+    if (width === 1440) {
+      await page.getByRole("button", {name: "Close Git tools", exact: true}).click();
+    }
     const scrollport = page.locator("[data-conversation-scroll]");
     await expect(page.getByText("History message 500", {exact: true})).toBeVisible();
     await expect(page.locator("[data-entry-id]")).toHaveCount(200);
@@ -851,8 +883,7 @@ test("captures the authoritative diff state", async ({page}) => {
     document.documentElement.scrollWidth <= document.documentElement.clientWidth
   )).toBe(true);
   await edit.getByRole("button", {name: "Inspect", exact: true}).click();
-  await expect(page.getByRole("button", {name: "Trajectory"}))
-    .toHaveAttribute("aria-current", "page");
+  await expect(page.getByRole("dialog", {name: "Inspect tool call"})).toBeVisible();
 });
 
 test("captures collapsed tools, expanded tool detail, and trajectory", async ({page}) => {
@@ -880,7 +911,7 @@ test("captures collapsed tools, expanded tool detail, and trajectory", async ({p
   await expect(page).toHaveScreenshot("canonical-tool-expanded.png");
 
   await tool.getByRole("button", {name: "Inspect"}).click();
-  await expect(page.getByLabel("Execution trajectory")).toBeVisible();
+  await expect(page.getByRole("dialog", {name: "Inspect tool call"})).toBeVisible();
   const inspector = page.getByRole("complementary", {name: "Record inspector"});
   await expect(inspector).toBeVisible();
   await expect(inspector.getByRole("tab", {name: "Summary"}))
@@ -1200,8 +1231,7 @@ test("captures the implementation plan", async ({page}) => {
 
   const progress = page.getByRole("region", {name: "Session progress"});
   await expect(progress).toBeVisible();
-  await expect(progress).toContainText("Stabilize prompt cache prefixes");
-  await expect(progress.getByRole("button", {name: "Implement"})).toBeVisible();
+  await expect(progress).toContainText("Sort tool definitions deterministically");
   await expect(progress).not.toContainText('{"version":1');
   await expect(progress).toHaveScreenshot("canonical-plan.png");
 
@@ -1243,9 +1273,9 @@ test("captures the input state", async ({page}) => {
 test("captures the failure state", async ({page}) => {
   await createSession(page);
   await submitPrompt(page, "visual failure");
-  await expect(page.getByText("Failed", {exact: true})).toBeVisible();
+  await expect(page.getByText("Model request failed")).toBeVisible();
   await expect(page.getByText("Review the workspace before continuing.")).toBeVisible();
-  await expect(page.getByRole("button", {name: "Continue"})).toBeVisible();
+  await expect(page.locator(".turnRecovery").getByRole("button", {name: "Continue"})).toBeVisible();
   await expect(page).toHaveScreenshot("canonical-failure.png");
 });
 
