@@ -19,6 +19,7 @@ import (
 	agentcontext "github.com/fwtllh-png/QCode/internal/runtime/agent/context"
 	contextview "github.com/fwtllh-png/QCode/internal/runtime/agent/contextview"
 	promptcontext "github.com/fwtllh-png/QCode/internal/runtime/agent/prompt"
+	"github.com/fwtllh-png/QCode/internal/runtime/agent/turnkernel"
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
 )
 
@@ -49,13 +50,18 @@ type preparedModelInput struct {
 	maxOutputTokens uint64
 }
 
+type modelRetryState struct {
+	budget      turnkernel.ProviderRetryBudget
+	reserveWait func(time.Duration, time.Time) error
+}
+
 func (e *Engine) modelStep(
 	ctx context.Context,
 	history *[]provider.Message,
 	turnUsage provider.Usage,
 	sampleID string,
 	reason string,
-	providerRetries uint32,
+	retries modelRetryState,
 	finishOnly bool,
 	convergenceOnly bool,
 	continued *bool,
@@ -68,8 +74,12 @@ func (e *Engine) modelStep(
 	send func(State, Event) error,
 ) ([]provider.ContentBlock, []provider.ToolCall, provider.Usage, uint64, error) {
 	e.viewFold.folded = false
-	var rateLimitRetries uint32
-	var rateLimitWaited time.Duration
+	providerRetries := retries.budget.TransientRetries
+	rateLimitRetries := retries.budget.RateLimitRetries
+	rateLimitWaited := retries.budget.RateLimitWaited
+	if err := waitRetryDelay(ctx, time.Until(retries.budget.WaitUntil)); err != nil {
+		return nil, nil, provider.Usage{}, 0, err
+	}
 	if continued != nil {
 		*continued = false
 	}
@@ -165,14 +175,15 @@ func (e *Engine) modelStep(
 				),
 			)
 		}
-		continuationMessages = append(
-			continuationMessages,
-			promptcontext.IncompleteOutputFeedback(
-				provider.StopReasonIncomplete,
-				assembly.IncompleteToolFragments(),
-				e.turn,
-			),
+		feedback := promptcontext.IncompleteOutputFeedback(
+			provider.StopReasonIncomplete,
+			assembly.IncompleteToolFragments(),
+			e.turn,
 		)
+		if assembly.ToolArgumentsRejected() {
+			feedback = promptcontext.ToolArgumentRepairFeedback(e.turn)
+		}
+		continuationMessages = append(continuationMessages, feedback)
 		continuations = uint32(assembly.TransportCount())
 		if continued != nil {
 			*continued = true
@@ -180,7 +191,7 @@ func (e *Engine) modelStep(
 	}
 	baseReasoningEffort := e.reasoningEffort()
 	for attempt := 0; ; attempt++ {
-		var turnContext []provider.Message
+		var sampleFeedback []provider.Message
 		turnReceipts := append([]promptcontext.Receipt(nil), worldReceipts...)
 		e.recordTurnContextReceipts(turnReceipts)
 		route := e.activeRoute()
@@ -189,8 +200,9 @@ func (e *Engine) modelStep(
 			turnUsage.Total() + totalUsage.Total(),
 		)
 		if len(budgetMessage.Blocks) != 0 {
-			turnContext = append(turnContext, budgetMessage)
+			sampleFeedback = append(sampleFeedback, budgetMessage)
 		}
+		feedback := append(slices.Clone(sampleFeedback), continuationMessages...)
 		requestTools := definitions
 		reasoningEffort := baseReasoningEffort
 		nativeSearch := e.options.NativeSearch
@@ -207,6 +219,9 @@ func (e *Engine) modelStep(
 		sampleReason := promptcontext.SampleReason(
 			reason, attempt, continuations > 0,
 		)
+		if assembly.ToolArgumentsRejected() {
+			sampleReason = promptcontext.SampleToolArgumentRepair
+		}
 		statelessProjector := contextview.NewStatelessProjector(
 			route.Model().Capabilities.IncrementalResponses,
 		)
@@ -220,6 +235,7 @@ func (e *Engine) modelStep(
 		}
 		var selection agentcontext.ProjectionResult
 		var selectionError error
+		var unavailableTurns map[uint64]bool
 		// Once directory recovery is needed, keep that decision for this sample.
 		// Repeated compaction projections must not oscillate as schemas shrink.
 		recoveryOnly := false
@@ -238,49 +254,53 @@ func (e *Engine) modelStep(
 		}
 		projectHistory := func(history []provider.Message) []provider.Message {
 			selectionError = nil
-			baseSelection := e.contextProjection(history)
-			original := statelessProjector.Project(baseSelection.Messages)
-			conversation := e.contextAuthority().Conversation()
 			plan := e.currentPlan()
+			conversation, unavailable, omissions, err := e.availableConversation(ctx, e.contextAuthority().Conversation(), plan)
+			if err != nil {
+				selectionError = err
+				return nil
+			}
+			unavailableTurns = unavailable
+			baseSelection := contextview.ExcludeUnavailableTurns(e.contextProjection(history), unavailable, e.estimateMessageTokens)
+			original := statelessProjector.Project(baseSelection.Messages)
 			render := func(directory bool) []provider.Message {
 				selection = baseSelection
 				selection.References = slices.Clone(baseSelection.References)
 				state := conversation
-				messages := slices.Clone(original)
+				// These are request-local background facts, not a new message
+				// after the latest tool result. Rebuild from the current selection
+				// on every projection, without writing them into durable history.
+				var background []provider.Message
 				if directory {
 					state = agentcontext.CloneConversation(conversation)
 					state.Selection = &agentcontext.ConversationSelection{}
-					messages = append(messages, promptcontext.ConversationCatalogHint(len(conversation.CandidateSources(plan)), e.sessionStateBudget()))
+					background = append(background, promptcontext.ConversationCatalogHint(len(conversation.CandidateSources(plan)), e.sessionStateBudget()))
 				}
-				excerpts := contextview.SelectConversation(state, plan, messages)
+				excerpts := contextview.SelectConversation(state, plan, original)
 				for _, excerpt := range excerpts {
-					available, err := e.conversationSourceAvailable(ctx, excerpt.Source)
-					if err != nil {
-						selectionError = err
-					} else if !available {
-						selectionError = fmt.Errorf("conversation source %s is withdrawn or outside this session", excerpt.Source.ID)
-					}
 					selection.References = append(selection.References, excerpt.Coverage)
 				}
 				if references := promptcontext.ConversationReferences(excerpts); references != nil {
-					messages = append(messages, *references)
+					background = append(background, *references)
 				}
 				selection.Representations = contextview.ConversationOmissions(conversation, selection.References, directory)
+				selection.Representations = append(selection.Representations, omissions...)
 				selection.Seal()
 				hint, err := promptcontext.ContextSelectionHint(selection, e.sessionStateBudget())
 				if err != nil {
 					selectionError = err
 				}
 				if hint != nil {
-					messages = append(messages, *hint)
+					background = append(background, *hint)
 				}
-				return messages
+				return contextview.WithTurnBackground(original, background, e.turn)
 			}
 			messages := render(recoveryOnly)
 			if !recoveryOnly && conversation != nil && conversation.Selection == nil && len(selection.References) != 0 {
 				candidate := contextLedger.Project(agentcontext.LedgerProjection{
-					Stable: stableContext, History: messages, Dynamic: turnContext,
-					Continuation: continuationMessages, Definitions: requestTools,
+					Stable: stableContext, History: messages,
+					DynamicBeforeTurn: e.turn,
+					Continuation:      feedback, Definitions: requestTools,
 				})
 				fits, err := fitsRequest(candidate)
 				if err != nil {
@@ -298,21 +318,22 @@ func (e *Engine) modelStep(
 		}
 		project := func() agentcontext.MessageSnapshot {
 			base := contextLedger.Project(agentcontext.LedgerProjection{
-				Stable: stableContext, History: projectHistory(*history), Dynamic: turnContext,
-				Continuation: continuationMessages, Definitions: requestTools,
+				Stable: stableContext, History: projectHistory(*history),
+				DynamicBeforeTurn: e.turn,
+				Continuation:      feedback, Definitions: requestTools,
 			})
 			e.checkpointMu.Lock()
 			checkpoints := agentcontext.CloneTurnCheckpoints(e.turnCheckpoints)
 			e.checkpointMu.Unlock()
+			checkpoints = slices.DeleteFunc(checkpoints, func(checkpoint agentcontext.TurnCheckpoint) bool { return unavailableTurns[checkpoint.Turn] })
 			selected, err := contextview.SelectCheckpoints(checkpoints, selection.References, e.options.Context.CheckpointMaxBytes, func(candidate []provider.Message) (bool, error) {
-				dynamic := append(slices.Clone(turnContext), candidate...)
-				return fitsRequest(base.WithDynamic(dynamic))
+				return fitsRequest(base.WithDynamic(candidate))
 			})
 			if err != nil {
 				selectionError = err
 				return base
 			}
-			dynamic := append(slices.Clone(turnContext), selected...)
+			dynamic := slices.Clone(selected)
 			summaryRoute, _ := e.SummaryRouteDigest()
 			narrative, observations, err := contextview.SelectNarrative(
 				e.contextAuthority().Compaction().Digest, e.options.Context.Digest == "ledger+narrative",
@@ -330,8 +351,9 @@ func (e *Engine) modelStep(
 			}
 			return contextLedger.Project(agentcontext.LedgerProjection{
 				Stable: stableContext, History: base.Partition(agentcontext.KindHistory),
-				Dynamic:      dynamic,
-				Continuation: continuationMessages, Definitions: requestTools,
+				Dynamic:           dynamic,
+				DynamicBeforeTurn: e.turn,
+				Continuation:      feedback, Definitions: requestTools,
 			})
 		}
 		snapshot := project()
@@ -349,11 +371,51 @@ func (e *Engine) modelStep(
 			}
 			return 0
 		}
-		window, err := e.runCompactGate(
-			ctx,
-			history, snapshot, maxOutputTokens, phase, true, gateSend,
-			economicInput(), projectHistory,
-		)
+		runGate := func(input agentcontext.MessageSnapshot) (tokenWindow, error) {
+			window, gateErr := e.runCompactGate(ctx, history, input, maxOutputTokens,
+				phase, true, gateSend, economicInput(), projectHistory)
+			if protocol.CodeOf(gateErr) != protocol.CodeResourceExhausted ||
+				window.hardLimit == 0 || window.total <= window.hardLimit || len(continuationMessages) == 0 {
+				return window, gateErr
+			}
+			originalFeedback := feedback
+			compacted, changed, compactErr := e.compactModelContinuation(continuationMessages, window, func(candidate []provider.Message) (tokenWindow, error) {
+				feedback = append(slices.Clone(sampleFeedback), candidate...)
+				candidateInput := project()
+				if selectionError != nil {
+					return tokenWindow{}, selectionError
+				}
+				return e.measureTokenWindow(candidateInput, maxOutputTokens, economicInput())
+			})
+			feedback = originalFeedback
+			if compactErr != nil {
+				return window, compactErr
+			}
+			if !changed {
+				return window, gateErr
+			}
+			continuationMessages = compacted
+			feedback = append(slices.Clone(sampleFeedback), compacted...)
+			e.advanceTokenWindow()
+			nextInput := project()
+			if selectionError != nil {
+				return window, selectionError
+			}
+			next, err := e.measureTokenWindow(nextInput, maxOutputTokens, economicInput())
+			if err != nil {
+				return window, err
+			}
+			if err := gateSend(Compacting, Event{Compaction: &CompactionReceipt{
+				Status: "pruned", Mode: "surface", Phase: phase,
+				OriginalTokens: window.total, RetainedTokens: next.total,
+				TruncationReason: "provider_continuation",
+			}}); err != nil {
+				return window, err
+			}
+			return e.runCompactGate(ctx, history, nextInput, maxOutputTokens,
+				phase, true, gateSend, economicInput(), projectHistory)
+		}
+		window, err := runGate(snapshot)
 		if err != nil {
 			return nil, nil, totalUsage, window.estimated, err
 		}
@@ -366,12 +428,7 @@ func (e *Engine) modelStep(
 				admission = finalAdmission
 				economicFinishOnly = true
 				snapshot = project()
-				window, err = e.runCompactGate(
-					ctx,
-					history, snapshot, maxOutputTokens,
-					phase, true, gateSend,
-					economicInput(), projectHistory,
-				)
+				window, err = runGate(snapshot)
 				if err != nil {
 					return nil, nil, totalUsage, window.estimated, err
 				}
@@ -441,8 +498,7 @@ func (e *Engine) modelStep(
 				if window.FullActiveTokens+maxOutputTokens > window.HardLimit ||
 					admission.Budgeted && window.FullActiveTokens > admission.AllowedInput {
 					previousDigest, previousTokens = attribution.ContextDigest, window.FullActiveTokens
-					if _, err := e.runCompactGate(ctx, history, normalized, maxOutputTokens,
-						phase, true, gateSend, economicInput(), projectHistory); err != nil {
+					if _, err := runGate(normalized); err != nil {
 						return preparedModelInput{}, err
 					}
 					continue
@@ -494,6 +550,7 @@ func (e *Engine) modelStep(
 			prepared.window.FullActiveTokens+prepared.maxOutputTokens,
 			&rateLimitWaited,
 			shrinkThroughput,
+			retries.reserveWait,
 		); err != nil {
 			return nil, nil, totalUsage, lastEstimate, err
 		}
@@ -524,6 +581,19 @@ func (e *Engine) modelStep(
 		if beginAttempt != nil {
 			if err := beginAttempt(); err != nil {
 				return nil, nil, totalUsage, lastEstimate, err
+			}
+		}
+		if assembly.ToolArgumentsRejected() {
+			if repairErr := assembly.AuthorizeToolArgumentRepair(e.options.MaxRetries); repairErr != nil {
+				return assembly.ConfirmedBlocks(), nil, totalUsage, lastEstimate,
+					exhaustedToolArgumentRepair(repairErr, len(assembly.ToolArgumentRepairs), e.options.MaxRetries)
+			}
+			// Persist the authorization before opening a transport. A restart
+			// can reuse it but cannot reset the regeneration budget.
+			if checkpoint != nil {
+				if err := checkpoint(assembly); err != nil {
+					return nil, nil, totalUsage, lastEstimate, err
+				}
 			}
 		}
 		sampleLease, holdErr := e.holdProviderSample(ctx)
@@ -768,6 +838,23 @@ func (e *Engine) modelStep(
 				attempt = -1
 				continue
 			}
+			if err != nil && assembly.ToolArgumentsRejected() && ctx.Err() == nil {
+				continuedBlocks = assembly.ConfirmedBlocks()
+				continuationMessages = nil
+				if len(continuedBlocks) != 0 {
+					continuationMessages = append(continuationMessages, provider.ProducedAssistant(
+						route, cloneBlocks(continuedBlocks), e.turn, nil,
+					))
+				}
+				continuationMessages = append(continuationMessages, promptcontext.ToolArgumentRepairFeedback(e.turn))
+				sampleLease.Release()
+				if finishTransport != nil {
+					if err := finishTransport(); err != nil {
+						return nil, nil, totalUsage, lastEstimate, err
+					}
+				}
+				continue
+			}
 			var incomplete *providerassembly.IncompleteOutputError
 			if errors.As(err, &incomplete) && ctx.Err() == nil {
 				if continued != nil {
@@ -889,17 +976,14 @@ func (e *Engine) modelStep(
 			sampleLease.Release()
 			return nil, nil, totalUsage, lastEstimate, sendErr
 		}
-		if waitErr := waitRetryDelay(
-			ctx,
-			retry.EffectiveDelay,
-		); waitErr != nil {
-			return nil, nil, totalUsage, lastEstimate, waitErr
-		}
 		if retry.Failure.Code == provider.FailureRateLimit {
 			rateLimitRetries++
 			rateLimitWaited += retry.EffectiveDelay
 		} else {
 			providerRetries++
+		}
+		if waitErr := waitRetryDelay(ctx, retry.EffectiveDelay); waitErr != nil {
+			return nil, nil, totalUsage, lastEstimate, waitErr
 		}
 	}
 }

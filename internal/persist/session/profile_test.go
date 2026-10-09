@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/fwtllh-png/QCode/internal/persist/session"
@@ -397,5 +399,108 @@ func TestRetiredSuggestProfileBecomesAutoExactlyOnce(t *testing.T) {
 				t.Fatal("unrelated metadata was changed")
 			}
 		})
+	}
+}
+
+func TestRetiredHostSettingIsRemovedWithoutChangingPermissions(t *testing.T) {
+	for _, retired := range []string{"true", "false"} {
+		for _, posture := range []string{"auto", "bypass", "never", "suggest"} {
+			t.Run(retired+"/"+posture, func(t *testing.T) {
+				store, err := sqlitestate.Open(t.Context(), filepath.Join(t.TempDir(), "state.db"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = store.Close() })
+				repository := session.NewSQLiteRepository(store)
+				if err := repository.EnsureSeed(t.Context(), "legacy", t.TempDir()); err != nil {
+					t.Fatal(err)
+				}
+				defaults := persistedProfile()
+				legacy := defaults
+				legacy.ApprovalPosture = posture
+				legacy.Revision = 5
+				legacy.PromptCacheRevision = 3
+				encoded, err := json.Marshal(legacy)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var fields map[string]json.RawMessage
+				if err := json.Unmarshal(encoded, &fields); err != nil {
+					t.Fatal(err)
+				}
+				fields["allow_host_execution"] = json.RawMessage(retired)
+				metadata, err := json.Marshal(map[string]any{"profile": fields, "transport": "web"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := store.DB().ExecContext(t.Context(), `UPDATE sessions SET metadata_json = ? WHERE id = ?`, metadata, "legacy"); err != nil {
+					t.Fatal(err)
+				}
+				loaded, err := repository.Profile(t.Context(), "legacy", defaults)
+				if err != nil || !reflect.DeepEqual(loaded, legacy) {
+					t.Fatalf("read legacy profile = %+v, %v; want %+v", loaded, err, legacy)
+				}
+				want := legacy
+				want.Revision++
+				want.ApprovalPosture = protocol.NormalizeSessionApprovalPosture(posture)
+				for range 2 {
+					updated, err := repository.EnsureProfile(t.Context(), "legacy", defaults)
+					if err != nil || !reflect.DeepEqual(updated, want) {
+						t.Fatalf("ensure profile = %+v, %v; want %+v", updated, err, want)
+					}
+				}
+				record, err := repository.Get(t.Context(), "legacy")
+				if err != nil {
+					t.Fatal(err)
+				}
+				var saved map[string]json.RawMessage
+				if err := json.Unmarshal(record.Metadata, &saved); err != nil {
+					t.Fatal(err)
+				}
+				if string(saved["transport"]) != `"web"` || strings.Contains(string(saved["profile"]), "allow_host_execution") {
+					t.Fatalf("retired field remains or unrelated metadata changed: %s", record.Metadata)
+				}
+				recovered, err := repository.Profile(t.Context(), "legacy", defaults)
+				if err != nil || !reflect.DeepEqual(recovered, want) {
+					t.Fatalf("persisted profile = %+v, %v; want %+v", recovered, err, want)
+				}
+			})
+		}
+	}
+}
+
+func TestStoredProfileStillRejectsUnknownFields(t *testing.T) {
+	store, err := sqlitestate.Open(t.Context(), filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	repository := session.NewSQLiteRepository(store)
+	if err := repository.EnsureSeed(t.Context(), "unknown", t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	defaults := persistedProfile()
+	metadata, err := json.Marshal(map[string]any{"profile": struct {
+		protocol.SessionProfile
+		Unknown bool `json:"unknown_permission"`
+	}{SessionProfile: defaults, Unknown: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.DB().ExecContext(t.Context(), `UPDATE sessions SET metadata_json = ? WHERE id = ?`, metadata, "unknown"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.Profile(t.Context(), "unknown", defaults); err == nil || !strings.Contains(err.Error(), `unknown field "unknown_permission"`) {
+		t.Fatalf("read unknown field error = %v", err)
+	}
+	if _, err := repository.EnsureProfile(t.Context(), "unknown", defaults); err == nil || !strings.Contains(err.Error(), `unknown field "unknown_permission"`) {
+		t.Fatalf("ensure unknown field error = %v", err)
+	}
+	var saved []byte
+	if err := store.DB().QueryRowContext(t.Context(), `SELECT metadata_json FROM sessions WHERE id = ?`, "unknown").Scan(&saved); err != nil {
+		t.Fatal(err)
+	}
+	if string(saved) != string(metadata) {
+		t.Fatal("rejected metadata was modified")
 	}
 }

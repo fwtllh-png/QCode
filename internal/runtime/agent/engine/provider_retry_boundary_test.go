@@ -47,7 +47,7 @@ func TestModelFailureRetryAcrossTransportBoundaries(t *testing.T) {
 				var statuses []string
 				history := []provider.Message{provider.TextMessage(provider.RoleUser, "review")}
 				blocks, _, _, _, err := engine.modelStep(
-					ctx, &history, provider.Usage{}, "sample-retry", "normal", 0, false, false,
+					ctx, &history, provider.Usage{}, "sample-retry", "normal", modelRetryState{}, false, false,
 					nil, nil, nil, nil, nil, nil, nil,
 					func(_ State, event Event) error {
 						if event.ModelExecution != nil {
@@ -161,7 +161,7 @@ func TestModelFailureCancellationPreservesTransportResult(t *testing.T) {
 			defer cancel()
 			history := []provider.Message{provider.TextMessage(provider.RoleUser, "review")}
 			blocks, calls, usage, _, err := engine.modelStep(
-				ctx, &history, provider.Usage{}, "sample-cancel", "normal", 0, false, false,
+				ctx, &history, provider.Usage{}, "sample-cancel", "normal", modelRetryState{}, false, false,
 				nil, nil, nil, nil, nil, nil, nil,
 				func(_ State, event Event) error {
 					if event.ProviderRetry != nil {

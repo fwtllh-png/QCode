@@ -9,13 +9,14 @@ import (
 type OmissionReason string
 
 const (
-	OmittedTurnLimit        OmissionReason = "recent_tail_turns"
-	OmittedTokenLimit       OmissionReason = "history_token_ceiling"
-	OmittedCapacity         OmissionReason = "context_capacity"
-	OmittedOperatorCeiling  OmissionReason = "operator_context_ceiling"
-	OmittedProviderOverflow OmissionReason = "provider_overflow"
-	OmittedEconomicBudget   OmissionReason = "economic_budget"
-	OmittedThroughput       OmissionReason = "provider_throughput"
+	OmittedTurnLimit         OmissionReason = "recent_tail_turns"
+	OmittedTokenLimit        OmissionReason = "history_token_ceiling"
+	OmittedCapacity          OmissionReason = "context_capacity"
+	OmittedOperatorCeiling   OmissionReason = "operator_context_ceiling"
+	OmittedProviderOverflow  OmissionReason = "provider_overflow"
+	OmittedEconomicBudget    OmissionReason = "economic_budget"
+	OmittedThroughput        OmissionReason = "provider_throughput"
+	OmittedSourceUnavailable OmissionReason = "source_unavailable"
 )
 
 // ProjectionSource identifies a raw message within SourceHistoryDigest. Index

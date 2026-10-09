@@ -123,6 +123,10 @@ func (Reducer) Apply(current State, command Command) (Transition, error) {
 		if err := applyProviderRetry(&transition, current, value); err != nil {
 			return Transition{}, err
 		}
+	case ProviderWaitReserved:
+		if err := applyProviderWait(&transition, current, value); err != nil {
+			return Transition{}, err
+		}
 
 	case ModelTextReceived:
 		if err := requirePhase(current, command, PhaseSampling); err != nil {
@@ -216,6 +220,11 @@ func (Reducer) Apply(current State, command Command) (Transition, error) {
 
 	case InputResultReceived:
 		if err := applyInputResult(&transition, current, value); err != nil {
+			return Transition{}, err
+		}
+
+	case ToolBatchAdmissionRejected:
+		if err := applyToolBatchAdmissionRejection(&transition, current, value); err != nil {
 			return Transition{}, err
 		}
 

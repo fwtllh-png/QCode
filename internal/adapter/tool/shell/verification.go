@@ -73,15 +73,18 @@ func (p *commandProtocol) prepareVerification(input execCommandInput) (*verify.E
 	// Bind command identity to its full declaration, including cwd and network
 	// scope; output limits and polling intervals do not change the command.
 	identity, err := json.Marshal(struct {
-		Command        string
-		CWD            string
-		TTY            bool
-		TimeoutMS      int64
-		NetworkTargets []tool.DeclaredNetworkTarget
-		AllowLoopback  bool
+		Command         string
+		CWD             string
+		TTY             bool
+		TimeoutMS       int64
+		NetworkTargets  []tool.DeclaredNetworkTarget
+		AllowLoopback   bool
+		ExecutionTarget string
+		Environment     map[string]string
 	}{
 		input.Command, input.CWD, input.TTY, input.TimeoutMS,
 		input.NetworkTargets, input.AllowLoopback,
+		input.ExecutionTarget, input.Env,
 	})
 	if err != nil {
 		return nil, err

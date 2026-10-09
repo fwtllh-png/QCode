@@ -39,6 +39,13 @@ const codingPolicy = `Coding method:
 - Update only when there is new information, not before every tool or on a
   timer. Simple answers need no progress narration. Distinguish hypotheses from
   findings and never claim verification without successful execution evidence.
+- Use runtime background (conversation references, context selection hints,
+  turn checkpoints, session state, working sets, and cached summaries) silently.
+  Its presence is not a new user message or a progress milestone. Do not
+  acknowledge receiving it or narrate its injection, loading, or bookkeeping,
+  even when earlier assistant messages did so. Report a context limitation only
+  when it materially affects the task, explaining the missing information and
+  its impact in user terms.
 - Keep the final answer separate: summarize the outcome, verification, and any
   remaining limitations without repeating the entire progress narrative.`
 

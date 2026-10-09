@@ -170,6 +170,38 @@ func (p *scriptedThroughputGovernor) ReserveThroughput(
 	p.reserved = append(p.reserved, tokens)
 }
 
+func TestAdmitThroughputReservesWaitBeforeSleeping(t *testing.T) {
+	for _, failStore := range []bool{false, true} {
+		runtime := &scriptedThroughputGovernor{decisions: []providerratelimit.Decision{
+			{Status: providerratelimit.StatusWait, Wait: time.Minute},
+		}}
+		engine := newEngine(t, runtime, nil)
+		engine.options.RateLimitMaxWait = 2 * time.Minute
+		ctx, cancel := context.WithCancel(t.Context())
+		waited := time.Second
+		storeErr := errors.New("wait store unavailable")
+		err := engine.admitProviderThroughput(ctx, engine.activeRoute(), 1, &waited, nil,
+			func(delay time.Duration, until time.Time) error {
+				if delay != time.Minute || until.IsZero() {
+					t.Fatal("wait reservation missing")
+				}
+				cancel()
+				if failStore {
+					return storeErr
+				}
+				return nil
+			})
+		cancel()
+		wantErr, wantWait := error(context.Canceled), time.Minute+time.Second
+		if failStore {
+			wantErr, wantWait = storeErr, time.Second
+		}
+		if !errors.Is(err, wantErr) || waited != wantWait || len(runtime.reserved) != 0 || len(runtime.required) != 1 {
+			t.Fatalf("waited=%v error=%v reservations=%v", waited, err, runtime.reserved)
+		}
+	}
+}
+
 func TestAdmitThroughputFoldsWhenRequiredExceedsBurst(t *testing.T) {
 	runtime := &scriptedThroughputGovernor{
 		decisions: []providerratelimit.Decision{
@@ -197,6 +229,7 @@ func TestAdmitThroughputFoldsWhenRequiredExceedsBurst(t *testing.T) {
 			folded = true
 			return 200, true, nil
 		},
+		nil,
 	)
 	if err != nil || !folded {
 		t.Fatalf("admit after fold err=%v folded=%t", err, folded)
@@ -223,6 +256,7 @@ func TestAdmitThroughputStillRefusesWhenFoldCannotShrinkBurst(t *testing.T) {
 		800,
 		nil,
 		func() (uint64, bool, error) { return 0, false, nil },
+		nil,
 	)
 	problem := protocol.ProblemOf(err)
 	if problem == nil ||
@@ -261,6 +295,7 @@ func TestAdmitThroughputDoesNotFoldWhenWaitFitsBudget(t *testing.T) {
 			folded = true
 			return 80, true, nil
 		},
+		nil,
 	)
 	if err != nil || folded {
 		t.Fatalf("short wait folded=%t err=%v", folded, err)
@@ -296,6 +331,7 @@ func TestAdmitThroughputFoldsWhenWaitExceedsBudget(t *testing.T) {
 			folded = true
 			return 80, true, nil
 		},
+		nil,
 	)
 	if err != nil || !folded {
 		t.Fatalf("wait-budget fold err=%v folded=%t", err, folded)

@@ -10,6 +10,7 @@ const (
 	SampleToolFailureRepair  = "tool_failure_repair"
 	SampleConvergence        = "convergence_finalization"
 	SampleProviderRetry      = "provider_retry"
+	SampleToolArgumentRepair = "tool_argument_repair"
 )
 
 func SampleReason(initial string, attempt int, continuation bool) string {

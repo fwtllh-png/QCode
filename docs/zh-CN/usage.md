@@ -133,6 +133,16 @@ Turn 用模型生成的标题替换；已有自动或手动标题保持不变。
 
 对话底部的运行状态栏显示思考、工具准备、工具执行与继续处理等当前阶段。正常的工具
 衔接不再作为聊天卡片显示；限流、重试、输出不完整和真实错误仍保留独立提示。
+模型进度只说明实际发现、执行结果和下一步。历史引用、检查点与摘要供模型静默使用，
+不需要回复“收到”或播报加载过程；信息缺失确实影响任务时才说明其影响。
+
+模型偶发生成重复字段或无效工具参数时，Runtime 会拒绝该批调用并自动请求重新生成，
+保留本轮已经完成的工作。只有纠错次数达到 `execution.provider_retry_limit` 才结束为
+可恢复的受阻状态，并给出继续指引；Continue 保留已有工作，Retry 可能回滚草稿，
+二者应按恢复面板的说明选择。权限不足、额度不足等情况仍需先改变对应条件。
+过大的部分输出会保留原文并缩小下一次请求中的引用；工具批次过大时会先反馈给模型拆分。
+未绑定的历史候选被撤回或不属于本会话时，会从本次背景资料中移除。当前明确选中的必要
+来源不可用、必要上下文确实装不下或存储失败时，仍会给出受阻原因。
 
 输入框旁的上下文圆环打开运行统计；`Context selection details` 展开本次选择诊断。
 普通视图仅说明当前任务信息已保留或正在恢复必要来源。详情显示输入/输出预留、原文额度、
@@ -170,17 +180,19 @@ Git Workspace 会在侧栏显示当前本地分支，并可从本地分支列表
 
 Agent 不通过 `exec_command` 写 `.git`。提交与同步工作流使用结构化的 `git_add`、
 `git_commit`、`git_switch`、`git_fetch`、`git_pull` 和 `git_push`；参数由 VCS
-Broker 白名单校验，其中 pull 只允许 fast-forward，push 不允许 force refspec，并且
-远端写入要求单次审批。`git_status`、`git_diff`、`git_log`、`git_remote`、
+Broker 白名单校验，其中 pull 只允许 fast-forward，push 不允许 force refspec。
+Auto 下远端写入要求单次审批，Full Access 下直接执行；用户或仓库显式要求审批时仍需确认。
+`git_status`、`git_diff`、`git_log`、`git_remote`、
 `git_branch`、`git_show` 和 `git_blame` 保持只读。
 分支协作使用 `git_merge`、`git_rebase`、`git_cherry_pick`、`git_restore`、
 `git_stash`、`git_tag` 和 `git_amend`。这些工具只接受固定参数结构；merge、rebase、
 cherry-pick、restore、stash 和 amend 可能改变历史、产生冲突或丢弃未提交内容，因此
-要求结构化 Plan 和单次审批。冲突不会被自动掩盖，Git 保留冲突状态供后续检查和处理。
+按计划策略要求结构化 Plan，Auto 下还需单次审批，Full Access 预授权该工具审批。
+冲突不会被自动掩盖，Git 保留冲突状态供后续检查和处理。
 冲突处理使用 `git_conflict`，仅允许 merge/rebase/cherry-pick 的 continue 或 abort；
 不开放 `reset --hard`，continue 也不会启动交互式编辑器。
 本地 `git_add`、`git_commit` 和 `git_switch` 属于有界本地变更，不会单独触发自适应
-Plan；`git_pull` 和 `git_push` 仍按网络或外部变更要求 Plan。
+Plan；`git_pull` 按网络变更要求 Plan，`git_push` 已声明计划豁免，无需为推送另交 Plan。
 
 Tool Catalog 的 `discovery_terms` 保存不授予权限的多语言检索词。首轮投影先保留核心与
 当前已物化工具，再按相关度排序其他工具，并在模型声明的 Tool Definition 与 Schema
@@ -239,7 +251,8 @@ Authorization、Cookie、API Key 等会被持久化进 Tool Call 的敏感 Heade
 
 安装并授权 GitHub CLI 后，`github_pr_list`、`github_pr_view`、
 `github_ci_status` 和 `github_pr_create` 提供固定参数的 PR/CI 操作。创建 PR 属于
-不可逆外部变更，要求 Plan 和单次审批。GitLab、内部代码托管平台和企业认证流程继续
+不可逆外部变更，按计划策略要求 Plan；Auto 下要求单次审批，Full Access 预授权该工具审批。
+GitLab、内部代码托管平台和企业认证流程继续
 通过 MCP 或 Skill 提供，不把平台凭据写入通用 Tool 参数。
 
 Composer 内、模型选择器左侧统一使用上下文圆环作为统计入口，平时只显示圆环。
@@ -291,12 +304,23 @@ Policy。Permissions 提供三档：
 | --- | --- |
 | `Read only`（`never`） | 允许检查，禁止修改与其他写副作用 |
 | `Auto`（`auto`，默认） | 普通操作自动执行，需要审批的操作仍请求用户确认 |
-| `Full Access`（`bypass`） | 普通命令可读写宿主文件并直接联网，无需常规审批；保留凭据、控制目录和显式策略保护 |
+| `Full Access`（`bypass`） | 普通命令可读写宿主文件并直接联网，Git 推送和明确请求的宿主命令无需常规审批；显式审批或拒绝规则继续生效 |
+
+需要宿主访问的命令或启动自身沙箱的测试（例如 QCode 的 Runtime fixture），由模型
+明确使用 `execution_target=host` 请求执行，无需额外开关。Auto 显示当前命令的审批卡，
+用户可以单次批准、拒绝或取消；Full Access 直接放行；Read only 拒绝宿主执行。
+批准后命令获得当前系统账户的文件和网络权限，QCode 不再阻挡凭据路径、控制目录和
+Runtime 状态路径。普通命令继续默认使用沙箱，已开始的失败命令不会自动改用 host
+重跑。执行卡片显示 `Host · no sandbox`。子 Agent 仍受隔离边界约束，不能宿主执行。
+如果启动 QCode 的外层环境也有沙箱，需在外层之外运行 QCode 或测试。
 
 Full Access 下普通测试、构建与安装依赖无需枚举缓存目录或网络目标；例如执行 Go 和
-Vitest 时可以写入正常缓存及 `.vite-temp`。命令仍通过 Guard、执行审计与 Seatbelt。
-显式提供 `write_paths`、`network_targets`、`allow_loopback` 或 `settle=discard` 时
-按声明范围执行；`shell_read` 保持只读。Git 元数据变更继续使用专用 Git 工具。
+Vitest 时可以写入正常缓存及 `.vite-temp`，Playwright 可以启动 Chromium、本地服务并
+写入测试结果。默认命令仍通过 Guard、执行审计与 Seatbelt。`write_paths` 只收窄文件写入；
+`network_targets` 或 `allow_loopback` 只收窄网络，不改变文件和系统权限。Full Access
+本已允许本地连接，无需额外传入 `allow_loopback`。`settle=discard` 使用隔离范围沙箱；
+`shell_read` 保持只读。Git 元数据变更继续使用专用 Git 工具。选择 Full Access 即预授权
+工具声明的单次审批；显式 ask、deny、hold、Surface 限制和强制编辑审阅仍然生效。
 输入区持续显示当前权限。切换模式影响后续命令，已启动进程保留原权限，停止并重新启动
 后才应用新模式。任意宿主写入不保证 Journal 回滚或完整 Turn Diff；需要这些能力时
 使用文件工具或显式写入范围。验证会检查覆盖文件是否变化，旧结果不能证明修改后的代码。
@@ -437,6 +461,14 @@ terminal、Known/Open、工具结论），不会递归拼接旧输入或把源�
 Goal。源 Turn 已读路径在开局写入 KnownReads；覆盖范围内的重读回放原结果，
 无法回放时放行，git 巡视不再被拒。
 恢复请求提交后按钮保持 Pending，直到 Runtime 发布新 Turn 或明确拒绝请求。
+
+失败卡片会区分权限待调整、Provider 配额或限流、模型请求重试耗尽、参数纠错耗尽、
+连接配置问题、验证不可用、验证未通过、任务未完成和运行时恢复要求。
+`Next step` 展示 Runtime 推荐动作或模型声明的后续步骤；已有 Provider 事件还会显示
+已记录的等待安排和重试，未记录的尝试不会补猜。Session 状态仍可显示 `Blocked`。
+看到存储或协议故障时，先按卡片指引恢复条件；Continue 入口不表示故障一定能自动修好。
+重启 QCode 会保留同一 Sample 已消费的普通重试次数、限流次数和等待预算，
+继续剩余冷却，不会重复执行已完成工具。
 
 ### 撤回最近一个 Turn
 

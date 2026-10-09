@@ -22,6 +22,19 @@ gofmt -w path/to/file.go
 go test ./path/to/package -count=1
 ```
 
+辅助上下文编排的聚焦回归：
+
+```bash
+go test ./internal/runtime/agent/context ./internal/runtime/agent/contextview ./internal/runtime/agent/prompt
+go test ./internal/runtime/agent/engine -run 'Test(RuntimeBackground|.*Prefix|ContextSelection|BudgetConvergence)' -count=1
+go test ./internal/runtime/agent/engine ./internal/runtime/agent/turnkernel ./internal/runtime/agent/contextview -run 'Test(ContinuationPressure|ContextReservation|ToolAdmission|ConversationAvailability|UnavailableSelection|NarrativeSelection)' -count=1
+```
+
+这些测试验证实际模型请求中的背景资料位置、连续工具调用和跨轮前缀、来源切换、
+会话恢复、遗漏指引，以及规范化与计量顺序。Fixture 测试不代表真实模型一定遵循
+措辞要求；人工验收时应观察连续工具调用是否只报告实际进展，并检查模型仍能引用
+早期问题的完整定义。不要通过隐藏聊天文本来替代输入编排和指令修复。
+
 Web 变更：
 
 ```bash
@@ -54,6 +67,42 @@ Web 主题 Token 集中在 `web/src/ui/theme/tokens.css`，统一控件外观在
 对运行中的开发环境进行验证时，可先用 `make build BINARY=.tmp/qcode-material3`
 构建独立二进制，再通过 `QCODE_E2E_BINARY` 指定它运行 Playwright；
 测试使用临时数据目录和随机端口，不替换当前 Web Owner。
+
+Full Access 的平台验收需要实际安装 Chromium，并经 Guard、Authority 和 Seatbelt
+执行；仅在普通终端直接跑 Playwright 不能验证权限链路：
+
+```bash
+npm --prefix web exec -- playwright install chromium
+QCODE_TEST_PLAYWRIGHT_MODULE="$PWD/web/node_modules/playwright" \
+  go test ./internal/adapter/tool/shell -run TestFullAccess -count=1 -v
+```
+
+该测试覆盖默认/loopback 的浏览器启动、本地服务、截图写入、受管网络范围、PTY、IOKit、
+嵌套同一 Profile 和保护规则。未指定模块路径时仅跳过浏览器验收，其他平台回归照常运行。
+同一 Profile 的嵌套回归只验证 Profile 重用，不代表可以在其中启动全新 Runtime。
+创建独立沙箱的测试从宿主终端运行，或在 QCode 中明确使用
+`exec_command.execution_target=host`：Auto 请求单次审批，Full Access 直接放行。
+默认执行目标仍使用 Seatbelt，Read only 和子 Agent 不能宿主执行。
+Playwright 全局前置检查运行真实攻击探针；环境不可用时整体失败并说明原因，不将
+环境失败伪装为测试通过，也不会自动切换宿主执行或重复已开始的测试。
+
+```bash
+go run ./scripts/sandbox-preflight.go
+go test -tags=capability ./internal/adapter/tool/shell -run '^TestHostExecutionCanStartFreshSandbox$' -count=1 -v
+```
+
+通过真实宿主授权链路运行 Web fixture 全套用例：
+
+```bash
+make build BINARY=.tmp/qcode-host-execution
+QCODE_HOST_E2E_BINARY="$PWD/.tmp/qcode-host-execution" \
+  go test -tags=capability ./internal/adapter/tool/shell -run '^TestHostExecutionBrowserFixtures$' -count=1 -timeout 15m -v
+```
+
+该回归由真实 Guard 分别启动 sandbox/host 子进程，每个子进程重新创建 Backend 并
+运行攻击探针，再验证只读沙箱拒绝写入。宿主路径必须成功，普通嵌套路径失败时必须
+保留 `sandbox_unavailable` 且不自动重试。Runtime 已被外层沙箱限制时，宿主路径仍
+继承外层权限，需调整启动环境。
 
 文档和交付检查：
 
@@ -152,3 +201,14 @@ make test-release
 
 发布产物是独立 QCode Binary，其中包含 `web/dist`。Web 不单独发布，也不在运行中
 替换当前进程。发布前必须通过 Web Parity、Cross-build、Secret Leak 和文档治理门禁。
+
+### 重试恢复分类与受阻提示回归
+
+```bash
+go test ./internal/runtime/agent/engine ./internal/runtime/agent/turnkernel -run 'Test(ProviderRetry|ProviderWait|ProviderBudget|ProviderFailure|AdmitThroughput|VerifyGate)' -count=1
+npm --prefix web test -- src/projection/conversation.test.ts src/projection/failurePresentation.test.ts src/ui/App.test.tsx
+```
+
+恢复预算测试使用独立内存事实存储和故障注入，覆盖重启前后混合 429/5xx、等待预留、
+取消与持久化失败。UI 测试同时验证具体原因和下一步，不只检查标题变化；
+历史缺少结构化原因时保留通用恢复提示，不根据报错字符串猜测。

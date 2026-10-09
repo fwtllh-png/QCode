@@ -249,7 +249,7 @@ describe("ConversationProjection", () => {
 
     expect(snapshot.nodes.get(snapshot.order[0])).toMatchObject({
       kind: "status",
-      title: "Blocked",
+      title: "Task incomplete",
       text: "The environment is missing a required dependency.",
       failed: false,
       blocked: true,
@@ -278,7 +278,7 @@ describe("ConversationProjection", () => {
       ]);
       const status = snapshot.nodes.get(snapshot.order.at(-1)!);
       expect(status).toMatchObject({
-        title: permissionRequired ? "Permission change required" : "Blocked",
+        title: permissionRequired ? "Permission change required" : "Task incomplete",
         recovery: {action: permissionRequired ? "change_approval_posture" : ""}
       });
     }
@@ -299,7 +299,7 @@ describe("ConversationProjection", () => {
 
     expect(snapshot.nodes.get(snapshot.order[0])).toMatchObject({
       kind: "status",
-      title: "Blocked",
+      title: "Recovery required",
       failed: false,
       blocked: true,
       recoverable: true
@@ -322,7 +322,7 @@ describe("ConversationProjection", () => {
 
       expect(snapshot.nodes.get(snapshot.order[0])).toMatchObject({
         kind: "status",
-        title: "Blocked",
+        title: "Recovery required",
         blocked: true,
         recoverable: true,
         recovery: {

@@ -70,14 +70,15 @@ Guard 解析并校验参数、路径和可信 Binding 后，通过 `tool.AssessR
 | 7 | `read` | Read 能力 | workspace.read / low / reversible |
 | 8 | `plan_only` | Write 能力且唯一副作用是会话计划 | session.mutation / low / reversible |
 | 9 | `agent` | Agent 资源 | agent.lifecycle / high / bounded |
-| 10 | `process_full_access` | Guard 从 Full Access 会话与可信命令 Binding 绑定的进程权限 | process.mutating / high / irreversible |
-| 11 | `loopback_only` | Strong Sandbox 进程，仅 loopback、无工作区写 | network.read / medium / bounded |
-| 12 | `network_read` | 有网络能力或目标，Access=Read、无工作区写；进程还须出网仅安全读 | network.read / medium / bounded |
-| 13 | `network_mutating` | 其余网络能力或目标 | network.mutating / high / irreversible |
-| 14 | `process_read_only` | Strong Sandbox 进程且无工作区写 | process.read_only / low / reversible |
-| 15 | `process_mutating` | 其余进程能力或资源 | process.mutating / high / bounded |
-| 16 | `journaled_edit` | Write 能力、工作区写且有 Journal | workspace.edit / low / reversible |
-| 17 | `external` | 其余已声明操作 | external.mutation / high / irreversible |
+| 10 | `process_host` | 可信内置命令明确请求宿主执行，由单次审批或 Full Access 预授权 | process.mutating / high / irreversible |
+| 11 | `process_full_access` | Guard 从 Full Access 会话与可信命令 Binding 绑定的进程权限 | process.mutating / high / irreversible |
+| 12 | `loopback_only` | Strong Sandbox 进程，仅 loopback、无工作区写 | network.read / medium / bounded |
+| 13 | `network_read` | 有网络能力或目标，Access=Read、无工作区写；进程还须出网仅安全读 | network.read / medium / bounded |
+| 14 | `network_mutating` | 其余网络能力或目标 | network.mutating / high / irreversible |
+| 15 | `process_read_only` | Strong Sandbox 进程且无工作区写 | process.read_only / low / reversible |
+| 16 | `process_mutating` | 其余进程能力或资源 | process.mutating / high / bounded |
+| 17 | `journaled_edit` | Write 能力、工作区写且有 Journal | workspace.edit / low / reversible |
+| 18 | `external` | 其余已声明操作 | external.mutation / high / irreversible |
 
 loopback 是独立资源类，作用域为本机任意端口，不是端口为零的网络端点。
 Profile 用 Loopback 标志，Operation 的 Network Intent 用 `loopback_any` 标志表达；
@@ -99,7 +100,7 @@ Profile 用 Loopback 标志，Operation 的 Network Intent 用 `loopback_any` �
 | L4 | `mode` | 工作模式和计划门；计划 ask 直接进入绑定审批 |
 | L5 | `posture` | suggest、auto、bypass、never 与评估效果 |
 | L6 | `surface` | Sandbox、Rules、Skills、MCP 的进一步收紧 |
-| L7 | `binding` | 一次审批及强制新编辑计划；运行时出网目标阶段跳过绑定审批 |
+| L7 | `binding` | Full Access 预授权工具声明的一次审批；显式 ask 保留来源与单次作用域，强制新编辑计划仍生效；运行时出网目标阶段跳过绑定审批 |
 | L8 | `auto_review` | 满足下表全部条件时，允许可自动审查的有界操作 |
 
 | 条件 | 含义 |
@@ -116,6 +117,8 @@ Profile 用 Loopback 标志，Operation 的 Network Intent 用 `loopback_any` �
 `fresh` 与 `fresh_once` 均不读取旧审批缓存；新的同意仅完成本次调用，不写缓存。
 二者仅允许 once scope 并禁止参数替换。普通可复用审批替换参数后，先重新解析、评估
 并检查策略。Journal 写还必须重建 Edit Plan 校验内容漂移。
+工具绑定的单次审批使用 `tool_approval_required`，原因中包含工具名；已有的显式
+策略 ask 保留原来的 Code 与 Layer，不被工具绑定改写成通用进程审批。
 
 路径规则支持段内 `*`、`?`、`[...]`、独占一段的 `**` 和反斜杠转义。
 未转义花括号、非法字符类、混合 `**` 拒绝加载；工作区字面花括号须正确转义。
@@ -147,20 +150,64 @@ Darwin `/bin/sh` here-document 的平台例外由
 
 - `Read only`（`never`）：检查仓库，不允许修改。
 - `Auto`（`auto`）：日常开发默认选择；普通操作自动执行，需要时请求审批。
-- `Full Access`（`bypass`）：普通命令可读写宿主文件并直接联网，跳过常规 Posture 和验证计划审批。
+- `Full Access`（`bypass`）：普通命令可读写宿主文件并直接联网，预授权工具声明的单次审批，包括 Git 推送；跳过常规 Posture 和验证计划审批。
 
 Full Access 由可信 Binding 声明能力，Guard 在每次授权时从会话权限绑定事实，不能由模型
 参数开启。Authority 将该事实编译进不可变 Profile、租约与执行回执的 `full_access`，
-同一 Seatbelt 后端应用文件读写和直接网络授权。普通测试与构建无需枚举输出目录、缓存
+同一 Seatbelt 后端应用逐维授权。Full Access 使用允许普通 OS 操作的独立基线，再叠加
+明确保护与资源限制；支持浏览器使用的 Mach/IOKit、PTY 和本地测试服务。普通测试与构建无需枚举输出目录、缓存
 或网络目标；原有环境契约仍负责 HOME、临时目录、PATH 和选定的环境变量。
 
-显式 `write_paths`、`network_targets`、`allow_loopback` 或 `settle=discard` 会收窄为
-原有的范围沙箱，`shell_read` 始终只读。Full Access 保留 Guard、Constitution、Managed
-Grant、仓库和用户 deny/hold/ask、强制一次审批、执行租约、审计以及 Sandbox。
+显式 `write_paths` 只将文件写入收窄到声明路径；读取与系统能力保持 Full Access。
+`network_targets` 只将网络收窄到受管代理目标，`allow_loopback` 只将网络收窄到本地地址；
+两者合用时保留代理目标和本地连接。网络参数不会取消文件写入权限，写入参数也不会取消
+直接联网权限。`settle=discard` 使用原有隔离范围沙箱，`shell_read` 始终只读。
+Full Access 保留 Guard、Constitution、Managed
+Grant、仓库和用户 deny/hold/ask、Surface 收紧、显式强制编辑审阅、执行租约、审计以及 Sandbox。
+工具的 `ApprovalPolicyOnce` 不再单独触发审批；如果上述显式策略仍要求 ask，继续
+使用本次有效、不可替换参数的审批，不能复用历史授权。Auto 下工具的单次审批保持不变。
 由于无范围命令可能访问任何资源，带资源条件的限制规则会保守匹配；需要限制到其他范围
 时可显式声明资源；范围受限的 Managed Allow 也不能授予无范围命令权限。
 凭据文件与目录、工作区各层控制目录和可信 Host 指定的 Runtime 状态根仍
 受保护；状态根内仅保留已有环境明确选定的目录授权，子 Agent 继承这些保护。
+Keychain 的保护同时覆盖文件与 Mach 凭据服务（SecurityServer、securityd、secd 和
+systemkeychain），普通应用的其他 Mach/IOKit 访问保持可用。
+
+回执的 `full_access` 表示采用 Full Access 基线，具体限制以 `effective_controls`、
+`write_paths` 和 `network_mode` 为准。默认沙箱的 Syscall/IPC 回执为
+`platform_filtered`，不声称没有过滤或具备独立命名空间；Full Access 的 Syscall 为
+`unrestricted`，IPC 因凭据服务保护仍为 `platform_filtered`。这些值描述 QCode 的
+控制，宿主系统权限依然有效。Prepare 后必须与冻结的 Full Access 各维授权一致。
+
+macOS 的沙箱重入不能按权限包含关系推断：同一 Profile 重用成功不代表全新 Runtime
+能应用另一个 Profile；实测更严格的子 Profile 也可能被内核拒绝。Full Access 下默认
+命令仍保留 Seatbelt。需要创建子沙箱的测试可以明确请求下述宿主执行路径。
+
+`exec_command.execution_target` 默认 `sandbox`；模型明确传入 `host` 时，复用现有
+Permissions 和工具审批流程，不增加独立会话开关。Auto 要求当前命令的单次用户审批，
+不接受缓存审批、永久放行或参数替换；Full Access 预授权该请求；Read only 拒绝。
+审批卡展示命令及当前系统账户的文件、网络访问范围，明确不使用 QCode 沙箱。
+宿主命令使用这一次审批，不再重复要求计划审批；Constitution、Managed Grant、
+仓库/用户 deny、hold、ask、Surface 收紧、执行租约与审计继续生效。显式 ask 在
+Full Access 下仍要求单次审批。子 Agent 保留隔离边界，不能请求宿主执行。
+
+已经保存旧 `allow_host_execution` 字段的会话会在加载时清除该字段，保留原有
+Permissions；旧字段的 true/false 值都不产生授权。清理通过会话版本校验写回，
+不会重复增加版本；该字段不再属于公开协议或可编辑设置。
+
+宿主执行使用 Runtime 的 Process Broker 和现有 SessionManager。租约绑定命令、固定环境、
+cwd、所属线程和超时等具体启动参数；启动租约只结算一次，后续输入、轮询、关闭与回收
+沿用进程会话的归属检查。回执为 `execution_target=host`、`enforcement=none`，文件与
+网络无 QCode 隔离，IPC、系统调用及跨进程访问也不声称受限；保留进程组回收和 cwd
+描述符身份校验。不得声称保护凭据、Runtime 状态或控制目录。只传递既有环境策略
+选出的环境变量，不向命令注入服务凭据。
+
+宿主执行拒绝 `write_paths`/展开的 `write_globs`、`network_targets`、`allow_loopback=true`
+和 `settle=discard`，避免承诺不可执行的范围限制或回滚。任意宿主写入不可逆，无法保证
+完整 Turn Diff；验证证据继续校验覆盖文件指纹。审批等待期间权限变更会重新校验，
+切换 Read only 后尚未启动的宿主命令不能继续执行。
+不会在沙箱失败后自动改为宿主重跑。如果 Runtime 自己已处于外层沙箱中，`host` 仍继承
+该外层限制，必须从外层之外启动 Runtime 或测试；本路径不提供沙箱逃逸。
 
 Full Access 的任意宿主副作用按高风险、不可逆进程记录，不生成全宿主 before-image，
 也不保证其所有写入出现在文件工具的 Turn Diff 中。需要逐文件变更归因、Journal 回滚或
@@ -292,7 +339,7 @@ Web Markdown 不执行原始 HTML 或危险 URL。同源图片可以直接显示
   Broker 只复制已准备策略中的环境值，并将其纳入进程租约摘要；不重新捕获宿主
   环境，不允许命令声明覆盖 HOME 或临时目录。`native` 使用所选用户 Git 配置，
   `isolated` 和私有内容基线禁用全局及系统 Git 配置；环境值不增加文件或网络授权。
-  远端写入使用不可逆高风险 Effect，并要求单次审批。
+  远端写入使用不可逆高风险 Effect；Auto 下要求单次审批，Full Access 预授权该工具审批。
 - 使用 `apply --dry-run` 检查生成计划。
 - 重要仓库必须纳入版本控制并维护备份。
 
@@ -381,7 +428,8 @@ Web Markdown 不执行原始 HTML 或危险 URL。同源图片可以直接显示
   `debug_run` 只接受经过校验的 Symbol 或 `file:line` 断点，不接受任意 LLDB Command；
   `dependency_resolve` 禁用安装脚本并保持 Workspace Read-only。
 - `web_run` 使用独立临时 Chromium Profile，不复用用户浏览器 Profile。浏览器交互和
-  通用 `http_request` 都按不可逆 External Mutation 要求单次审批；Loopback 导航必须
+  通用 `http_request` 都按不可逆 External Mutation 声明单次审批，Auto 下逐次确认，
+  Full Access 预授权该工具审批；Loopback 导航必须
   显式声明。`http_request` 拒绝 Authorization、Cookie 和 API Key Header，并从返回
   Metadata 中删除 Set-Cookie 与认证挑战 Header。
 - `web_run` 的 Chromium 所有流量都经过 Runtime 自有的 loopback 代理和浏览器专用
@@ -414,9 +462,10 @@ Web Markdown 不执行原始 HTML 或危险 URL。同源图片可以直接显示
   网络拒绝不会根据原始 URL 猜测目标并追加审批。
 - Git merge、rebase、cherry-pick、restore、stash、tag 和 amend 均通过 VCS Broker
   的固定 argv 白名单执行；不提供任意 Git 参数、force push 或隐式远端。可能改写历史、
-  产生冲突或丢弃内容的操作要求单次审批。
-- 不提供绕出 OS Sandbox 的模型侧宿主进程冒烟入口。开发服务和 Fixture 使用
-  `exec_command` 及显式 `allow_loopback`；观察到服务存活不能当作测试通过。
+  产生冲突或丢弃内容的操作在 Auto 下要求单次审批，Full Access 预授权该工具审批。
+- 开发服务默认通过 `exec_command` 在沙箱内运行，按需声明 `allow_loopback`。
+  必须创建独立 OS 沙箱的 Fixture 明确请求 `execution_target=host`，经单次审批或 Full Access 预授权，
+  仍走 Guard、Authority 和 Process Broker；观察到服务存活不能当作测试通过。
 - Command Policy 使用 Bash AST 与 Static argv Segment。Managed Authority 定义
   Ceiling，Repository 只能收紧，User Approval 不能覆盖高权 Deny/Ask。Policy Reload
   原子发布新 Revision，并绑定到 Profile Provenance。

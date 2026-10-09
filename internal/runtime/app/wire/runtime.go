@@ -268,6 +268,11 @@ func childEngineOptions(
 	options.InputHost = nil
 	options.ReadTracker = nil
 	options.Security = cloneThreadSecurity(seed.Security)
+	// Children keep their scoped workspace contract even when the parent
+	// preauthorizes host commands through Full Access.
+	if options.Security != nil {
+		options.Security.DisableHostExecution = true
+	}
 	if !spec.Serialized {
 		options.Journal = nil
 		options.WorkspaceTurnGate = nil

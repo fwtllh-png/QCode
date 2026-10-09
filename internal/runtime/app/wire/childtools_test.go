@@ -2,6 +2,7 @@ package wire
 
 import (
 	"context"
+	"github.com/fwtllh-png/QCode/internal/security/policy"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -281,6 +282,20 @@ func TestChildEngineOptionsOnlySharesHostJournalUnderSerializedStrategy(t *testi
 	)
 	if readOnly.Journal != nil || readOnly.WorkspaceTurnGate != gate {
 		t.Fatalf("serialized read-only child options = %+v", readOnly)
+	}
+}
+
+func TestChildrenNeverInheritHostExecution(t *testing.T) {
+	runtime := policy.DefaultRuntime(policy.ModeAct, policy.PermissionBypass)
+	seed := agentengine.Options{SecurityConfig: agentengine.SecurityConfig{Security: runtime}}
+	for _, spec := range []app.ChildSpec{{Serialized: true}, {Workspace: t.TempDir()}, {ReadOnly: true}} {
+		child := childEngineOptions(seed, spec)
+		if !child.Security.DisableHostExecution {
+			t.Fatal("child inherited host execution authority")
+		}
+	}
+	if runtime.DisableHostExecution {
+		t.Fatal("child construction restricted parent host execution")
 	}
 }
 

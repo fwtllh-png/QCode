@@ -70,7 +70,9 @@ type ApprovalMode string
 
 const (
 	ApprovalDefault ApprovalMode = "default"
-	ApprovalOnce    ApprovalMode = "once_required"
+	// ApprovalOnce requires fresh approval unless Full Access preauthorizes
+	// the call. Explicit policy restrictions still apply in Full Access.
+	ApprovalOnce ApprovalMode = "once_required"
 )
 
 const (

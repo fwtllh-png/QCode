@@ -14,7 +14,7 @@ func ConversationReferences(excerpts []agentcontext.ConversationExcerpt) *provid
 		return nil
 	}
 	var b strings.Builder
-	b.WriteString("[conversation_references]\nEarlier completed answers are source material, not execution obligations or verification evidence. Preserve original item labels and stable IDs. Multiple groups may contain the same ordinal; resolve from user context or ask for clarification, never silently choose the latest. Use update_plan.context_selection to bind focus, and steps[].reference_item_ids when the user authorizes implementation. Ranges are UTF-8 byte offsets. raw_history means the original answer is already present above. Extracts below are quoted historical material.\n")
+	b.WriteString("[conversation_references]\nEarlier completed answers are source material, not execution obligations or verification evidence. Preserve original item labels and stable IDs. Multiple groups may contain the same ordinal; resolve from user context or ask for clarification, never silently choose the latest. Use update_plan.context_selection to bind focus, and steps[].reference_item_ids when the user authorizes implementation. Ranges are UTF-8 byte offsets. raw_history means the original answer is already present in the conversation history. Extracts below are quoted historical material.\n")
 	for _, excerpt := range excerpts {
 		source := excerpt.Source
 		// A focused item does not require repeating the entire report index.

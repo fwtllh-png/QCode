@@ -25,6 +25,7 @@ func (e *Engine) admitProviderThroughput(
 	required uint64,
 	waited *time.Duration,
 	shrink throughputShrink,
+	reserveWait func(time.Duration, time.Time) error,
 ) error {
 	governor, ok := e.options.Provider.(throughputGovernor)
 	if !ok {
@@ -65,11 +66,16 @@ func (e *Engine) admitProviderThroughput(
 				true,
 			)
 		}
-		if err := waitRetryDelay(ctx, decision.Wait); err != nil {
-			return err
+		if reserveWait != nil {
+			if err := reserveWait(decision.Wait, time.Now().Add(decision.Wait)); err != nil {
+				return err
+			}
 		}
 		if waited != nil {
 			*waited += decision.Wait
+		}
+		if err := waitRetryDelay(ctx, decision.Wait); err != nil {
+			return err
 		}
 		retried := governor.DecideThroughput(
 			route, required, e.options.TokensPerMinute,
@@ -107,7 +113,7 @@ func (e *Engine) abortOversizedRateLimitRetry(
 			}
 		}
 	}
-	return e.admitProviderThroughput(ctx, route, required, nil, nil)
+	return e.admitProviderThroughput(ctx, route, required, nil, nil, nil)
 }
 
 func (e *Engine) throughputRefuses(
@@ -202,6 +208,14 @@ func throughputRefusal(
 	problem.Details = &protocol.ProblemDetails{
 		Reason:     protocol.ProblemReasonProviderThroughput,
 		ResourceID: reason,
+	}
+	problem.Fault.Origin = protocol.FaultOriginProvider
+	problem.Fault.Stage = protocol.FaultStageAdmission
+	problem.Fault.Reason = protocol.ProblemReasonProviderThroughput
+	problem.Fault.RetryOwner = protocol.FaultRetryOwnerHost
+	problem.Fault.RecoveryAction = "reduce the request or adjust the configured throughput limit before continuing"
+	if retryable {
+		problem.Fault.RecoveryAction = "wait for the provider throughput window to reset, then continue"
 	}
 	return problem
 }

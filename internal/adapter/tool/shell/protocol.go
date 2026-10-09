@@ -36,22 +36,23 @@ const (
 )
 
 type execCommandInput struct {
-	Command        string                       `json:"command"`
-	CWD            string                       `json:"cwd"`
-	TTY            bool                         `json:"tty"`
-	YieldTimeMS    int64                        `json:"yield_time_ms"`
-	TimeoutMS      int64                        `json:"timeout_ms"`
-	OutputTokens   int                          `json:"output_tokens"`
-	Rows           uint16                       `json:"rows"`
-	Cols           uint16                       `json:"cols"`
-	Description    string                       `json:"description"`
-	WritePaths     []string                     `json:"write_paths"`
-	NetworkTargets []tool.DeclaredNetworkTarget `json:"network_targets"`
-	AllowLoopback  bool                         `json:"allow_loopback"`
-	Verification   string                       `json:"verification"`
-	CoveredPaths   []string                     `json:"covered_paths"`
-	Settle         string                       `json:"settle"`
-	Env            map[string]string            `json:"env"`
+	ExecutionTarget string                       `json:"execution_target"`
+	Command         string                       `json:"command"`
+	CWD             string                       `json:"cwd"`
+	TTY             bool                         `json:"tty"`
+	YieldTimeMS     int64                        `json:"yield_time_ms"`
+	TimeoutMS       int64                        `json:"timeout_ms"`
+	OutputTokens    int                          `json:"output_tokens"`
+	Rows            uint16                       `json:"rows"`
+	Cols            uint16                       `json:"cols"`
+	Description     string                       `json:"description"`
+	WritePaths      []string                     `json:"write_paths"`
+	NetworkTargets  []tool.DeclaredNetworkTarget `json:"network_targets"`
+	AllowLoopback   bool                         `json:"allow_loopback"`
+	Verification    string                       `json:"verification"`
+	CoveredPaths    []string                     `json:"covered_paths"`
+	Settle          string                       `json:"settle"`
+	Env             map[string]string            `json:"env"`
 }
 
 type writeStdinInput struct {
@@ -88,6 +89,7 @@ func (e *protocolExecutor) TrustedBinding() tool.TrustedBinding {
 	binding.ValidateMissingWriteParent = e.validateMissingWriteParent
 	binding.IsolatesWriteTrees = e.expand
 	binding.SupportsFullAccess = e.expand
+	binding.SupportsHostExecution = e.expand
 	binding.Required.ProcessTree = securitymodel.ProcessTreeGroupKill
 	binding.ProducesVerificationEvidence = true
 	binding.VerificationField = e.verificationField
@@ -117,6 +119,9 @@ func registerProcessProtocol(
 		Descriptor:  execCommandDescriptor(),
 		Disposition: tool.DispositionDetached,
 		Validate: func(input execCommandInput) error {
+			if err := validateExecutionTarget(input); err != nil {
+				return err
+			}
 			if _, err := processYield(input.YieldTimeMS, defaultExecYield); err != nil {
 				return err
 			}
@@ -235,13 +240,13 @@ func uint64Metadata(metadata map[string]any, key string) uint64 {
 func execCommandDescriptor() tool.Descriptor {
 	return tool.Descriptor{
 		Name: "exec_command",
-		Description: "Run a local command under the governed sandbox. Returns " +
+		Description: "Run a local command with sandbox or approved host execution. Returns " +
 			"output when it exits within yield_time_ms (defaults to 10000 " +
 			"and must not exceed 30000); otherwise it returns a session_id — " +
 			"continue with write_stdin instead of waiting. timeout_ms kills " +
 			"the process group without extending the first wait; a started " +
 			"server or daemon never exits, so verify its startup output and " +
-			"close the session rather than polling. The workspace is " +
+			"close the session rather than polling. In sandbox mode the workspace is " +
 			"read-only in Auto/Read only unless write_paths declares exact regular files in " +
 			"existing directories, or one existing directory as a bounded " +
 			"write tree; write_paths does not permit the workspace root or a " +
@@ -250,8 +255,11 @@ func execCommandDescriptor() tool.Descriptor {
 			"directories belong to file_write or file_apply, which create " +
 			"parent directories safely. In Full Access, omit write_paths and network_targets " +
 			"for direct host file/network access; ordinary tests and builds need no resource " +
-			"declarations. Explicit write_paths/network_targets/allow_loopback narrow the command " +
-			"back to the scoped sandbox. Protected metadata, credential locations and explicit " +
+			"declarations. Explicit write_paths narrows only file writes; network_targets or " +
+			"allow_loopback narrows only networking. Other Full Access grants remain active. " +
+			"settle=discard uses the scoped isolated sandbox. Full Access supports browsers/PTY; " +
+			"macOS still rejects incompatible nested sandbox profiles. " +
+			"In sandbox mode, protected metadata, credential locations and explicit " +
 			"rules remain enforced. Unscoped Full Access commands and declared verification " +
 			"need no routine approval or plan gate. When Full Access is active, diagnose " +
 			"failures instead of asking the user to select it again. " +
@@ -266,8 +274,8 @@ func execCommandDescriptor() tool.Descriptor {
 			"destination in network_targets. HTTPS control is at the CONNECT " +
 			"tunnel endpoint only; declared methods are enforced per method " +
 			"for plaintext HTTP. Undeclared egress is denied by the managed " +
-			"proxy. Full Access uses direct sockets. Set allow_loopback only for binding or connecting to a " +
-			"local development server; do not put localhost or port 0 in " +
+			"proxy. Unscoped Full Access uses direct sockets including localhost. In scoped mode, " +
+			"set allow_loopback for a local development server; do not put localhost or port 0 in " +
 			"network_targets. Git metadata is protected: use the dedicated " +
 			"git_* tools for mutations. Related probes chained into one " +
 			"command share a single approval. " + shellUsageContract,
@@ -295,9 +303,10 @@ func execCommandDescriptor() tool.Descriptor {
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"command": map[string]any{"type": "string", "minLength": 1},
-				"cwd":     map[string]any{"type": "string"},
-				"tty":     map[string]any{"type": "boolean"},
+				"command":          map[string]any{"type": "string", "minLength": 1},
+				"execution_target": map[string]any{"type": "string", "enum": []any{"sandbox", "host"}, "description": "Defaults to sandbox. Host skips the sandbox: Auto asks once per command, Full Access allows, Read only denies. Use for host access or child-sandbox tests. Omit write_paths/network_targets/allow_loopback/settle=discard. Never automatically replay a started command."},
+				"cwd":              map[string]any{"type": "string"},
+				"tty":              map[string]any{"type": "boolean"},
 				"env": map[string]any{
 					"type":                 "object",
 					"additionalProperties": map[string]any{"type": "string"},
@@ -343,7 +352,7 @@ func execCommandDescriptor() tool.Descriptor {
 				"network_targets": tool.NetworkTargetsInputSchema(),
 				"allow_loopback": map[string]any{
 					"type":        "boolean",
-					"description": "Permit localhost bind/connect for local development servers and fixtures",
+					"description": "Permit localhost bind/connect for local development servers and fixtures. In Full Access this narrows only network reach, preserving file and system permissions.",
 				},
 			},
 			"required":             []string{"command"},
@@ -467,6 +476,9 @@ func (p *commandProtocol) execCommand(
 	input execCommandInput,
 ) (out tool.Result, outErr error) {
 	defer func() { attachPreparationFacts(ctx, &out) }()
+	if input.ExecutionTarget == "host" {
+		return p.execHostCommand(ctx, input)
+	}
 	if token := unsupportedPOSIXShellSyntax(input.Command); token != "" {
 		return unsupportedSyntaxResult(token), nil
 	}
@@ -579,7 +591,7 @@ func (p *commandProtocol) execCommand(
 	if input.Verification != "" {
 		command = "set -e\n" + command
 	}
-	if requireStrong {
+	if requireStrong && !fullAccess {
 		command = wrapSandboxTempCommand(command)
 	}
 	if result, denied := p.preflightExecutables(
@@ -607,15 +619,19 @@ func (p *commandProtocol) execCommand(
 		return tool.Result{}, err
 	}
 	sessionTargets := resolveProcessNetworkTargets(sandboxBackend, input.NetworkTargets)
-	// All process modes use declared or inherited targets and explicit loopback authority.
-	denyNetwork := !fullAccess && len(sessionTargets) == 0 && !input.AllowLoopback
-	// Full Access uses direct sockets; scoped commands keep the session gate.
-	if fullAccess {
+	directNetwork := authorityBound && execution.EffectiveControls.Network == securitymodel.NetworkDirect
+	denyNetwork := len(sessionTargets) == 0 && !input.AllowLoopback
+	if authorityBound {
+		denyNetwork = execution.EffectiveControls.Network == securitymodel.NetworkDenied
+	}
+	// Only direct network bypasses the proxy; Full Access can independently
+	// retain a declared managed-network or loopback scope.
+	if directNetwork {
 		sessionTargets = nil
 	}
 	network, err := openProcessNetwork(
 		sandboxBackend,
-		denyNetwork || fullAccess,
+		denyNetwork || directNetwork || (authorityBound && execution.LoopbackOnly()),
 		sessionTargets,
 	)
 	if err != nil {
@@ -628,7 +644,11 @@ func (p *commandProtocol) execCommand(
 	var sessionCredential string
 	if network != nil {
 		sessionPort, sessionCredential = network.Port(), network.Credential()
-		defer network.Gate().BindRuntimeApprover(egress.RuntimeApproverFrom(ctx))()
+		// An explicit Full Access network scope is a ceiling, not a seed
+		// for bypass-posture discovery to silently authorize more hosts.
+		if !fullAccess {
+			defer network.Gate().BindRuntimeApprover(egress.RuntimeApproverFrom(ctx))()
+		}
 	}
 	id, err := p.manager.Create(
 		context.WithoutCancel(processContext),
@@ -647,7 +667,7 @@ func (p *commandProtocol) execCommand(
 			Timeout:                timeout,
 			Sandbox:                sandboxBackend,
 			RequireSandbox:         requireStrong,
-			WorkspaceReadOnly:      !fullAccess,
+			WorkspaceReadOnly:      !fullAccess || !execution.WorkspaceBaseWrite,
 			WorkspaceWritePaths:    writePaths,
 			DenyNetwork:            denyNetwork,
 			SessionProxyPort:       sessionPort,
@@ -679,6 +699,12 @@ func (p *commandProtocol) execCommand(
 	}
 	wait.Data = output.String()
 	result := sessionResult(id, wait)
+	if fullAccess {
+		result.Metadata["execution_permissions"] = execution.EffectiveControls.StringMap()
+		if result.IsError {
+			result.Content += fmt.Sprintf("\nExecution used Full Access: file writes=%s; network=%s. Explicit write_paths and network declarations restrict only their own dimension. Protected paths and credential services remain restricted; inspect the actual failure before retrying.", execution.EffectiveControls.FilesystemWrite, execution.EffectiveControls.Network)
+		}
+	}
 	attachVerification(&result, evidence, wait)
 	if wait.Running {
 		result.Metadata["error_category"] = "process_still_running"
@@ -1156,6 +1182,12 @@ func sessionResult(id string, wait process.SessionWait) tool.Result {
 		"timed_out":         wait.TimedOut,
 		"tty":               wait.TTY,
 	}
+	if wait.ExecutionTarget != "" {
+		metadata["execution_target"] = wait.ExecutionTarget
+	}
+	if wait.ExecutionTarget == "host" {
+		metadata["enforcement"] = "none"
+	}
 	if wait.Archived {
 		metadata["archived"] = true
 		metadata["pending_bytes"] = wait.Pending
@@ -1187,7 +1219,8 @@ func attachCommandExecution(
 		}
 	}
 	execution := map[string]any{
-		"command": read.Command, "call_id": read.CallID, "session_id": id,
+		"execution_target": read.ExecutionTarget,
+		"command":          read.Command, "call_id": read.CallID, "session_id": id,
 		"status": status, "output_tail": result.Content,
 		"duration_ms": window.Milliseconds(),
 	}

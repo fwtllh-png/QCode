@@ -85,8 +85,11 @@ type Runtime struct {
 	Revision          uint64
 	Mode              Mode
 	Permission        Permission
-	PlanningPolicy    PlanningPolicy
-	PlanSubmitted     bool
+	// DisableHostExecution preserves the delegated runtime's process boundary.
+	// It is a construction-time ceiling, not a user permission setting.
+	DisableHostExecution bool
+	PlanningPolicy       PlanningPolicy
+	PlanSubmitted        bool
 	// DisableAutoReview is the fail-closed operational kill switch.
 	DisableAutoReview bool
 	// ForceEditPlanApproval makes every journaled write ask for a fresh
@@ -243,6 +246,7 @@ func (r *Runtime) CloneSampling() *Runtime {
 	r.refreshUserRulesLocked()
 	return &Runtime{
 		Revision: r.Revision, Mode: r.Mode, Permission: r.Permission,
+		DisableHostExecution:  r.DisableHostExecution,
 		PlanningPolicy:        r.PlanningPolicy,
 		PlanSubmitted:         r.PlanSubmitted,
 		DisableAutoReview:     r.DisableAutoReview,
@@ -343,7 +347,7 @@ func ruleMatches(rule Rule, invocation Invocation) bool {
 		// An unrestricted process can reach any host path or network target.
 		// It cannot evade a scoped restriction by omitting resources. A caller
 		// can select exact write/network scopes for a narrower authorization.
-		if invocation.Assessment.Facets().FullAccess {
+		if invocation.Assessment.Facets().FullAccess || invocation.Assessment.Facets().HostExecution {
 			// A scoped allow is not a grant for an unrestricted process, even
 			// when one of its covered paths happens to match that allow.
 			if rule.Action == ActionAllow {

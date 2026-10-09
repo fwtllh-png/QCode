@@ -105,6 +105,11 @@ func TestCodingPolicySectionIsStableAndContainsWorkflow(t *testing.T) {
 		"Do not invent a tool call",
 		"not before every tool or on a",
 		"never claim verification without successful execution evidence",
+		"cached summaries) silently",
+		"not a new user message or a progress milestone",
+		"acknowledge receiving it or narrate its injection",
+		"even when earlier assistant messages did so",
+		"when it materially affects the task",
 		"Keep the final answer separate",
 	} {
 		if !strings.Contains(body, want) {

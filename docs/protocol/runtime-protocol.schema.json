@@ -4541,6 +4541,9 @@
         "duration_ms": {
           "type": "integer"
         },
+        "execution_target": {
+          "type": "string"
+        },
         "exit_code": {
           "type": "integer"
         },

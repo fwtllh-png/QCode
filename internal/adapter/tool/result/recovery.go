@@ -102,6 +102,9 @@ func policyDecisionHint(code string) (
 	action string, retryOriginal bool, guidance string, ok bool,
 ) {
 	switch code {
+	case "host_execution_forbidden":
+		return "review_permissions", false,
+			"host execution is unavailable in Read only mode or a delegated runtime. A main session in Auto requests one-time user approval; Full Access preauthorizes explicitly requested host commands. Do not retry under unchanged permissions", true
 	case "permission_denied":
 		return "review_permissions", false,
 			"the permission policy prevents this action. In Read only mode, " +

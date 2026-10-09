@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 
@@ -106,7 +107,7 @@ func (g *Guard) executePipeline(
 			prepared = authorized
 		}
 		raw = append(json.RawMessage(nil), prepared.arguments...)
-		if prepared.invocation.Binding.SandboxRequirement == tool.SandboxNone {
+		if prepared.invocation.Binding.SandboxRequirement == tool.SandboxNone || prepared.invocation.Assessment.Facets().HostExecution {
 			mode = SandboxModeNone
 		}
 		if receipt.Tool.Name == "" {
@@ -287,10 +288,28 @@ func (g *Guard) runAttempt(
 	}
 	run.profile = profile
 	brokerExecutor, brokerAware := prepared.executor.(AuthorizedProcessExecutor)
+	sessionExecutor, sessionBrokerAware := prepared.executor.(AuthorizedSessionExecutor)
+	sessionBrokerAware = sessionBrokerAware && invocation.Assessment.Facets().HostExecution
+	brokerAware = brokerAware && !sessionBrokerAware
+	if invocation.Assessment.Facets().HostExecution && !sessionBrokerAware {
+		run.err = errors.New("host execution requires a session broker executor")
+		run.receipt = attemptReceipt(sequence, mode, started, g.now(), tool.OutcomeRejected, "session_broker_required", run.profile)
+		return run
+	}
 	fileExecutor, fileBrokerAware := prepared.executor.(AuthorizedFileExecutor)
 	fileBrokerAware = fileBrokerAware &&
 		fileExecutor.IsAuthorizedFileMutation(prepared.invocation)
-	brokerManaged := brokerAware || fileBrokerAware
+	brokerManaged := brokerAware || fileBrokerAware || sessionBrokerAware
+	var sessionBinding authority.SessionBinding
+	if sessionBrokerAware {
+		sessionBinding, err = sessionExecutor.PrepareAuthorizedSession(ctx, invocation)
+		if err != nil {
+			run.err = err
+			run.receipt = attemptReceipt(sequence, mode, started, g.now(), tool.OutcomeRejected, "session_prepare", run.profile)
+			return run
+		}
+		defer func() { run.err = errors.Join(run.err, sessionExecutor.ReleaseAuthorizedSession(sessionBinding)) }()
+	}
 	var artifactBinding authority.ArtifactBinding
 	var artifactIntent *authority.ArtifactIntent
 	var fileBinding authority.FileBinding
@@ -340,8 +359,9 @@ func (g *Guard) runAttempt(
 		compiled,
 		uint64(sequence),
 		authority.Evidence{
-			Artifact:           artifactIntent,
-			FileMutationDigest: fileBinding.MutationDigest,
+			ProcessCommandDigest: sessionBinding.CommandDigest,
+			Artifact:             artifactIntent,
+			FileMutationDigest:   fileBinding.MutationDigest,
 		},
 		!brokerManaged,
 	)
@@ -413,7 +433,7 @@ func (g *Guard) runAttempt(
 	}
 	claimStarted := g.now()
 	claimResources := invocation.Resources
-	if invocation.Assessment.Facets().FullAccess {
+	if facets := invocation.Assessment.Facets(); (facets.FullAccess || facets.HostExecution) && !facets.WritesWorkspace {
 		claimResources = append(append([]tool.Resource(nil), claimResources...), tool.Resource{
 			Kind: "directory", Path: g.workspace, Access: tool.AccessWrite, Tree: true,
 		})
@@ -556,6 +576,14 @@ func (g *Guard) runAttempt(
 					},
 				)
 		}
+	} else if sessionBrokerAware {
+		sandboxPolicyID, policyErr := sandboxPolicyBinding(profile, invocation.Tool)
+		if policyErr != nil {
+			run.err = policyErr
+		} else {
+			run.result, run.outcome, run.err = sessionExecutor.ExecuteAuthorizedSession(runContext, invocation,
+				authority.AuthorizedSessionGrant{Lease: lease, Validation: leaseValidation(operation, prepared.runtime.Revision, sandboxPolicyID, uint64(sequence)), Prepared: sessionBinding.Value}, g.leaseAuthority)
+		}
 	} else if fileBrokerAware {
 		sandboxPolicyID, policyErr := sandboxPolicyBinding(
 			profile, prepared.invocation.Tool,
@@ -587,6 +615,11 @@ func (g *Guard) runAttempt(
 			runContext,
 			prepared,
 		)
+	}
+	if unavailable, ok := errors.AsType[*sandbox.UnavailableError](run.err); ok {
+		run.err = tool.WithRecoveryHint(fmt.Errorf("%w; restore a working OS sandbox or request execution_target=host for tests that create their own sandbox. Auto asks for one-time approval; Full Access preauthorizes host commands. Default commands still use the sandbox; an enclosing sandbox must be resolved outside this Runtime. Do not automatically replay a started command", unavailable), tool.RecoveryHint{
+			ErrorCategory: sandbox.ErrUnavailableCode, RequiredAction: "review_execution_environment", RetryOriginal: false,
+		})
 	}
 	if invocation.Binding.RecordsWorkspaceRead && run.err == nil {
 		if recordErr := g.recordFileRead(&run.result, invocation, readBefore); recordErr != nil {
@@ -955,6 +988,11 @@ func bindAttemptAuthority(
 	)
 	receipt.WorkspaceBaseWrite = profile.Filesystem.WorkspaceBaseWrite
 	receipt.FullAccess = profile.Process.FullAccess
+	if profile.Process.HostExecution {
+		receipt.ExecutionTarget = "host"
+	} else if profile.Process.Enforcement == sandbox.EnforcementStrong {
+		receipt.ExecutionTarget = "sandbox"
+	}
 	receipt.NetworkMode = string(profile.Controls.Network)
 	receipt.NetworkTargets = append([]string(nil), profile.Network.Targets...)
 	receipt.ManagedProxyPort = profile.Network.ProxyPort

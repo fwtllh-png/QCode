@@ -6,9 +6,68 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/fwtllh-png/QCode/internal/adapter/model"
 	"github.com/fwtllh-png/QCode/internal/adapter/provider"
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
 )
+
+func TestSnapshotPlacesBackgroundBeforeCurrentTurnAndPreservesFeedback(t *testing.T) {
+	old := provider.TextMessage(provider.RoleUser, "old request")
+	old.Turn = 1
+	current := provider.TextMessage(provider.RoleUser, "current request")
+	current.Turn = 2
+	latest := provider.TextMessage(provider.RoleAssistant, "latest progress")
+	latest.Turn = 2
+	background := []provider.Message{provider.TextMessage(provider.RoleSystem, "checkpoint")}
+	feedback := []provider.Message{provider.TextMessage(provider.RoleUser, "continue incomplete output")}
+	ledger := NewMessageLedger(LedgerInput{
+		Stable:  []provider.Message{provider.TextMessage(provider.RoleSystem, "policy")},
+		History: []provider.Message{old, current, latest}, Dynamic: background,
+		Continuation: feedback, DynamicBeforeTurn: 2,
+	})
+	initial := ledger.Snapshot()
+	check := func(snapshot MessageSnapshot, want []string) {
+		t.Helper()
+		messages, items, refs := snapshot.Messages(), snapshot.Items(), snapshot.ItemRefs()
+		var got []string
+		for i, message := range messages {
+			got = append(got, message.Text())
+			if !reflect.DeepEqual(message, items[i].Message) || items[i].ID != refs[i].ID {
+				t.Fatal("message order differs from item/prefix order")
+			}
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("order=%v want=%v", got, want)
+		}
+		encoded, err := json.Marshal(struct {
+			Messages []provider.Message `json:"messages"`
+		}{messages})
+		if err != nil {
+			t.Fatal(err)
+		}
+		digest, err := snapshot.Digest()
+		if err != nil || digest != digestString(string(encoded)) {
+			t.Fatalf("digest does not bind the physical message order: %s %v", digest, err)
+		}
+	}
+	want := []string{"policy", "old request", "checkpoint", "current request", "latest progress", "continue incomplete output"}
+	check(initial, want)
+	normalized, _, err := initial.Normalize(model.Capabilities{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	check(normalized, want)
+	// Omitting an earlier turn changes the insertion index, not the anchor.
+	folded := normalized.WithHistory([]provider.Message{current, latest})
+	check(folded, []string{"policy", "checkpoint", "current request", "latest progress", "continue incomplete output"})
+	replaced := folded.WithDynamic([]provider.Message{provider.TextMessage(provider.RoleSystem, "updated checkpoint")})
+	check(replaced, []string{"policy", "updated checkpoint", "current request", "latest progress", "continue incomplete output"})
+	check(initial, want)
+	// If the current request is absent, background stays before the retained
+	// history rather than splitting a surviving tool group at a stale offset.
+	check(initial.WithHistory([]provider.Message{old}), []string{"policy", "checkpoint", "old request", "continue incomplete output"})
+	check(initial.WithHistory(nil), []string{"policy", "checkpoint", "continue incomplete output"})
+}
 
 func TestLedgerProjectsOneOrderedImmutableSnapshot(t *testing.T) {
 	stable := []provider.Message{provider.TextMessage(provider.RoleSystem, "stable")}

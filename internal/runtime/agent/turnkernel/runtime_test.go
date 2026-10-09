@@ -498,9 +498,9 @@ func TestProviderRetryScheduleSurvivesCoordinatorRestore(t *testing.T) {
 				Message:      "rate limited",
 				RetryAfterMS: 60000,
 			},
-			EffectiveDelayMS: 60000,
-			RetryAt:          retryAt,
-			PolicyRevision:   "provider-retry/v1",
+			EffectiveDelay: 60 * time.Second,
+			RetryAt:        retryAt,
+			PolicyRevision: "provider-retry/v1",
 		},
 	); err != nil {
 		t.Fatal(err)

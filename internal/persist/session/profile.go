@@ -90,13 +90,19 @@ func (r *Repository) EnsureProfile(
 			)
 		}
 		if len(values["profile"]) != 0 {
-			current, err := profileFromMetadata(metadata, defaults)
+			current, retiredHostSetting, err := decodeStoredProfile(values["profile"])
 			if err != nil {
 				return protocol.SessionProfile{}, err
 			}
 			migrated, ok, err := migrateLegacyProfileDefaults(current, defaults)
 			if err != nil {
 				return protocol.SessionProfile{}, err
+			}
+			if retiredHostSetting {
+				if !ok {
+					migrated.Revision++
+				}
+				ok = true
 			}
 			if !ok {
 				return current, nil
@@ -456,14 +462,25 @@ func profileFromMetadata(
 	if len(raw) == 0 {
 		return defaults, nil
 	}
-	var profile protocol.SessionProfile
+	profile, _, err := decodeStoredProfile(raw)
+	return profile, err
+}
+
+// A shipped desktop build persisted the retired host toggle. Accept only that
+// known field at the storage boundary and remove it through EnsureProfile's
+// revision-checked write; it never grants execution authority.
+func decodeStoredProfile(raw []byte) (protocol.SessionProfile, bool, error) {
+	var stored struct {
+		protocol.SessionProfile
+		RetiredHostExecution *bool `json:"allow_host_execution,omitempty"`
+	}
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&profile); err != nil {
-		return protocol.SessionProfile{}, fmt.Errorf("decode session profile: %w", err)
+	if err := decoder.Decode(&stored); err != nil {
+		return protocol.SessionProfile{}, false, fmt.Errorf("decode session profile: %w", err)
 	}
-	if err := profile.Validate(); err != nil {
-		return protocol.SessionProfile{}, fmt.Errorf("validate session profile: %w", err)
+	if err := stored.SessionProfile.Validate(); err != nil {
+		return protocol.SessionProfile{}, false, fmt.Errorf("validate session profile: %w", err)
 	}
-	return profile, nil
+	return stored.SessionProfile, stored.RetiredHostExecution != nil, nil
 }

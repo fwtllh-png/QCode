@@ -1,9 +1,37 @@
 package contextview
 
 import (
+	"slices"
+
 	"github.com/fwtllh-png/QCode/internal/adapter/provider"
 	agentcontext "github.com/fwtllh-png/QCode/internal/runtime/agent/context"
 )
+
+// ExcludeUnavailableTurns keeps source indices and records omissions without
+// offering retrieval for withdrawn or foreign history.
+func ExcludeUnavailableTurns(result agentcontext.ProjectionResult, turns map[uint64]bool, estimate func([]provider.Message) uint64) agentcontext.ProjectionResult {
+	if len(turns) == 0 {
+		return result
+	}
+	result.Messages = slices.DeleteFunc(slices.Clone(result.Messages), func(message provider.Message) bool { return turns[message.Turn] })
+	result.Omissions = slices.Clone(result.Omissions)
+	result.Selected = slices.DeleteFunc(slices.Clone(result.Selected), func(source agentcontext.ProjectionSource) bool {
+		if !turns[source.Turn] {
+			return false
+		}
+		result.Omissions = append(result.Omissions, agentcontext.ProjectionOmission{Source: source, Reason: agentcontext.OmittedSourceUnavailable})
+		return true
+	})
+	for i := range result.Omissions {
+		if turns[result.Omissions[i].Source.Turn] {
+			result.Omissions[i].Reason = agentcontext.OmittedSourceUnavailable
+			result.Omissions[i].Retrieval = nil
+		}
+	}
+	result.RawTokens = estimate(RawTailMessages(result.Messages, 0))
+	result.Seal()
+	return result
+}
 
 type SelectionPolicy struct {
 	RecentTurns      int

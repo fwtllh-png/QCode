@@ -99,17 +99,25 @@ func (SupplementalUsageRecorded) commandName() string {
 }
 
 type ProviderRetryRequested struct {
-	EffectID         string
-	SampleID         string
-	Attempt          uint32
-	Retry            uint32
-	Failure          provider.Failure
-	EffectiveDelayMS uint64
-	RetryAt          time.Time
-	PolicyRevision   string
+	EffectID       string
+	SampleID       string
+	Attempt        uint32
+	Retry          uint32
+	Failure        provider.Failure
+	EffectiveDelay time.Duration
+	RetryAt        time.Time
+	PolicyRevision string
 }
 
 func (ProviderRetryRequested) commandName() string { return "provider_retry_requested" }
+
+type ProviderWaitReserved struct {
+	SampleID string
+	Delay    time.Duration
+	Until    time.Time
+}
+
+func (ProviderWaitReserved) commandName() string { return "provider_wait_reserved" }
 
 type ModelTextReceived struct {
 	Text string
@@ -244,6 +252,15 @@ type ToolResultReceived struct {
 	Changes     []ObservedChange
 	Observation WorkItemObservation
 }
+
+// ToolBatchAdmissionRejected commits the rejection before per-call lifecycle
+// settlement. Result is an immutable JSON encoding of the rejected tool result.
+type ToolBatchAdmissionRejected struct {
+	CallIDs []string
+	Result  string
+}
+
+func (ToolBatchAdmissionRejected) commandName() string { return "tool_batch_admission_rejected" }
 
 func (ToolResultReceived) commandName() string { return "tool_result_received" }
 

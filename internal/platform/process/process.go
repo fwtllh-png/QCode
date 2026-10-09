@@ -17,6 +17,7 @@ import (
 	"github.com/creack/pty"
 	"github.com/fwtllh-png/QCode/internal/common/tracecontext"
 	"github.com/fwtllh-png/QCode/internal/security/envpolicy"
+	securitymodel "github.com/fwtllh-png/QCode/internal/security/model"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
 )
 
@@ -196,7 +197,7 @@ func NewCommand(ctx context.Context, options Options) (*exec.Cmd, error) {
 	if err != nil {
 		return nil, err
 	}
-	if authorityBound && executionAuthority.FullAccess {
+	if authorityBound && (executionAuthority.FullAccess || executionAuthority.HostExecution) && executionAuthority.EffectiveControls.Network != securitymodel.NetworkProxyTargets {
 		// The managed proxy is a sandbox contract, not a host proxy setting.
 		// A direct-network command must not inherit its credentials or port.
 		environment = envpolicy.WithoutManagedProxy(environment)
@@ -345,7 +346,7 @@ func NewCommand(ctx context.Context, options Options) (*exec.Cmd, error) {
 			return nil, unenforcedRestriction(options.Sandbox, "loopback_network")
 		}
 		expectedProxyPort := policy.ManagedProxyPort
-		if options.DenyNetwork || executionAuthority.FullAccess {
+		if options.DenyNetwork || (authorityBound && executionAuthority.ManagedProxyPort == 0) {
 			expectedProxyPort = 0
 		}
 		if commandSpec.SessionProxyPort != 0 {
@@ -443,7 +444,7 @@ func validateExecutionAuthority(
 		// bind/connect is a seatbelt grant, not a proxy-routed destination.
 		if !options.DenyNetwork &&
 			authority.ManagedProxyPort != policyValue.ManagedProxyPort &&
-			!authority.LoopbackOnly() && !authority.FullAccess {
+			!authority.LoopbackOnly() && !(authority.FullAccess && authority.EffectiveControls.Network == securitymodel.NetworkDirect) {
 			return sandbox.Denied(sandbox.Denial{
 				Operation: sandbox.DenialNetwork, Resource: "managed_proxy",
 				ReasonCode: sandbox.ReasonAuthorityUnverified,

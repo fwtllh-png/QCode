@@ -1112,6 +1112,7 @@ func commandExecutionFromResult(callID string, result *tool.Result) (*protocol.C
 	data := &protocol.CommandExecutionData{
 		CallID: callID, Command: command, Status: status,
 	}
+	data.ExecutionTarget, _ = raw["execution_target"].(string)
 	if sessionID, _ := raw["session_id"].(string); sessionID != "" {
 		data.SessionID = sessionID
 	}

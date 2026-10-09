@@ -42,6 +42,20 @@ func orderedDimension(
 	}
 }
 
+// Platform-specific filtering is not comparable to a portable isolation
+// guarantee. It satisfies only itself and the unrestricted requirement.
+func platformFilteredDimension(key, label string, values []string, value func(Controls) string) dimensionSpec {
+	spec := orderedDimension(key, label, values, value)
+	spec.values = append(append([]string(nil), values...), "platform_filtered")
+	spec.satisfies = func(required, actual string) bool {
+		if required == "platform_filtered" || actual == "platform_filtered" {
+			return required == "unrestricted" || required == actual
+		}
+		return satisfiesOrdered(required, actual, values)
+	}
+	return spec
+}
+
 // dimensionSpecs lists the dimensions in Controls field order. Identity()
 // joins them in this order, so inserting or reordering rows changes
 // identities and must be an explicit decision.
@@ -96,14 +110,14 @@ var dimensionSpecs = []dimensionSpec{
 			string(CrossProcessIsolated),
 		},
 		func(m Controls) string { return string(m.CrossProcess) }),
-	orderedDimension("syscall", "syscall",
+	platformFilteredDimension("syscall", "syscall",
 		[]string{
 			string(SyscallUnrestricted),
 			string(SyscallDenyDangerous),
 			string(SyscallAllowlist),
 		},
 		func(m Controls) string { return string(m.Syscall) }),
-	orderedDimension("ipc", "IPC",
+	platformFilteredDimension("ipc", "IPC",
 		[]string{
 			string(IPCUnrestricted),
 			string(IPCUnixOnly),

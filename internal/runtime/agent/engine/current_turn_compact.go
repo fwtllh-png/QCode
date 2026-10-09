@@ -5,7 +5,6 @@ import (
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
 	agentcontext "github.com/fwtllh-png/QCode/internal/runtime/agent/context"
 	promptcontext "github.com/fwtllh-png/QCode/internal/runtime/agent/prompt"
-	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
 )
 
 func (e *Engine) relieveCurrentTurnPressure(
@@ -137,16 +136,6 @@ func (e *Engine) relieveCurrentTurnPressure(
 		if !progressed {
 			break
 		}
-	}
-	if window.hardLimit != 0 &&
-		window.total > window.hardLimit &&
-		len(baseInput.Partition(agentcontext.KindContinuation)) != 0 {
-		return window, protocol.NewProblem(
-			protocol.CodeResourceExhausted,
-			"partial provider output cannot be compacted within the model context window",
-			false,
-			nil,
-		)
 	}
 	if window.hardLimit != 0 && window.total > window.hardLimit {
 		return window, compactionBudgetError(window)

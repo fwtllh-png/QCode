@@ -90,6 +90,11 @@ func TestConversationSessionBoundaryBeforeSampling(t *testing.T) {
 			if err := state.Add(source); err != nil {
 				t.Fatal(err)
 			}
+			// The current request explicitly depends on this source. Optional
+			// unavailable candidates are tested separately and may be omitted.
+			if err := state.Select(agentcontext.NewConversationSelection(nil, []string{source.Items[0].ID}, 2, "followup", "继续第一项"), nil); err != nil {
+				t.Fatal(err)
+			}
 			e.context.SetConversation(state)
 			e.turn = 1
 			e.options.TurnContexts = &withdrawalContextStore{withdrawn: tc.withdrawn}

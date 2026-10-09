@@ -33,10 +33,10 @@ func TestNarrativeSelectionUsesOnlyValidNonduplicatedSources(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, scenario := range []struct {
-		name, reason                string
-		enabled, raw, extract, fits bool
-		at                          time.Time
-		route                       string
+		name, reason                             string
+		enabled, raw, extract, fits, unavailable bool
+		at                                       time.Time
+		route                                    string
 	}{
 		{name: "cached with generation off", enabled: true, fits: true, at: now, route: "route"},
 		{name: "ledger only", reason: "digest_disabled", fits: true, at: now, route: "route"},
@@ -45,9 +45,13 @@ func TestNarrativeSelectionUsesOnlyValidNonduplicatedSources(t *testing.T) {
 		{name: "expired", reason: "invalid_or_expired", enabled: true, fits: true, at: now.Add(2 * time.Hour), route: "route"},
 		{name: "model switch", reason: "route_or_window_changed", enabled: true, fits: true, at: now, route: "other"},
 		{name: "capacity", reason: "context_capacity", enabled: true, at: now, route: "route"},
+		{name: "withdrawn source", reason: "source_unavailable", enabled: true, unavailable: true, fits: true, at: now, route: "route"},
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
 			projection := agentcontext.ProjectionResult{}
+			if scenario.unavailable {
+				projection.Omissions = []agentcontext.ProjectionOmission{{Source: agentcontext.ProjectionSource{Index: 0}, Reason: agentcontext.OmittedSourceUnavailable}}
+			}
 			if scenario.raw {
 				projection.Selected = []agentcontext.ProjectionSource{{Index: 0}}
 			}

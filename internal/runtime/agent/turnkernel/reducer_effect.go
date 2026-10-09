@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 )
 
 func applyEffectStarted(
@@ -34,6 +35,7 @@ func applyEffectStarted(
 		sample.Status = SampleRunning
 		sample.Attempt = command.Attempt
 		sample.Retry = nil
+		sample.RetryBudget.WaitUntil = time.Time{}
 		sample.Error = ""
 		transition.State.SampleLedger[effect.CallID] = sample
 		transition.State.ActiveSampleID = effect.CallID

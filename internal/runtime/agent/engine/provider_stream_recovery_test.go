@@ -3,6 +3,7 @@ package engine
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"syscall"
@@ -14,42 +15,103 @@ import (
 	providerfixture "github.com/fwtllh-png/QCode/internal/adapter/provider/fixture"
 	provideropenai "github.com/fwtllh-png/QCode/internal/adapter/provider/openai"
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
+	"github.com/fwtllh-png/QCode/internal/observability/verify"
 	"github.com/fwtllh-png/QCode/internal/runtime/agent/turnkernel"
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
 )
 
-func TestDuplicateToolArgumentMembersFailWithoutRetryAndRetainDraft(t *testing.T) {
-	fixture := newVerifyGateFixture(t, VerifyOptions{}, &scriptedVerifier{}, 0, 4)
-	fixture.engine.options.MaxRetries = 3
-	malformed := &eventErrorStream{events: []provider.StreamEvent{
+func duplicateToolArgumentsStream() provider.Stream {
+	return &eventErrorStream{events: []provider.StreamEvent{
 		{Type: provider.EventToolCallDelta, ToolCall: &provider.ToolCallFragment{
 			ID: "invalid-edit", Name: "file_edit",
 			Arguments: `{"path":"value.txt","old":"after","new":"must not execute","new"`,
 		}},
 	}}
-	fixture.provider.streams[2] = malformed
-	var states []State
-	result, err := fixture.engine.RunForTurn(t.Context(), "duplicate-members", "edit", func(event Event) error {
-		states = append(states, event.State)
-		return nil
+}
+
+func TestDuplicateToolArgumentMembersRecoverWithoutReplayingCompletedEdits(t *testing.T) {
+	fixture := newVerifyGateFixture(t, VerifyOptions{}, &scriptedVerifier{receipts: []verify.Receipt{passedReceipt()}}, 0, 4)
+	fixture.engine.options.MaxRetries = 1
+	fixture.provider.streams[2] = duplicateToolArgumentsStream()
+	fixture.provider.streams = append(fixture.provider.streams,
+		toolCallStream("check", "file_read", `{"path":"value.txt"}`), textStream("done"))
+	result, err := fixture.engine.RunForTurn(t.Context(), "duplicate-recovery", "edit", nil)
+	if err != nil || result.State != Completed || len(fixture.provider.requests) != 5 || len(result.Tools) != 3 {
+		t.Fatalf("state=%s tools=%d requests=%d error=%v", result.State, len(result.Tools), len(fixture.provider.requests), err)
+	}
+	request := fixture.provider.requests[3]
+	visible := joinMessageText(request.Messages)
+	if !strings.Contains(visible, "[regenerate_tool_arguments]") || strings.Contains(visible, "must not execute") ||
+		request.LogicalRequestID != fixture.provider.requests[2].LogicalRequestID || request.TransportAttempt != 2 {
+		t.Fatal("repair did not isolate rejected arguments in a fresh response attempt")
+	}
+	if fixture.journal.HasDraft("duplicate-recovery") || fixture.contents(t) != "after\n" {
+		t.Fatal("repair replayed an edit or left a failed draft")
+	}
+}
+
+func TestRejectedToolArgumentRepairBudgetRetainsDraft(t *testing.T) {
+	for _, limit := range []int{0, 2} {
+		t.Run(fmt.Sprint(limit), func(t *testing.T) {
+			fixture := newVerifyGateFixture(t, VerifyOptions{}, &scriptedVerifier{}, 0, 4)
+			fixture.engine.options.MaxRetries = limit
+			fixture.provider.streams = fixture.provider.streams[:2]
+			for range limit + 1 {
+				fixture.provider.streams = append(fixture.provider.streams, duplicateToolArgumentsStream())
+			}
+			var states []State
+			result, err := fixture.engine.RunForTurn(t.Context(), "duplicate-members", "edit", func(event Event) error {
+				states = append(states, event.State)
+				return nil
+			})
+			var failure *provider.Failure
+			if err == nil || result.State != Failed || !errors.As(err, &failure) ||
+				failure.Code != provider.FailureMalformedResponse {
+				t.Fatalf("state = %s, error = %v", result.State, err)
+			}
+			assertOneTerminal(t, states, Failed)
+			problem := protocol.ProblemOf(err)
+			if problem == nil || problem.Fault == nil || problem.Fault.Disposition != protocol.FaultResumeTurn ||
+				problem.Fault.RetryOwner != protocol.FaultRetryOwnerHost ||
+				!strings.Contains(problem.Message, "regeneration budget exhausted") {
+				t.Fatalf("recovery problem = %+v", problem)
+			}
+			if len(fixture.provider.requests) != limit+3 || len(result.Tools) != 2 {
+				t.Fatalf("requests = %d, executed tools = %d", len(fixture.provider.requests), len(result.Tools))
+			}
+			if !fixture.journal.HasDraft("duplicate-members") || fixture.contents(t) != "after\n" {
+				t.Fatal("failure did not retain the preceding valid edit as a draft")
+			}
+		})
+	}
+}
+
+func TestRejectedToolArgumentRepairBudgetSurvivesRestart(t *testing.T) {
+	runtime, engine, echo, store := restartTestEngines(t, "workspace-restart", func(engine *Engine, runtime *scriptedProvider) {
+		engine.options.MaxRetries = 1
+		runtime.streams = []provider.Stream{runtime.streams[0], duplicateToolArgumentsStream(), runtime.streams[1]}
 	})
-	var failure *provider.Failure
-	if err == nil || result.State != Failed || !errors.As(err, &failure) ||
-		failure.Code != provider.FailureMalformedResponse {
-		t.Fatalf("state = %s, error = %v", result.State, err)
+	engine.options.MaxRetries = 1
+	runtime.streams = []provider.Stream{duplicateToolArgumentsStream(), textStream("must not be sampled")}
+	result, err := engine.RunForTurn(t.Context(), "turn-restart", "inspect the parser", nil)
+	if err == nil || result.State != Failed || !strings.Contains(err.Error(), "regeneration budget exhausted (1/1)") ||
+		len(runtime.requests) != 1 || echo.calls.Load() != 1 {
+		t.Fatalf("restart reset budget or replayed work: result=%s requests=%d calls=%d err=%v", result.State, len(runtime.requests), echo.calls.Load(), err)
 	}
-	assertOneTerminal(t, states, Failed)
-	problem := protocol.ProblemOf(err)
-	if problem == nil || problem.Fault == nil || problem.Fault.Disposition != protocol.FaultRetryTurn ||
-		problem.Fault.RetryOwner != protocol.FaultRetryOwnerHost ||
-		!strings.Contains(problem.Fault.RecoveryAction, "fresh model response") {
-		t.Fatalf("recovery problem = %+v", problem)
+	facts, err := store.LoadDomainFacts(t.Context(), "turn-restart")
+	if err != nil {
+		t.Fatal(err)
 	}
-	if len(fixture.provider.requests) != 3 || len(result.Tools) != 2 {
-		t.Fatalf("requests = %d, executed tools = %d", len(fixture.provider.requests), len(result.Tools))
+	var authorized bool
+	for _, fact := range facts {
+		for _, sample := range fact.State.SampleLedger {
+			if sample.Assembly != nil && len(sample.Assembly.ToolArgumentRepairs) == 1 {
+				authorized = true
+			}
+		}
 	}
-	if !fixture.journal.HasDraft("duplicate-members") || fixture.contents(t) != "after\n" {
-		t.Fatal("failure did not retain the preceding valid edit as a draft")
+	if !authorized {
+		t.Fatal("tool argument repair authorization was not durable")
 	}
 }
 
@@ -580,7 +642,7 @@ func TestR3CompleteAssemblyDoesNotRestartProviderTransport(t *testing.T) {
 		provider.Usage{},
 		"sample-complete",
 		"normal",
-		0,
+		modelRetryState{},
 		false,
 		false,
 		nil,
@@ -655,7 +717,7 @@ func TestR3CompleteToolAssemblyUsesFrozenCatalogBinding(t *testing.T) {
 		provider.Usage{},
 		"sample-tool-complete",
 		"normal",
-		0,
+		modelRetryState{},
 		false,
 		false,
 		nil,

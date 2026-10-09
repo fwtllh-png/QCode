@@ -578,6 +578,10 @@ func TestVerifyGateHardFailureBlocksAndRetainsDraft(t *testing.T) {
 	if result.State != Failed {
 		t.Fatalf("result state = %q", result.State)
 	}
+	if problem := protocol.ProblemOf(err); problem.Fault == nil ||
+		problem.Fault.Origin != protocol.FaultOriginVerification || problem.Fault.Reason != protocol.ProblemReasonVerificationFailed {
+		t.Fatalf("verification classification missing: %+v", problem)
+	}
 	if result.Verification == nil || result.Verification.Workspace == nil ||
 		result.Verification.Workspace.Status != "draft" {
 		t.Fatalf("verification receipt = %+v", result.Verification)
@@ -676,6 +680,12 @@ func TestVerifyGateRunnerErrorDependsOnMode(t *testing.T) {
 			}
 			if result.State != test.wantState {
 				t.Fatalf("result state = %q, want %q", result.State, test.wantState)
+			}
+			if test.wantError {
+				problem := protocol.ProblemOf(err)
+				if problem.Fault == nil || problem.Fault.Reason != protocol.ProblemReasonVerificationUnavailable {
+					t.Fatalf("unavailable verifier labeled as code failure: %+v", problem)
+				}
 			}
 			if !test.wantError &&
 				result.Verification.Status != verify.StatusUnavailable {

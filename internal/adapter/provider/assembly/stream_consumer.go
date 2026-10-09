@@ -162,6 +162,7 @@ func ConsumeStream(
 			return result, err
 		}
 		applied, applyErr := assembly.Apply(event)
+		rejectedArguments := false
 		if applyErr == nil && applied && event.Type == provider.EventToolCallDelta {
 			fragment := event.ToolCall
 			members := argumentMembers[fragment.Index]
@@ -171,6 +172,16 @@ func ConsumeStream(
 			}
 			if err := members.Append(fragment.Arguments); err != nil {
 				applyErr = fmt.Errorf("tool call %d: %w", fragment.Index, err)
+				rejectedArguments = errors.Is(err, errDuplicateJSONMember)
+			}
+		}
+		// A normal stop closes the response, so invalid calls need a fresh
+		// generation. Only an explicitly incomplete stop may continue fragments.
+		// Validate before checkpointing the stop as complete.
+		if applyErr == nil && applied && event.Type == provider.EventMessageStop &&
+			(assembly.CurrentStopReason() == provider.StopReasonToolUse || assembly.CurrentStopReason() == provider.StopReasonEndTurn) {
+			if _, err := assembly.ExecutableToolCalls(); err != nil && len(assembly.currentOrNil().ToolFragments) != 0 {
+				applyErr, rejectedArguments = err, true
 			}
 		}
 		if applyErr != nil {
@@ -180,8 +191,11 @@ func ConsumeStream(
 			}
 			if errors.Is(applyErr, errDuplicateJSONMember) {
 				failure.Message = "provider generated tool arguments with a duplicate JSON object member"
+			} else if rejectedArguments {
+				failure.Message = "provider generated an invalid tool call"
 			}
 			_ = assembly.Fail(applyErr)
+			assembly.currentOrNil().RejectedToolArguments = rejectedArguments
 			if persistErr := persist(true); persistErr != nil {
 				return current(), errors.Join(applyErr, persistErr)
 			}

@@ -6,6 +6,20 @@ import (
 	"testing"
 )
 
+func TestPlatformFilteringDoesNotClaimPortableIsolation(t *testing.T) {
+	for _, spec := range dimensionSpecs {
+		if spec.key != "ipc" && spec.key != "syscall" {
+			continue
+		}
+		for _, required := range spec.values {
+			want := required == "unrestricted" || required == "platform_filtered"
+			if got := spec.satisfies(required, "platform_filtered"); got != want {
+				t.Errorf("%s requirement %s: got %v want %v", spec.key, required, got, want)
+			}
+		}
+	}
+}
+
 // TestDimensionSpecsCoverEveryMatrixField keeps the spec table and the Matrix
 // struct in lockstep: every field (by JSON tag) must have exactly one spec
 // row, every spec row must name a field, and both sides must have the same

@@ -1,0 +1,3 @@
+data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_visual_host","function":{"name":"exec_command","arguments":"{\"command\":\"printf host-fixture > host-result.txt\",\"execution_target\":\"host\"}"}}]},"finish_reason":"tool_calls"}]}
+
+data: [DONE]

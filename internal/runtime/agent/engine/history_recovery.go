@@ -93,17 +93,6 @@ func (e *Engine) runCompactGate(
 				input, outputReserve, economicInput,
 			)
 		}
-		if err == nil &&
-			window.hardLimit != 0 &&
-			window.total > window.hardLimit &&
-			len(baseInput.Partition(agentcontext.KindContinuation)) != 0 {
-			err = protocol.NewProblem(
-				protocol.CodeResourceExhausted,
-				"partial provider output cannot be compacted within the model context window",
-				false,
-				nil,
-			)
-		}
 		return window, err
 	}
 	for overHard || operatorCeiling {

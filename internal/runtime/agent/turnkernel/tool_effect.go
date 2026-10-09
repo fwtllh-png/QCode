@@ -3,6 +3,7 @@ package turnkernel
 import (
 	"context"
 	"errors"
+	"maps"
 
 	"github.com/fwtllh-png/QCode/internal/adapter/provider"
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
@@ -14,7 +15,7 @@ type ToolEffect struct {
 	Executed            map[string]tool.Result
 	Cache               *tool.ResultCache
 	Registry            *tool.Registry
-	Admit               func([]provider.ToolCall) error
+	Admit               func([]provider.ToolCall) (*tool.Result, error)
 	Execute             func(context.Context, provider.ToolCall) (tool.Result, error)
 	Recover             func(provider.ToolCall, tool.Result, error) (tool.Result, bool)
 	FailureCategory     func(error) string
@@ -41,13 +42,26 @@ func (s *RuntimeKernel) ExecuteToolEffect(
 			planned = append(planned, call)
 		}
 	}
-	if effect.Admit != nil {
-		if err := effect.Admit(planned); err != nil {
-			return nil, err
-		}
-	}
 	if err := s.ValidateToolStarts(planned); err != nil {
 		return nil, err
+	}
+	rejections, undecided, err := s.toolAdmissionRejections(planned)
+	if err != nil {
+		return nil, err
+	}
+	if effect.Admit != nil && len(undecided) != 0 {
+		rejection, err := effect.Admit(undecided)
+		if err != nil {
+			return nil, err
+		}
+		if rejection != nil {
+			if err := s.recordToolAdmissionRejection(undecided, *rejection); err != nil {
+				return nil, err
+			}
+			for _, call := range undecided {
+				rejections[call.ID] = *rejection
+			}
+		}
 	}
 	published := make([]provider.ToolCall, 0, len(planned))
 	for _, call := range planned {
@@ -90,6 +104,18 @@ func (s *RuntimeKernel) ExecuteToolEffect(
 			}
 		}
 		published = append(published, call)
+	}
+	// Rejections are already durable. Mark their execution slots complete so
+	// cached proposals and executors cannot replace a rejection on restart.
+	for index, call := range effect.Calls {
+		if rejection, rejected := rejections[call.ID]; rejected {
+			rejection.Metadata = maps.Clone(rejection.Metadata)
+			rejection.Outcome = tool.CloneOutcome(rejection.Outcome)
+			plan.Results[index] = rejection
+			plan.SkipExecution[index] = true
+			plan.Fingerprints[index] = ""
+			delete(plan.DuplicateOwners, index)
+		}
 	}
 	batch := tool.ExecuteBatch(tool.BatchExecution{
 		Context:         effect.Context,
@@ -207,6 +233,8 @@ func (s *RuntimeKernel) ExecuteToolEffect(
 	if projectionErr != nil {
 		return results, projectionErr
 	}
+	// Admission depends on the whole batch and current obligations. A later
+	// smaller batch must not inherit a per-call cached admission rejection.
 	effect.Cache.Commit(effect.Calls, plan, results, batchMutated)
 	if batch.Error != nil {
 		return results, batch.Error

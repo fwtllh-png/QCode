@@ -553,9 +553,11 @@ func CanEnforceNetwork(capability Capability, desired securitymodel.Network) boo
 func CommandNetworkPolicy(policy Policy, command Command) Policy {
 	if command.FullAccess {
 		policy.FullAccess = true
-		policy.AllowNetwork = true
-		policy.ManagedProxyPort = 0
-		policy.ManagedProxyCredential = ""
+		policy.AllowNetwork = command.CompiledNetwork == securitymodel.NetworkDirect
+		if command.CompiledNetwork != securitymodel.NetworkProxyTargets {
+			policy.ManagedProxyPort = 0
+			policy.ManagedProxyCredential = ""
+		}
 	}
 	if command.DenyNetwork || command.LoopbackOnly {
 		policy.AllowNetwork = false
@@ -590,7 +592,8 @@ func CommandControls(
 			return securitymodel.Controls{}, errors.New("full access requires an authorized Seatbelt execution")
 		}
 		controls.FilesystemRead = securitymodel.FilesystemReadUnrestricted
-		controls.FilesystemWrite = securitymodel.FilesystemWriteUnrestricted
+		controls.Syscall = securitymodel.SyscallUnrestricted
+		controls.IPC = securitymodel.IPCPlatformFiltered
 	}
 	// These are the flags the backend actually emits. For an authorized
 	// execution they validate the already-compiled network ceiling; they do
@@ -631,7 +634,12 @@ func CommandControls(
 			desiredWrite = securitymodel.FilesystemWriteExactPaths
 		}
 	}
-	if !command.FullAccess && securitymodel.CanEnforceFilesystemWrite(
+	if command.FullAccess {
+		controls.FilesystemWrite = securitymodel.FilesystemWriteUnrestricted
+		if command.WorkspaceReadOnly {
+			controls.FilesystemWrite = desiredWrite
+		}
+	} else if securitymodel.CanEnforceFilesystemWrite(
 		controls.FilesystemWrite,
 		desiredWrite,
 	) {

@@ -149,11 +149,23 @@ Child Engine，统一完成 Security Clone、Guard Factory 绑定、Workspace Id
 `ChildSpec` 覆盖，不能扩大 Parent Authority。
 
 Web 的 Session 默认审批姿态为 `auto`，可选权限上限通过
-`ExecOptions.ProfilePermissionCeiling=bypass` 显式传入。默认值与上限分别绑定，用户
+`ExecOptions.ProfilePermissionCeiling=bypass` 显式传入。默认值与上限分别绑定。
+
+`exec_command.execution_target=host` 复用工具审批：Guard 对可信内置 Binding 在 Auto
+下要求当前命令的单次审批，Full Access 预授权，Read only 拒绝。审批通过后编译宿主
+Authority。Process Broker 消费绑定
+具体启动参数的单次租约，将启动交给现有 SessionManager，保留线程归属、交互、超时、
+回收和验证证据；回执声明 `enforcement=none`。Web 只提交审批和权限设置，不执行命令。
+该分支支持宿主访问及需要创建子沙箱的测试，不自动重试，不向子 Agent 开放，也不承诺路径保护、
+范围网络或隔离回滚。默认执行目标仍为 `sandbox`。
+
 选择 Full Access 后，Guard 为支持此能力的内置命令绑定会话权限事实，Authority 编译为
-宿主文件读写和直接联网的逐次执行授权，由同一 Seatbelt 后端落实；普通命令与声明的验证
-不再触发常规审批或计划审批。显式资源范围仍使用原有的受限授权。
-Guard、显式拒绝、强制一次审批、执行租约和审计链路保持一致；任意宿主写入不承诺
+宿主文件读写、网络和系统能力的逐次执行授权，由同一 Seatbelt 后端落实；普通命令与声明的验证
+不再触发常规审批或计划审批。显式写入范围只限制文件写入，显式网络范围只限制网络，
+不切换整个执行基线。`settle=discard` 保持隔离范围执行。Full Access 的 Seatbelt 基线
+允许普通系统操作后叠加保护规则；冻结 Profile 和实际 Prepared Controls 必须逐维一致。
+统一 Policy 层将 Full Access 视为工具单次审批的预授权；显式 ask 保留原始来源与
+单次作用域，显式拒绝和强制编辑审阅继续生效。Guard、执行租约和审计链路保持一致；任意宿主写入不承诺
 文件 before-image 回滚。未声明上限的构造方继续以启动姿态为上限，子 Agent
 以父级当前权限收紧。用户界面合并 `suggest` 到 Auto；内部 `suggest` 权限上限仍有效。
 
@@ -433,12 +445,20 @@ Provider Delta 按消费进度合并：`Recv` 立即交付已有片段，不等�
 
 带 Provider Event ID 或 Sequence 的片段保留事件边界，由 Response Assembly 去重，
 不能在合并时丢失身份。工具参数在去重后逐段检查 JSON 对象成员的唯一性：同一对象中
-第二个同名成员的名称闭合时立即终止采样，关闭 Provider 流并持久化失败检查点；不会
+第二个同名成员的名称闭合时立即关闭当前 Provider 流并持久化失败检查点；不会
 等待整个参数闭合，也不按重复次数或持续时间猜测生成是否退化。名称按 JSON 转义解码
 后比较，不同对象可使用相同名称，字符串值中的代码不参与检查。检查状态按调用索引及
 Transport 隔离，逐字节推进，不反复扫描累计参数。完整参数及持久化组装结果在交给
-Guard 前再次验证；重复成员归为 `malformed_response`，不自动重试或续写无效片段，
-通过正常失败结算保留已有草稿，用户可重试或继续该 Turn。
+Guard 前再次验证。重复成员，以及正常停止时仍无法组成有效调用的参数，归为
+`malformed_response`，整个工具批次不执行。Engine 在同一逻辑 Sample 中开启新的
+Transport/响应片段，让模型重新生成完整调用；失败片段不会拼接到新参数或作为续写
+片段回传。已确认正文和已完成工具结果保留，新调用仍经过 Catalog 绑定和 Guard。
+输出纠错与网络重试分别计数，上限均来自 `execution.provider_retry_limit`；默认 3，
+0 关闭自动纠错。Assembly 的 `tool_argument_repairs` 保存已授权纠错对应的片段序号，
+先持久化授权再打开 Transport；重启复用同一授权，不重置次数或改写失败片段。
+达到上限后返回带具体原因和 Continue 指引的 `resume_turn`，保留之前的草稿。
+事件身份冲突等其他流协议错误不通过此入口恢复。详见
+[Turn 受阻与恢复评估](./blocked-recovery-assessment.md)。
 
 阶段说明使用独立的 `commentary.completed` 持久事件，包含稳定 Message ID、Sample ID、
 正文与关联 Call ID；Thread/Turn 归属来自事件信封。普通协议在完整逻辑采样成功后，
@@ -660,6 +680,20 @@ World 投影不提供摘要注入入口。摘要输入保持捕获时的窗口�
 Prefix Manifest 复用最终请求的 `MeasureDetailed` 结果，生产路径不重复估算；
 独立估算实现仅保留在等价性测试中。
 
+历史引用、遗漏指引与 Dynamic 中的 Checkpoint、有效摘要是本次请求的背景资料，
+统一放在当前 Turn 首条用户请求之前，既不插入最新工具结果之后，也不移到旧 Turn
+之前改写其前缀。同一 Turn 内资料不变时，后续工具调用只扩展对话尾部；引用选择、
+原文覆盖、窗口或来源有效性改变时，按本次投影重新计算资料与插入位置。
+完整历史接口每次仍携带必要资料，不依赖模型记住上次请求；这些临时投影不写入
+Durable History。快照消息、Normalize、Digest、Token 计量与 Prefix Manifest 使用
+同一实际顺序。预算收敛和截断续写等即时反馈放在末尾的 Continuation 分区。
+模型静默使用背景资料，不确认接收或播报注入、加载等内部动作；只有影响任务的
+信息缺失才向用户说明。历史回复中的接收套话也不作为后续进度模板。
+每次采样重新检查会话来源的所属会话和撤回状态。失效的未绑定候选从当前投影移除，
+同时移除该 Turn 的原文、检查点和依赖其原文的可选摘要；遗漏记录保留来源身份并标记
+`source_unavailable`，不提供无效的恢复指针。Durable 来源索引保持不变。显式选择或
+未完成执行步骤依赖的必要来源失效，以及来源存储检查失败，仍拒绝采样。
+
 Repository Map 属于 `internal/runtime/agent/prompt` 的模型输入投影。
 `repository_map.go` 根据 Repo Index 快照聚合、筛选目录和符号提纲；
 `repository.go` 按 Turn 缓存结果，`turn.go` 完成预算内呈现。
@@ -691,6 +725,12 @@ Control State。Cancel、Steer、Approval、Input 统一进入 `ControlPort`；�
    Constitution、Approval 与 Sandbox。
 8. Tool、Approval、Input Result 以一个可保留重试的 Result Command 返回；Coordinator
    在 Host Projection 前持久化逻辑闭合。
+   工具批次的 Mandatory 预留超额时，所有尚未执行的调用以
+   `context_reservation_exceeded` 拒绝结果闭合，再给模型拆批或先验证已有变更的机会。
+   `tool_batch_admission_rejected` 先把整批拒绝决定写入 OpenCalls，随后逐个结算；
+   即使进程在部分结果落盘后退出，恢复时也只结算剩余拒绝，不因批次变小而重新放行。
+   该批没有工具进入执行器，已完成结果不重放。批次拒绝不进入单调用失败缓存，否则
+   拆批后的合法调用会被旧拒绝永久挡住。持久化或生命周期失败仍停止推进。
 9. 修改型 Tool 先生成不可变 File Plan；File Broker 消费单次 Lease，在 Journal
    Before/After 与 descriptor-relative Workspace API 之间提交或回滚。Git Metadata
    Mutation 由独立 VCS Broker 执行。
@@ -1215,8 +1255,13 @@ Context Rebase、基线快照、终态和续跑批次在成功、失败及部分
 若仍超限，已闭合及最新一批工具结果、调用参数、已消费 reasoning 和过长的闭合轮次
 分析正文都可降级为有界投影（正文收成带来源的非权威摘要；工具原文留在
 ResultStore / Journal，可通过 `result_get` 回读），并推进 Token Window。进行中的 Turn 继续降级到不可再缩前缀——Stable、`session_state`、
-工具定义、当前用户请求原文、仍有效的会话来源依赖和 output reserve。只有该前缀仍超硬输入，或部分
-Provider 续写无法放入窗口时，才以 `resource_exhausted` 失败。
+工具定义、当前用户请求原文、仍有效的会话来源依赖和 output reserve。部分 Provider
+输出所在的 Continuation 分区同样可降级：先把完整续写消息存入 ResultStore，再按
+完整规范化请求的实测 Token 成本选择带 Handle 的首尾摘录。没有额外固定大小阈值；
+只有净缩减才安装投影，原文存储失败时保持原表示。Assembly、已确认正文与已完成工具
+不改写，重启从 Assembly 重建投影。未执行片段只作为引用资料，模型必须重新生成较小的
+完整调用，不能把截断参数拼接执行。必要前缀加最小可恢复投影仍装不下时，才以
+`resource_exhausted` 失败。
 跨 Turn 的完整 History Replacement 仍留给显式 `thread.compact` 与 Turn 终态维护。
 压缩 digest 二次折叠时并入上一份 Removed History；超出 `max_digest_entries`
 的条数写入 omitted 计数，不静默丢掉。
@@ -1278,7 +1323,20 @@ Provider 配额耗尽与瞬时限流分开处理。OpenAI-compatible 的明确
 空转。每次请求都有 started 和闭合事件，回执仅按 started 计数。
 Transport 打开失败与流消费失败共用上下文恢复、重试决策、吞吐检查、共享 Lease
 释放、重试事件、等待和预算更新流程。Steering、部分输出与 Usage、续传及取消返回
-仍按 Transport 边界处理，重试事件成功提交后才等待，等待成功后才更新本地重试预算。
+仍按 Transport 边界处理。重试事件提交时同时预留次数和等待预算；Sample 保留普通
+重试次数、429 次数、等待时长和截止时间，`ProviderRetries` 只作单调序号。重启不退款，
+只等待原截止时间的剩余部分，后续 5xx 不消耗此前 429 的次数。吞吐准入等待也通过
+`provider_wait_reserved` 持久化，不计重试次数。时间预算使用 Duration 精度，现有
+Retry Schedule 的毫秒展示字段保持原格式。缺省新增预算字段不改变旧审计编码；
+旧活动 Sample 缺少分类事实时拒绝直接续采样，指引通过保留工作的新恢复 Turn 继续，
+不为预发布状态增加迁移或猜测旧重试类型。
+
+失败终态的 `fault.reason` 区分 Provider 配额、限流、瞬时重试耗尽、参数纠错耗尽、
+认证、请求配置、内容限制和响应契约错误；验证环境不可用与检查失败分别标记。
+Web 只按结构化原因、Origin 和 Convergence 分类，不从自由文本推断；
+恢复动作和 Pending Actions 在卡片直接显示。Provider Attempt 事实按 Sample、Attempt
+及状态去重后汇总已安排的恢复，缺失记录不虚构次数。终态存储故障显示恢复要求，
+不承诺 Continue 会自动修复；运行中的等待不伪装为失败终态。
 
 模型侧不再提供 quality 工具、专项环境探针或“修改文件后才允许重试”的额外门禁。
 命令统一经过 exec_command/write_stdin 的 Guard、审批和 Sandbox；退出码来自真实

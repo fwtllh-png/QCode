@@ -435,8 +435,8 @@ func TestDecideBindingLayer(t *testing.T) {
 			action: ActionAllow, layer: LayerPosture,
 		},
 		{
-			name: "once binding asks under bypass", call: onceCall,
-			action: ActionAsk, code: "host_process_approval_required", layer: LayerBinding,
+			name: "once binding is preauthorized under bypass", call: onceCall,
+			action: ActionAllow, layer: LayerPosture,
 		},
 		{
 			name:   "once binding cannot soften a posture deny",
@@ -465,11 +465,11 @@ func TestDecideBindingLayer(t *testing.T) {
 				r.Permission = PermissionAuto
 			},
 			call:   onceCall,
-			action: ActionAsk, code: "host_process_approval_required", layer: LayerBinding,
+			action: ActionAsk, code: "tool_approval_required", layer: LayerBinding,
 		},
 	})
 	t.Run("approval reuse", func(t *testing.T) {
-		runtime := DefaultRuntime(ModeAct, PermissionBypass)
+		runtime := DefaultRuntime(ModeAct, PermissionAuto)
 		if got := runtime.Decide(resolveFixture(onceCall())).Approval; got != ApprovalFreshOnce {
 			t.Fatalf("once binding approval = %q", got)
 		}

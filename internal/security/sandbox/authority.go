@@ -27,6 +27,7 @@ func (e Enforcement) Valid() bool {
 }
 
 type ExecutionAuthority struct {
+	HostExecution       bool
 	FullAccess          bool
 	Digest              string
 	Enforcement         Enforcement
@@ -50,12 +51,51 @@ func (a ExecutionAuthority) Validate() error {
 	if !a.Enforcement.Valid() {
 		return errors.New("execution authority enforcement is invalid")
 	}
-	if a.FullAccess && (a.Enforcement != EnforcementStrong || !a.AllowProcess ||
-		!a.WorkspaceBaseWrite || !a.AllowNetwork || a.ManagedProxyPort != 0 ||
-		a.EffectiveControls.FilesystemRead != securitymodel.FilesystemReadUnrestricted ||
-		a.EffectiveControls.FilesystemWrite != securitymodel.FilesystemWriteUnrestricted ||
-		a.EffectiveControls.Network != securitymodel.NetworkDirect) {
-		return errors.New("full access requires consistent compiled process controls")
+	if a.HostExecution {
+		controls := a.EffectiveControls
+		if a.FullAccess || a.Enforcement != EnforcementNone || !a.AllowProcess ||
+			!a.WorkspaceBaseWrite || !a.AllowNetwork || a.ManagedProxyPort != 0 ||
+			a.AllowLoopback || len(a.WorkspaceWritePaths) != 0 || len(a.NetworkTargets) != 0 ||
+			controls.FilesystemRead != securitymodel.FilesystemReadUnrestricted ||
+			controls.FilesystemWrite != securitymodel.FilesystemWriteUnrestricted ||
+			controls.Network != securitymodel.NetworkDirect || controls.Syscall != securitymodel.SyscallUnrestricted ||
+			controls.IPC != securitymodel.IPCUnrestricted || controls.CrossProcess != securitymodel.CrossProcessUnrestricted ||
+			controls.ProcessTree != securitymodel.ProcessTreeGroupKill || controls.PathIdentity != securitymodel.PathIdentityDescriptorRelative {
+			return errors.New("host execution requires explicit unrestricted process controls without a sandbox")
+		}
+	}
+	if a.FullAccess {
+		if a.Enforcement != EnforcementStrong || !a.AllowProcess ||
+			a.EffectiveControls.FilesystemRead != securitymodel.FilesystemReadUnrestricted {
+			return errors.New("full access requires consistent compiled process controls")
+		}
+		if a.WorkspaceBaseWrite {
+			if len(a.WorkspaceWritePaths) != 0 || a.EffectiveControls.FilesystemWrite != securitymodel.FilesystemWriteUnrestricted {
+				return errors.New("full access write scope is inconsistent")
+			}
+		} else if len(a.WorkspaceWritePaths) == 0 || a.EffectiveControls.FilesystemWrite != securitymodel.FilesystemWriteExactPaths {
+			return errors.New("full access requires explicit restricted write paths")
+		}
+		switch a.EffectiveControls.Network {
+		case securitymodel.NetworkDirect:
+			if !a.AllowNetwork || a.ManagedProxyPort != 0 || a.AllowLoopback || len(a.NetworkTargets) != 0 {
+				return errors.New("full access direct network has scoped grants")
+			}
+		case securitymodel.NetworkLoopbackAny:
+			if !a.AllowNetwork || !a.LoopbackOnly() {
+				return errors.New("full access loopback scope is inconsistent")
+			}
+		case securitymodel.NetworkProxyTargets:
+			if !a.AllowNetwork || a.ManagedProxyPort == 0 || len(a.NetworkTargets) == 0 {
+				return errors.New("full access proxy scope is inconsistent")
+			}
+		case securitymodel.NetworkDenied:
+			if a.AllowNetwork || a.ManagedProxyPort != 0 {
+				return errors.New("full access network denial is inconsistent")
+			}
+		default:
+			return errors.New("full access network control is invalid")
+		}
 	}
 	if a.Enforcement == EnforcementStrong && strings.TrimSpace(a.WorkspaceRoot) == "" {
 		return errors.New("strong execution authority requires a workspace")
@@ -133,6 +173,16 @@ func (a ExecutionAuthority) VerifyPrepared(
 		ceiling := securitymodel.RequiredControls{Network: a.EffectiveControls.Network}
 		if err := ceiling.SatisfiedBy(prepared); err != nil {
 			return prepared, fmt.Errorf("prepared network exceeds the compiled authority: %w", err)
+		}
+	}
+	if a.FullAccess {
+		// These dimensions describe both grants and restrictions. A stronger
+		// sandbox can still break the authorized workload (browser/PTY/IPC).
+		if prepared.FilesystemRead != a.EffectiveControls.FilesystemRead ||
+			prepared.FilesystemWrite != a.EffectiveControls.FilesystemWrite ||
+			prepared.Network != a.EffectiveControls.Network ||
+			prepared.Syscall != a.EffectiveControls.Syscall || prepared.IPC != a.EffectiveControls.IPC {
+			return prepared, errors.New("prepared controls differ from the compiled Full Access grants")
 		}
 	}
 	return prepared, nil

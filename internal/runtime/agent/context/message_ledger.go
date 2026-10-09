@@ -44,33 +44,40 @@ type LedgerInput struct {
 	Dynamic      []provider.Message
 	Continuation []provider.Message
 	Definitions  []provider.ToolDefinition
+	// DynamicBeforeTurn places request-local background before this Turn's
+	// user request, preserving both earlier history and the current tool loop.
+	// Zero keeps the default partition order.
+	DynamicBeforeTurn uint64
 }
 
 // LedgerProjection atomically updates the mutable portions of a MessageLedger.
 type LedgerProjection struct {
-	Stable       []provider.Message
-	History      []provider.Message
-	Dynamic      []provider.Message
-	Continuation []provider.Message
-	Definitions  []provider.ToolDefinition
+	Stable            []provider.Message
+	History           []provider.Message
+	Dynamic           []provider.Message
+	Continuation      []provider.Message
+	Definitions       []provider.ToolDefinition
+	DynamicBeforeTurn uint64
 }
 
 // MessageLedger is the sole owner of model-sample assembly within one turn.
 type MessageLedger struct {
-	revision     uint64
-	partitions   map[MessageKind][]provider.Message
-	ids          map[MessageKind][]string
-	definitions  []provider.ToolDefinition
-	lastSnapshot *MessageSnapshot
+	revision          uint64
+	partitions        map[MessageKind][]provider.Message
+	ids               map[MessageKind][]string
+	definitions       []provider.ToolDefinition
+	lastSnapshot      *MessageSnapshot
+	dynamicBeforeTurn uint64
 }
 
 // MessageSnapshot is an immutable model-sample projection.
 type MessageSnapshot struct {
-	revision    uint64
-	partitions  map[MessageKind][]provider.Message
-	ids         map[MessageKind][]string
-	definitions []provider.ToolDefinition
-	items       []MessageItem
+	revision          uint64
+	partitions        map[MessageKind][]provider.Message
+	ids               map[MessageKind][]string
+	definitions       []provider.ToolDefinition
+	items             []MessageItem
+	dynamicBeforeTurn uint64
 }
 
 func NewMessageLedger(input LedgerInput) *MessageLedger {
@@ -81,10 +88,11 @@ func NewMessageLedger(input LedgerInput) *MessageLedger {
 		KindContinuation: CloneMessages(input.Continuation),
 	}
 	return &MessageLedger{
-		revision:    1,
-		ids:         messageIDs(partitions),
-		partitions:  partitions,
-		definitions: cloneDefinitions(input.Definitions),
+		revision:          1,
+		ids:               messageIDs(partitions),
+		partitions:        partitions,
+		definitions:       cloneDefinitions(input.Definitions),
+		dynamicBeforeTurn: input.DynamicBeforeTurn,
 	}
 }
 
@@ -113,6 +121,10 @@ func (l *MessageLedger) Project(value LedgerProjection) MessageSnapshot {
 	changed = l.replace(KindHistory, value.History) || changed
 	changed = l.replace(KindDynamic, value.Dynamic) || changed
 	changed = l.replace(KindContinuation, value.Continuation) || changed
+	if l.dynamicBeforeTurn != value.DynamicBeforeTurn {
+		l.dynamicBeforeTurn = value.DynamicBeforeTurn
+		changed = true
+	}
 	if l.replaceDefinitions(value.Definitions) {
 		changed = true
 	}
@@ -173,7 +185,8 @@ func (l *MessageLedger) Snapshot() MessageSnapshot {
 	}
 	snapshot := MessageSnapshot{
 		revision: l.revision, partitions: partitions, ids: ids,
-		definitions: cloneDefinitions(l.definitions), items: items,
+		definitions: cloneDefinitions(l.definitions), items: placeDynamic(items, l.dynamicBeforeTurn),
+		dynamicBeforeTurn: l.dynamicBeforeTurn,
 	}
 	l.lastSnapshot = &snapshot
 	return snapshot
@@ -218,20 +231,20 @@ func (s MessageSnapshot) Definitions() []provider.ToolDefinition {
 
 func (s MessageSnapshot) Messages() []provider.Message {
 	var result []provider.Message
-	for _, kind := range orderedKinds {
-		result = append(result, CloneMessages(s.partitions[kind])...)
+	for _, item := range s.items {
+		result = append(result, CloneMessage(item.Message))
 	}
 	return result
 }
 
 // Digest identifies the complete model-visible message and definition content.
 func (s MessageSnapshot) Digest() (string, error) {
-	// Marshal reads the internal partitions directly; cloning every message
+	// Marshal reads the ordered items directly; cloning every message
 	// first would only add allocations to an already O(context) pass. The
 	// slice stays nil for an empty snapshot so the encoding is unchanged.
 	var messages []provider.Message
-	for _, kind := range orderedKinds {
-		messages = append(messages, s.partitions[kind]...)
+	for _, item := range s.items {
+		messages = append(messages, item.Message)
 	}
 	encoded, err := json.Marshal(struct {
 		Messages    []provider.Message        `json:"messages"`
@@ -306,8 +319,44 @@ func (s MessageSnapshot) withPartition(replaced MessageKind, messages []provider
 	}
 	return MessageSnapshot{
 		revision: s.revision + 1, partitions: partitions, ids: ids,
-		definitions: s.definitions, items: items,
+		definitions: s.definitions, items: placeDynamic(items, s.dynamicBeforeTurn),
+		dynamicBeforeTurn: s.dynamicBeforeTurn,
 	}
+}
+
+// placeDynamic changes only physical order; partition attribution and item
+// identities remain intact. Recompute after every projection/normalization so
+// a folded history cannot leave a stale numeric insertion offset.
+func placeDynamic(items []MessageItem, turn uint64) []MessageItem {
+	if turn == 0 {
+		return items
+	}
+	var background []MessageItem
+	ordered := make([]MessageItem, 0, len(items))
+	for _, item := range items {
+		if item.Kind == KindDynamic {
+			background = append(background, item)
+		} else {
+			ordered = append(ordered, item)
+		}
+	}
+	if len(background) == 0 {
+		return items
+	}
+	at := len(ordered)
+	for i, item := range ordered {
+		if (item.Kind == KindHistory || item.Kind == KindContinuation) && at == len(ordered) {
+			at = i // No retained current request: place before history/feedback.
+		}
+		if item.Kind == KindHistory && item.Message.Turn == turn && item.Role == provider.RoleUser {
+			at = i
+			break
+		}
+	}
+	result := make([]MessageItem, 0, len(items))
+	result = append(result, ordered[:at]...)
+	result = append(result, background...)
+	return append(result, ordered[at:]...)
 }
 
 func (l *MessageLedger) ReplaceHistory(history []provider.Message) {

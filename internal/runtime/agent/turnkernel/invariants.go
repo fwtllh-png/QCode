@@ -68,6 +68,13 @@ func Validate(state State) error {
 		if sample.ProviderRetries == 0 && sample.Retry != nil {
 			return fmt.Errorf("model sample %q has retry facts without a retry", sampleID)
 		}
+		// The additive budget may be absent in an older fact. Keep such audit
+		// facts readable; BeginModelSample refuses to invent their retry split.
+		if sample.RetryBudget != (ProviderRetryBudget{}) &&
+			(uint64(sample.RetryBudget.TransientRetries)+uint64(sample.RetryBudget.RateLimitRetries) != uint64(sample.ProviderRetries) ||
+				sample.RetryBudget.RateLimitWaited < 0) {
+			return fmt.Errorf("model sample %q has an invalid retry budget", sampleID)
+		}
 		if sample.LastFailure != nil &&
 			(sample.LastFailure.Code == "" ||
 				strings.TrimSpace(sample.LastFailure.Message) == "") {
@@ -94,6 +101,7 @@ func Validate(state State) error {
 				sample.Retry.Attempt != sample.Attempt ||
 				sample.Retry.Retry != sample.ProviderRetries ||
 				sample.Retry.RetryAt.IsZero() ||
+				(sample.RetryBudget != (ProviderRetryBudget{}) && sample.RetryBudget.WaitUntil.Before(sample.Retry.RetryAt)) ||
 				strings.TrimSpace(sample.Retry.PolicyRevision) == "" ||
 				!ok ||
 				effect.Kind != EffectSampleProvider ||

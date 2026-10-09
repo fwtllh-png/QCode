@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 
@@ -69,24 +70,28 @@ type ResponseAssembly struct {
 	LogicalRequestID string               `json:"logical_request_id"`
 	State            ResponseCompleteness `json:"state"`
 	Segments         []ResponseSegment    `json:"segments,omitempty"`
+	// One-based segment indexes whose rejected tool calls Runtime authorized
+	// for regeneration. Persist before opening another transport.
+	ToolArgumentRepairs []uint32 `json:"tool_argument_repairs,omitempty"`
 }
 
 type ResponseSegment struct {
-	Transport     TransportMetadata    `json:"transport"`
-	State         ResponseCompleteness `json:"state"`
-	StopReason    StopReason           `json:"stop_reason,omitempty"`
-	Blocks        []ContentBlock       `json:"blocks,omitempty"`
-	ToolFragments []ToolCallFragment   `json:"tool_fragments,omitempty"`
-	Usage         Usage                `json:"usage"`
-	Replay        *ReplayState         `json:"replay,omitempty"`
-	Response      *ResponseState       `json:"response,omitempty"`
-	Seen          map[string]string    `json:"seen,omitempty"`
-	HasSequence   bool                 `json:"has_sequence,omitempty"`
-	LastSequence  uint64               `json:"last_sequence,omitempty"`
-	LastOrdinal   uint32               `json:"last_ordinal,omitempty"`
-	EventCount    uint64               `json:"event_count"`
-	Meaningful    bool                 `json:"meaningful"`
-	Error         string               `json:"error,omitempty"`
+	Transport             TransportMetadata    `json:"transport"`
+	State                 ResponseCompleteness `json:"state"`
+	StopReason            StopReason           `json:"stop_reason,omitempty"`
+	Blocks                []ContentBlock       `json:"blocks,omitempty"`
+	ToolFragments         []ToolCallFragment   `json:"tool_fragments,omitempty"`
+	Usage                 Usage                `json:"usage"`
+	Replay                *ReplayState         `json:"replay,omitempty"`
+	Response              *ResponseState       `json:"response,omitempty"`
+	Seen                  map[string]string    `json:"seen,omitempty"`
+	HasSequence           bool                 `json:"has_sequence,omitempty"`
+	LastSequence          uint64               `json:"last_sequence,omitempty"`
+	LastOrdinal           uint32               `json:"last_ordinal,omitempty"`
+	EventCount            uint64               `json:"event_count"`
+	Meaningful            bool                 `json:"meaningful"`
+	Error                 string               `json:"error,omitempty"`
+	RejectedToolArguments bool                 `json:"rejected_tool_arguments,omitempty"`
 }
 
 func NewResponseAssembly(logicalRequestID string) *ResponseAssembly {
@@ -131,7 +136,7 @@ func (a *ResponseAssembly) BeginTransport(metadata TransportMetadata) error {
 	if metadata.LogicalRequestID != a.LogicalRequestID {
 		return errors.New("response transport changed logical request identity")
 	}
-	if a.State == ResponseFailed {
+	if a.State == ResponseFailed && !a.toolArgumentRepairAuthorized() {
 		return fmt.Errorf("response assembly is already %s", a.State)
 	}
 	if len(a.Segments) != 0 {
@@ -415,6 +420,12 @@ func (a *ResponseAssembly) IncompleteToolFragments() []ToolCallFragment {
 	}
 	var fragments []ToolCallFragment
 	for _, segment := range a.Segments {
+		if segment.State == ResponseFailed {
+			if segment.RejectedToolArguments {
+				fragments = nil
+			}
+			continue
+		}
 		if segment.State != ResponseComplete ||
 			!toolFragmentsComplete(segment.ToolFragments) {
 			fragments = append(
@@ -493,7 +504,7 @@ func (a *ResponseAssembly) Validate() error {
 		return fmt.Errorf("invalid response assembly state %q", a.State)
 	}
 	if len(a.Segments) == 0 {
-		if a.State != ResponseEmpty {
+		if a.State != ResponseEmpty || len(a.ToolArgumentRepairs) != 0 {
 			return errors.New("response assembly without segments is not empty")
 		}
 		return nil
@@ -514,6 +525,12 @@ func (a *ResponseAssembly) Validate() error {
 				segment.State,
 			)
 		}
+		if segment.RejectedToolArguments && (segment.State != ResponseFailed || len(segment.ToolFragments) == 0) {
+			return fmt.Errorf("response segment %d has invalid tool rejection", index)
+		}
+	}
+	if err := a.validateToolArgumentRepairs(); err != nil {
+		return err
 	}
 	if a.State != a.Segments[len(a.Segments)-1].State {
 		return errors.New("response assembly state does not match last segment")
@@ -536,6 +553,10 @@ func (a *ResponseAssembly) ValidateExtension(previous *ResponseAssembly) error {
 		len(a.Segments) < len(previous.Segments) {
 		return errors.New("response assembly does not extend durable identity")
 	}
+	if len(a.ToolArgumentRepairs) < len(previous.ToolArgumentRepairs) ||
+		!slices.Equal(a.ToolArgumentRepairs[:len(previous.ToolArgumentRepairs)], previous.ToolArgumentRepairs) {
+		return errors.New("tool argument repair authorizations changed")
+	}
 	for index, before := range previous.Segments {
 		after := a.Segments[index]
 		if err := validateSegmentExtension(before, after); err != nil {
@@ -550,6 +571,10 @@ func (a *ResponseAssembly) ValidateExtension(previous *ResponseAssembly) error {
 }
 
 func validateSegmentExtension(before, after ResponseSegment) error {
+	if before.RejectedToolArguments && !after.RejectedToolArguments ||
+		before.State != ResponseStreaming && before.RejectedToolArguments != after.RejectedToolArguments {
+		return errors.New("tool argument rejection changed")
+	}
 	if !reflect.DeepEqual(before.Transport, after.Transport) {
 		return errors.New("transport metadata changed")
 	}

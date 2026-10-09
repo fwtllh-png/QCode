@@ -24,14 +24,24 @@ const (
 )
 
 const (
-	ProblemReasonSessionBusy          = "session_busy"
-	ProblemReasonStaleRecoverySource  = "stale_recovery_source"
-	ProblemReasonStaleProfileRevision = "stale_profile_revision"
-	ProblemReasonStaleSessionRevision = "stale_session_revision"
-	ProblemReasonUnsupported          = "unsupported"
-	ProblemReasonWrongSession         = "wrong_session"
-	ProblemReasonProviderThroughput   = "provider_throughput"
-	ProblemReasonProviderRateLimited  = "provider_rate_limited"
+	ProblemReasonSessionBusy             = "session_busy"
+	ProblemReasonStaleRecoverySource     = "stale_recovery_source"
+	ProblemReasonStaleProfileRevision    = "stale_profile_revision"
+	ProblemReasonStaleSessionRevision    = "stale_session_revision"
+	ProblemReasonUnsupported             = "unsupported"
+	ProblemReasonWrongSession            = "wrong_session"
+	ProblemReasonProviderThroughput      = "provider_throughput"
+	ProblemReasonProviderRateLimited     = "provider_rate_limited"
+	ProblemReasonProviderQuota           = "provider_quota_exhausted"
+	ProblemReasonProviderRetry           = "provider_retry_exhausted"
+	ProblemReasonToolArgumentRepair      = "provider_tool_argument_repair_exhausted"
+	ProblemReasonProviderAuth            = "provider_auth"
+	ProblemReasonProviderRequest         = "provider_invalid_request"
+	ProblemReasonProviderResponse        = "provider_response_invalid"
+	ProblemReasonProviderContent         = "provider_unsupported_content"
+	ProblemReasonContextWindow           = "context_window_exceeded"
+	ProblemReasonVerificationUnavailable = "verification_unavailable"
+	ProblemReasonVerificationFailed      = "verification_failed"
 )
 
 func NewProblem(code ErrorCode, message string, retryable bool, cause error) *Problem {

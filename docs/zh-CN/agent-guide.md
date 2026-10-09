@@ -92,7 +92,10 @@
   时才收成带来源的非权威摘要，不能仅因为文字和工具在同一条消息就丢掉判断。
   进行中的 Turn 不得因窗口失败，除非用户请求加
   Mandatory 分区已超过硬输入。闭合 Turn 的 Checkpoint 持久化仍 write-once，
-  采样仅选当前来源引用轮和最近闭合轮，放在 Dynamic；`checkpoint_max_bytes`
+  采样仅选当前来源引用轮和最近闭合轮，放在 Dynamic。Dynamic 与历史引用、遗漏
+  指引都插入当前 Turn 首条用户请求之前；资料不变时保留工具循环前缀，选择或
+  容量改变时重新投影，不写入 Durable History。预算与续写反馈仍在末尾。
+  模型静默使用内部背景，不确认接收或播报注入过程；`checkpoint_max_bytes`
   约束可选块总投影，0 用必要上下文之后的请求余量。摘要不得自动提升执行 Todo。
   历史恢复走 `turn_history` 的 turn/source_id/item_id/catalog 互斥选择器，
   source_id 可读 index_only；max_bytes 有界，继续源分页用 offset/content_digest。

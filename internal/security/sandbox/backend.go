@@ -169,6 +169,8 @@ func platformControls(platform string) securitymodel.Controls {
 		controls.Network = securitymodel.NetworkDenied
 		controls.ProcessTree = securitymodel.ProcessTreeGroupKill
 		controls.PathIdentity = securitymodel.PathIdentityDescriptorRelative
+		controls.Syscall = securitymodel.SyscallPlatformFiltered
+		controls.IPC = securitymodel.IPCPlatformFiltered
 	}
 	return controls
 }
@@ -352,8 +354,21 @@ func seatbeltProfileForCommand(
 	allowLoopback bool,
 ) string {
 	var profile strings.Builder
-	profile.WriteString("(version 1)\n(deny default)\n")
-	profile.WriteString("(import \"system.sb\")\n")
+	profile.WriteString("(version 1)\n")
+	if policy.FullAccess {
+		// Full Access grants ordinary OS facilities (Mach/IOKit, PTY and
+		// child sandbox setup). Explicit protections and resource scopes
+		// below still apply to this process and all of its descendants.
+		profile.WriteString("(allow default)\n")
+		if workspaceReadOnly {
+			profile.WriteString("(deny file-write*)\n")
+		}
+		// Remove the default network grant before adding this command's
+		// direct, loopback or managed-proxy grant.
+		profile.WriteString("(deny network*)\n")
+	} else {
+		profile.WriteString("(deny default)\n(import \"system.sb\")\n")
+	}
 	// signal stays unscoped: Seatbelt offers no self+descendants target
 	// (empirically verified — (target self) denies killing the process's
 	// own children), and unscoped signal is already the macOS same-UID

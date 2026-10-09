@@ -43,10 +43,14 @@ const (
 	SyscallUnrestricted  Syscall = "unrestricted"
 	SyscallDenyDangerous Syscall = "deny_dangerous"
 	SyscallAllowlist     Syscall = "allowlist"
+	// PlatformFiltered reports OS profile filtering without claiming a
+	// portable syscall allowlist or a deny-dangerous guarantee.
+	SyscallPlatformFiltered Syscall = "platform_filtered"
 
 	IPCUnrestricted     IPC = "unrestricted"
 	IPCUnixOnly         IPC = "unix_only"
 	IPCPrivateNamespace IPC = "private_namespace"
+	IPCPlatformFiltered IPC = "platform_filtered"
 
 	PathIdentityLexical            PathIdentity = "lexical"
 	PathIdentityCanonical          PathIdentity = "canonical"

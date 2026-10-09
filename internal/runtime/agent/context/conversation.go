@@ -304,6 +304,19 @@ func (s *ConversationState) CandidateSources(plan Plan) []ConversationSource {
 	return sources
 }
 
+// RequiredSources excludes unbound candidates but retains explicit selection
+// and unfinished plan dependencies.
+func (s *ConversationState) RequiredSources(plan Plan) []ConversationSource {
+	if s == nil {
+		return nil
+	}
+	bound := *s
+	if bound.Selection == nil {
+		bound.Selection = &ConversationSelection{}
+	}
+	return bound.CandidateSources(plan)
+}
+
 func (s *ConversationState) SelectedItems(source ConversationSource, plan Plan) []ReferenceItem {
 	if s.Selection == nil || slices.Contains(s.Selection.GroupIDs, source.ID) {
 		return append([]ReferenceItem(nil), source.Items...)

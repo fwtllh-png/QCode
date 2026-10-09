@@ -30,6 +30,8 @@ func TestDecisionTableRows(t *testing.T) {
 	}
 	fullAccess := derived(CapabilityProcess, Read, true)
 	fullAccess.Declared.FullAccess = true
+	host := derived(CapabilityProcess, Read, true)
+	host.Declared.HostExecution = true
 	tests := []struct {
 		name  string
 		input AssessmentInput
@@ -96,6 +98,7 @@ func TestDecisionTableRows(t *testing.T) {
 			rule: RuleAgent,
 			want: classified(AgentLifecycle, RiskHigh, Bounded),
 		},
+		{name: "host process", input: host, rule: RuleProcessHost, want: classified(ProcessMutating, RiskHigh, Irreversible)},
 		{name: "full access process", input: fullAccess, rule: RuleProcessFullAccess, want: classified(ProcessMutating, RiskHigh, Irreversible)},
 		{
 			name: "strong process reaching only loopback",

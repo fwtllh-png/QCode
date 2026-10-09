@@ -122,7 +122,7 @@ func TestHostProcessApprovalIsFreshOnce(t *testing.T) {
 		Registry: registry,
 		Policy: policy.DefaultRuntime(
 			policy.ModeAct,
-			policy.PermissionBypass,
+			policy.PermissionAuto,
 		),
 		Workspace: t.TempDir(),
 		Approvals: func(_ context.Context, request ApprovalRequest) error {
@@ -149,7 +149,7 @@ func TestHostProcessApprovalIsFreshOnce(t *testing.T) {
 	case executeErr := <-done:
 		t.Fatalf("process smoke ended before approval: %v", executeErr)
 	}
-	if request.ReasonCode != "host_process_approval_required" ||
+	if request.ReasonCode != "tool_approval_required" ||
 		request.ReplacementAllowed ||
 		len(request.AllowedScopes) != 1 ||
 		request.AllowedScopes[0] != policy.ApprovalOnce {
@@ -173,7 +173,7 @@ func TestOneShotApprovalRechecksPermissionBeforeExecution(t *testing.T) {
 	}
 	executor := &testExecutor{descriptor: descriptor, binding: binding}
 	registry := newTestRegistry(t, nil, executor)
-	runtime := policy.DefaultRuntime(policy.ModeAct, policy.PermissionBypass)
+	runtime := policy.DefaultRuntime(policy.ModeAct, policy.PermissionAuto)
 	requests := make(chan ApprovalRequest, 1)
 	guarded := newTestGuard(t, registry, runtime, func(_ context.Context, request ApprovalRequest) error {
 		requests <- request

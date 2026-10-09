@@ -175,7 +175,8 @@ export function ToolDisclosure({
 }) {
   const [open, setOpen] = useState(false);
   const presentation = useMemo(() => toolPresentation(entry), [entry]);
-  const expandable = Boolean(entry.output || entry.state === "failed");
+  const expandable = Boolean(entry.output || entry.state === "failed" ||
+    entry.command?.executionTarget === "host");
   const toggle = () => {
     if (expandable) setOpen((value) => !value);
   };
@@ -275,6 +276,7 @@ type ReadPresentation = {
 
 type ShellPresentation = {
   kind: "shell";
+  executionTarget?: string;
   command: string;
   cwd: string;
   output: string;
@@ -344,6 +346,7 @@ function toolPresentation(entry: ToolNode): ToolPresentation {
   if (entry.variant === "shell") {
     return {
       kind: "shell",
+      executionTarget: entry.command?.executionTarget,
       command: entry.command?.command ||
         stringArgument(args, ["command", "cmd"]) ||
         entry.summary,
@@ -557,6 +560,7 @@ function TerminalCard({value}: {value: ShellPresentation}) {
           {value.running ? "Command running" : failed ? "Command failed" : "Command finished"}
         </span>
         <span className="terminalCwd">{terminalDirectory(value.cwd)}</span>
+        {value.executionTarget === "host" && <span title="Current-user OS access; QCode sandbox enforcement is disabled">Host · no sandbox</span>}
         <code>{value.command}</code>
         {failed && value.exitCode !== undefined && (
           <span className="terminalExit">exit {value.exitCode}</span>

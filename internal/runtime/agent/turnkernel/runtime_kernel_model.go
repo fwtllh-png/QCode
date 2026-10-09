@@ -7,6 +7,7 @@ import (
 
 	"github.com/fwtllh-png/QCode/internal/adapter/provider"
 	providerassembly "github.com/fwtllh-png/QCode/internal/adapter/provider/assembly"
+	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
 )
 
 func (s *RuntimeKernel) BeginModelSample(
@@ -22,10 +23,14 @@ func (s *RuntimeKernel) BeginModelSample(
 			return err
 		}
 	}
-	retryAt := time.Time{}
-	if retry := s.state.SampleLedger[sampleID].Retry; retry != nil {
-		retryAt = retry.RetryAt
+	sample := s.state.SampleLedger[sampleID]
+	if sample.ProviderRetries > 0 && sample.RetryBudget == (ProviderRetryBudget{}) {
+		s.mu.Unlock()
+		return protocol.NewFault(protocol.CodeConflict, "retained model sample has no classified retry budget", false,
+			protocol.FaultMetadata{Origin: protocol.FaultOriginKernel, Disposition: protocol.FaultResumeTurn,
+				RecoveryAction: "continue in a new recovery turn using the retained work; this older sample cannot safely resume its retry budget"}, nil)
 	}
+	retryAt := sample.RetryBudget.WaitUntil
 	s.mu.Unlock()
 	if delay := time.Until(retryAt); !retryAt.IsZero() && delay > 0 {
 		timer := time.NewTimer(delay)
@@ -168,10 +173,21 @@ func (s *RuntimeKernel) ScheduleProviderRetry(
 	return nil
 }
 
-func (s *RuntimeKernel) ProviderRetries(sampleID string) uint32 {
+func (s *RuntimeKernel) ProviderRetryBudget(sampleID string) ProviderRetryBudget {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.state.SampleLedger[sampleID].ProviderRetries
+	return s.state.SampleLedger[sampleID].RetryBudget
+}
+
+func (s *RuntimeKernel) ReserveProviderWait(sampleID string, delay time.Duration, until time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, exists := s.state.SampleLedger[sampleID]; !exists {
+		if err := s.applyAuthoritativeLocked(ModelSampleRequested{SampleID: sampleID}); err != nil {
+			return err
+		}
+	}
+	return s.applyAuthoritativeLocked(ProviderWaitReserved{SampleID: sampleID, Delay: delay, Until: until})
 }
 
 func (s *RuntimeKernel) FinishModelTransport(sampleID string) error {

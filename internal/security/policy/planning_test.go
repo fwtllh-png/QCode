@@ -134,9 +134,13 @@ func TestPlanningExemptEffectSkipsPlanGate(t *testing.T) {
 		t.Fatalf("undeclared exemption decision = %+v", decision)
 	}
 	push.Effect.Planning = tool.PlanningExempt
-	if decision := runtime.Decide(resolveFixture(push)); decision.Code != "host_process_approval_required" ||
-		decision.Layer != LayerBinding {
-		t.Fatalf("planning-exempt decision = %+v, want the binding's one-time approval", decision)
+	if decision := runtime.Decide(resolveFixture(push)); decision.Action != ActionAllow {
+		t.Fatalf("planning-exempt decision = %+v, want Full Access preauthorization", decision)
+	}
+	runtime.Permission = PermissionAuto
+	if decision := runtime.Decide(resolveFixture(push)); decision.Code != "tool_approval_required" ||
+		decision.Layer != LayerBinding || decision.Approval != ApprovalFreshOnce {
+		t.Fatalf("planning-exempt decision = %+v, want one-time approval under Auto", decision)
 	}
 }
 

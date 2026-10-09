@@ -41,8 +41,9 @@ type Authority struct {
 // Evidence is what a broker learns after compilation and before the lease: a
 // snapshotted artifact or a planned file mutation.
 type Evidence struct {
-	Artifact           *ArtifactIntent
-	FileMutationDigest string
+	ProcessCommandDigest string
+	Artifact             *ArtifactIntent
+	FileMutationDigest   string
 }
 
 func Compile(input CompileInput) (Authority, error) {
@@ -63,6 +64,14 @@ func Compile(input CompileInput) (Authority, error) {
 		return Authority{}, errors.New("prepared invocation does not match the policy invocation")
 	}
 	assessment := input.Invocation.Assessment
+	if assessment.Facets().HostExecution {
+		if input.Runtime.DisableHostExecution || input.Runtime.Permission == policy.PermissionNever || input.Prepared.Subject.Kind != securitymodel.SubjectBuiltin || input.Invocation.Capability() != securitymodel.CapabilityProcess || input.Enforcement != sandbox.EnforcementNone || assessment.Facets().FullAccess {
+			return Authority{}, errors.New("host execution requires an authorized unsandboxed builtin process within the runtime permission ceiling")
+		}
+		if input.Runtime.Permission != policy.PermissionBypass && (input.Decision.Action != policy.ActionAsk || input.Decision.Approval != policy.ApprovalFreshOnce) {
+			return Authority{}, errors.New("host execution requires a fresh command approval or Full Access")
+		}
+	}
 	if assessment.Facets().FullAccess && (input.Runtime.Permission != policy.PermissionBypass ||
 		input.Prepared.Subject.Kind != securitymodel.SubjectBuiltin || input.Invocation.Capability() != securitymodel.CapabilityProcess) {
 		return Authority{}, errors.New("full access requires a builtin process and Full Access permission")
@@ -74,10 +83,21 @@ func Compile(input CompileInput) (Authority, error) {
 		return Authority{}, err
 	}
 	required := requiredControls(input.Prepared.Required, assessment.Facets(), reach)
+	if assessment.Facets().HostExecution {
+		required = RequiredControls{
+			FilesystemRead:  securitymodel.FilesystemReadUnrestricted,
+			FilesystemWrite: securitymodel.FilesystemWriteUnrestricted,
+			Network:         securitymodel.NetworkDirect,
+			ProcessTree:     securitymodel.ProcessTreeGroupKill,
+			PathIdentity:    securitymodel.PathIdentityDescriptorRelative,
+		}
+	}
 	if assessment.Facets().FullAccess {
-		required.FilesystemRead = securitymodel.FilesystemReadUnrestricted
-		required.FilesystemWrite = securitymodel.FilesystemWriteUnrestricted
-		required.Network = securitymodel.NetworkDirect
+		required.FilesystemRead = profile.Controls.FilesystemRead
+		required.FilesystemWrite = profile.Controls.FilesystemWrite
+		if reach == sandbox.ReachNone {
+			required.Network = profile.Controls.Network
+		}
 	}
 	roots := make(map[string]string)
 	for _, candidate := range profileHostRoots(profile) {
@@ -123,6 +143,12 @@ func (a Authority) Bind(evidence Evidence) (Authority, error) {
 		return Authority{}, err
 	}
 	result := a.clone()
+	if evidence.ProcessCommandDigest != "" {
+		if result.Operation.Process == nil || !validDigest(evidence.ProcessCommandDigest) {
+			return Authority{}, errors.New("prepared command requires a process operation and a valid digest")
+		}
+		result.Operation.Process.PreparedCommandDigest = evidence.ProcessCommandDigest
+	}
 	result.Operation.Artifact = cloneArtifactIntent(evidence.Artifact)
 	if result.Operation.File != nil {
 		result.Operation.File.MutationDigest = evidence.FileMutationDigest

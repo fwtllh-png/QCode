@@ -3,8 +3,11 @@ package turnkernel
 import (
 	"errors"
 	"fmt"
+	"math"
 	"strings"
+	"time"
 
+	"github.com/fwtllh-png/QCode/internal/adapter/provider"
 	providerassembly "github.com/fwtllh-png/QCode/internal/adapter/provider/assembly"
 )
 
@@ -64,11 +67,11 @@ func applyModelSampleStarted(
 		command.Attempt <= existing.Attempt {
 		return illegal(current, command, "sample attempt is not monotonic")
 	}
-	transition.State.SampleLedger[command.SampleID] = ModelSampleState{
-		ID:      command.SampleID,
-		Attempt: command.Attempt,
-		Status:  SampleRunning,
-	}
+	sample := current.SampleLedger[command.SampleID]
+	sample.ID, sample.Attempt, sample.Status = command.SampleID, command.Attempt, SampleRunning
+	sample.Error, sample.Retry = "", nil
+	sample.RetryBudget.WaitUntil = time.Time{}
+	transition.State.SampleLedger[command.SampleID] = sample
 	transition.State.ActiveSampleID = command.SampleID
 	transition.Events = append(transition.Events, Event{
 		Kind: EventSampleStarted, SampleID: command.SampleID,
@@ -325,14 +328,28 @@ func applyProviderRetry(
 	if command.Retry != sample.ProviderRetries+1 {
 		return illegal(current, command, "provider retry number is not monotonic")
 	}
+	if command.EffectiveDelay < 0 {
+		return illegal(current, command, "provider retry delay is negative")
+	}
+	if command.Failure.Code == provider.FailureRateLimit {
+		delay := command.EffectiveDelay
+		if sample.RetryBudget.RateLimitWaited > time.Duration(math.MaxInt64)-delay {
+			return illegal(current, command, "provider retry wait budget overflows duration")
+		}
+		sample.RetryBudget.RateLimitRetries++
+		sample.RetryBudget.RateLimitWaited += delay
+	} else {
+		sample.RetryBudget.TransientRetries++
+	}
 	failure := command.Failure
 	sample.ProviderRetries = command.Retry
+	sample.RetryBudget.WaitUntil = command.RetryAt
 	sample.LastFailure = &failure
 	sample.Retry = &ProviderRetryState{
 		EffectID:         command.EffectID,
 		Attempt:          command.Attempt,
 		Retry:            command.Retry,
-		EffectiveDelayMS: command.EffectiveDelayMS,
+		EffectiveDelayMS: uint64(command.EffectiveDelay / time.Millisecond),
 		RetryAt:          command.RetryAt,
 		PolicyRevision:   command.PolicyRevision,
 	}
@@ -346,6 +363,23 @@ func applyProviderRetry(
 		Kind: EventProviderRetry, EffectID: command.EffectID,
 		SampleID: command.SampleID,
 	})
+	return nil
+}
+
+func applyProviderWait(transition *Transition, current State, command ProviderWaitReserved) error {
+	if err := requirePhase(current, command, PhaseSampling); err != nil {
+		return err
+	}
+	sample, ok := current.SampleLedger[command.SampleID]
+	if !ok || sample.Status != SampleRequested ||
+		command.Delay <= 0 || command.Until.IsZero() ||
+		command.Until.Add(-command.Delay).Before(sample.RetryBudget.WaitUntil) ||
+		sample.RetryBudget.RateLimitWaited > time.Duration(math.MaxInt64)-command.Delay {
+		return illegal(current, command, "provider wait does not match pending sample or budget")
+	}
+	sample.RetryBudget.RateLimitWaited += command.Delay
+	sample.RetryBudget.WaitUntil = command.Until
+	transition.State.SampleLedger[command.SampleID] = sample
 	return nil
 }
 

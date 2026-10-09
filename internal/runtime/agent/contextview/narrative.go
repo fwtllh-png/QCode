@@ -47,6 +47,13 @@ func SelectNarrative(artifact *agentcontext.NarrativeArtifact, enabled bool, rou
 		return omit("source_unavailable")
 	}
 	raw := map[string]bool{}
+	unavailable := map[string]bool{}
+	unavailableIndices := map[int]bool{}
+	for _, omission := range projection.Omissions {
+		if omission.Reason == agentcontext.OmittedSourceUnavailable {
+			unavailableIndices[omission.Source.Index] = true
+		}
+	}
 	indices := map[uint64]int{}
 	selected := map[int]bool{}
 	for _, s := range projection.Selected {
@@ -58,11 +65,17 @@ func SelectNarrative(artifact *agentcontext.NarrativeArtifact, enabled bool, rou
 		}
 		index := indices[message.Turn]
 		indices[message.Turn]++
+		if unavailableIndices[i] {
+			unavailable[agentcontext.StableMessageID(artifact.ThreadID, message, index)] = true
+		}
 		if selected[i] {
 			raw[agentcontext.StableMessageID(artifact.ThreadID, message, index)] = true
 		}
 	}
 	for i, c := range artifact.Coverage {
+		if unavailable[c.Source.MessageID] {
+			return omit("source_unavailable")
+		}
 		found := false
 		for _, source := range current.Excerpts {
 			if source.Source.MessageID == c.Source.MessageID && source.Source.Digest == c.Source.Digest {

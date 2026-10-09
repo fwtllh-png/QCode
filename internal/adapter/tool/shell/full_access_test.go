@@ -85,6 +85,16 @@ func TestFullAccessCommandsUseSessionAuthority(t *testing.T) {
 	if err != nil || result.IsError || result.Content != "network-ok" {
 		t.Fatalf("Full Access direct network: %+v %v", result, err)
 	}
+	result, err = run("exec_command", map[string]any{
+		"command":        "mkdir -p e2e/results && /usr/bin/curl --fail --silent --max-time 5 " + server.URL + " > e2e/results/output",
+		"allow_loopback": true,
+	})
+	if err != nil || result.IsError || !result.Execution.Attempts[0].FullAccess || result.Execution.Attempts[0].NetworkMode != "loopback_any" {
+		t.Fatalf("loopback must not remove Full Access file grants: %+v %v", result, err)
+	}
+	if content, err := os.ReadFile(filepath.Join(root, "e2e/results/output")); err != nil || string(content) != "network-ok" {
+		t.Fatalf("loopback result = %q, %v", content, err)
+	}
 	outside := filepath.Join(host, "output")
 	result, err = run("exec_command", map[string]any{"command": fmt.Sprintf("printf host > %q", outside)})
 	if err != nil || result.IsError {
@@ -126,7 +136,7 @@ func TestFullAccessCommandsUseSessionAuthority(t *testing.T) {
 	}
 	runtime.SubmitPlan()
 	result, err = run("exec_command", map[string]any{"command": "printf ok > scoped-output", "write_paths": []string{"scoped-output"}})
-	if err != nil || result.IsError || result.Execution.Attempts[0].FullAccess {
+	if err != nil || result.IsError || !result.Execution.Attempts[0].FullAccess || result.Execution.Attempts[0].NetworkMode != "direct" || result.Execution.Attempts[0].EffectiveControls.FilesystemWrite != "exact_paths" {
 		t.Fatalf("explicit write scope: %+v %v", result, err)
 	}
 	result, err = run("exec_command", map[string]any{"command": "printf forbidden > outside-scope", "write_paths": []string{"scoped-output"}})

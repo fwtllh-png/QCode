@@ -130,6 +130,36 @@ func TestVerifyPreparedRejectsNetworkBroaderThanAuthority(t *testing.T) {
 	}
 }
 
+func TestFullAccessPreparedGrantsMustMatchEveryDimension(t *testing.T) {
+	compiled := platformControls("darwin")
+	compiled.FilesystemRead = securitymodel.FilesystemReadUnrestricted
+	compiled.FilesystemWrite = securitymodel.FilesystemWriteUnrestricted
+	compiled.Network = securitymodel.NetworkDirect
+	compiled.Syscall = securitymodel.SyscallUnrestricted
+	authority := ExecutionAuthority{FullAccess: true, Enforcement: EnforcementStrong, EffectiveControls: compiled}
+	if _, err := authority.VerifyPrepared(compiled); err != nil {
+		t.Fatal(err)
+	}
+	for _, change := range []struct {
+		name  string
+		apply func(*securitymodel.Controls)
+	}{
+		{"read narrowed", func(c *securitymodel.Controls) { c.FilesystemRead = securitymodel.FilesystemReadDeclaredRoots }},
+		{"write narrowed", func(c *securitymodel.Controls) { c.FilesystemWrite = securitymodel.FilesystemWriteExactPaths }},
+		{"network narrowed", func(c *securitymodel.Controls) { c.Network = securitymodel.NetworkDenied }},
+		{"system calls narrowed", func(c *securitymodel.Controls) { c.Syscall = securitymodel.SyscallPlatformFiltered }},
+		{"credential IPC opened", func(c *securitymodel.Controls) { c.IPC = securitymodel.IPCUnrestricted }},
+	} {
+		t.Run(change.name, func(t *testing.T) {
+			prepared := compiled
+			change.apply(&prepared)
+			if _, err := authority.VerifyPrepared(prepared); err == nil {
+				t.Fatal("mismatched Full Access grants accepted")
+			}
+		})
+	}
+}
+
 func TestAuthorizedCommandMustRespectCompiledNetwork(t *testing.T) {
 	capability := Capability{Available: true, ManagedProxy: true, Effective: platformControls("darwin")}
 	for _, tc := range []struct {

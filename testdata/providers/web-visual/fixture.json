@@ -9,6 +9,10 @@
       "streams": ["session-title.sse"]
     },
     {
+      "match": ["visual host command"],
+      "streams": ["host-command.sse", "approval-complete.sse"]
+    },
+    {
       "match": ["visual session title"],
       "streams": ["tools-read.sse", "tools-complete.sse", "tools-complete.sse"]
     },

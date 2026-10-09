@@ -72,7 +72,7 @@ response_header_timeout = "0s"  # 0 表示继承 timeout
 idle_timeout = "1m"             # 每个流事件都会续期
 max_concurrent = 8
 rate_limit = 0                    # 0 = 仅根据 Provider 反馈动态限流
-provider_retry_limit = 3          # 每次 Model Sample 的瞬时故障重试预算；0 = 不重试
+provider_retry_limit = 3          # 每次 Sample 的网络重试/工具参数纠错上限，分别计数；0 = 关闭
 rate_limit_retry_limit = 0        # 0 = 有 Retry-After/Cooldown 时不限次数；无等待信号时继承 provider_retry_limit
 rate_limit_wait = "10m"           # 累计 429 等待上限；0 = 继承 timeout
 tokens_per_minute = 0             # 0 = TPM 未知，不按模型名称发明默认值；只做请求冷却
@@ -285,7 +285,10 @@ SLA Ceiling，仍不能超过剩余硬输入。轮数和原文 ceiling 不授权
 闭合 Turn 的摘要条目仅作为解释保存；`unresolved` / `pending_job` / `next_step`
 不再自动提升为 Plan Todo。执行义务只由现有计划入口更新；报告或 deliverable
 本身不会创建 pending 步骤。闭合时持久化 write-once Turn Checkpoint；每次采样仅把
-当前来源引用轮及最近闭合轮的可选块放入 History 之后的 Dynamic 区，不改写旧块。
+当前来源引用轮及最近闭合轮的可选块放入 Dynamic 区，不改写旧块。Dynamic 在实际
+请求中位于当前 Turn 首条用户请求之前，历史引用与遗漏指引也在该边界提供；同一
+工具循环内未变化的资料保持原位置，不反复附在最新工具结果后面。来源选择、
+原文覆盖和容量改变时重新投影，恢复会话后仍完整提供本次所需资料。
 `checkpoint_max_bytes` 是本次所有可选块的总字节上限；正值仍为 256–1048576，
 0 表示只受必要上下文之后的请求余量约束。完整规范化请求（含 Schema、提示、续写、
 运行时观测校准和输出预留）还必须满足硬窗口及经济预算。新块渲染仍用公开的摘要
@@ -474,8 +477,9 @@ Progress 与 Convergence 状态都会持久化并在 Runtime 恢复后延续。
 `execution.idle_timeout` 约束相邻流事件之间的空闲时间，每收到一个事件就重新计时，
 因此持续产出进展的长流不会在固定两分钟后被中断。
 它不判断内容是否有效。工具参数另按 JSON 对象成员唯一性进行增量校验：同一对象的
-重复成员一经确认即停止采样并报告 Provider 响应错误，保留已有草稿供恢复，不需要
-调整超时，也不会自动续写这个无效调用。普通文本或字符串值的重复不据此判为错误。
+重复成员一经确认即关闭当前响应流并记录 Provider 响应错误，随后按
+`execution.provider_retry_limit` 重新生成完整调用；保留已有工作，不续写无效参数。
+这类错误不需要调整超时。普通文本或字符串值的重复不据此判为错误。
 
 `execution.max_concurrent` 是运维侧声明的 Provider 并发合同。同一 Session 内
 主 Agent 与全部 Subagent 的并发模型采样都受它约束：Runtime 在两个层面执行同一
@@ -519,7 +523,18 @@ Token。它与模型 Context Window、`budget_tokens` / `turn_budget_tokens` 经
 次恢复。明确分类为 `rate_limit` 的 429 不消耗该次数预算，改由
 Rate Limit Recovery Budget 约束。本地推导的退避在现有 20% 幅度内按 Session、
 Route 与 Sample 做确定性 jitter；有 `Retry-After` / Reset / Route Cooldown 时仍
-等满剩余窗口。
+等满剩余窗口。普通故障次数、429 次数和累计等待预留随 Sample 持久化，重启不会
+把 429 算成网络重试，也不会清空已预留的等待预算。等待开始前落盘；进程在等待中
+退出时，恢复仅等待原截止时间的剩余部分。吞吐准入等待共用此预算，不增加重试次数。
+
+同一配置也约束工具参数的自动纠错次数，和网络重试分别计数。重复 JSON 成员或正常
+停止时无效的工具调用会被整批拒绝，模型在同一 Turn 的新响应片段中重新生成；默认
+最多 3 次，`0` 表示直接保留草稿并报告。已完成的工具不重放，拒绝的参数不续写。
+纠错授权先写入 Durable Assembly，重启不会清零。耗尽后提供 Continue 入口，并说明
+应检查 Provider 或选择其他模型。`max_tokens` 等正常截断仍走续写机制，不占参数纠错额度。
+续写内容使完整请求超窗时，Runtime 先保存完整内容，再按实际窗口余量投影可分页读取的
+摘录；保留原始 Assembly 和用户可见正文。过大的未执行工具片段会要求重新生成较小的
+完整调用，不引入额外重试或压缩大小阈值。
 
 Rate Limit Recovery Budget：
 
@@ -582,9 +597,11 @@ follow-up 的生命周期上限；每次 follow-up 只预留该 Agent 的剩余�
 实际没有生效”。
 
 `context.compact` 先为 Mandatory Truth 和未闭合因果组分配空间，再保留
-Protected/Refreshable Truth、Raw Tail 和可选 Narrative。新增计划、Pending Input
-或写工具预留如果会超过 Mandatory 上界，会在状态或副作用提交前返回
-`resource_exhausted`。`post_turn` Narrative 仅在 `turn.completed` 之后生成滚动
+Protected/Refreshable Truth、Raw Tail 和可选 Narrative。新增计划如果会超过
+Mandatory 上界，仍拒绝状态提交。工具批次的 Pending Input 或写入预留超额时，
+执行前向所有待执行调用返回 `context_reservation_exceeded`，并提示拆批或验证已有变更；
+模型可在同一 Turn 继续。原有 Mandatory 上界不变，也不缓存该批拒绝来阻止后续拆批。
+`post_turn` Narrative 仅在 `turn.completed` 之后生成滚动
 Digest 分区，不得持锁或挡住下一轮 Sample；用户暂停 / 取消 / 失败不调用
 summary 模型。Timeout 或 Provider 失败只记录 `fallback=ledger`，Session State
 继续从 Ledger 投影。`thread.compact` 可带可选
@@ -654,8 +671,10 @@ Credential Control 的最新引用，因此页面完成 Keychain 轮换后无需
 Mode 固定为 `act`；新 Session 的 Posture 默认为 `auto`，通过界面的 Permissions
 或 Session 设置修改，不提供启动参数。二者互不替代。
 界面提供 `Read only`（`never`）、`Auto`（`auto`）和 `Full Access`（`bypass`）；
-Full Access 为未声明资源范围的普通命令授予宿主文件读写与直接联网权限，无需常规审批；
-显式 `write_paths`、`network_targets`、`allow_loopback` 或 `settle=discard` 保持范围限制。
+Full Access 授予普通命令宿主文件读写、直接联网和浏览器/PTY 等系统能力，并预授权
+Git 推送等工具声明的单次审批；显式 ask、deny、hold、Surface 限制和强制编辑审阅仍生效。
+显式 `write_paths` 只限制文件写入，`network_targets` / `allow_loopback` 只限制网络，
+其余维度保持原授权。`settle=discard` 使用隔离范围沙箱。
 凭据、工作区控制目录、QCode 状态和显式策略仍受保护。旧 `suggest` 会话加载时合并到 Auto。
 `wire.ExecOptions.ProfilePermissionCeiling` 由可信 Host 声明可选上限；空值使用启动姿态，
 未知值拒绝构造。Web 声明 `bypass` 上限但保持 `auto` 默认值，Session 参数不能更改 Host 上限。

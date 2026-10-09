@@ -233,13 +233,14 @@ func DefaultPolicy() Policy {
 }
 
 type ToolCallState struct {
-	ID                string `json:"id"`
-	Name              string `json:"name"`
-	Arguments         string `json:"arguments,omitempty"`
-	CatalogID         string `json:"catalog_id,omitempty"`
-	CatalogGeneration uint64 `json:"catalog_generation,omitempty"`
-	CatalogRevision   uint64 `json:"catalog_revision,omitempty"`
-	CatalogAuthority  uint64 `json:"catalog_authority,omitempty"`
+	ID                 string `json:"id"`
+	Name               string `json:"name"`
+	Arguments          string `json:"arguments,omitempty"`
+	CatalogID          string `json:"catalog_id,omitempty"`
+	CatalogGeneration  uint64 `json:"catalog_generation,omitempty"`
+	CatalogRevision    uint64 `json:"catalog_revision,omitempty"`
+	CatalogAuthority   uint64 `json:"catalog_authority,omitempty"`
+	AdmissionRejection string `json:"admission_rejection,omitempty"`
 }
 
 type ToolResultState struct {
@@ -330,10 +331,20 @@ type ModelSampleState struct {
 	Attempt         uint32                             `json:"attempt"`
 	Status          SampleStatus                       `json:"status"`
 	ProviderRetries uint32                             `json:"provider_retries,omitempty"`
+	RetryBudget     ProviderRetryBudget                `json:"retry_budget,omitzero"`
 	LastFailure     *provider.Failure                  `json:"last_failure,omitempty"`
 	Retry           *ProviderRetryState                `json:"retry,omitempty"`
 	Assembly        *providerassembly.ResponseAssembly `json:"assembly,omitempty"`
 	Error           string                             `json:"error,omitempty"`
+}
+
+// ProviderRetryBudget records reservations, not completed sleeps. A crash during
+// a wait must not refund either the retry or its waiting budget.
+type ProviderRetryBudget struct {
+	TransientRetries uint32        `json:"transient_retries,omitempty"`
+	RateLimitRetries uint32        `json:"rate_limit_retries,omitempty"`
+	RateLimitWaited  time.Duration `json:"rate_limit_waited_ns,omitempty"`
+	WaitUntil        time.Time     `json:"wait_until,omitzero"`
 }
 
 type Commentary struct {

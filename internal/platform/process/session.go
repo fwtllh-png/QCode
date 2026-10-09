@@ -56,6 +56,8 @@ type Archive interface {
 const maxArchiveReplay = 256 << 10
 
 type SessionOptions struct {
+	Environment            *Environment
+	ExecutionTarget        string
 	Command                string
 	DisplayCommand         string // original command before QCode's sandbox wrapper
 	Dir                    string
@@ -91,9 +93,10 @@ type SessionOptions struct {
 }
 
 type SessionRead struct {
-	Command   string
-	CallID    string
-	CreatedAt time.Time
+	ExecutionTarget string
+	Command         string
+	CallID          string
+	CreatedAt       time.Time
 	// ProcessTimedOut records the process deadline, not a caller's wait timeout.
 	ProcessTimedOut bool
 	Data            string
@@ -117,21 +120,22 @@ type SessionWait struct {
 }
 
 type Session struct {
-	id             string
-	commandText    string
-	displayCommand string
-	cwd            string
-	linkedTaskID   string
-	threadID       string
-	turnID         string
-	callID         string
-	createdAt      time.Time
-	command        *exec.Cmd
-	process        *sessionProcess
-	input          io.WriteCloser
-	outputReader   io.ReadCloser
-	terminal       *os.File
-	tty            bool
+	executionTarget string
+	id              string
+	commandText     string
+	displayCommand  string
+	cwd             string
+	linkedTaskID    string
+	threadID        string
+	turnID          string
+	callID          string
+	createdAt       time.Time
+	command         *exec.Cmd
+	process         *sessionProcess
+	input           io.WriteCloser
+	outputReader    io.ReadCloser
+	terminal        *os.File
+	tty             bool
 
 	archive     Archive
 	mu          sync.RWMutex
@@ -215,7 +219,7 @@ func (m *SessionManager) Create(
 	}
 	command, err := NewCommand(runCtx, Options{
 		Command: commandText, Dir: options.Dir, DirFile: options.DirFile,
-		Env: options.Env, Sandbox: options.Sandbox, PTY: options.PTY,
+		Env: options.Env, Environment: options.Environment, Sandbox: options.Sandbox, PTY: options.PTY,
 		TrustedRuntimeHelper:   options.TrustedRuntimeHelper,
 		RequireSandbox:         options.RequireSandbox,
 		WorkspaceReadOnly:      options.WorkspaceReadOnly,
@@ -278,7 +282,8 @@ func (m *SessionManager) Create(
 		output = outputReader
 	}
 	session := &Session{
-		id: sessionID, commandText: commandText, cwd: options.Dir,
+		executionTarget: options.ExecutionTarget,
+		id:              sessionID, commandText: commandText, cwd: options.Dir,
 		displayCommand: options.DisplayCommand,
 		linkedTaskID:   strings.TrimSpace(options.LinkedTaskID),
 		threadID:       ownerThreadID,
@@ -390,7 +395,8 @@ func (m *SessionManager) Read(id, threadID string, cursor uint64) (SessionRead, 
 	}
 	if cursor >= base {
 		return SessionRead{
-			Command: session.displayCommand, CallID: session.callID, CreatedAt: session.createdAt, ProcessTimedOut: timedOut,
+			ExecutionTarget: session.executionTarget,
+			Command:         session.displayCommand, CallID: session.callID, CreatedAt: session.createdAt, ProcessTimedOut: timedOut,
 			Data: live, Cursor: end, Running: running, ExitCode: exitCode,
 			TTY: tty, Terminated: terminated,
 		}, nil
@@ -413,7 +419,8 @@ func (m *SessionManager) Read(id, threadID string, cursor uint64) (SessionRead, 
 		pending = total - next
 	}
 	return SessionRead{
-		Command: session.displayCommand, CallID: session.callID, CreatedAt: session.createdAt, ProcessTimedOut: timedOut,
+		ExecutionTarget: session.executionTarget,
+		Command:         session.displayCommand, CallID: session.callID, CreatedAt: session.createdAt, ProcessTimedOut: timedOut,
 		Data: string(data), Cursor: next, Running: running, ExitCode: exitCode,
 		TTY: tty, Terminated: terminated, Archived: true, Pending: pending,
 	}, nil
@@ -580,7 +587,8 @@ func (m *SessionManager) CloseWithResult(id, threadID string) (SessionRead, erro
 	defer session.mu.RUnlock()
 	return SessionRead{
 		Command: session.displayCommand, CallID: session.callID, CreatedAt: session.createdAt,
-		Running: session.running, ExitCode: session.exitCode, Terminated: session.terminated,
+		ExecutionTarget: session.executionTarget,
+		Running:         session.running, ExitCode: session.exitCode, Terminated: session.terminated,
 		ProcessTimedOut: session.timedOut, TTY: session.tty,
 	}, err
 }

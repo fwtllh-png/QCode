@@ -55,9 +55,10 @@ func (s MessageSnapshot) Normalize(
 		PairedCalls: len(validPairs),
 	}
 	normalized := MessageSnapshot{
-		revision:    s.revision,
-		partitions:  make(map[MessageKind][]provider.Message, len(orderedKinds)),
-		definitions: cloneDefinitions(s.definitions),
+		revision:          s.revision,
+		partitions:        make(map[MessageKind][]provider.Message, len(orderedKinds)),
+		definitions:       cloneDefinitions(s.definitions),
+		dynamicBeforeTurn: s.dynamicBeforeTurn,
 	}
 	for _, source := range s.items {
 		item := source

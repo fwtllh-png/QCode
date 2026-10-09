@@ -224,7 +224,7 @@ L3 User 规则                              → deny/ask/allow
 L4 Mode 与 Planning                        → hold/ask
 L5 Posture × Effect Risk                  → allow/ask/deny
 L6 Surface 收紧                            → ask/deny
-L7 Binding 审批策略（once）与强制编辑审批 → ask
+L7 Binding 审批策略（once；Full Access 预授权）与显式强制编辑审批 → ask
 L8 自动审查资格                           → allow（显式谓词表）
 ```
 

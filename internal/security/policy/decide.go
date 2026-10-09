@@ -1,6 +1,7 @@
 package policy
 
 import (
+	"fmt"
 	"path/filepath"
 
 	securitymodel "github.com/fwtllh-png/QCode/internal/security/model"
@@ -66,6 +67,9 @@ func (r *Runtime) decide(invocation Invocation) Decision {
 	assessment := invocation.Assessment
 	if decision, done := inputLayer(invocation, assessment); done {
 		return decision
+	}
+	if assessment.Facets().HostExecution && (r.DisableHostExecution || r.Permission == PermissionNever) {
+		return deny("host_execution_forbidden", "host execution is unavailable in Read only mode and delegated runtimes").at(LayerHard)
 	}
 	if decision, done := controlPlaneLayer(invocation, assessment); done {
 		return decision
@@ -219,12 +223,24 @@ func (r *Runtime) bindingLayer(invocation Invocation, decision Decision) Decisio
 		decision.Action == ActionDeny || decision.Action == ActionHold {
 		return decision
 	}
-	if invocation.Approval == securitymodel.ApprovalOnce {
-		return Decision{
-			Action: ActionAsk, Code: "host_process_approval_required",
-			Reason: "host process execution requires one-time user approval",
-			Layer:  LayerBinding, Approval: ApprovalFreshOnce,
+	hostExecution := invocation.Assessment.Facets().HostExecution
+	if (invocation.Approval == securitymodel.ApprovalOnce || hostExecution) &&
+		(r.Permission != PermissionBypass || decision.Action == ActionAsk) {
+		// Full Access preauthorizes the tool's one-time approval. Explicit
+		// restrictions still apply, preserving their origin and fresh scope.
+		if decision.Action != ActionAsk || decision.Layer == LayerPosture {
+			decision = Decision{
+				Action: ActionAsk, Code: "tool_approval_required",
+				Reason: fmt.Sprintf("tool %s requires one-time user approval", invocation.Tool),
+				Layer:  LayerBinding,
+			}
+			if hostExecution {
+				decision.Code = "host_execution_approval_required"
+				decision.Reason = "approve this command to run with your OS account's file and network access, without QCode's sandbox"
+			}
 		}
+		decision.Approval = ApprovalFreshOnce
+		return decision
 	}
 	if !r.ForceEditPlanApproval {
 		return decision

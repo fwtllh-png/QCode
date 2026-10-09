@@ -45,6 +45,13 @@ type AuthorizedFileExecutor interface {
 	) (tool.Result, tool.Outcome, error)
 }
 
+type AuthorizedSessionExecutor interface {
+	tool.Executor
+	PrepareAuthorizedSession(context.Context, tool.PreparedInvocation) (authority.SessionBinding, error)
+	ReleaseAuthorizedSession(authority.SessionBinding) error
+	ExecuteAuthorizedSession(context.Context, tool.PreparedInvocation, authority.AuthorizedSessionGrant, *authority.LeaseAuthority) (tool.Result, tool.Outcome, error)
+}
+
 func NewLeaseAuthority() *LeaseAuthority {
 	return authority.NewLeaseAuthority(authority.LeaseAuthorityOptions{})
 }

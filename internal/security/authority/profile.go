@@ -36,10 +36,11 @@ type NetworkAuthority struct {
 }
 
 type ProcessAuthority struct {
-	FullAccess  bool                `json:"full_access,omitempty"`
-	Allowed     bool                `json:"allowed"`
-	Enforcement sandbox.Enforcement `json:"enforcement"`
-	Backend     string              `json:"backend"`
+	HostExecution bool                `json:"host_execution,omitempty"`
+	FullAccess    bool                `json:"full_access,omitempty"`
+	Allowed       bool                `json:"allowed"`
+	Enforcement   sandbox.Enforcement `json:"enforcement"`
+	Backend       string              `json:"backend"`
 }
 
 type AuthoritySource struct {
@@ -89,15 +90,36 @@ func compileProfile(
 	}
 	compileResources(&profile, input.Invocation, resources)
 	compileSandboxCeiling(&profile, input, reach)
+	if input.Invocation.Assessment.Facets().HostExecution {
+		if reach != sandbox.ReachNone || len(profile.Filesystem.WritePaths) != 0 {
+			return EffectivePermissionProfile{}, errors.New("host execution cannot enforce scoped writes or network grants")
+		}
+		profile.Access = securitymodel.Write
+		profile.Process.HostExecution = true
+		profile.Process.Allowed = true
+		profile.Filesystem.ReadRoots = []string{"/"}
+		profile.Filesystem.WorkspaceBaseWrite = true
+		profile.Filesystem.DeniedWriteRoots = nil
+		profile.Network = NetworkAuthority{}
+		profile.Controls.ProcessTree = securitymodel.ProcessTreeGroupKill
+		profile.Controls.PathIdentity = securitymodel.PathIdentityDescriptorRelative
+	}
 	if input.Invocation.Assessment.Facets().FullAccess {
 		profile.Access = securitymodel.Write
 		profile.Process.FullAccess = true
-		profile.Filesystem.WorkspaceBaseWrite = true
 		profile.Filesystem.ReadRoots = []string{"/"}
 		profile.Controls.FilesystemRead = securitymodel.FilesystemReadUnrestricted
-		profile.Controls.FilesystemWrite = securitymodel.FilesystemWriteUnrestricted
-		profile.Controls.Network = securitymodel.NetworkDirect
-		profile.Network = NetworkAuthority{}
+		profile.Controls.Syscall = securitymodel.SyscallUnrestricted
+		profile.Controls.IPC = securitymodel.IPCPlatformFiltered
+		profile.Filesystem.WorkspaceBaseWrite = len(profile.Filesystem.WritePaths) == 0
+		profile.Controls.FilesystemWrite = securitymodel.FilesystemWriteExactPaths
+		if profile.Filesystem.WorkspaceBaseWrite {
+			profile.Controls.FilesystemWrite = securitymodel.FilesystemWriteUnrestricted
+		}
+		if reach == sandbox.ReachNone {
+			profile.Controls.Network = securitymodel.NetworkDirect
+			profile.Network = NetworkAuthority{}
+		}
 	}
 	profile.Provenance = provenance(input)
 	normalize(&profile)
@@ -124,10 +146,10 @@ func (p EffectivePermissionProfile) Validate() error {
 	if !p.Process.Enforcement.Valid() {
 		return errors.New("effective permission profile enforcement is invalid")
 	}
-	if p.Process.FullAccess && (p.Process.Enforcement != sandbox.EnforcementStrong || !p.Process.Allowed ||
-		!p.Filesystem.WorkspaceBaseWrite || p.Controls.Network != securitymodel.NetworkDirect || p.Network.ProxyPort != 0 ||
-		p.Controls.FilesystemRead != securitymodel.FilesystemReadUnrestricted || p.Controls.FilesystemWrite != securitymodel.FilesystemWriteUnrestricted) {
-		return errors.New("full access profile has inconsistent process controls")
+	if p.Process.FullAccess || p.Process.HostExecution {
+		if err := p.executionAuthority(RequiredControls{}).Validate(); err != nil {
+			return fmt.Errorf("full access profile: %w", err)
+		}
 	}
 	if p.Process.Enforcement == sandbox.EnforcementStrong && p.Process.Backend == "" {
 		return errors.New("controlled profile has no sandbox backend")
@@ -142,6 +164,7 @@ func (p EffectivePermissionProfile) executionAuthority(
 	required RequiredControls,
 ) sandbox.ExecutionAuthority {
 	return sandbox.ExecutionAuthority{
+		HostExecution: p.Process.HostExecution,
 		FullAccess:    p.Process.FullAccess,
 		Digest:        p.Digest,
 		Enforcement:   p.Process.Enforcement,

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/fwtllh-png/QCode/internal/adapter/provider"
 	providerassembly "github.com/fwtllh-png/QCode/internal/adapter/provider/assembly"
@@ -336,7 +337,12 @@ func (r *turnRun) sampleStep(step int) (bool, error) {
 		r.result.Usage,
 		sampleID,
 		r.sampleReason,
-		kernel.ProviderRetries(sampleID),
+		modelRetryState{
+			budget: kernel.ProviderRetryBudget(sampleID),
+			reserveWait: func(delay time.Duration, until time.Time) error {
+				return kernel.ReserveProviderWait(sampleID, delay, until)
+			},
+		},
 		r.progress.Stage == turnkernel.ProgressStageFinishOnly &&
 			turnkernel.IsResearchIntent(kernel.Intent()),
 		r.convergenceFinalization,
@@ -702,15 +708,9 @@ func (r *turnRun) advanceTurn() (bool, error) {
 			r.sampleReason = promptcontext.SampleVerificationRepair
 			return false, nil
 		case verifyActionBlocked:
-			return false, protocol.NewFault(protocol.CodeConflict, outcome.receipt.ProblemMessage(), true,
-				protocol.FaultMetadata{Origin: protocol.FaultOriginVerification, Disposition: protocol.FaultResumeTurn, SideEffects: protocol.SideEffectDraft, RecoveryAction: "satisfy verification and continue the retained draft"}, nil)
+			return false, verificationFailure(outcome.receipt, true)
 		case verifyActionFailed:
-			return false, protocol.NewProblem(
-				protocol.CodeConflict,
-				outcome.receipt.ProblemMessage(),
-				false,
-				nil,
-			)
+			return false, verificationFailure(outcome.receipt, false)
 		}
 	case turnkernel.StepActionFinalize:
 		if err := kernel.BeginConvergenceFinalization(); err != nil {

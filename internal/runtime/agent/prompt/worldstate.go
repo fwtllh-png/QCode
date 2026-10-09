@@ -30,8 +30,9 @@ func digestJSON(value any) string {
 
 // PolicySection snapshots mode/permission/granular for WorldState.
 type PolicySection struct {
-	Mode       string `json:"mode"`
-	Permission string `json:"permission"`
+	Mode                 string `json:"mode"`
+	Permission           string `json:"permission"`
+	DisableHostExecution bool   `json:"disable_host_execution,omitempty"`
 	policy.PlanningSnapshot
 	Granular policy.Granular `json:"granular"`
 }
@@ -42,7 +43,8 @@ func NewPolicySection(runtime *policy.Runtime) PolicySection {
 	}
 	return PolicySection{
 		Mode: string(runtime.Mode), Permission: string(runtime.Permission),
-		PlanningSnapshot: runtime.PlanningSnapshot(), Granular: runtime.Granular,
+		DisableHostExecution: runtime.DisableHostExecution,
+		PlanningSnapshot:     runtime.PlanningSnapshot(), Granular: runtime.Granular,
 	}
 }
 
@@ -58,6 +60,9 @@ func (p PolicySection) Render() string {
 		permission += " (Full Access)"
 	}
 	b.WriteString(fmt.Sprintf("- mode=%s permission=%s\n", p.Mode, permission))
+	if p.DisableHostExecution {
+		b.WriteString("- Host execution is unavailable in this delegated runtime.\n")
+	}
 	b.WriteString(p.Guidance())
 	b.WriteString(fmt.Sprintf(
 		"- granular: sandbox=%s rules=%s skills=%s mcp=%s\n",

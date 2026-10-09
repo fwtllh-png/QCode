@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/fwtllh-png/QCode/internal/security/pathpolicy"
@@ -13,6 +14,13 @@ import (
 // control state. Derive protections from the shared path table and actual
 // state layout, including environment grants already selected by the host.
 func writeFullAccessProtections(profile *strings.Builder, policy Policy) {
+	// Keychain access is also brokered over Mach, so file denies alone do
+	// not preserve credential isolation when ordinary OS IPC is allowed.
+	// Names come from Apple's securityd launchd MachServices contracts
+	// (com.apple.securityd{,.system}.plist) and Security/SecXPCClient.
+	for _, service := range []string{"com.apple.SecurityServer", "com.apple.securityd.systemkeychain", "com.apple.securityd", "com.apple.secd"} {
+		fmt.Fprintf(profile, "(deny mach-lookup (global-name %s))\n", strconv.Quote(service))
+	}
 	for _, name := range pathpolicy.ControlPlaneNames() {
 		pattern := "^" + regexp.QuoteMeta(policy.WorkspaceRoot) + "/(.*/)?" + caseFoldPathPattern(name) + "(/|$)"
 		fmt.Fprintf(profile, "(deny file-write* (regex #%s))\n", seatbeltRegex(pattern))

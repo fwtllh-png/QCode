@@ -25,6 +25,9 @@ type AssessmentBinding struct {
 // Declared carries binding declarations that Guard resolved against the
 // invocation's arguments.
 type Declared struct {
+	// HostExecution is selected by Guard from a supported command's requested
+	// target. Policy must independently authorize host execution.
+	HostExecution bool
 	// FullAccess is selected by Guard from the session permission and a trusted
 	// process binding. It is never accepted from model arguments.
 	FullAccess bool
@@ -51,6 +54,7 @@ const (
 
 // Facets are the classification-relevant properties of an invocation.
 type Facets struct {
+	HostExecution   bool
 	FullAccess      bool
 	WritesWorkspace bool
 	Egress          Egress
@@ -96,6 +100,7 @@ const (
 	RuleNetworkMutating     = "network_mutating"
 	RuleProcessReadOnly     = "process_read_only"
 	RuleProcessFullAccess   = "process_full_access"
+	RuleProcessHost         = "process_host"
 	RuleProcessMutating     = "process_mutating"
 	RuleJournaledEdit       = "journaled_edit"
 	RuleExternal            = "external"
@@ -164,6 +169,11 @@ var table = []row{
 		RuleAgent,
 		func(_ AssessmentBinding, f Facets) bool { return f.Agent },
 		constant(AgentLifecycle, RiskHigh, Bounded),
+	},
+	{
+		RuleProcessHost,
+		func(b AssessmentBinding, f Facets) bool { return b.Capability == CapabilityProcess && f.HostExecution },
+		constant(ProcessMutating, RiskHigh, Irreversible),
 	},
 	{
 		RuleProcessFullAccess,
@@ -255,8 +265,9 @@ func (a Assessment) Digest() string {
 
 func facetsOf(input AssessmentInput) Facets {
 	facets := Facets{
+		HostExecution:        input.Declared.HostExecution,
 		FullAccess:           input.Declared.FullAccess,
-		StrongSandbox:        input.Binding.StrongSandbox,
+		StrongSandbox:        input.Binding.StrongSandbox && !input.Declared.HostExecution,
 		Journaled:            input.Binding.Journaled,
 		ReadOnlyDeclared:     input.Declared.ReadOnly,
 		DeclaredVerification: input.Declared.Verification,

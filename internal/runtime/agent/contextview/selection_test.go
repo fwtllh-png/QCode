@@ -9,6 +9,32 @@ import (
 	agentcontext "github.com/fwtllh-png/QCode/internal/runtime/agent/context"
 )
 
+func TestUnavailableSelectionKeepsProvenanceWithoutRecoveryPointers(t *testing.T) {
+	history := []provider.Message{textTurn(provider.RoleUser, "old", 1), textTurn(provider.RoleAssistant, "withdrawn", 1), textTurn(provider.RoleUser, "current", 2)}
+	estimate := func(messages []provider.Message) uint64 { return uint64(len(messages)) }
+	for _, tail := range []int{0, 1} {
+		original := SelectHistory(history, SelectionPolicy{RecentTurns: tail, Estimate: estimate})
+		before, _ := json.Marshal(original)
+		filtered := ExcludeUnavailableTurns(original, map[uint64]bool{1: true}, estimate)
+		if len(filtered.Selected) != 1 || filtered.Selected[0].Index != 2 || len(filtered.Omissions) != 2 || filtered.RawTokens != 1 || len(filtered.Messages) != 1 {
+			t.Fatalf("lost source accounting: %+v", filtered)
+		}
+		for _, omission := range filtered.Omissions {
+			if omission.Retrieval != nil || omission.Reason != agentcontext.OmittedSourceUnavailable {
+				t.Fatal("advertised withdrawn history for recovery")
+			}
+		}
+		after, _ := json.Marshal(original)
+		if string(before) != string(after) || filtered.SourceHistoryDigest != original.SourceHistoryDigest {
+			t.Fatal("rewrote source provenance")
+		}
+		again := ExcludeUnavailableTurns(filtered, map[uint64]bool{1: true}, estimate)
+		if again.Digest != filtered.Digest {
+			t.Fatal("availability filtering is not idempotent")
+		}
+	}
+}
+
 func TestSelectionOmissionsMatchActualDifference(t *testing.T) {
 	history := []provider.Message{
 		textTurn(provider.RoleUser, "one", 1),

@@ -89,9 +89,10 @@ type EffectContract struct {
 type RequiredControls = securitymodel.RequiredControls
 
 type ProcessIntent struct {
-	Kind            string `json:"kind"`
-	Tool            string `json:"tool"`
-	ArgumentsDigest string `json:"arguments_digest"`
+	PreparedCommandDigest string `json:"prepared_command_digest,omitempty"`
+	Kind                  string `json:"kind"`
+	Tool                  string `json:"tool"`
+	ArgumentsDigest       string `json:"arguments_digest"`
 }
 
 type NetworkIntent struct {
@@ -276,7 +277,7 @@ func (o ExecutionOperation) Validate() error {
 	if o.Process != nil &&
 		(o.Process.Kind != "tool" ||
 			o.Process.Tool != o.Tool ||
-			!validDigest(o.Process.ArgumentsDigest)) {
+			!validDigest(o.Process.ArgumentsDigest) || (o.Process.PreparedCommandDigest != "" && !validDigest(o.Process.PreparedCommandDigest))) {
 		return errors.New("execution process intent is invalid")
 	}
 	if o.Network != nil {

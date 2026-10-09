@@ -1587,19 +1587,23 @@ func (d *PlanDeltaData) validate() error {
 }
 
 type CommandExecutionData struct {
-	CallID     string `json:"call_id"`
-	SessionID  string `json:"session_id,omitempty"`
-	Command    string `json:"command"`
-	Status     string `json:"status"` // started|completed|failed|canceled|timed_out
-	ExitCode   *int   `json:"exit_code,omitempty"`
-	DurationMS int64  `json:"duration_ms,omitempty"`
-	Handle     string `json:"handle,omitempty"`
-	OutputTail string `json:"output_tail,omitempty"`
+	ExecutionTarget string `json:"execution_target,omitempty"`
+	CallID          string `json:"call_id"`
+	SessionID       string `json:"session_id,omitempty"`
+	Command         string `json:"command"`
+	Status          string `json:"status"` // started|completed|failed|canceled|timed_out
+	ExitCode        *int   `json:"exit_code,omitempty"`
+	DurationMS      int64  `json:"duration_ms,omitempty"`
+	Handle          string `json:"handle,omitempty"`
+	OutputTail      string `json:"output_tail,omitempty"`
 }
 
 func (*CommandExecutionData) eventKind() EventKind { return EventCommandExecution }
 
 func (d *CommandExecutionData) validate() error {
+	if d.ExecutionTarget != "" && d.ExecutionTarget != "host" && d.ExecutionTarget != "sandbox" {
+		return errors.New("command execution target is invalid")
+	}
 	if d.CallID == "" || d.Command == "" {
 		return errors.New("command execution call_id and command are required")
 	}

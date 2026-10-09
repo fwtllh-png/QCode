@@ -145,6 +145,7 @@ func TestCommandExecutionContinuationPreservesOriginAndReplays(t *testing.T) {
 			meta := map[string]any{
 				"call_id": "call-start", "session_id": "term-session",
 				"command": "test command", "status": status,
+				"execution_target": "host",
 			}
 			if status != "started" {
 				meta["exit_code"] = 0
@@ -174,7 +175,7 @@ func TestCommandExecutionContinuationPreservesOriginAndReplays(t *testing.T) {
 				t.Fatal(err)
 			}
 			command := replay.Data.(*protocol.CommandExecutionData)
-			if command.CallID != data.CallID || command.Status != status {
+			if command.CallID != data.CallID || command.Status != status || command.ExecutionTarget != "host" {
 				t.Fatalf("replay changed command identity: %+v", command)
 			}
 		})

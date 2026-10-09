@@ -108,6 +108,11 @@ func planningDecision(
 	if r.PlanningPolicy == PlanningOff {
 		return nil
 	}
+	if assessment.Facets().HostExecution {
+		// Host commands require a fresh command approval under Auto. Full
+		// Access preauthorizes it; a separate plan gate would duplicate it.
+		return nil
+	}
 	// Full Access already authorizes ordinary command execution and declared
 	// verification. Repository/user rules are evaluated independently.
 	if r.Permission == PermissionBypass &&

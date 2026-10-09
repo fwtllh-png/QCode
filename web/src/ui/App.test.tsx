@@ -235,6 +235,23 @@ describe("projectTranscript", () => {
     expect(client.recoverTurn).toHaveBeenCalledWith("turn", "retry");
   });
 
+  it("shows a specific failure, recorded recovery, and the required next step", () => {
+    const client = mockClient(snapshot([
+      event(1, "provider.attempt", {sample_id: "sample", attempt: 1, status: "retry_wait", failure_code: "rate_limit"}),
+      event(2, "turn.failed", {message: "provider waiting budget consumed", fault: {
+        origin: "provider", reason: "provider_rate_limited", disposition: "resume_turn", side_effects: "draft",
+        recovery_action: "Wait for the provider cooldown before continuing."
+      }})
+    ]));
+    render(<App client={client} />);
+    expect(screen.getByText("Provider rate limit reached")).toBeTruthy();
+    expect(screen.getByText("Recorded recovery: 1 rate-limit waits scheduled.")).toBeTruthy();
+    expect(screen.getByText("Next step: Wait for the provider cooldown before continuing.")).toBeTruthy();
+    expect(screen.queryByText("Draft saved. Continue from the last durable step.")).toBeNull();
+    expect(screen.getByRole("button", {name: "Continue"})).toBeTruthy();
+    expect(client.recoverTurn).not.toHaveBeenCalled();
+  });
+
   it("renders Runtime recovery capabilities at the failed turn", async () => {
     const value = snapshot([
       event(1, "turn.failed", {
@@ -768,6 +785,29 @@ describe("projectTranscript", () => {
     }
     fireEvent.keyDown(screen.getByPlaceholderText("Ask QCode"), {key: "Enter"});
     expect(client.recoverTurn).not.toHaveBeenCalled();
+  });
+
+  it.each(["approve", "deny"])("explains host command authority before %s", (decision) => {
+    const client = mockClient(snapshot([event(1, "approval.required", {
+      request_id: "host-approval",
+      tool: "exec_command",
+      arguments: {command: "go test ./...", execution_target: "host"},
+      allowed_scopes: ["once"],
+      replacement_allowed: false,
+      resources: [{kind:"process", id:"workspace"}],
+      reason_code: "host_execution_approval_required"
+    })]));
+    render(<App client={client} />);
+    expect(screen.getByText("Run this command on your computer?")).toBeTruthy();
+    expect(screen.getByText(/outside QCode's sandbox with your OS account/)).toBeTruthy();
+    expect(screen.getByText("go test ./...")).toBeTruthy();
+    expect(screen.queryByText(/protected resources/)).toBeNull();
+    expect(screen.queryByRole("button", {name:"Approve for session"})).toBeNull();
+    expect(screen.queryByLabelText("Replacement arguments")).toBeNull();
+    fireEvent.click(screen.getByRole("button", {name: decision === "approve" ? "Approve once" : "Deny"}));
+    expect(client.decideApproval).toHaveBeenCalledWith(
+      "host-approval", decision, "", decision === "approve" ? "once" : "", undefined
+    );
   });
 
   it("offers Full Access and removes the retired suggest command", async () => {
@@ -2749,6 +2789,22 @@ describe("projectTranscript", () => {
       .toBe('Command exited with code 1 · output: "package service"');
     expect(container.querySelector(".terminalOutput")?.textContent).toBe("package service");
     expect(screen.getByText("exit 1")).toBeTruthy();
+  });
+
+  it("keeps a silent host command inspectable with its actual execution target", () => {
+    const client = mockClient(snapshot([
+      event(1, "tool.start", {
+        call_id: "host-silent", tool: "exec_command", arguments: {command: "true", execution_target: "host"}
+      }),
+      event(2, "tool.result", {call_id: "host-silent", output: "", is_error: false}),
+      event(3, "command.execution", {
+        call_id: "host-silent", command: "true", status: "completed", exit_code: 0, execution_target: "host"
+      })
+    ]));
+    render(<App client={client} />);
+    fireEvent.click(screen.getByRole("button", {name:"Bash true"}));
+    expect(screen.getByText("Host · no sandbox")).toBeTruthy();
+    expect(screen.getByRole("button", {name:"Inspect"})).toBeTruthy();
   });
 
   it.each([

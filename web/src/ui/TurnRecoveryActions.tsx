@@ -3,6 +3,7 @@ import {useRef, useState} from "react";
 import type {SessionCheckpoint} from "../protocol";
 import type {ConversationNode} from "../projection/conversation";
 import type {RuntimeClient} from "../runtime/client";
+import {fullAccessDescription} from "./approvalPosture";
 import {useWorkbenchSnapshot} from "./useRuntimeView";
 
 export function TurnRecoveryActions({entry, checkpoint, client, onError}: {
@@ -56,7 +57,7 @@ export function TurnRecoveryActions({entry, checkpoint, client, onError}: {
       <span className="turnRecoveryStatus">
         {permissionRequired
           ? canChangePermission
-            ? "Auto asks when needed. Full Access lets commands change host files and access the network without routine approval. Protected paths and explicit rules still apply."
+            ? `Auto asks when needed. ${fullAccessDescription}`
             : "The runtime keeps this session read only. Change its permission setting before continuing."
           : recoverySummary(entry.recovery?.sideEffects ?? "unknown")}
       </span>
@@ -105,7 +106,7 @@ export function TurnRecoveryActions({entry, checkpoint, client, onError}: {
 
 function recoverySummary(sideEffects: string): string {
   switch (sideEffects) {
-    case "draft": return "Draft saved. Continue from the last durable step.";
+    case "draft": return "Draft saved. Review the recovery guidance before continuing.";
     case "committed": return "Workspace changes were kept.";
     case "rolled_back": return "Workspace changes were rolled back.";
     case "none": return "No workspace changes were made.";

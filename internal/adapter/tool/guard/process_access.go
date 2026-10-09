@@ -7,21 +7,29 @@ import (
 	"github.com/fwtllh-png/QCode/internal/security/policy"
 )
 
-// Explicit write scopes and discard retain the exact-path execution contract.
+// Full Access selects the process baseline. Resource declarations narrow their
+// own dimensions during authority compilation; they never change this baseline.
+// Discard retains the isolated, scoped execution contract.
 // Recompute only this session fact when an approval wait changes permission;
 // resolved paths and the rest of the assessment remain frozen.
 func bindProcessAccess(invocation Invocation, runtime *policy.Runtime) Invocation {
 	declared := invocation.Assessment.Declared()
 	declared.FullAccess = false
+	declared.HostExecution = false
+	var target struct {
+		ExecutionTarget string `json:"execution_target"`
+	}
+	if invocation.Binding.SupportsHostExecution &&
+		tool.CatalogSourceKind(invocation.Tool, invocation.Ref.Source) == "builtin" &&
+		json.Unmarshal(invocation.Arguments, &target) == nil && target.ExecutionTarget == "host" {
+		declared.HostExecution = true
+	}
 	if runtime.Permission == policy.PermissionBypass && invocation.Binding.SupportsFullAccess &&
-		tool.CatalogSourceKind(invocation.Tool, invocation.Ref.Source) == "builtin" {
+		!declared.HostExecution && tool.CatalogSourceKind(invocation.Tool, invocation.Ref.Source) == "builtin" {
 		var input struct {
-			WritePaths     []string          `json:"write_paths"`
-			Settle         string            `json:"settle"`
-			NetworkTargets []json.RawMessage `json:"network_targets"`
-			AllowLoopback  bool              `json:"allow_loopback"`
+			Settle string `json:"settle"`
 		}
-		if json.Unmarshal(invocation.Arguments, &input) == nil && len(input.WritePaths) == 0 && input.Settle != "discard" && len(input.NetworkTargets) == 0 && !input.AllowLoopback {
+		if json.Unmarshal(invocation.Arguments, &input) == nil && input.Settle != "discard" {
 			declared.FullAccess = true
 		}
 	}

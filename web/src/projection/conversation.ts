@@ -1,4 +1,5 @@
 import type {RuntimeEvent} from "../protocol";
+import {failurePresentation} from "./failurePresentation";
 
 export type ToolVariant =
   | "read"
@@ -105,6 +106,7 @@ export type ConversationNode =
       readonly errorSummary: string;
       readonly execution?: Record<string, unknown>;
       readonly command?: {
+        readonly executionTarget?: string;
         readonly command: string;
         readonly status: string;
         readonly exitCode?: number;
@@ -126,6 +128,8 @@ export type ConversationNode =
       readonly text: string;
       readonly failed: boolean;
       readonly blocked?: boolean;
+      readonly nextStep?: string;
+      readonly attemptedRecovery?: string;
       readonly warning?: boolean;
       readonly recoverable: boolean;
       readonly recovery?: {
@@ -239,6 +243,7 @@ export class ConversationProjection {
   private readonly runningTools = new Map<string, Set<string>>();
   private readonly approvals = new Map<string, RuntimeEvent>();
   private readonly inputs = new Map<string, RuntimeEvent>();
+  private readonly recoveryAttempts = new Map<string, Map<string, string>>();
   private readonly receipts = new Map<string, Readonly<Record<string, unknown>>>();
   private readonly receiptNodes = new Map<string, string>();
   private readonly contextMaintenance = new Map<string, Map<string, Readonly<Record<string, unknown>>>>();
@@ -316,7 +321,8 @@ export class ConversationProjection {
           if (node.kind === "user") this.put({...node, withdrawn: true});
           if (node.kind === "status") this.put({
             ...node, title: "Withdrawn", text: "", failed: false,
-            blocked: false, warning: false, recoverable: false, recovery: undefined
+            blocked: false, warning: false, recoverable: false, recovery: undefined,
+            nextStep: undefined, attemptedRecovery: undefined
           });
         }
         this.activeTurns.delete(event.turn_id);
@@ -759,6 +765,7 @@ export class ConversationProjection {
     const status = stringValue(event.data.status);
     const command = {
       command: stringValue(event.data.command),
+      executionTarget: stringValue(event.data.execution_target),
       status,
       ...(exitCode === undefined ? {} : {exitCode}),
       ...(durationMS === undefined ? {} : {durationMS})
@@ -1034,6 +1041,15 @@ export class ConversationProjection {
   }
 
   private applyProviderAttempt(event: RuntimeEvent): void {
+    const data = event.data;
+    if (data.status === "retry_wait" || data.status === "incomplete" ||
+        data.status === "started" && data.reason === "tool_argument_repair") {
+      const attempts = this.recoveryAttempts.get(event.turn_id) ?? new Map<string, string>();
+      const key = `${stringValue(data.sample_id)}:${stringValue(data.attempt)}:${stringValue(data.status)}`;
+      attempts.set(key, data.status === "started" ? "argument_repair" : data.status === "incomplete" ? "continuation" :
+        data.failure_code === "rate_limit" ? "rate_limit" : "retry");
+      this.recoveryAttempts.set(event.turn_id, attempts);
+    }
     const presentation = providerAttemptPresentation(event.data);
     if (!presentation) {
       if (event.data.status === "started" || event.data.status === "completed") {
@@ -1125,7 +1141,19 @@ export class ConversationProjection {
       return;
     }
     const failure = failurePresentation(event);
+    const attempts = [...(this.recoveryAttempts.get(event.turn_id)?.values() ?? [])];
+    const recoveryCounts = [
+      ["rate_limit", "rate-limit waits scheduled"],
+      ["retry", "model request retries scheduled"],
+      ["continuation", "incomplete outputs retained for continuation"],
+      ["argument_repair", "tool argument regenerations started"]
+    ].flatMap(([kind, label]) => {
+      const count = attempts.filter((value) => value === kind).length;
+      return count ? [`${count} ${label}`] : [];
+    });
+    const recoveryOrigin = stringValue(recordValue(event.data.fault)?.origin);
     const permissionChangeRequired = readOnly && event.kind === "turn.failed" &&
+      !["persistence", "kernel", "projection"].includes(recoveryOrigin) &&
       recordValue(event.data.convergence)?.cause === "declared_incomplete" &&
       [...this.nodes.values()].some((node) => node.kind === "tool" &&
         node.turnID === event.turn_id && node.state === "failed" &&
@@ -1144,6 +1172,8 @@ export class ConversationProjection {
       failed: failed && !warning,
       blocked,
       warning,
+      nextStep: permissionChangeRequired ? undefined : failure.nextStep,
+      attemptedRecovery: recoveryCounts.length ? `Recorded recovery: ${recoveryCounts.join("; ")}.` : undefined,
       recoverable: failed,
       recovery: failed ? {
         ...recoveryOptions(event, this.receipts.get(event.turn_id)),
@@ -1259,66 +1289,6 @@ export class ConversationProjection {
     this.dirty = true;
     this.structureDirty = true;
   }
-}
-
-function failurePresentation(event: RuntimeEvent) {
-  const fallback = stringValue(
-    event.data.outcome ??
-    event.data.message ??
-    event.data.reason ??
-    "Turn did not complete"
-  );
-  const budget = fallback.match(
-    /^token budget exhausted: projected (\d+), limit (\d+)$/
-  );
-  if (budget) {
-    return {
-      title: "Token limit reached",
-      text: `The next model call would exceed this run's token limit (${formatInteger(
-        budget[1]
-      )} projected, ${formatInteger(budget[2])} allowed).`
-    };
-  }
-  const convergence = isRecord(event.data.convergence)
-    ? event.data.convergence
-    : undefined;
-  if (stringValue(convergence?.cause)) {
-    return {
-      title: "Blocked",
-      text: stringValue(convergence?.summary) || fallback,
-      blocked: true,
-      warning: true
-    };
-  }
-  const fault = isRecord(event.data.fault) ? event.data.fault : undefined;
-  if (["retry_step", "retry_turn", "resume_turn"].includes(
-    stringValue(fault?.disposition)
-  )) {
-    return {
-      title: "Blocked",
-      text: fallback,
-      blocked: true,
-      warning: true
-    };
-  }
-  if (
-    event.kind === "turn.canceled" &&
-    stringValue(event.data.reason) === "user_interrupted"
-  ) {
-    return {
-      title: "Paused",
-      text: "Paused by user.",
-      warning: true
-    };
-  }
-  return {
-    title: event.kind === "turn.canceled" ? "Canceled" : "Failed",
-    text: fallback
-  };
-}
-
-function formatInteger(value: string): string {
-  return value.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 }
 
 function requestID(event: RuntimeEvent): string {
