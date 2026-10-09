@@ -1015,6 +1015,7 @@ function ConnectionWizard({
               aria-label="Connection model ID"
               value={modelID}
               placeholder="Enter the exact model ID"
+              autoFocus
               disabled={submitting || detecting}
               onChange={(event) => {
                 setModelID(event.target.value);

@@ -293,6 +293,9 @@ for (const viewport of [
   test(`Git diff fills its viewer and preserves virtual scrolling at ${viewport.width}x${viewport.height}`, async ({page}) => {
     await page.setViewportSize(viewport);
     await page.emulateMedia({colorScheme: viewport.width === 1024 || viewport.height === 390 ? "dark" : "light"});
+    if (viewport.width <= 720) {
+      await page.getByRole("button", {name: "Git tools", exact: true}).click();
+    }
     const filename = "long-diff-with-a-descriptive-filename.md";
     await writeFile(path.join(workspaceDir, filename),
       Array.from({length: 1000}, (_, index) => `Line ${index + 1}: ${"readable source content ".repeat(12)}`).join("\n") + "\n");
@@ -420,6 +423,7 @@ test("Git tools preserve mobile focus and dark-theme geometry", async ({page}) =
   await page.emulateMedia({colorScheme: "dark", reducedMotion: "no-preference"});
   const trigger = page.getByRole("button", {name: "Git tools", exact: true});
   const panel = page.locator("#git-tools");
+  await trigger.click();
   await expect(panel).toBeVisible();
   await expect(panel).toHaveAttribute("role", "complementary");
   await page.getByPlaceholder("Ask QCode").fill("Mobile draft");
@@ -1056,7 +1060,7 @@ test("captures message actions, commands, context usage, and rich Markdown", asy
   const context = page.getByRole("button", {name: /of context used/});
   await expect(context).toBeVisible();
   await context.click();
-  await expect(page.getByRole("dialog", {name: "Context usage"})).toBeVisible();
+  await expect(page.getByRole("dialog", {name: "Run statistics details"})).toBeVisible();
   await expect(page).toHaveScreenshot("canonical-context-usage.png");
 
   await page.getByRole("button", {
@@ -1186,26 +1190,35 @@ test("navigates long conversations by stable semantic anchors", async ({page}) =
     )
   ).toBeLessThanOrEqual(2);
 
-  const beforeToolExpansion = await transcriptAnchorTop(thirdQuestion);
-  const firstTool = page.locator(".toolDisclosure .disclosureRow").first();
-  await firstTool.evaluate((button: HTMLButtonElement) => button.click());
-  await expect(firstTool).toHaveAttribute("aria-expanded", "true");
-  await expect.poll(
-    async () => Math.abs(
-      (await transcriptAnchorTop(thirdQuestion)) - beforeToolExpansion
-    )
-  ).toBeLessThanOrEqual(2);
+  await page.getByRole("button", {name: "Previous user question"}).click();
+  await page.getByRole("button", {name: "Previous user question"}).click();
+  await expect(
+    page.locator(".transcriptEntryAnchor[data-navigation-current] .userMessage")
+  ).toContainText("visual navigation first");
 
   const beforeSessionSwitch = await transcriptAnchorTop(thirdQuestion);
   await page.locator(".workspaceHeader[data-active] .workspaceCreateAction button").click();
   await expect(page.locator(".sessionRow")).toHaveCount(2);
   await page.locator(".sessionSelect")
-    .filter({hasText: "visual navigation first"})
+    .filter({has: page.getByRole("img", {name: "Completed"})})
     .click();
   await expect(thirdQuestion).toBeVisible();
   await expect.poll(
     async () => Math.abs(
       (await transcriptAnchorTop(thirdQuestion)) - beforeSessionSwitch
+    )
+  ).toBeLessThanOrEqual(2);
+
+  await page.getByRole("button", {name: /Execution details/}).first().click();
+  const firstQuestion = page.locator(".transcriptEntryAnchor")
+    .filter({hasText: "visual navigation first"});
+  const beforeToolExpansion = await transcriptAnchorTop(firstQuestion);
+  const firstTool = page.locator(".toolDisclosure .disclosureRow").first();
+  await firstTool.evaluate((button: HTMLButtonElement) => button.click());
+  await expect(firstTool).toHaveAttribute("aria-expanded", "true");
+  await expect.poll(
+    async () => Math.abs(
+      (await transcriptAnchorTop(firstQuestion)) - beforeToolExpansion
     )
   ).toBeLessThanOrEqual(2);
 
@@ -1368,9 +1381,9 @@ test("keeps background work visible and opens its completion notification", asyn
   await createSession(page);
 
   const background = page.locator(".sessionRow").filter({
-    hasText: "visual long streaming"
+    has: page.getByRole("img", {name: "Completed"})
   });
-  await expect(background.locator('[title="Completed"]')).toBeVisible();
+  await expect(background).toBeVisible();
   const captured = await page.evaluate(() => (
     (window as unknown as {
       __qcodeNotifications: Array<{title: string; body: string}>;
@@ -1399,11 +1412,9 @@ test("keeps background work visible and opens its completion notification", asyn
   await expect(page.getByText("Working", {exact: true})).toBeVisible();
   await createSession(page);
   const approvalBackground = page.locator(".sessionRow").filter({
-    hasText: "visual background approval"
+    has: page.getByRole("img", {name: "Approval required"})
   });
-  await expect(
-    approvalBackground.locator('[title="Approval required"]')
-  ).toBeVisible();
+  await expect(approvalBackground).toBeVisible();
   await expect(page).toHaveTitle("(1) Action required · QCode");
   await expect.poll(() => page.evaluate(() => (
     (window as unknown as {
