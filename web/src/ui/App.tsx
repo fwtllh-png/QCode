@@ -2474,11 +2474,6 @@ function Composer({
           Read only allows inspection. Switch to Auto or Full Access to make changes.
         </p>
       )}
-      {snapshot.profile?.profile.approval_posture === "bypass" && (
-        <p className="composerPermissionNotice">
-          Full Access allows host file changes and network access. Protected paths and explicit rules still apply.
-        </p>
-      )}
       <div className="composerControls">
         <div>
           <IconButton
@@ -3264,7 +3259,11 @@ const TranscriptItem = memo(function TranscriptItem({
             : entry.warning
               ? <LoaderCircle size={16} />
               : <Check size={16} />}
-        <div><strong>{entry.title}</strong><span>{entry.text}</span></div>
+        <div>
+          <strong>{entry.title}</strong><span>{entry.text}</span>
+          {entry.attemptedRecovery && <span>{entry.attemptedRecovery}</span>}
+          {entry.nextStep && <span className="terminalNextStep">Next step: {entry.nextStep}</span>}
+        </div>
         {entry.recoverable &&
           (!recoveryTurnID || entry.turnID === recoveryTurnID) &&
           entry.recovery && (
@@ -3356,6 +3355,11 @@ function ApprovalComposer({
     ? String((data.edit_plan as Record<string, unknown>).id ?? "")
     : "";
   const editPlan = projectEditPlan(data.edit_plan);
+  const commandArguments = typeof data.arguments === "string"
+    ? parseJSONObject(data.arguments)
+    : isObject(data.arguments) ? data.arguments : undefined;
+  const hostExecution = data.tool === "exec_command" &&
+    commandArguments?.execution_target === "host";
   const scopes = Array.isArray(data.allowed_scopes)
     ? data.allowed_scopes.map(String)
     : [];
@@ -3408,10 +3412,14 @@ function ApprovalComposer({
             ? `Review ${editPlan.files.length} file ${
               editPlan.files.length === 1 ? "change" : "changes"
             }`
-            : `${String(data.tool ?? "Action")} requires approval`}
+            : hostExecution
+              ? "Run this command on your computer?"
+              : `${String(data.tool ?? "Action")} requires approval`}
         </div>
         <div className="approvalReason">
-          {String(data.effect ?? data.risk ?? "Review the requested effect.")}
+          {hostExecution
+            ? "This command will run outside QCode's sandbox with your OS account's file and network access. Approval applies only to this command."
+            : String(data.effect ?? data.risk ?? "Review the requested effect.")}
         </div>
         {approvalCommand(data.arguments) && (
           <code className="approvalCommand">{approvalCommand(data.arguments)}</code>
@@ -3421,7 +3429,7 @@ function ApprovalComposer({
         )}
         <div className="pendingMeta">
           {planID && <span>Plan {planID.slice(0, 12)}</span>}
-          {Array.isArray(data.resources) && (
+          {!hostExecution && Array.isArray(data.resources) && (
             <span>{data.resources.length} protected resources</span>
           )}
           {typeof data.expires_at === "string" &&
