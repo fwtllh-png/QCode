@@ -38,6 +38,7 @@ type DiagnosticReceipt struct {
 	Path          string       `json:"path"`
 	Status        string       `json:"status"`
 	Runner        string       `json:"runner,omitempty"`
+	Unconfigured  bool         `json:"unconfigured,omitempty"`
 	Diagnostics   []Diagnostic `json:"diagnostics"`
 	Message       string       `json:"message,omitempty"`
 	ErrorCategory string       `json:"error_category,omitempty"`
@@ -79,7 +80,7 @@ func (r *DiagnosticCommandRunner) Run(ctx context.Context, path string) (Diagnos
 	command, exists := r.Commands[extension]
 	if !exists || command.Name == "" {
 		return DiagnosticReceipt{
-			Path: path, Status: "unavailable", Diagnostics: []Diagnostic{},
+			Path: path, Status: "unavailable", Unconfigured: true, Diagnostics: []Diagnostic{},
 			Message: "no post-edit diagnostics command is configured for " + extension,
 		}, nil
 	}

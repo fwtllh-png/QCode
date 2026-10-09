@@ -165,12 +165,14 @@ func InputDigest(root string, paths []string) (string, error) {
 
 // FromDiagnostics turns the post-edit diagnostics of a turn into a verdict.
 // Only error-severity diagnostics fail the pass; warnings are reported so the
-// receipt still shows why a pass was noisy. When no receipt covers the changed
-// paths the pass is unavailable rather than passed, so a missing diagnostics
-// runner never reads as a green light.
+// receipt still shows why a pass was noisy. Coverage is only required for file
+// types with a configured diagnostics command: receipts marked Unconfigured
+// exempt their path, so unconfigured types never fabricate an unavailable
+// verdict, while a configured command that produced no covering receipt still
+// reads as unavailable rather than passed.
 func FromDiagnostics(receipts []DiagnosticReceipt, paths []string) Receipt {
 	receipt := Receipt{Scope: ScopeDiagnostics, Status: StatusPassed}
-	evaluated := 0
+	exempt := make(map[string]bool)
 	covered := make(map[string]bool)
 	for _, item := range receipts {
 		if len(paths) > 0 && !containsPath(paths, item.Path) {
@@ -178,11 +180,13 @@ func FromDiagnostics(receipts []DiagnosticReceipt, paths []string) Receipt {
 		}
 		switch item.Status {
 		case "unavailable":
+			if item.Unconfigured {
+				exempt[item.Path] = true
+			}
 			continue
 		case "failed":
 			receipt.Status = StatusFailed
 			receipt.Errors++
-			evaluated++
 			receipt.Checks = append(receipt.Checks, Check{
 				Name: diagnosticsCheckName(item), Command: "diagnostics " + item.Path,
 				Reason:   "post-edit diagnostics cover the changed file",
@@ -193,7 +197,6 @@ func FromDiagnostics(receipts []DiagnosticReceipt, paths []string) Receipt {
 		default:
 			continue
 		}
-		evaluated++
 		covered[item.Path] = true
 		var messages []string
 		errors := 0
@@ -223,11 +226,14 @@ func FromDiagnostics(receipts []DiagnosticReceipt, paths []string) Receipt {
 		for candidate := range covered {
 			matched = matched || samePath(path, candidate)
 		}
+		for candidate := range exempt {
+			matched = matched || samePath(path, candidate)
+		}
 		if !matched {
 			receipt.UncoveredPaths = append(receipt.UncoveredPaths, path)
 		}
 	}
-	if receipt.Status != StatusFailed && (evaluated == 0 || len(receipt.UncoveredPaths) != 0) {
+	if receipt.Status != StatusFailed && len(receipt.UncoveredPaths) != 0 {
 		receipt.Status = StatusUnavailable
 		receipt.Message = "post-edit diagnostics do not cover every changed file"
 	}

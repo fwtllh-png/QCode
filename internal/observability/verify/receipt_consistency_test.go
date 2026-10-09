@@ -88,6 +88,22 @@ func TestDiagnosticsRequireEveryChangedPath(t *testing.T) {
 	}
 }
 
+func TestDiagnosticsExemptPathsForUnconfiguredCommands(t *testing.T) {
+	mixed := FromDiagnostics([]DiagnosticReceipt{
+		{Path: "a.go", Status: "completed"},
+		{Path: "b.tsx", Status: "unavailable", Unconfigured: true},
+	}, []string{"a.go", "b.tsx"})
+	if mixed.Status != StatusPassed || len(mixed.UncoveredPaths) != 0 {
+		t.Fatalf("unconfigured path fabricated unavailable: %+v", mixed)
+	}
+	allExempt := FromDiagnostics([]DiagnosticReceipt{
+		{Path: "only.css", Status: "unavailable", Unconfigured: true},
+	}, []string{"only.css"})
+	if allExempt.Status != StatusPassed || len(allExempt.UncoveredPaths) != 0 {
+		t.Fatalf("unconfigured-only diagnostics did not pass: %+v", allExempt)
+	}
+}
+
 func TestConfiguredTemplateDoesNotExpandPlaceholdersInsidePaths(t *testing.T) {
 	if got := expandCommand("check {paths}", []string{"{packages}.go"}); got != "check '{packages}.go'" {
 		t.Fatalf("path content was interpreted as a template: %q", got)
