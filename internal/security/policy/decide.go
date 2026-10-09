@@ -1,6 +1,7 @@
 package policy
 
 import (
+	"encoding/json"
 	"fmt"
 	"path/filepath"
 
@@ -161,7 +162,42 @@ func (r *Runtime) decide(invocation Invocation) Decision {
 			Layer:  LayerAutoReview,
 		}
 	}
+	// Safe-command pathway: shell commands matching a known-safe prefix
+	// (git add, go test, npm install, etc.) are allowed under Auto without
+	// human approval. This supplements the typed-grant pathway above and
+	// covers routine development operations that only touch workspace state.
+	managedAsk := grant.Action == ActionAsk
+	if decision.Action == ActionAsk &&
+		(decision.Layer == LayerPosture || decision.Layer == LayerUser) &&
+		r.Permission == PermissionAuto && !r.DisableAutoReview &&
+		!repositoryAsk && !managedAsk &&
+		assessment.Effect().Risk != securitymodel.RiskHigh &&
+		assessment.Effect().Risk != securitymodel.RiskCritical {
+		if command, ok := invocationCommand(invocation); ok &&
+			MatchesSafeCommand(DefaultCommandSafetyRules(), command) {
+			decision = Decision{
+				Action: ActionAllow, Code: "safe_command_allowed",
+				Reason: "command matches a known-safe prefix under the Auto posture",
+				Layer:  LayerAutoReview,
+			}
+		}
+	}
 	return decision
+}
+
+// invocationCommand extracts the shell command from an invocation's
+// arguments if the tool is a shell-family executor.
+func invocationCommand(invocation Invocation) (string, bool) {
+	if len(invocation.Arguments) == 0 {
+		return "", false
+	}
+	var args struct {
+		Command string `json:"command"`
+	}
+	if err := json.Unmarshal(invocation.Arguments, &args); err != nil {
+		return "", false
+	}
+	return args.Command, args.Command != ""
 }
 
 func inputLayer(invocation Invocation, assessment securitymodel.Assessment) (Decision, bool) {
