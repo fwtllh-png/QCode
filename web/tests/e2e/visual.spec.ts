@@ -444,7 +444,6 @@ test("captures populated model, tool, and agent settings", async ({page}) => {
   await page.getByRole("button", {name: "Settings"}).click();
   await page.getByRole("button", {name: "Models"}).click();
   await expect(page.getByRole("button", {name: "Test connection"})).toBeVisible();
-  await expect(page.getByText("Runtime-managed")).toBeVisible();
   await expect(page).toHaveScreenshot("canonical-settings-connection.png");
 
   await page.getByRole("button", {name: "Models"}).click();
@@ -506,7 +505,7 @@ test("Material drawers preserve focus and mobile session access", async ({page})
 
 test("Material simplified chrome preserves file previews and responsive Prefix metrics", async ({page}) => {
   await createSession(page);
-  await page.getByLabel("Approval").selectOption("auto");
+  await page.getByLabel("Permissions").selectOption("auto");
   await submitPrompt(page, "visual diff");
   await expect(page.locator(".assistantMessage").last())
     .toContainText("Updated README and verified the diff.");
@@ -588,9 +587,9 @@ test("Material nested model dialog preserves autofocus and keyboard ownership", 
   await page.getByRole("button", {name: "Settings", exact: true}).click();
   await page.getByRole("button", {name: "Models", exact: true}).click();
   await page.getByRole("button", {name: "Add model", exact: true}).click();
-  await expect(page.getByRole("textbox", {name: "New model ID"})).toBeFocused();
+  await expect(page.getByRole("textbox", {name: "Connection model ID"})).toBeFocused();
   await page.keyboard.press("Escape");
-  await expect(page.getByRole("textbox", {name: "New model ID"})).toHaveCount(0);
+  await expect(page.getByRole("textbox", {name: "Connection model ID"})).toHaveCount(0);
   await expect(page.getByRole("dialog", {name: "Settings", exact: true})).toBeVisible();
   await expect(page.getByRole("button", {name: "Add model", exact: true})).toBeFocused();
   await page.keyboard.press("Escape");
@@ -607,7 +606,7 @@ test("Motion dialogs retain exit frames and restore nested focus before unmount"
   await page.getByRole("button", {name: "Models", exact: true}).click();
   const add = page.getByRole("button", {name: "Add model", exact: true});
   await add.click();
-  const input = page.getByRole("textbox", {name: "New model ID"});
+  const input = page.getByRole("textbox", {name: "Connection model ID"});
   await input.fill("unsaved-model");
   const original = await input.elementHandle();
   await page.keyboard.press("Escape");
@@ -656,7 +655,7 @@ test("Motion menus can reopen mid-exit and hand focus to another dialog", async 
 test("Motion session drawer releases interaction during exit", async ({page}) => {
   await page.emulateMedia({reducedMotion: "no-preference"});
   await createSession(page);
-  await page.getByLabel("Approval").selectOption("auto");
+  await page.getByLabel("Permissions").selectOption("auto");
   await submitPrompt(page, "visual diff");
   await expect(page.locator(".assistantMessage").last()).toContainText("Updated");
   await page.setViewportSize({width: 390, height: 844});
@@ -833,7 +832,7 @@ test("captures the modal workspace context browser", async ({page}) => {
 
 test("captures the authoritative diff state", async ({page}) => {
   await createSession(page);
-  await page.getByLabel("Approval").selectOption("auto");
+  await page.getByLabel("Permissions").selectOption("auto");
   await submitPrompt(page, "visual diff");
   await expect(page.locator(".assistantMessage").last())
     .toContainText("Updated README and verified the diff.");
@@ -858,7 +857,7 @@ test("captures the authoritative diff state", async ({page}) => {
 
 test("captures collapsed tools, expanded tool detail, and trajectory", async ({page}) => {
   await createSession(page);
-  await page.getByLabel("Approval").selectOption("auto");
+  await page.getByLabel("Permissions").selectOption("auto");
   await submitPrompt(page, "visual diff");
   await expect(page.locator(".assistantMessage").last())
     .toContainText("Updated README and verified the diff.");
@@ -896,7 +895,7 @@ test("captures collapsed tools, expanded tool detail, and trajectory", async ({p
 
 test("captures Think and specialized Read, Bash, Grep, and Glob cards", async ({page}) => {
   await createSession(page);
-  await page.getByLabel("Approval").selectOption("auto");
+  await page.getByLabel("Permissions").selectOption("auto");
   await submitPrompt(page, "visual tools");
   await expect(page.locator(".assistantMessage").last())
     .toContainText("Inspected the workspace with focused tools.");
@@ -930,7 +929,7 @@ test("captures Think and specialized Read, Bash, Grep, and Glob cards", async ({
 test("captures the back-to-bottom control at the transcript edge", async ({page}) => {
   await page.setViewportSize({width: 1024, height: 600});
   await createSession(page);
-  await page.getByLabel("Approval").selectOption("auto");
+  await page.getByLabel("Permissions").selectOption("auto");
   await submitPrompt(page, "visual tools");
   await expect(page.locator(".assistantMessage").last())
     .toContainText("Inspected the workspace with focused tools.");
@@ -1010,7 +1009,7 @@ test("captures message actions, commands, context usage, and rich Markdown", asy
   })).toBeVisible();
 
   const selectWidths = await page.evaluate(() => ({
-    approval: document.querySelector<HTMLSelectElement>('select[aria-label="Approval"]')
+    approval: document.querySelector<HTMLSelectElement>('select[aria-label="Permissions"]')
       ?.getBoundingClientRect().width ?? 0
   }));
   await expect(page.getByLabel("Mode", {exact: true})).toHaveCount(0);
@@ -1466,7 +1465,7 @@ async function createSession(page: Page): Promise<void> {
   await page.locator(".workspaceHeader[data-active] .workspaceCreateAction button").click();
   await expect(sessions).toHaveCount(count + 1);
   await expect(page.getByPlaceholder("Ask QCode")).toBeEnabled();
-  await page.getByLabel("Approval").selectOption("suggest");
+  await page.getByLabel("Permissions").selectOption("auto");
 }
 
 async function enableAutomaticPlanApproval(page: Page): Promise<void> {

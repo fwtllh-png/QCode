@@ -414,11 +414,11 @@ test("creates a Session and completes a fixture-backed Turn", async ({page}) => 
 test("inherits Approval when creating another Session", async ({page}) => {
   await page.goto(baseURL);
   await page.getByRole("button", {name: /New session in /}).click();
-  await page.getByLabel("Approval").selectOption("auto");
-  await expect(page.getByLabel("Approval")).toHaveValue("auto");
+  await page.getByLabel("Permissions").selectOption("auto");
+  await expect(page.getByLabel("Permissions")).toHaveValue("auto");
 
   await page.getByRole("button", {name: /New session in /}).click();
-  await expect(page.getByLabel("Approval")).toHaveValue("auto");
+  await expect(page.getByLabel("Permissions")).toHaveValue("auto");
 });
 
 test("submits local attachments as verified Runtime context", async ({page}) => {
