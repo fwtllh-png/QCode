@@ -491,6 +491,10 @@ func validateTerminalState(state State) error {
 		expected := JournalNone
 		if hasChanges || state.Policy.JournalRequired {
 			_, expected = terminalJournalOutcome(state, *state.Terminal)
+			// Old hard-gate failures retained drafts; accept their durable journal fact.
+			if state.Verification.Action == VerificationActionBlocked && state.Terminal.Kind == TerminalFailed {
+				expected = JournalSuspended
+			}
 		}
 		if state.Journal != expected {
 			return errors.New("failed or canceled turn has invalid journal state")

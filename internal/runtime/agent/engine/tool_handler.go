@@ -131,7 +131,12 @@ func (e *Engine) runToolsWithCache(
 				Result:   &result,
 			})
 		},
-		Execute: func(callCtx context.Context, call provider.ToolCall) (tool.Result, error) {
+		Execute: func(callCtx context.Context, call provider.ToolCall) (result tool.Result, executeErr error) {
+			defer func() {
+				if callCtx.Err() == nil && (executeErr != nil || result.IsError) {
+					executeErr = errors.Join(executeErr, e.rejectUnresumedApproval(call.ID))
+				}
+			}()
 			if recoveryOnly && !conversationRecoveryTool(call.Name) {
 				return tool.Result{
 					Content:  "Current source definitions are not in the sampled context. Recover them with turn_history and bind the required IDs with update_plan.context_selection before acting. Business tools become available after the next sample includes the definitions.",
@@ -140,19 +145,6 @@ func (e *Engine) runToolsWithCache(
 				}, nil
 			}
 			binding := tool.BindingForCall(call)
-			if e.options.VerificationOnly && call.Name == "exec_command" {
-				var declaration struct {
-					Verification string `json:"verification"`
-				}
-				if json.Unmarshal([]byte(call.Arguments), &declaration) != nil ||
-					declaration.Verification == "" {
-					return tool.Result{
-						Content:  "verifier role requires exec_command with verification and covered_paths",
-						IsError:  true,
-						Metadata: map[string]any{"error_category": "child_authority_denied"},
-					}, nil
-				}
-			}
 			finishOnly := tool.FinishOnlyEnabled(toolCtx)
 			if finishOnly && !recoveryOnly {
 				canonical, descriptor, _, resolveErr :=
@@ -189,6 +181,7 @@ func (e *Engine) runToolsWithCache(
 			callCtx = tool.WithOutputObserver(callCtx, stream.Observe(call))
 			callCtx = tool.WithExecutionAdmission(callCtx, sched.Admit)
 			callCtx = e.tracer().Context(callCtx, span.ID())
+			callCtx = e.guardianContext(callCtx, func(event Event) error { return send(RunningTools, event) })
 			result, err := e.guard.ExecuteBound(
 				callCtx,
 				call.ID,
@@ -226,12 +219,6 @@ func (e *Engine) runToolsWithCache(
 					result.Metadata["invalidated_read"] = reason
 				}
 			}
-			e.bindVerificationEvidence(
-				call,
-				result,
-				batchMutated,
-				mutationRevision,
-			)
 			for _, change := range turnkernel.ObservedFileChanges(*result) {
 				relative, ok := agentcontext.WorkspaceRelative(e.options.Workspace, change.Path)
 				if !ok {

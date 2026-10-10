@@ -89,10 +89,7 @@ func (w WorkItem) RequiredActionOr(fallback string) string {
 }
 
 func (w WorkItem) HasKnownOrOpen() bool {
-	return w.HasKnown() ||
-		len(w.Open.UnverifiedPaths) > 0 ||
-		len(w.Open.Sessions) > 0 ||
-		len(w.Open.CoveredPaths) > 0
+	return w.HasKnown() || len(w.Open.Sessions) > 0
 }
 
 func (w WorkItem) KnownRead(path string) (WorkItemRead, bool) {
@@ -109,11 +106,6 @@ func DeriveRequiredAction(state State) string {
 	switch {
 	case len(item.Open.Sessions) > 0:
 		return "write_stdin"
-	case len(item.KnownEdits) > 0 &&
-		state.Verification.Status != VerificationPassed &&
-		state.Verification.Action != VerificationActionReported &&
-		state.Verification.Action != VerificationActionReverted:
-		return "exec_command"
 	case len(item.KnownReads) > 0 && len(item.KnownEdits) == 0:
 		return "file_edit"
 	case state.Completion != nil && state.Completion.Accepted:
@@ -192,17 +184,9 @@ func applyBindWorkItem(
 			item.KnownEdits[path] = edit
 		}
 	}
-	item.Open.UnverifiedPaths = mergeUniqueSorted(
-		item.Open.UnverifiedPaths,
-		command.Open.UnverifiedPaths...,
-	)
 	item.Open.Sessions = mergeUniqueSorted(
 		item.Open.Sessions,
 		command.Open.Sessions...,
-	)
-	item.Open.CoveredPaths = mergeUniqueSorted(
-		item.Open.CoveredPaths,
-		command.Open.CoveredPaths...,
 	)
 	item.RequiredAction = DeriveRequiredAction(withWorkItem(transition.State, item))
 	transition.State.WorkItem = item
@@ -268,26 +252,12 @@ func applyWorkItemObservation(
 			edit.ContentDigest = digest
 		}
 		item.KnownEdits[path] = edit
-		item.Open.UnverifiedPaths = mergeUniqueSorted(
-			item.Open.UnverifiedPaths,
-			path,
-		)
 	}
 	if session := strings.TrimSpace(observation.OpenSession); session != "" {
 		item.Open.Sessions = mergeUniqueSorted(item.Open.Sessions, session)
 	}
 	if session := strings.TrimSpace(observation.CloseSession); session != "" {
 		item.Open.Sessions = removeSorted(item.Open.Sessions, session)
-	}
-	if len(observation.CoveredPaths) != 0 {
-		item.Open.CoveredPaths = mergeUniqueSorted(
-			item.Open.CoveredPaths,
-			observation.CoveredPaths...,
-		)
-		item.Open.UnverifiedPaths = subtractSorted(
-			item.Open.UnverifiedPaths,
-			observation.CoveredPaths...,
-		)
 	}
 	item.RequiredAction = DeriveRequiredAction(withWorkItem(*state, item))
 	state.WorkItem = item
@@ -351,15 +321,6 @@ func ObserveWorkItemResult(
 		}
 	}
 	observation.CallID = call.ID
-	var covered struct {
-		CoveredPaths []string `json:"covered_paths"`
-	}
-	if err := json.Unmarshal([]byte(call.Arguments), &covered); err == nil {
-		observation.CoveredPaths = append(
-			[]string(nil),
-			covered.CoveredPaths...,
-		)
-	}
 	return observation
 }
 
@@ -433,14 +394,11 @@ func FormatWorkItemSignature(
 		reads = joinSortedKeys(state.WorkItem.KnownReads)
 	}
 	return fmt.Sprintf(
-		"goal=%s;reads=%s;edits=%s;verify=%s/%s;coverage=%s;"+
+		"goal=%s;reads=%s;edits=%s;"+
 			"plan_done=%d;completion=%t;sessions=%d",
 		state.WorkItem.GoalDigest,
 		reads,
 		joinSortedKeys(state.WorkItem.KnownEdits),
-		state.Verification.Status,
-		state.Verification.Action,
-		strings.Join(append([]string(nil), state.WorkItem.Open.CoveredPaths...), ","),
 		completedPlanSteps,
 		completionAccepted,
 		len(state.WorkItem.Open.Sessions),

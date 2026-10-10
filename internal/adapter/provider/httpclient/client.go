@@ -113,6 +113,14 @@ func (c *Client) Execute(
 	tracecontext.InjectHTTP(requestContext, httpRequest.Header)
 	transportRequestID := requestKey(call.Body)
 	httpRequest.Header.Set("Idempotency-Key", transportRequestID)
+	if request.SingleAttempt {
+		// net/http can replay an idempotent POST on a stale pooled connection
+		// when GetBody is available. Disable that transport-level resend too.
+		httpRequest.GetBody = nil
+		copyClient := *httpClient
+		copyClient.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+		httpClient = &copyClient
+	}
 	phase := newRequestPhase()
 	httpRequest = httpRequest.WithContext(httptrace.WithClientTrace(
 		httpRequest.Context(),

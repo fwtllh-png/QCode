@@ -1,0 +1,59 @@
+{
+  "origin": "fixture_model_real_runtime_and_sandbox",
+  "cases": [
+    {
+      "mode": "allow",
+      "approval_events": 0,
+      "judge_calls": 1,
+      "approval_cancel_to_terminal_ms": null
+    },
+    {
+      "mode": "approve",
+      "approval_events": 1,
+      "judge_calls": 1,
+      "approval_cancel_to_terminal_ms": null
+    },
+    {
+      "mode": "deny",
+      "approval_events": 1,
+      "judge_calls": 1,
+      "approval_cancel_to_terminal_ms": null
+    },
+    {
+      "mode": "cancel",
+      "approval_events": 1,
+      "judge_calls": 1,
+      "approval_cancel_to_terminal_ms": 25.078167
+    },
+    {
+      "mode": "failure",
+      "approval_events": 1,
+      "judge_calls": 1,
+      "approval_cancel_to_terminal_ms": null
+    },
+    {
+      "mode": "timeout",
+      "approval_events": 1,
+      "judge_calls": 1,
+      "approval_cancel_to_terminal_ms": null
+    },
+    {
+      "mode": "audit_started",
+      "approval_events": 1,
+      "judge_calls": 0,
+      "approval_cancel_to_terminal_ms": null
+    },
+    {
+      "mode": "audit_assessed",
+      "approval_events": 1,
+      "judge_calls": 1,
+      "approval_cancel_to_terminal_ms": null
+    },
+    {
+      "mode": "audit_decided",
+      "approval_events": 1,
+      "judge_calls": 1,
+      "approval_cancel_to_terminal_ms": null
+    }
+  ]
+}

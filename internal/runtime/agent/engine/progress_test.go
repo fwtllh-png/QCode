@@ -439,7 +439,7 @@ func TestAcceptedCompletionPublishesSummaryWithoutFinalAnswerSampleAtLimit(
 		streams = append(streams, toolCallStream(
 			fmt.Sprintf("quality-%d", index),
 			"exec_command",
-			`{"covered_paths":["a.go"]}`,
+			`{"cmd":"go test ./..."}`,
 		))
 	}
 	streams = append(

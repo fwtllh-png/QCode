@@ -56,11 +56,7 @@ func applyEvaluateTurnStep(
 	}
 	switch {
 	case current.Completion != nil && current.Completion.Accepted:
-		if verificationPending(current) {
-			transition.State.NextAction = StepActionVerify
-		} else {
-			transition.State.NextAction = StepActionComplete
-		}
+		transition.State.NextAction = StepActionComplete
 	case current.Convergence != nil:
 		if current.Convergence.FinalizationAttempted {
 			transition.State.NextAction = StepActionBlock
@@ -126,8 +122,6 @@ func applyEvaluateTurnStep(
 		); err != nil {
 			return err
 		}
-	case verificationPending(current):
-		transition.State.NextAction = StepActionVerify
 	default:
 		transition.State.NextAction = StepActionComplete
 	}
@@ -138,8 +132,6 @@ func completionRejectionAction(reason string) string {
 	switch reason {
 	case "no_observed_changes":
 		return "perform_workspace_mutation_or_explain_no_change"
-	case "verification_evidence_required":
-		return "exec_command"
 	case "pending_actions":
 		return "continue_work"
 	case "convergence_blocked":

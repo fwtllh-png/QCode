@@ -24,6 +24,8 @@ type WindowLedger struct {
 	ToolDefinitionTokens     uint64 `json:"tool_definition_tokens,omitempty"`
 	LastProviderInputTokens  uint64 `json:"last_provider_input_tokens,omitempty"`
 	LastProviderCachedTokens uint64 `json:"last_provider_cached_tokens,omitempty"`
+	LastUnderestimateTokens  uint64 `json:"last_underestimate_tokens,omitempty"`
+	HistoryFloorTurn         uint64 `json:"history_floor_turn,omitempty"`
 	Digest                   string `json:"digest"`
 }
 
@@ -68,30 +70,34 @@ func WindowThresholds(policy WindowPolicy, hardInputCapacity uint64) (uint64, ui
 }
 
 type BudgetSnapshot struct {
-	WindowID              string `json:"window_id,omitempty"`
-	WindowNumber          uint64 `json:"window_number,omitempty"`
-	Observed              bool   `json:"observed,omitempty"`
-	ActiveTokens          uint64 `json:"active_tokens"`
-	FullActiveTokens      uint64 `json:"full_active_tokens,omitempty"`
-	PrefillTokens         uint64 `json:"prefill_tokens,omitempty"`
-	BodyTokens            uint64 `json:"body_tokens,omitempty"`
-	ToolDefinitionTokens  uint64 `json:"tool_definition_tokens,omitempty"`
-	PendingTokens         uint64 `json:"pending_tokens,omitempty"`
-	OutputReserve         uint64 `json:"output_reserve,omitempty"`
-	HardInputTokens       uint64 `json:"hard_input_tokens,omitempty"`
-	LimitSource           string `json:"limit_source,omitempty"`
-	OutputSource          string `json:"output_source,omitempty"`
-	AutoCompactTokens     uint64 `json:"auto_compact_tokens"`
-	PrepareTokens         uint64 `json:"prepare_tokens,omitempty"`
-	EmergencyTokens       uint64 `json:"emergency_tokens,omitempty"`
-	RecentTailTurns       int    `json:"recent_tail_turns,omitempty"`
-	KeepRecentToolResults int    `json:"keep_recent_tool_results,omitempty"`
-	HistoryTokenCeiling   uint64 `json:"history_token_ceiling,omitempty"`
-	Digest                string `json:"digest,omitempty"`
-	NarrativeMode         string `json:"narrative_mode,omitempty"`
-	EstimatedTokens       uint64 `json:"estimated_tokens,omitempty"`
-	MaxContextTokens      uint64 `json:"max_context_tokens,omitempty"`
-	Compactions           int    `json:"compactions"`
+	MeasurementSource        string `json:"measurement_source,omitempty"`
+	ContextDigest            string `json:"context_digest,omitempty"`
+	CompactionHeadroomTokens uint64 `json:"compaction_headroom_tokens,omitempty"`
+	CompactionTargetTokens   uint64 `json:"compaction_target_tokens,omitempty"`
+	WindowID                 string `json:"window_id,omitempty"`
+	WindowNumber             uint64 `json:"window_number,omitempty"`
+	Observed                 bool   `json:"observed,omitempty"`
+	ActiveTokens             uint64 `json:"active_tokens"`
+	FullActiveTokens         uint64 `json:"full_active_tokens,omitempty"`
+	PrefillTokens            uint64 `json:"prefill_tokens,omitempty"`
+	BodyTokens               uint64 `json:"body_tokens,omitempty"`
+	ToolDefinitionTokens     uint64 `json:"tool_definition_tokens,omitempty"`
+	PendingTokens            uint64 `json:"pending_tokens,omitempty"`
+	OutputReserve            uint64 `json:"output_reserve,omitempty"`
+	HardInputTokens          uint64 `json:"hard_input_tokens,omitempty"`
+	LimitSource              string `json:"limit_source,omitempty"`
+	OutputSource             string `json:"output_source,omitempty"`
+	AutoCompactTokens        uint64 `json:"auto_compact_tokens"`
+	PrepareTokens            uint64 `json:"prepare_tokens,omitempty"`
+	EmergencyTokens          uint64 `json:"emergency_tokens,omitempty"`
+	RecentTailTurns          int    `json:"recent_tail_turns,omitempty"`
+	KeepRecentToolResults    int    `json:"keep_recent_tool_results,omitempty"`
+	HistoryTokenCeiling      uint64 `json:"history_token_ceiling,omitempty"`
+	Digest                   string `json:"digest,omitempty"`
+	NarrativeMode            string `json:"narrative_mode,omitempty"`
+	EstimatedTokens          uint64 `json:"estimated_tokens,omitempty"`
+	MaxContextTokens         uint64 `json:"max_context_tokens,omitempty"`
+	Compactions              int    `json:"compactions"`
 }
 
 func NewWindowLedger(id string, number uint64) (WindowLedger, error) {
@@ -198,6 +204,11 @@ func (w *WindowLedger) Observe(
 		w.PrefillTokens = inputTokens
 		w.PrefillObserved = true
 	}
+	// The first observation calibrates the estimator; only subsequent
+	// predictions provide residual error evidence for future headroom.
+	if context.WindowObserved {
+		w.LastUnderestimateTokens = inputTokens - min(inputTokens, context.WindowProjectedTokens)
+	}
 	w.FullActiveTokens = inputTokens
 	w.ObservedEstimateTokens = context.EstimatedTokens
 	w.ObservedContextDigest = context.ContextDigest
@@ -231,7 +242,18 @@ func (w *WindowLedger) RebaseEstimates(from, to float64) {
 }
 
 func (w WindowLedger) Advance(id string) (WindowLedger, error) {
-	return NewWindowLedger(id, w.Number+1)
+	next, err := NewWindowLedger(id, w.Number+1)
+	if err == nil {
+		next.RetainHistoryFrom(w.HistoryFloorTurn)
+	}
+	return next, err
+}
+
+// RetainHistoryFrom pins a whole-turn boundary independently of message
+// indices, which change during terminal maintenance and session restoration.
+func (w *WindowLedger) RetainHistoryFrom(turn uint64) {
+	w.HistoryFloorTurn = turn
+	w.seal()
 }
 
 func ApplyWindowProjection(
@@ -250,6 +272,7 @@ func ApplyWindowProjection(
 	context.WindowBodyTokens = value.BodyTokens
 	context.WindowPendingTokens = value.PendingTokens
 	context.WindowOutputReserve = value.OutputReserve
+	context.WindowContextTokens = value.HardLimit
 }
 
 func (w WindowLedger) digest() string {

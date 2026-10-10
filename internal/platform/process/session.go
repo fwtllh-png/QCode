@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"github.com/fwtllh-png/QCode/internal/common/startgate"
 	"io"
 	"os"
 	"os/exec"
@@ -246,10 +247,11 @@ func (m *SessionManager) Create(
 	var output io.ReadCloser
 	var terminal *os.File
 	if options.PTY {
-		terminal, err = pty.StartWithSize(
-			command,
-			&pty.Winsize{Rows: rows, Cols: cols},
-		)
+		err = startgate.Run(ctx, func() error {
+			var startErr error
+			terminal, startErr = pty.StartWithSize(command, &pty.Winsize{Rows: rows, Cols: cols})
+			return startErr
+		})
 		if err != nil {
 			return "", err
 		}
@@ -269,7 +271,7 @@ func (m *SessionManager) Create(
 		command.Stdin = stdinReader
 		command.Stdout = outputWriter
 		command.Stderr = outputWriter
-		if err = command.Start(); err != nil {
+		if err = startgate.Run(ctx, command.Start); err != nil {
 			_ = stdinReader.Close()
 			_ = stdinWriter.Close()
 			_ = outputReader.Close()

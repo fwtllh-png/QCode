@@ -13,7 +13,6 @@ import (
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
 	toolguard "github.com/fwtllh-png/QCode/internal/adapter/tool/guard"
 	"github.com/fwtllh-png/QCode/internal/observability/trace"
-	"github.com/fwtllh-png/QCode/internal/observability/verify"
 	"github.com/fwtllh-png/QCode/internal/security/policy"
 )
 
@@ -125,28 +124,14 @@ func (t latencyTool) Execute(_ context.Context, raw json.RawMessage) (tool.Resul
 }
 
 // timedVerifier spends a known amount of time in the gate.
-type timedVerifier struct {
-	clock *latencyClock
-	spent time.Duration
-	runs  int
-}
-
-func (v *timedVerifier) Verify(
-	context.Context, verify.Request,
-) (verify.Receipt, error) {
-	v.runs++
-	v.clock.advance(v.spent)
-	return passedReceipt(), nil
-}
 
 // TestTurnReportsEveryLatencyPhase is the T3 acceptance: a turn that called a
 // model, ran a tool, waited for a human and verified itself reports all five
 // numbers, and each one is the stretch that phase actually spent.
 func TestTurnReportsEveryLatencyPhase(t *testing.T) {
 	clock := newLatencyClock()
-	verifier := &timedVerifier{clock: clock, spent: 1500 * time.Millisecond}
 	engine := newLatencyEngine(t, latencyEngineOptions{
-		clock: clock, verifier: verifier,
+		clock:   clock,
 		posture: policy.PermissionSuggest,
 		tool:    latencyTool{clock: clock, spent: time.Second},
 		calls: [][]timedEvent{{
@@ -176,9 +161,6 @@ func TestTurnReportsEveryLatencyPhase(t *testing.T) {
 	if result.State != Completed {
 		t.Fatalf("state = %q, want the turn to complete", result.State)
 	}
-	if verifier.runs != 1 {
-		t.Fatalf("verifier ran %d times, want once", verifier.runs)
-	}
 
 	latency := engine.TurnLatency()
 	if latency == nil {
@@ -199,10 +181,10 @@ func TestTurnReportsEveryLatencyPhase(t *testing.T) {
 	if latency.ApprovalWait > latency.Tool {
 		t.Fatalf("approval wait %s is not inside its tool %s", latency.ApprovalWait, latency.Tool)
 	}
-	if latency.Verify != 1500*time.Millisecond {
+	if latency.Verify != 0 {
 		t.Fatalf("verify = %s, want 1.5s", latency.Verify)
 	}
-	if latency.Total != 7300*time.Millisecond {
+	if latency.Total != 5800*time.Millisecond {
 		t.Fatalf("total = %s, want 7.3s", latency.Total)
 	}
 
@@ -216,7 +198,7 @@ func TestTurnReportsEveryLatencyPhase(t *testing.T) {
 	}
 	for _, name := range []string{
 		trace.NameTurn, trace.NameModelCall, trace.NameTool,
-		trace.NameApprovalWait, trace.NameVerify,
+		trace.NameApprovalWait,
 	} {
 		if _, exists := byName[name]; !exists {
 			t.Fatalf("no %q span was persisted; got %+v", name, spans)
@@ -354,11 +336,10 @@ func TestActivitySnapshotCountsOnlyOpenProviderAndToolSpans(t *testing.T) {
 }
 
 type latencyEngineOptions struct {
-	clock    *latencyClock
-	verifier verify.Runner
-	posture  policy.Permission
-	tool     tool.Executor
-	calls    [][]timedEvent
+	clock   *latencyClock
+	posture policy.Permission
+	tool    tool.Executor
+	calls   [][]timedEvent
 }
 
 func newLatencyEngine(t *testing.T, options latencyEngineOptions) *Engine {
@@ -386,12 +367,6 @@ func newLatencyEngine(t *testing.T, options latencyEngineOptions) *Engine {
 		Journal:   newTestWorkspaceJournal(t, root)}, TelemetryConfig: TelemetryConfig{Observability: trace.Runtime{
 		Clock: options.clock.now,
 	}},
-	}
-	if options.verifier != nil {
-		engineOptions.Verify = VerifyOptions{
-			Mode: VerifyModeSoft, OnFailure: VerifyOnFailureFail,
-			Scope: verify.ScopeDiagnostics, Runner: options.verifier,
-		}
 	}
 	engine, err := newTestEngine(engineOptions)
 	if err != nil {

@@ -101,14 +101,6 @@ Context Window：后者只约束单次请求。默认值 `0` 不设置累计上�
 结果语义摘要不使用原始正文、耗时、临时路径日志、结果 Handle、进程 ID 或输出
 游标；仅结构化事实变化可以续期。没有结构化事实的新输出不会单独清零计数。
 已有租约阈值保持不变；长时间进程仅持续输出日志也不能无限续期。
-[execution.verify]
-mode = "soft"                # off | soft | hard
-scope = "diagnostics"        # diagnostics | repository | affected
-on_failure = "fail"          # fail | revert
-command = ""                 # 可选的显式仓库验证命令
-max_repair_steps = 1
-timeout = "2m"
-
 [execution.journal]
 durable = true
 recover_on_start = true
@@ -193,7 +185,7 @@ truth_max_bytes = 0 # 0 表示根据当前 Route 的硬输入 Token 容量动态
 truth_max_entities = 256
 mandatory_max_entities = 128
 fact_max_entities = 96
-verified_change_retention_turns = 32
+verified_change_retention_turns = 32 # 沿用已有字段名，现用于普通变更的保留轮数，不要求验证证明
 failure_max_entities = 24
 handle_max_entities = 32
 omission_sample_max_entities = 8
@@ -280,6 +272,21 @@ SLA Ceiling，仍不能超过剩余硬输入。轮数和原文 ceiling 不授权
 会继续检查后续安全边界，只有完整成本净下降才接受，否则回滚。当前 Turn 仍超
 硬输入时再做钉死用户的 working-set 降级；不可再缩前缀超限才 `resource_exhausted`。
 
+容量、显式输入 ceiling 或原文容量选择迫使历史前缀改变时，会在同一次整理中
+尽量留出下一轮工作余量，避免只移除一个短轮、紧接着又改前缀而重复损失缓存。
+余量取当前 Turn 消息、最近一个历史 Turn 消息的校准估算，以及有观测基线时
+本次 Pending 输入三者最大值，再加最近一次已校准请求的正向预测误差。
+首次采样的全部输入不算 Pending 增长；World 状态不重复计入轮次工作量。
+余量受有效输入容量限制，目标为有效输入容量减余量；显式输入、body-only 或
+原文 ceiling 仍分别作用于各自分区。没有新增固定百分比或提前触发档位。
+仅为这个软目标移除已闭合的历史组，达到目标或无可用历史组即停止；硬预算已
+满足时，软目标不足不会触发当前用户请求降级或阻断。多组折叠合并为一次回执。
+已接受的轮次边界以 `WindowLedger.history_floor_turn` 持久化，后续采样、下一轮及
+恢复时不会自动填回已释放的原文空间；显式替换 History 会重置边界。
+原文仍可经 `turn_history` 回读，活动来源定义继续独立投影。
+采样诊断的 `compaction_headroom_tokens`、`compaction_target_tokens` 记录当次整理目标，
+它们不是每次采样都要维持的硬限制；后续新增内容可以消耗这份余量。
+
 `digest` 只允许 `ledger` 或 `ledger+narrative`，默认后者。`ledger` 使用确定性状态、原文和无损摘录，不自动生成摘要。`narrative_mode` 控制新生成：只有 `ledger+narrative` 与 `post_turn` 同时成立才自动调度；`ledger+narrative` 与 `off` 可以复用仍有效的缓存。`digest=off` 非法，Session State 与稳定来源不能关闭。摘要逐次检查来源、过期、Route/Window、重复表示和完整请求余量，不复制已在原文或摘录中的来源；不可拆分的多来源摘要存在部分重叠时整体省略。Context Budget 快照报告这些 view 字段；只有 Operator 显式设置时才报告 `prepare_tokens` / `emergency_tokens`。
 
 闭合 Turn 的摘要条目仅作为解释保存；`unresolved` / `pending_job` / `next_step`
@@ -347,6 +354,10 @@ model = "gpt-4.1"
 provider = "openai"
 model = "gpt-4.1-mini"
 
+[route.judge]
+provider = "openai"
+model = "gpt-4.1-mini"
+
 [web]
 search_backend = "duckduckgo"
 ```
@@ -354,13 +365,38 @@ search_backend = "duckduckgo"
 模型目录声明了默认 Reasoning Effort 时，空的 `reasoning_effort` 使用该默认值；
 DeepSeek 的默认值为 High，可选档位为 Off、Low、High、Max。未声明 Effort 集合时，
 Runtime 不发送 `reasoning_effort`；声明了集合但没有默认值时，自适应策略只在声明的
-集合内选择。显式 Effort 始终固定，且必须由所有已配置 Route 广告；不支持的值会在
+集合内选择。显式 Effort 始终固定，且必须由 act、vision、summary Route 广告；不支持的值会在
 Provider I/O 前失败。Reasoning Effort 不再改变输出容量。
+Guardian 的 judge 路由按自身能力选择 Reasoning Effort，不继承主 Agent 的强制值。
 
 执行模式固定为 `act`；`execution.mode`、`QCODE_MODE` 及 Session/Preset 的 `mode`
 仅接受该值，Profile Patch 不再接受模式变更。旧的非 act 配置和 `[route.plan]`
 会明确报错，需移除旧路由并将模式改为 `act`。主 Turn 使用 Act 路由，辅助路由仅有
-`vision` 和 `summary`。
+`vision`、`summary` 和 `judge`。未配置的辅助路由在 `route.lock=false` 时回退到
+当前 act；锁定时必须显式配置，错误配置不会自动换模型。
+
+Guardian 模型服务配置如下，默认关闭，仅接受 Operator 配置或显式信任的仓库配置：
+
+```toml
+[security.guardian]
+enabled = false
+timeout = "10s"
+max_output_tokens = 0
+```
+
+`timeout` 没有隐藏默认值，启用时必须显式指定正时长；示例 10 秒是 Operator 选择的
+总预算，覆盖排队、速率等待、请求和读流，并受调用方更早的期限约束。格式错误或负值
+始终报错。`max_output_tokens=0` 从 judge 的权威输出能力、完整输入后的剩余窗口和
+共享预算推导；正值是上限，超过模型能力会报错。必需来源超出窗口时审查失败，不删掉限制。
+
+每次审查只调用一次 Provider，不重试、不带工具或原生搜索；Token 和费用与前台、标题、
+摘要共享预留和实际结算，失败、无效及取消的已观测 Usage 也计费。统一
+`QCODE_DISABLE_APPROVAL_AUTO_REVIEW=1` 会关闭 Guardian。显式启用后，
+只有持久审计提交成功、当前 Policy 允许且启动前授权仍有效的调用才自动放行。
+审查、审计或证据校验失败保留人工审批；成功审查在工具详情展示，故障原因进入原审批卡。
+重启不会把历史模型评估当作授权。P6 已提供脱敏评估与启用/回退流程，默认仍关闭；
+首轮结果包含真实模型故障、未知价格和生产覆盖率缺口，不能作为默认启用的依据。
+详见 [Guardian 评估](./guardian-evaluation.md) 和 [Guardian 设计](./guardian-auto-review-design.md)。
 
 `max_output_tokens = 0` 会根据当前 Model Catalog 能力和输入投影后剩余的 Context
 空间，为每次请求动态计算上限。初始 Ceiling 来自模型声明的 `MaxOutputTokens`；
@@ -649,7 +685,7 @@ Provider 变更会在没有活动或待处理工作的前提下重建已注册�
 Composer 可直接切换历史 Model。同一 Provider 内标记为 `hot` 的 Model 可作为 Session
 Profile 在 Turn 之间切换；运行中的 Turn 继续使用启动时冻结的 Route。
 
-用途路由支持 `vision` 和 `summary`。设置 `route.lock=true` 后，缺失用途路由
+用途路由支持 `vision`、`summary` 和 `judge`。设置 `route.lock=true` 后，缺失用途路由
 会直接报错，不再静默回落到主执行路由。
 
 ## 凭证
@@ -679,38 +715,10 @@ Git 推送等工具声明的单次审批；显式 ask、deny、hold、Surface �
 `wire.ExecOptions.ProfilePermissionCeiling` 由可信 Host 声明可选上限；空值使用启动姿态，
 未知值拒绝构造。Web 声明 `bypass` 上限但保持 `auto` 默认值，Session 参数不能更改 Host 上限。
 
-验证模式：
-
-- `off`：不运行 Verify Gate；
-- `soft`：收集并报告失败或未验证状态，不强制增加修复轮次，也不阻止完成；
-- `hard`：修复预算耗尽后强制执行结论。
-
-`workspace_change` 和 Completion Contract 不再隐式覆盖验证模式。只有显式 `hard`
-策略要求阻止未验证的完成；失败后遵循配置的恢复或回滚策略。Soft 完成不会把
-`unavailable`、`failed` 改写成 `passed`。
-
-验证范围：
-
-- `diagnostics`：语言或编辑器诊断；
-- `repository`：收集仓库验证命令的实际执行证据；
-- `affected`：收集覆盖变更路径的实际执行证据。
-
-命令统一由模型通过 `exec_command` 执行并声明 `verification`、`covered_paths`；
-长命令通过 `write_stdin` 结算。Runtime 不再自动探测语言或另起进程重复执行检查。
-若设置 `execution.verify.command`，现有 `{paths}`、`{packages}` 显式模板仍可使用，
-但该命令现在是所需证据的约束和执行提示；只有匹配命令的当前输入证据能够满足它。
-普通命令没有验证声明时不自动提供覆盖证明。
-
-`hard` 必须显式配置 `execution.verify.command`，且命令应在目标沙箱内稳定可复现。
-没有配置命令时，实际有变更的验证结果为 `unavailable`；模型自行选择的命令不能定义
-强制验收标准。默认 `soft` 可继续汇总模型执行证据或编辑后诊断。检查执行成功不代表
-需求已全部满足，`covered_paths` 也不是语义覆盖证明。
-
-没有剩余净变更时，启用的门禁记录 `not_required`，不执行检查；这与关闭门禁的
-`not_evaluated` 和执行成功的 `passed` 不同。新建后删除、修改后还原都按 Journal
-前后内容判断。修改类任务经核查不需要改动时，可通过完成声明说明原因并引用本轮
-文件读取证据。验证器不可用按 `unavailable` 处理，soft 报告后结束；hard 按修复预算
-和失败策略处理，受阻草稿可在配置或环境修复后继续。
+通用 Verify Gate 已移除。`execution.verify` 和 `QCODE_VERIFY_*` 不再是配置入口；
+旧配置中的这部分不会生效。测试或 CI 由用户要求、仓库约定与任务需要驱动，通过普通
+命令执行并记录客观结果，不再要求模型声明覆盖路径，也不以覆盖账本阻止完成。
+权限、审批、沙箱及 Journal 结算规则保持生效。
 
 ## 编辑后诊断
 
@@ -907,7 +915,6 @@ Lexical Repository Index。结果始终标注 `resolution`、`source`、`version
 | `QCODE_MAX_*`、`QCODE_TIMEOUT`、`QCODE_LEASE_TIMEOUT`、`QCODE_CONNECTION_TIMEOUT`、`QCODE_TLS_HANDSHAKE_TIMEOUT`、`QCODE_RESPONSE_HEADER_TIMEOUT`、`QCODE_IDLE_TIMEOUT`、`QCODE_PROVIDER_RETRY_LIMIT`、`QCODE_RATE_LIMIT_RETRY_LIMIT`、`QCODE_RATE_LIMIT_WAIT`、`QCODE_TOKENS_PER_MINUTE` | 限制 |
 | `QCODE_BUDGET_TOKENS`、`QCODE_BUDGET_USD` | 会话预算 |
 | `QCODE_SUBAGENT_*` | 委派模式、Tree 限制、Child 预算、Wall Time 与 Workspace 策略 |
-| `QCODE_VERIFY_*` | 验证行为 |
 | `QCODE_STATE_*` | 持久化 |
 | `QCODE_LOG_LEVEL` | 结构化 Runtime Log |
 | `QCODE_CREDENTIAL_KIND`、`QCODE_CREDENTIAL_NAME` | Secret 引用 |

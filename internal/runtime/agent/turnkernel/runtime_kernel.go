@@ -100,6 +100,11 @@ func NewRuntimeKernel(
 		restored:    handle.Restored,
 	}
 	if handle.Restored {
+		if legacyVerificationActive(kernel.state) && !kernel.state.Phase.Terminal() && kernel.state.Phase != PhaseCommitting {
+			if err := kernel.applyAuthoritative(VerificationRetired{}); err != nil {
+				return nil, err
+			}
+		}
 		return kernel, nil
 	}
 	if recovery != nil {
@@ -441,11 +446,6 @@ func (s *RuntimeKernel) MutationRevision() uint64 {
 	defer s.mu.Unlock()
 	return s.state.MutationRevision
 }
-func (s *RuntimeKernel) VerificationMustPass() bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.state.Policy.VerificationMustPass
-}
 func (s *RuntimeKernel) Completion() *CompletionDecision {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -762,38 +762,6 @@ func (s *RuntimeKernel) CancellationReason() string {
 		return ""
 	}
 	return s.state.Cancellation.Reason
-}
-
-func (s *RuntimeKernel) BeginVerification() error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.applyAuthoritativeLocked(VerificationStarted{})
-}
-
-func (s *RuntimeKernel) FinishVerification(
-	command VerificationFinished,
-) (VerificationAction, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	from := s.state.Phase
-	effect, err := s.dispatcher.Start(
-		EffectRunVerification,
-		"",
-	)
-	if err != nil {
-		return "", err
-	}
-	s.recordAcceptedLocked(EffectStarted{
-		EffectID: effect.ID,
-		Attempt:  effect.Attempt,
-	}, from)
-	command.EffectID = effect.ID
-	from = s.state.Phase
-	if err := s.dispatcher.Resolve(command); err != nil {
-		return "", err
-	}
-	s.recordAcceptedLocked(command, from)
-	return s.state.Verification.Action, nil
 }
 
 func (s *RuntimeKernel) BufferOutput(text string) error {

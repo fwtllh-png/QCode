@@ -2,14 +2,14 @@ package shell
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
+	"github.com/fwtllh-png/QCode/internal/adapter/tool/typed"
 	"github.com/fwtllh-png/QCode/internal/common/tokenestimate"
-	"github.com/fwtllh-png/QCode/internal/observability/verify"
 	"github.com/fwtllh-png/QCode/internal/platform/process"
 	"github.com/fwtllh-png/QCode/internal/security/authority"
 	"github.com/fwtllh-png/QCode/internal/security/processbroker"
@@ -31,8 +31,7 @@ func validateExecutionTarget(input execCommandInput) error {
 }
 
 type preparedHostSession struct {
-	options  process.SessionOptions
-	evidence *verify.Evidence
+	options process.SessionOptions
 }
 
 type hostSessionGrant struct {
@@ -44,19 +43,17 @@ type hostSessionGrant struct {
 type hostSessionKey struct{}
 
 func (e *protocolExecutor) PrepareAuthorizedSession(ctx context.Context, invocation tool.PreparedInvocation) (authority.SessionBinding, error) {
-	var input execCommandInput
-	if err := json.Unmarshal(invocation.Arguments, &input); err != nil {
-		return authority.SessionBinding{}, err
+	input, err := typed.DecodeStrict[execCommandInput](invocation.Arguments)
+	if err != nil {
+		return authority.SessionBinding{}, fmt.Errorf("%w: %v", tool.ErrInvalidArguments, err)
 	}
 	if !e.expand || input.ExecutionTarget != "host" {
 		return authority.SessionBinding{}, errors.New("executor does not support host session preparation")
 	}
-	if err := validateExecutionTarget(input); err != nil {
-		return authority.SessionBinding{}, err
-	}
-	applyVerificationDefaults(&input)
-	if (input.Rows == 0) != (input.Cols == 0) {
-		return authority.SessionBinding{}, errors.New("rows and cols must be supplied together")
+	// Host preparation runs before the typed executor. Preserve its argument
+	// error classification so a refused call can be corrected within the turn.
+	if err := validateExecCommandInput(input); err != nil {
+		return authority.SessionBinding{}, fmt.Errorf("%w: %v", tool.ErrInvalidArguments, err)
 	}
 	timeout, err := processTimeout(input.TimeoutMS)
 	if err != nil {
@@ -66,10 +63,6 @@ func (e *protocolExecutor) PrepareAuthorizedSession(ctx context.Context, invocat
 		return authority.SessionBinding{}, err
 	}
 	prepared := &preparedHostSession{}
-	prepared.evidence, err = e.protocol.prepareVerification(input)
-	if err != nil {
-		return authority.SessionBinding{}, err
-	}
 	directory, err := e.protocol.workspace.ResolveDirectory(input.CWD)
 	if err != nil {
 		return authority.SessionBinding{}, err
@@ -102,9 +95,6 @@ func (e *protocolExecutor) PrepareAuthorizedSession(ctx context.Context, invocat
 		return authority.SessionBinding{}, err
 	}
 	command := input.Command
-	if input.Verification != "" {
-		command = "set -e\n" + command
-	}
 	prepared.options = process.SessionOptions{
 		Command: command, DisplayCommand: input.Command, Dir: directory, DirFile: directoryFile,
 		Env: env, Environment: environment, ExecutionTarget: "host",
@@ -172,7 +162,6 @@ func (p *commandProtocol) execHostCommand(ctx context.Context, input execCommand
 	result := sessionResult(id, wait)
 	result.Metadata["execution_target"] = "host"
 	result.Metadata["enforcement"] = "none"
-	attachVerification(&result, grant.prepared.evidence, wait)
 	attachCommandExecution(&result, id, wait.SessionRead, time.Since(wait.CreatedAt))
 	if input.Description != "" {
 		result.Metadata["description"] = input.Description
@@ -181,12 +170,10 @@ func (p *commandProtocol) execHostCommand(ctx context.Context, input execCommand
 		result.Metadata["omitted_bytes"] = output.Omitted()
 	}
 	if wait.Running {
-		p.storePendingExecution(id, isolatedCommand{}, grant.prepared.evidence)
 		result.Metadata["error_category"] = "process_still_running"
 		result.Metadata["required_action"] = "write_stdin"
 		result.Metadata["retry_original"] = false
 	} else {
-		invalidateVerificationOnCoveredWrites(&result, grant.prepared.evidence, p.workspace.Root())
 		err = p.manager.Close(id, owner)
 		delete(result.Metadata, "session_id")
 	}

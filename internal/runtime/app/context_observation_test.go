@@ -37,3 +37,35 @@ func TestContextObservationSurvivesNoUsageAndCountsRecoveryBytes(t *testing.T) {
 		t.Fatal("projection contains tool text")
 	}
 }
+
+func TestContextReceiptKeepsTerminalBudgetAndSampleOnSameRequest(t *testing.T) {
+	r := newTurnReceiptRecorder("inspect")
+	r.observe(agentengine.Event{State: agentengine.Streaming,
+		SampleContext: &protocol.SampleContextData{ContextDigest: "earlier", MeasuredInputTokens: 900}})
+	sample := protocol.SampleContextData{ContextDigest: "last", EstimatedTokens: 120,
+		WindowFullActiveTokens: 130, MeasuredInputTokens: 130, WindowContextTokens: 2048,
+		WindowOutputReserve: 512, WindowHardInputTokens: 1536,
+		CompactionHeadroomTokens: 100, CompactionTargetTokens: 1436}
+	r.observe(agentengine.Event{State: agentengine.Streaming, SampleContext: &sample})
+	r.observe(agentengine.Event{State: agentengine.Completed, ContextBudget: &agentengine.ContextBudgetSnapshot{
+		MeasurementSource: "provider_usage", ContextDigest: "last", ActiveTokens: 130,
+		FullActiveTokens: 130, EstimatedTokens: 120, MaxContextTokens: 2048,
+		OutputReserve: 512, HardInputTokens: 1536, CompactionHeadroomTokens: 100, CompactionTargetTokens: 1436,
+	}})
+	receipt := r.build(turnReceiptObservations{budget: r.budget})
+	encoded, err := json.Marshal(receipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var replay protocol.ExecutionReceiptData
+	if err := json.Unmarshal(encoded, &replay); err != nil {
+		t.Fatal(err)
+	}
+	b := replay.ContextBudget
+	if b == nil || replay.ContextSample == nil || b.ContextDigest != replay.ContextSample.ContextDigest ||
+		b.ActiveTokens != replay.ContextSample.MeasuredInputTokens || b.MaxContextTokens != replay.ContextSample.WindowContextTokens ||
+		b.OutputReserve != 512 || b.HardInputTokens != 1536 || b.CompactionHeadroomTokens != 100 ||
+		b.CompactionTargetTokens != 1436 || b.MeasurementSource != "provider_usage" {
+		t.Fatalf("receipt changed request accounting: budget=%+v sample=%+v", b, replay.ContextSample)
+	}
+}

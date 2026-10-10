@@ -11,7 +11,6 @@ import (
 	"github.com/fwtllh-png/QCode/internal/adapter/provider"
 	providerfixture "github.com/fwtllh-png/QCode/internal/adapter/provider/fixture"
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
-	"github.com/fwtllh-png/QCode/internal/observability/verify"
 	agentcontext "github.com/fwtllh-png/QCode/internal/runtime/agent/context"
 	"github.com/fwtllh-png/QCode/internal/runtime/agent/turnkernel"
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
@@ -250,31 +249,6 @@ func TestSteerDoesNotAbortRunningTools(t *testing.T) {
 // A steer accepted after the loop's last drain but before the completion
 // step (here: while verification runs) must still reach the model; the
 // completion yields to it and samples again.
-func TestSteerDuringVerificationContinuesTheTurn(t *testing.T) {
-	fixture := newVerifyGateFixture(t, VerifyOptions{
-		Mode: VerifyModeHard, Scope: verify.ScopeDiagnostics,
-	}, &scriptedVerifier{receipts: []verify.Receipt{passedReceipt()}}, 1, 6)
-	var steered bool
-	result, err := fixture.engine.RunForTurn(t.Context(), "turn-1", "edit", func(event Event) error {
-		if event.State == Verifying && event.Verification != nil && !steered {
-			steered = true
-			if err := mustControl(t, fixture.engine).Steer("verify steer"); err != nil {
-				t.Errorf("Steer() during verification error = %v", err)
-			}
-		}
-		return nil
-	})
-	if err != nil || result.State != Completed {
-		t.Fatalf("Run() = (%+v, %v)", result, err)
-	}
-	if !steered {
-		t.Fatal("verification never ran")
-	}
-	requests := fixture.provider.requests
-	if len(requests) != 4 || !requestContains(requests[3], "verify steer") {
-		t.Fatalf("provider requests = %d; the steer never reached the model", len(requests))
-	}
-}
 
 // Once the turn starts terminalizing, a steer can no longer reach the model;
 // accepting it would report success for a message that is then dropped.

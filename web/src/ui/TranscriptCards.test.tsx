@@ -2,9 +2,27 @@ import {cleanup, fireEvent, render, screen} from "@testing-library/react";
 import {afterEach, describe, expect, it, vi} from "vitest";
 
 import type {ConversationNode} from "../projection/conversation";
-import {AgentDisclosure} from "./TranscriptCards";
+import {AgentDisclosure, ToolDisclosure} from "./TranscriptCards";
+import {projectGuardian} from "../projection/guardian";
 
 afterEach(cleanup);
+
+describe("Guardian details", () => {
+  it("keeps a successful review collapsed and distinguishes authorization from execution", () => {
+    const review = projectGuardian({review_id: "review-1", call_id: "call", phase: "decided", reason_code: "policy_decision",
+      provider: "judge", model: "model", assessment: {risk: "low", authorization: "supported", recommendation: "allow"},
+      decision: {action: "allow", authority: "guardian", code: "guardian_allowed"}}, 2)!;
+    render(<ToolDisclosure entry={{id: "tool-call", kind: "tool", callID: "call", turnID: "turn", sequence: 1,
+      tool: "exec_command", variant: "shell", title: "Run", summary: "./build.sh", state: "running", arguments: {},
+      output: "", errorSummary: "", truncated: false, changes: [], guardianReviews: [review]}}
+      onInspect={() => undefined} onAddContext={() => undefined} />);
+    expect(screen.queryByLabelText("Automatic review details")).toBeNull();
+    fireEvent.click(screen.getByRole("button", {name: "Run ./build.sh"}));
+    expect(screen.getByText("Authorization: automatic approval")).toBeTruthy();
+    expect(screen.getByText("Execution: no execution receipt")).toBeTruthy();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+});
 
 describe("AgentDisclosure", () => {
   it("shows a running subagent execution and opens tool inspection", () => {

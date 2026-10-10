@@ -131,25 +131,24 @@ type RequestedEffects struct {
 // TrustedBinding is the Registry-owned authority contract. Guard projects its
 // security fields into the assessment instead of trusting the presentation descriptor.
 type TrustedBinding struct {
+	// GuardianReview registers a built-in process for snapshot preparation.
+	// It does not enable model review or grant automatic execution.
+	GuardianReview bool `json:"guardian_review,omitempty"`
+
 	SupportsHostExecution bool `json:"supports_host_execution,omitempty"`
 	// SupportsFullAccess opts a builtin command executor into session-selected
 	// process authority. External descriptors cannot grant this capability.
-	SupportsFullAccess           bool               `json:"supports_full_access,omitempty"`
-	Capability                   Capability         `json:"capability"`
-	ResourceResolver             ResourceResolver   `json:"resource_resolver"`
-	AccessMode                   AccessMode         `json:"access_mode"`
-	ParallelPolicy               ParallelPolicy     `json:"parallel_policy"`
-	RepeatPolicy                 RepeatPolicy       `json:"repeat_policy,omitempty"`
-	SandboxRequirement           SandboxRequirement `json:"sandbox_requirement"`
-	Effect                       EffectContract     `json:"effect"`
-	Required                     RequiredControls   `json:"required_controls"`
-	RecordsWorkspaceRead         bool               `json:"records_workspace_read,omitempty"`
-	ProducesVerificationEvidence bool               `json:"produces_verification_evidence,omitempty"`
-	// VerificationField names the argument that declares a verification run;
-	// together with a non-empty ResourceResolver.ReadPathsField argument it
-	// lets a plan gate ask once instead of holding.
-	VerificationField          string `json:"verification_field,omitempty"`
-	ValidateMissingWriteParent bool   `json:"validate_missing_write_parent,omitempty"`
+	SupportsFullAccess         bool               `json:"supports_full_access,omitempty"`
+	Capability                 Capability         `json:"capability"`
+	ResourceResolver           ResourceResolver   `json:"resource_resolver"`
+	AccessMode                 AccessMode         `json:"access_mode"`
+	ParallelPolicy             ParallelPolicy     `json:"parallel_policy"`
+	RepeatPolicy               RepeatPolicy       `json:"repeat_policy,omitempty"`
+	SandboxRequirement         SandboxRequirement `json:"sandbox_requirement"`
+	Effect                     EffectContract     `json:"effect"`
+	Required                   RequiredControls   `json:"required_controls"`
+	RecordsWorkspaceRead       bool               `json:"records_workspace_read,omitempty"`
+	ValidateMissingWriteParent bool               `json:"validate_missing_write_parent,omitempty"`
 	// IsolatesWriteTrees promises that, when an Isolator is bound and a tree
 	// is declared, all workspace writes run in its copy and settle via the
 	// File Broker / Journal. Preparation failure must not fall back in place.
@@ -287,16 +286,11 @@ func (b TrustedBinding) Validate() error {
 		(b.Capability != CapabilityRead || b.AccessMode != AccessRead) {
 		return errors.New("workspace read evidence requires read-only capability")
 	}
-	if b.ProducesVerificationEvidence &&
-		b.Capability != CapabilityProcess {
-		return errors.New("verification evidence requires process capability")
-	}
-	if b.VerificationField != "" &&
-		(!b.ProducesVerificationEvidence || b.ResourceResolver.ReadPathsField == "") {
-		return errors.New("verification field requires verification evidence and covered paths")
-	}
 	if b.ValidateMissingWriteParent && b.Capability != CapabilityProcess {
 		return errors.New("missing write targets require process capability")
+	}
+	if b.GuardianReview && (!b.IsolatesWriteTrees || b.Effect.Mode == EffectFixed) {
+		return errors.New("Guardian review requires an isolated process binding with derived effects")
 	}
 	if b.IsolatesWriteTrees && (b.Capability != CapabilityProcess ||
 		b.SandboxRequirement != SandboxStrong || b.ResourceResolver.PathsField == "") {

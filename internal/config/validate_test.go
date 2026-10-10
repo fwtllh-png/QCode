@@ -117,69 +117,9 @@ func TestViewRejectsCheckpointMaxBytesBelowMinimum(t *testing.T) {
 
 // The affected scope now has a repo index behind it, and it accepts a command so
 // an operator can point it at their own suite.
-func TestVerifyGateConfigAcceptsTheAffectedScope(t *testing.T) {
-	loaded, err := Load(LoadOptions{LookupEnv: envLookup(map[string]string{
-		"QCODE_VERIFY_SCOPE":   "affected",
-		"QCODE_VERIFY_COMMAND": "go test {packages}",
-	})})
-	if err != nil {
-		t.Fatal(err)
-	}
-	verify := loaded.Config.Execution.Verify
-	if verify.Scope != "affected" || verify.Command != "go test {packages}" {
-		t.Fatalf("verify = %+v", verify)
-	}
-}
 
 // The unimplemented values must not load: silently degrading them into
 // something that runs would hide the gap.
-func TestVerifyGateConfigRejectsUnimplementedValues(t *testing.T) {
-	tests := map[string]struct {
-		env       map[string]string
-		wantField string
-	}{
-		"unknown scope": {
-			env:       map[string]string{"QCODE_VERIFY_SCOPE": "packages"},
-			wantField: fieldVerifyScope,
-		},
-		"ask on failure": {
-			env:       map[string]string{"QCODE_VERIFY_ON_FAILURE": "ask"},
-			wantField: fieldVerifyOnFailure,
-		},
-		"unknown mode": {
-			env:       map[string]string{"QCODE_VERIFY_MODE": "always"},
-			wantField: fieldVerifyMode,
-		},
-		"negative repair budget": {
-			env:       map[string]string{"QCODE_VERIFY_MAX_REPAIR_STEPS": "-1"},
-			wantField: fieldVerifyRepair,
-		},
-		"zero timeout": {
-			env:       map[string]string{"QCODE_VERIFY_TIMEOUT": "0s"},
-			wantField: fieldVerifyTimeout,
-		},
-		// A command under the diagnostics scope would silently never run.
-		"command without a command scope": {
-			env:       map[string]string{"QCODE_VERIFY_COMMAND": "make verify"},
-			wantField: fieldVerifyCommand,
-		},
-	}
-	for name, test := range tests {
-		t.Run(name, func(t *testing.T) {
-			_, err := Load(LoadOptions{LookupEnv: envLookup(test.env)})
-			var fieldErr *FieldError
-			if !errors.As(err, &fieldErr) {
-				t.Fatalf("Load() error = %v, want a field error", err)
-			}
-			if fieldErr.Field != test.wantField {
-				t.Fatalf("field = %q, want %q", fieldErr.Field, test.wantField)
-			}
-			if fieldErr.Source != SourceEnv {
-				t.Fatalf("source = %q, want env", fieldErr.Source)
-			}
-		})
-	}
-}
 
 func TestExecutionEnvironmentRejectsInvalidCombinations(t *testing.T) {
 	_, err := Load(LoadOptions{

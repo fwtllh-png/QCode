@@ -49,14 +49,6 @@ func TestTrustedBindingRejectsCrossFieldAuthorityConflicts(t *testing.T) {
 			}(),
 		},
 		{
-			name: "verification evidence with read capability",
-			binding: func() TrustedBinding {
-				value := bindingFixture(CapabilityRead)
-				value.ProducesVerificationEvidence = true
-				return value
-			}(),
-		},
-		{
 			name: "missing write parent with read capability",
 			binding: func() TrustedBinding {
 				value := bindingFixture(CapabilityRead)
@@ -130,6 +122,7 @@ func TestIsolatedWriteBindingRequiresDeclaredStrongProcess(t *testing.T) {
 	binding.ResourceResolver.PathsField = "write_paths"
 	binding.Required.ProcessTree = securitymodel.ProcessTreeGroupKill
 	binding.IsolatesWriteTrees = true
+	binding.GuardianReview = true
 	if err := binding.Validate(); err != nil {
 		t.Fatal(err)
 	}
@@ -137,6 +130,7 @@ func TestIsolatedWriteBindingRequiresDeclaredStrongProcess(t *testing.T) {
 		"read capability": func(b *TrustedBinding) { b.Capability = CapabilityRead },
 		"no sandbox":      func(b *TrustedBinding) { b.SandboxRequirement = SandboxNone },
 		"no write paths":  func(b *TrustedBinding) { b.ResourceResolver.PathsField = "" },
+		"no isolation":    func(b *TrustedBinding) { b.IsolatesWriteTrees = false },
 	} {
 		t.Run(name, func(t *testing.T) {
 			invalid := binding

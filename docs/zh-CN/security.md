@@ -32,7 +32,6 @@ QCode 会根据模型选择在源码上执行工具。目标不是让任意代�
 | Tool Guard | Identity、Risk、Resource、Approval 与 Evidence 的统一决策 |
 | Execution Authority | 将授权结果绑定为单次 Operation Lease，并校验 Generation 与 Controls |
 | Edit Journal | 记录 Before Image 与中断工作 |
-| Verify Gate | Commit 前收集正确性证据 |
 | OS Sandbox | 强制进程、文件系统和网络边界 |
 | Egress Control | 约束远程 Endpoint 与出网 Client |
 | Observability | 通过 Privacy、Retention 与有界 Export Policy 接收版本化证据 |
@@ -416,11 +415,9 @@ Web Markdown 不执行原始 HTML 或危险 URL。同源图片可以直接显示
   `required_action=keep_allow_loopback_omit_network_targets`，不能把临时端口
   写进 `network_targets`。Effective Profile 与 Attempt Receipt 都会记录该
   Loopback Grant。
-- 声明 `verification` 的 `exec_command` 使用 POSIX `set -e`，并要求精确的
-  `covered_paths`。声明不能扩大执行权限；验证命令不能声明 Workspace 写入，
-  仍经过相同 Guard、审批、Journal 和 Sandbox。证据在启动前绑定输入摘要，
-  结束时检查摘要和 Mutation Revision；运行中或被终止的进程不提供通过证据。
-  Verifier 子代理只允许带验证声明的进程启动，不因入口统一取得写权限。
+- 测试、构建和检查使用普通 `exec_command`，经过相同 Guard、审批、Journal 和
+  Sandbox。不存在验证声明带来的特权或覆盖门禁；Verifier 子代理的权限仍由角色
+  策略限制，模型可以执行允许的普通检查命令。
 - Language Server 按文件类型选择实际安装的 Server，进程在 Workspace Read-only、
   Network Denied 的 Strong Sandbox 中运行。format、code action 和 rename 只返回
   edits，不直接取得文件写权限。

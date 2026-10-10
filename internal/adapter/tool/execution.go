@@ -172,11 +172,12 @@ type OutcomeFacts struct {
 	WorkspaceChanges []WorkspaceChange          `json:"workspace_changes,omitempty"`
 	Diagnostics      []verify.DiagnosticReceipt `json:"diagnostics,omitempty"`
 	Evidence         []EvidenceHit              `json:"evidence,omitempty"`
-	Verification     *verify.Evidence           `json:"verification,omitempty"`
-	Completion       *CompletionDeclaration     `json:"completion,omitempty"`
-	Failure          *FailureFact               `json:"failure,omitempty"`
-	ProcessSession   *ProcessSessionFact        `json:"process_session,omitempty"`
-	ResultHandle     string                     `json:"result_handle,omitempty"`
+	// Verification is retained only for decoding historical tool results.
+	Verification   *verify.Evidence       `json:"verification,omitempty"`
+	Completion     *CompletionDeclaration `json:"completion,omitempty"`
+	Failure        *FailureFact           `json:"failure,omitempty"`
+	ProcessSession *ProcessSessionFact    `json:"process_session,omitempty"`
+	ResultHandle   string                 `json:"result_handle,omitempty"`
 }
 
 type WorkspaceReadFact struct {
@@ -253,10 +254,6 @@ func factsFromResult(result Result) *OutcomeFacts {
 		if value, ok := result.Metadata[MetadataCompletionDeclaration].(CompletionDeclaration); ok {
 			copy := value
 			facts.Completion = &copy
-		}
-		if value, ok := result.Metadata[verify.EvidenceMetadataKey].(verify.Evidence); ok {
-			copy := value
-			facts.Verification = &copy
 		}
 		if value, ok := result.Metadata["error_category"].(string); ok {
 			facts.Failure = &FailureFact{Category: value}
@@ -425,6 +422,7 @@ type AttemptReceipt struct {
 }
 
 type ExecutionReceipt struct {
+	GuardianReviewID               string                 `json:"guardian_review_id,omitempty"`
 	Tool                           ToolRef                `json:"tool"`
 	Source                         InvocationSource       `json:"source"`
 	Disposition                    ExecutionDisposition   `json:"disposition"`

@@ -83,7 +83,7 @@ func classifyEntity(entity TruthEntity) RetentionClass {
 			return RetentionMandatory
 		}
 	case EntityChange:
-		if !entity.Verified || entity.Diagnostics ||
+		if entity.Diagnostics ||
 			entity.WorkspaceClaimStatus == WorkspaceClaimStale {
 			return RetentionMandatory
 		}
@@ -421,7 +421,7 @@ func entityPriority(
 	case EntityPendingInput:
 		return 2
 	case EntityChange:
-		if !entity.Verified || entity.Diagnostics {
+		if entity.Diagnostics {
 			return 3
 		}
 		if currentTurn >= entity.Turn &&
@@ -566,7 +566,6 @@ func (c ContextAdmissionController) Decide(
 		decision.Allowed = false
 		decision.Reason = err.Error()
 		decision.RequiredActions = []string{
-			"verify existing changes",
 			"close completed plan steps",
 			"split work into a new thread",
 			"select a route with a larger context window",

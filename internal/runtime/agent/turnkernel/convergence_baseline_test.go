@@ -118,16 +118,6 @@ func TestC3ModelDecisionOwnershipBaseline(t *testing.T) {
 	if functionHasIdentifier(run, "completionVerification") {
 		t.Fatal("Engine turn handler still owns completion verification state")
 	}
-	verifyFile := parseProductionFile(
-		t,
-		root,
-		"internal/runtime/agent/engine/verify.go",
-	)
-	for _, name := range []string{"decide", "requestRepair"} {
-		if findFunction(verifyFile, name) != nil {
-			t.Fatalf("Verification executor decision function %q remains", name)
-		}
-	}
 	completionFile := parseProductionFile(
 		t,
 		root,

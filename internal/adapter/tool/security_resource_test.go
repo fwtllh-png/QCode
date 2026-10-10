@@ -166,30 +166,3 @@ func TestEffectContractDeclarationsValidate(t *testing.T) {
 		t.Fatal("argument match normalization is wrong")
 	}
 }
-
-func TestVerificationFieldRequiresEvidenceAndCoverage(t *testing.T) {
-	binding := TrustedBinding{
-		Capability: CapabilityProcess, AccessMode: AccessRead,
-		ParallelPolicy: ParallelConcurrent, SandboxRequirement: SandboxNone,
-		ResourceResolver: ResourceResolver{ReadPathsField: "covered_paths"},
-		Effect: EffectContract{
-			Mode: EffectDerived, WorkspaceTransaction: TransactionNone,
-			Approval: ApprovalPolicyDefault,
-		},
-		ProducesVerificationEvidence: true,
-		VerificationField:            "verification",
-	}
-	if err := binding.Validate(); err != nil {
-		t.Fatal(err)
-	}
-	noEvidence := binding
-	noEvidence.ProducesVerificationEvidence = false
-	if noEvidence.Validate() == nil {
-		t.Fatal("verification field without evidence passed validation")
-	}
-	noCoverage := binding
-	noCoverage.ResourceResolver.ReadPathsField = ""
-	if noCoverage.Validate() == nil {
-		t.Fatal("verification field without covered paths passed validation")
-	}
-}

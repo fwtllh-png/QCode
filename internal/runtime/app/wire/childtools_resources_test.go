@@ -153,7 +153,7 @@ func TestChildToolsetFailedOpenCanRetryWithoutOwningParentResources(t *testing.T
 	if err := os.WriteFile(stateParent, []byte("blocks skill state directory"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	toolsets := newChildToolsets(content, webtool.Options{}, config.Verify{}, config.Journal{}, nil, nil, nil, "", 0, t.TempDir(), paths)
+	toolsets := newChildToolsets(content, webtool.Options{}, config.Journal{}, nil, nil, nil, "", 0, t.TempDir(), paths)
 	var parentCloses atomic.Int32
 	toolsets.bindParentSandbox(childCloseBackend{close: func() error { parentCloses.Add(1); return nil }})
 	t.Cleanup(func() { _ = toolsets.closeAll(context.Background()) })

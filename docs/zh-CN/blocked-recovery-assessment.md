@@ -37,6 +37,10 @@ AwaitingInput 和 Journal 的 AwaitingRecovery 是独立等待状态；单个工
 事件序号倒退、同一事件身份对应不同内容等流协议错误不属于参数纠错，继续拒绝。
 正常 `max_tokens` 截断保留续写语义。
 
+`exec_command` 的 host 准备与普通执行共用参数校验；非法
+timeout、输出限制、终端尺寸组合等均以 `invalid_arguments` 返回模型，在当前 Turn
+内纠正，拒绝的命令不会启动。同批次已完成的调用仍保留，环境准备故障不改判为参数错误。
+
 ## 受阻入口与合理性
 
 | 场景 | 当前路径与处理 | 评估 |
@@ -51,7 +55,7 @@ AwaitingInput 和 Journal 的 AwaitingRecovery 是独立等待状态；单个工
 | 只读模式、显式策略拒绝、审批拒绝、资源缺失、工具失败 | [result/recovery.go](../../internal/adapter/tool/result/recovery.go) 返回结构化工具错误及修正动作；模型可选替代方案、提示切换权限或声明未完成 | 安全边界合理，通常不会直接终止 Turn；只有必要条件无法满足时才应声明受阻 |
 | 缺少历史定义或来源不可用 | 缺定义时只允许恢复/绑定；失效的未绑定候选从请求移除；已绑定必要来源不可用则拒绝采样 | 恢复门禁及来源校验合理；已区分必要来源与可选候选，原文、检查点与摘要同步过滤 |
 | 无进展、修复预算耗尽、模型声明 incomplete | [reducer_common.go](../../internal/runtime/agent/turnkernel/reducer_common.go) 先给修正或最终收尾机会，[turn_run.go](../../internal/runtime/agent/engine/turn_run.go) 再结算受阻 | 防止空转合理；模型可能过早声明未完成，需检查 Pending Actions 是否真的依赖外部条件 |
-| 必须通过的验证失败 | [reducer_verification.go](../../internal/runtime/agent/turnkernel/reducer_verification.go) 先修复，再保留草稿并停止；普通 soft 验证报告风险 | 合理；验证器不可用必须与代码测试失败区分，不能把缓存或沙箱问题伪装成代码缺陷 |
+| 通用验证门禁 | 已移除；不再因覆盖声明、验证器不可用或验证修复预算耗尽阻止完成 | 用户要求的测试仍执行，实际失败保留在工具结果中 |
 | 草稿冲突、恢复环境不一致、撤回来源、损坏的事实链 | Journal/恢复入口验证身份、Revision、Digest 与副作用状态 | 合理，避免丢改动或重复副作用；保留草稿、重新选择来源等恢复动作必须具体 |
 | Domain Fact、必需交互投影、Journal 或终态存储失败 | [coordinator.go](../../internal/runtime/agent/turnkernel/coordinator.go) 停止推进未落盘事实；Journal/Outbox 保留同一幂等工作 | 持久化安全边界合理；能自动结算的工作应维持等待与重试，不能让用户重复执行业务工具 |
 | 普通阶段说明、日志、用量投影或完成后的上下文维护失败 | 记录 Secondary Issue 或交给 Outbox 重放 | 不应改变已决定的业务结果；当前主路径已有隔离，应继续保持回归 |

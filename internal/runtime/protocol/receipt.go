@@ -25,7 +25,8 @@ var UncollectedReceiptSections = []string{
 	"unreverted_side_effects",
 }
 
-// ReceiptVerification records which verification layers ran for a turn.
+// ReceiptVerification decodes historical summaries. New turns omit it and
+// report diagnostics_status and actual command execution facts.
 type ReceiptVerification struct {
 	Diagnostics string `json:"diagnostics"`
 	Tests       string `json:"tests"`
@@ -51,8 +52,7 @@ type ReceiptVerificationDetail struct {
 	Attempts       []ReceiptVerificationAttempt `json:"attempts"`
 }
 
-// ReceiptWorkspaceOutcome is the final workspace state after verification and
-// rollback policy have settled.
+// ReceiptWorkspaceOutcome records the final journal settlement.
 type ReceiptWorkspaceOutcome struct {
 	Status                     string   `json:"status"`
 	Changed                    []string `json:"changed,omitempty"`
@@ -167,33 +167,37 @@ type ReceiptEvidence struct {
 	OmittedFacts int `json:"omitted_facts,omitempty"`
 }
 
-// ReceiptContextBudget records the token-native active window at termination.
-//
-// It answers a question the section list cannot: whether a turn that lost detail
-// lost it to a budget that is about to bite again. A thread on its fourth
-// compaction is one whose early history now exists only as summary.
+// ReceiptContextBudget binds last-request accounting to its measurement source.
+// Maintenance policy remains separate from the frozen request quantities.
 type ReceiptContextBudget struct {
-	WindowID              string `json:"window_id,omitempty"`
-	WindowNumber          uint64 `json:"window_number,omitempty"`
-	Observed              bool   `json:"observed,omitempty"`
-	ActiveTokens          uint64 `json:"active_tokens"`
-	FullActiveTokens      uint64 `json:"full_active_tokens,omitempty"`
-	PrefillTokens         uint64 `json:"prefill_tokens,omitempty"`
-	BodyTokens            uint64 `json:"body_tokens,omitempty"`
-	ToolDefinitionTokens  uint64 `json:"tool_definition_tokens,omitempty"`
-	PendingTokens         uint64 `json:"pending_tokens,omitempty"`
-	OutputReserve         uint64 `json:"output_reserve,omitempty"`
-	AutoCompactTokens     uint64 `json:"auto_compact_tokens"`
-	PrepareTokens         uint64 `json:"prepare_tokens,omitempty"`
-	EmergencyTokens       uint64 `json:"emergency_tokens,omitempty"`
-	RecentTailTurns       int    `json:"recent_tail_turns,omitempty"`
-	KeepRecentToolResults int    `json:"keep_recent_tool_results,omitempty"`
-	HistoryTokenCeiling   uint64 `json:"history_token_ceiling,omitempty"`
-	Digest                string `json:"digest,omitempty"`
-	NarrativeMode         string `json:"narrative_mode,omitempty"`
-	EstimatedTokens       uint64 `json:"estimated_tokens,omitempty"`
-	MaxContextTokens      uint64 `json:"max_context_tokens,omitempty"`
-	Compactions           int    `json:"compactions"`
+	MeasurementSource        string `json:"measurement_source,omitempty"`
+	ContextDigest            string `json:"context_digest,omitempty"`
+	HardInputTokens          uint64 `json:"hard_input_tokens,omitempty"`
+	LimitSource              string `json:"limit_source,omitempty"`
+	OutputSource             string `json:"output_source,omitempty"`
+	CompactionHeadroomTokens uint64 `json:"compaction_headroom_tokens,omitempty"`
+	CompactionTargetTokens   uint64 `json:"compaction_target_tokens,omitempty"`
+	WindowID                 string `json:"window_id,omitempty"`
+	WindowNumber             uint64 `json:"window_number,omitempty"`
+	Observed                 bool   `json:"observed,omitempty"`
+	ActiveTokens             uint64 `json:"active_tokens"`
+	FullActiveTokens         uint64 `json:"full_active_tokens,omitempty"`
+	PrefillTokens            uint64 `json:"prefill_tokens,omitempty"`
+	BodyTokens               uint64 `json:"body_tokens,omitempty"`
+	ToolDefinitionTokens     uint64 `json:"tool_definition_tokens,omitempty"`
+	PendingTokens            uint64 `json:"pending_tokens,omitempty"`
+	OutputReserve            uint64 `json:"output_reserve,omitempty"`
+	AutoCompactTokens        uint64 `json:"auto_compact_tokens"`
+	PrepareTokens            uint64 `json:"prepare_tokens,omitempty"`
+	EmergencyTokens          uint64 `json:"emergency_tokens,omitempty"`
+	RecentTailTurns          int    `json:"recent_tail_turns,omitempty"`
+	KeepRecentToolResults    int    `json:"keep_recent_tool_results,omitempty"`
+	HistoryTokenCeiling      uint64 `json:"history_token_ceiling,omitempty"`
+	Digest                   string `json:"digest,omitempty"`
+	NarrativeMode            string `json:"narrative_mode,omitempty"`
+	EstimatedTokens          uint64 `json:"estimated_tokens,omitempty"`
+	MaxContextTokens         uint64 `json:"max_context_tokens,omitempty"`
+	Compactions              int    `json:"compactions"`
 }
 
 // ReceiptLatency records measured phase duration. Phases overlap:
@@ -331,9 +335,10 @@ type ExecutionReceiptData struct {
 	// ApprovalsRequested counts approval prompts raised during the turn.
 	ApprovalsRequested int `json:"approvals_requested"`
 
-	Verification       ReceiptVerification        `json:"verification"`
+	Verification       ReceiptVerification        `json:"verification,omitempty,omitzero"`
 	VerificationDetail *ReceiptVerificationDetail `json:"verification_detail,omitempty"`
 	WorkspaceOutcome   *ReceiptWorkspaceOutcome   `json:"workspace_outcome,omitempty"`
+	DiagnosticsStatus  string                     `json:"diagnostics_status,omitempty"`
 	DiagnosticCount    int                        `json:"diagnostic_count"`
 
 	// ContextSections reports what the assembled prompt context cost and whether
@@ -410,7 +415,9 @@ type ReceiptCatalog struct {
 func (*ExecutionReceiptData) eventKind() EventKind { return EventExecutionReceipt }
 
 func (d *ExecutionReceiptData) validate() error {
-	d.Verification.normalize()
+	if d.Verification != (ReceiptVerification{}) {
+		d.Verification.normalize()
+	}
 	if !NormalizeTurnIntent(d.Intent).Valid() {
 		return errors.New("receipt turn intent is invalid")
 	}

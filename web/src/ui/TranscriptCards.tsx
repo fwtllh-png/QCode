@@ -29,6 +29,7 @@ import type {
   ProjectedEditPlanFile
 } from "../projection/conversation";
 import {Collapse} from "./primitives/Collapse";
+import {guardianReason} from "../projection/guardian";
 
 type ReasoningNode = Extract<ConversationNode, {kind: "reasoning"}>;
 type ToolNode = Extract<ConversationNode, {kind: "tool"}>;
@@ -176,6 +177,7 @@ export function ToolDisclosure({
   const [open, setOpen] = useState(false);
   const presentation = useMemo(() => toolPresentation(entry), [entry]);
   const expandable = Boolean(entry.output || entry.state === "failed" ||
+    entry.guardianReviews?.length ||
     entry.command?.executionTarget === "host");
   const toggle = () => {
     if (expandable) setOpen((value) => !value);
@@ -221,6 +223,25 @@ export function ToolDisclosure({
             </div>
           )}
           {renderToolBody(presentation, entry)}
+          {entry.guardianReviews?.map((review) => (
+            <div className="toolIOCard" key={review.reviewID}>
+              <section aria-label="Automatic review details">
+                <span>AUTOMATIC REVIEW · {review.provider} / {review.model}</span>
+                <p>{guardianReason(review.reasonCode)}</p>
+                {review.risk && <p>Assessment: {review.risk} risk · user authorization {review.authorization} · recommendation {review.recommendation}</p>}
+                {review.action && <p>Policy: {review.action} · {review.policyCode || "current rules"}</p>}
+                <p>Authorization: {review.phase === "invalidated" ? "invalidated" :
+                  review.authority === "guardian" ? "automatic approval" :
+                  review.authority === "human" ? "user approval" :
+                  review.authority === "policy" ? "current policy" : "not granted by this review"}</p>
+                <p>Execution: {entry.command?.status ?? (entry.execution?.terminal_status === "rejected" ? "not started" :
+                  entry.execution ? `receipt recorded (${String(entry.execution.terminal_status ?? entry.state)})` : "no execution receipt")}</p>
+                {review.approvalRequestID && <p>Approval: {entry.approvalDecision || "see approval request"}</p>}
+                {review.inputTokens !== undefined && <p>Review tokens: {review.inputTokens} in / {review.outputTokens ?? 0} out</p>}
+                <small>Review {review.reviewID}</small>
+              </section>
+            </div>
+          ))}
           {entry.state === "failed" &&
             entry.output &&
             presentation.kind !== "shell" &&

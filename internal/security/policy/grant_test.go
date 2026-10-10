@@ -156,7 +156,6 @@ func TestShellGrantPrefixBindsEffectAndFacets(t *testing.T) {
 		t.Fatal("argv extension in the same scope did not match")
 	}
 	for name, mutate := range map[string]func(*invocationFixture){
-		"facets": func(call *invocationFixture) { call.Declared.Verification = true },
 		"effect": func(call *invocationFixture) { call.Sandbox = tool.SandboxNone },
 	} {
 		t.Run(name, func(t *testing.T) {

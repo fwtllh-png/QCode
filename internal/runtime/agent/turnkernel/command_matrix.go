@@ -3,13 +3,13 @@ package turnkernel
 type CommandFamily string
 
 const (
-	CommandFamilyLifecycle    CommandFamily = "lifecycle"
-	CommandFamilySampling     CommandFamily = "sampling"
-	CommandFamilyTool         CommandFamily = "tool"
-	CommandFamilyInteraction  CommandFamily = "interaction"
-	CommandFamilyVerification CommandFamily = "verification"
-	CommandFamilyTerminal     CommandFamily = "terminal"
-	CommandFamilyEffect       CommandFamily = "effect"
+	CommandFamilyLifecycle   CommandFamily = "lifecycle"
+	CommandFamilySampling    CommandFamily = "sampling"
+	CommandFamilyTool        CommandFamily = "tool"
+	CommandFamilyInteraction CommandFamily = "interaction"
+	CommandFamilyCompletion  CommandFamily = "completion"
+	CommandFamilyTerminal    CommandFamily = "terminal"
+	CommandFamilyEffect      CommandFamily = "effect"
 )
 
 // CommandContract is the machine-readable ownership index for Reducer
@@ -52,11 +52,10 @@ var commandContracts = []CommandContract{
 	{Name: "input_required", Family: CommandFamilyInteraction, AllowedPhases: []Phase{PhaseExecutingTools}},
 	{Name: "input_resolved", Family: CommandFamilyInteraction, AllowedPhases: []Phase{PhaseAwaitingInput}},
 	{Name: "input_result_received", Family: CommandFamilyInteraction, AllowedPhases: []Phase{PhaseAwaitingInput}},
-	{Name: "workspace_reconciled", Family: CommandFamilyVerification, AllowedPhases: []Phase{PhaseSampling}},
-	{Name: "verification_started", Family: CommandFamilyVerification, AllowedPhases: []Phase{PhaseSampling}},
-	{Name: "verification_finished", Family: CommandFamilyVerification, AllowedPhases: []Phase{PhaseVerifying}},
-	{Name: "completion_evaluated", Family: CommandFamilyVerification},
-	{Name: "completion_invalidated", Family: CommandFamilyVerification},
+	{Name: "workspace_reconciled", Family: CommandFamilyCompletion, AllowedPhases: []Phase{PhaseSampling}},
+	{Name: "verification_retired", Family: CommandFamilyLifecycle},
+	{Name: "completion_evaluated", Family: CommandFamilyCompletion},
+	{Name: "completion_invalidated", Family: CommandFamilyCompletion},
 	{Name: "cancel_requested", Family: CommandFamilyInteraction},
 	{Name: "recovery_requested", Family: CommandFamilyInteraction},
 	{Name: "effect_started", Family: CommandFamilyEffect},

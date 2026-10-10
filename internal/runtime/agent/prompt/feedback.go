@@ -85,7 +85,7 @@ func WorkspaceChangeRequiredFeedback(turn uint64) provider.Message {
 			"observed_changes=0\n"+
 			"retry_original=false\n"+
 			"The workspace_change contract is not complete. Use a guarded mutation tool, "+
-			"then verify the observed changed paths before answering. If no edit is needed, "+
+			"then report the observed changes and any checks you ran. If no edit is needed, "+
 			"call turn_complete with no_change_reason and no_change_evidence citing successful file-read call IDs from this Turn. "+
 			"Do not manufacture a change just to satisfy this check.")
 }
@@ -106,7 +106,7 @@ func CompletionDeclarationFeedback(turn uint64) provider.Message {
 			"appends it to the preserved body instead of rewriting the answer. If any "+
 			"work remains, use status=incomplete and list each concrete pending action; "+
 			"the runtime will continue this same Turn. The runtime binds any changed "+
-			"paths and accepted verification evidence automatically. Do not move "+
+			"paths automatically. Do not move "+
 			"requested work to a future turn.")
 }
 

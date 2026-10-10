@@ -113,12 +113,6 @@ const (
 	fieldBudgetUSD                  = "execution.budget_usd"
 	fieldReasoning                  = "execution.reasoning_effort"
 	fieldNativeSearch               = "execution.native_search"
-	fieldVerifyMode                 = "execution.verify.mode"
-	fieldVerifyScope                = "execution.verify.scope"
-	fieldVerifyOnFailure            = "execution.verify.on_failure"
-	fieldVerifyCommand              = "execution.verify.command"
-	fieldVerifyRepair               = "execution.verify.max_repair_steps"
-	fieldVerifyTimeout              = "execution.verify.timeout"
 
 	fieldSubagentDelegation  = "execution.subagent.delegation"
 	fieldSubagentMaxDepth    = "execution.subagent.max_depth"
@@ -145,7 +139,10 @@ const (
 	fieldVisionModel      = "vision.model"
 	fieldWebSearchBackend = "web.search_backend"
 
-	fieldRouteLock = "route.lock"
+	fieldRouteLock         = "route.lock"
+	fieldGuardianEnabled   = "security.guardian.enabled"
+	fieldGuardianTimeout   = "security.guardian.timeout"
+	fieldGuardianMaxOutput = "security.guardian.max_output_tokens"
 )
 
 // fieldRouteProvider and fieldRouteModel name a purpose's slot for provenance
@@ -172,6 +169,9 @@ type Snapshot struct {
 
 func defaultProvenance() map[string]Source {
 	return map[string]Source{
+		fieldGuardianEnabled:       SourceDefault,
+		fieldGuardianTimeout:       SourceDefault,
+		fieldGuardianMaxOutput:     SourceDefault,
 		fieldOperationBuffer:       SourceDefault,
 		fieldEventHistory:          SourceDefault,
 		fieldSubscriberBuffer:      SourceDefault,
@@ -273,12 +273,6 @@ func defaultProvenance() map[string]Source {
 		fieldBudgetUSD:                  SourceDefault,
 		fieldReasoning:                  SourceDefault,
 		fieldNativeSearch:               SourceDefault,
-		fieldVerifyMode:                 SourceDefault,
-		fieldVerifyScope:                SourceDefault,
-		fieldVerifyOnFailure:            SourceDefault,
-		fieldVerifyCommand:              SourceDefault,
-		fieldVerifyRepair:               SourceDefault,
-		fieldVerifyTimeout:              SourceDefault,
 
 		fieldSubagentDelegation:  SourceDefault,
 		fieldSubagentMaxDepth:    SourceDefault,

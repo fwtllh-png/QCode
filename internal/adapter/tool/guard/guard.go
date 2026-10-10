@@ -38,6 +38,7 @@ type ApprovalRequest struct {
 	Tool                 string                                 `json:"tool"`
 	Arguments            json.RawMessage                        `json:"arguments"`
 	ArgumentsDigest      string                                 `json:"arguments_digest"`
+	BindingDigest        string                                 `json:"binding_digest,omitempty"`
 	Resources            []tool.Resource                        `json:"resources"`
 	AllowedScopes        []policy.ApprovalScope                 `json:"allowed_scopes"`
 	ExpiresAt            time.Time                              `json:"expires_at"`
@@ -46,6 +47,9 @@ type ApprovalRequest struct {
 	Effect               securitymodel.EffectKind               `json:"effect"`
 	Risk                 securitymodel.Risk                     `json:"risk"`
 	ReasonCode           string                                 `json:"reason_code"`
+	GuardianReason       string                                 `json:"guardian_reason,omitempty"`
+	GuardianReviewID     string                                 `json:"guardian_review_id,omitempty"`
+	GuardianReasonCode   string                                 `json:"guardian_reason_code,omitempty"`
 	Network              *NetworkApprovalContext                `json:"network,omitempty"`
 	EditPlan             *tool.EditPlan                         `json:"edit_plan,omitempty"`
 	Grant                *policy.Grant                          `json:"grant,omitempty"`
@@ -161,23 +165,26 @@ type Guard struct {
 	isolator            tool.Isolator
 	preparationFacts    []environment.Fact
 
-	mu           sync.Mutex
-	pending      map[string]*pending
-	completed    map[string]time.Time
-	recovered    map[string]ApprovalRequest
-	restoreWait  func(ApprovalRequest) error
-	approvalWait func(ApprovalWait)
-	expireWait   func(ApprovalWait) error
-	observe      ApprovalObserver
+	mu            sync.Mutex
+	guardianCalls map[tool.InvocationIdentity]bool
+	pending       map[string]*pending
+	completed     map[string]time.Time
+	recovered     map[string]ApprovalRequest
+	restoreWait   func(ApprovalRequest) error
+	approvalWait  func(ApprovalWait)
+	expireWait    func(ApprovalWait) error
+	observe       ApprovalObserver
 }
 
 type approvalAsk struct {
-	Code                 string
-	AllowedScopes        []policy.ApprovalScope
-	DisableReplace       bool
-	Network              *NetworkApprovalContext
-	EditPlan             *tool.EditPlan
-	AdditionalPermission *authority.AdditionalPermissionRequest
+	GuardianReviewID, GuardianReasonCode string
+	Code                                 string
+	GuardianReason                       string
+	AllowedScopes                        []policy.ApprovalScope
+	DisableReplace                       bool
+	Network                              *NetworkApprovalContext
+	EditPlan                             *tool.EditPlan
+	AdditionalPermission                 *authority.AdditionalPermissionRequest
 }
 
 func New(options Options) (*Guard, error) {
@@ -296,6 +303,7 @@ func (g *Guard) policyInput(callID string, invocation Invocation) policy.Invocat
 		CallID: callID, Tool: invocation.Tool, Arguments: invocation.Arguments,
 		Source: tool.CatalogSourceKind(invocation.Tool, invocation.Ref.Source), Assessment: invocation.Assessment,
 		Approval: invocation.Binding.Effect.Approval, Validated: true, Workspace: g.workspace,
+		GuardianRegistered: invocation.Binding.GuardianReview,
 	}
 
 }
@@ -314,16 +322,6 @@ func declaredFacts(invocation Invocation) securitymodel.Declared {
 		var value string
 		declared.ReadOnly = json.Unmarshal(arguments[match.Field], &value) == nil &&
 			match.Matches(value)
-	}
-	if field := binding.VerificationField; field != "" &&
-		binding.ResourceResolver.ReadPathsField != "" {
-		var kind string
-		var covered []string
-		declared.Verification =
-			json.Unmarshal(arguments[field], &kind) == nil &&
-				strings.TrimSpace(kind) != "" &&
-				json.Unmarshal(arguments[binding.ResourceResolver.ReadPathsField], &covered) == nil &&
-				len(covered) != 0
 	}
 	return declared
 }
@@ -1170,7 +1168,6 @@ func (g *Guard) waitForApproval(
 	recovered, recovering := g.recovered[invocation.CallID]
 	if recovering {
 		delete(g.recovered, invocation.CallID)
-		expiresAt = recovered.ExpiresAt
 	}
 	g.mu.Unlock()
 	request, err := policy.NewApprovalRequestForScope(
@@ -1206,22 +1203,32 @@ func (g *Guard) waitForApproval(
 		modifiable = nil
 	}
 	event := ApprovalRequest{
+		GuardianReviewID: opts.GuardianReviewID, GuardianReasonCode: opts.GuardianReasonCode,
 		RequestID: requestID, CallID: invocation.CallID, Tool: invocation.Tool,
 		Arguments: request.Arguments, ArgumentsDigest: request.ArgumentsDigest,
 		Resources: approvalResources(request.Resources), AllowedScopes: scopes,
 		ExpiresAt: expiresAt, ReplacementAllowed: replacementAllowed,
-		ModifiableArguments: modifiable, ReasonCode: opts.Code,
+		ModifiableArguments: modifiable, ReasonCode: opts.Code, GuardianReason: opts.GuardianReason,
 		Network: opts.Network, EditPlan: opts.EditPlan, Grant: request.Grant,
 		AdditionalPermission: opts.AdditionalPermission,
 	}
 	classified := policyInvocation.Assessment.Effect()
 	event.Effect, event.Risk = classified.Kind, classified.Risk
-	if recovering {
-		event = recovered
-	}
 	if opts.AdditionalPermission != nil {
 		event.Effect = securitymodel.ExternalMutation
 		event.Risk = securitymodel.RiskCritical
+	}
+	if recovering {
+		event.BindingDigest = approvalBindingDigest(event, tool.InvocationIdentityFrom(ctx))
+		if err := validateRecoveredApproval(recovered, event); err != nil {
+			return ApprovalDecision{}, err
+		}
+		event = recovered
+		scopes = recovered.AllowedScopes
+		expiresAt = recovered.ExpiresAt
+	}
+	if !recovering {
+		event.BindingDigest = approvalBindingDigest(event, tool.InvocationIdentityFrom(ctx))
 	}
 	entry := &pending{
 		callID: invocation.CallID, decision: make(chan ApprovalDecision, 1),
@@ -1261,6 +1268,10 @@ func (g *Guard) waitForApproval(
 		return wait
 	}
 	if !recovering {
+		if a := guardianAttemptFrom(ctx); a != nil && a.reviewer != nil {
+			a.approvalID = requestID
+			_ = a.report(ctx, "human_required", a.reasonCode, nil, "")
+		}
 		if err := handler(ctx, event); err != nil {
 			return ApprovalDecision{}, fmt.Errorf("emit approval request: %w", err)
 		}
@@ -1275,8 +1286,10 @@ func (g *Guard) waitForApproval(
 	select {
 	case <-ctx.Done():
 		reportWait(ApprovalWaitCanceled)
+		_ = guardianAttemptFrom(ctx).report(ctx, "human_resolved", "human_canceled", nil, "")
 		return ApprovalDecision{}, ctx.Err()
 	case <-expiry:
+		_ = guardianAttemptFrom(ctx).report(ctx, "human_resolved", "approval_expired", nil, "")
 		wait := reportWait(ApprovalWaitExpired)
 		if expire := g.approvalExpiryHandler(); expire != nil {
 			if err := expire(wait); err != nil {
@@ -1297,17 +1310,22 @@ func (g *Guard) waitForApproval(
 			reportWait(ApprovalWaitDecided)
 		}
 		if decision.Canceled {
+			_ = guardianAttemptFrom(ctx).report(ctx, "human_resolved", "human_canceled", nil, "")
 			return ApprovalDecision{}, &policy.DecisionError{
 				Code: "approval_canceled", Reason: "approval was canceled",
 			}
 		}
 		if !decision.Approved {
+			_ = guardianAttemptFrom(ctx).report(ctx, "human_resolved", "human_denied", nil, "")
 			return ApprovalDecision{}, &policy.DecisionError{
 				Code: "approval_denied", Reason: "approval was denied",
 			}
 		}
 		if decision.Scope == "" {
 			decision.Scope = policy.ApprovalOnce
+		}
+		if len(decision.ReplacementArguments) != 0 && !event.ReplacementAllowed {
+			return ApprovalDecision{}, &policy.DecisionError{Code: "approval_replacement_denied", Reason: "approval does not allow replacement arguments"}
 		}
 		if !slices.Contains(scopes, decision.Scope) {
 			return ApprovalDecision{}, &policy.DecisionError{

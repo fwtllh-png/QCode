@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
-	"github.com/fwtllh-png/QCode/internal/observability/verify"
 	"github.com/fwtllh-png/QCode/internal/platform/process"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
 )
@@ -23,22 +22,16 @@ type isolatedCommand struct {
 	shadow bool
 }
 
-// pendingExecution is what a still-running exec_command leaves behind: the
-// isolated workspace to settle on its final poll, and the verification
-// evidence that must reach a terminal status once the process exits. Both
-// are reclaimed when the session closes without a final poll (turn release,
-// timeout): the isolate is closed and the evidence is dropped.
+// pendingExecution retains the isolated workspace until the final poll or session cleanup.
 type pendingExecution struct {
 	isolated isolatedCommand
-	evidence *verify.Evidence
 }
 
 func (p *commandProtocol) storePendingExecution(
 	id string,
 	isolated isolatedCommand,
-	evidence *verify.Evidence,
 ) {
-	if p == nil || id == "" || (isolated.session == nil && evidence == nil) {
+	if p == nil || id == "" || isolated.session == nil {
 		return
 	}
 	p.mu.Lock()
@@ -46,7 +39,7 @@ func (p *commandProtocol) storePendingExecution(
 	if p.isolates == nil {
 		p.isolates = make(map[string]pendingExecution)
 	}
-	p.isolates[id] = pendingExecution{isolated: isolated, evidence: evidence}
+	p.isolates[id] = pendingExecution{isolated: isolated}
 }
 
 func (p *commandProtocol) takePendingExecution(id string) (pendingExecution, bool) {
@@ -65,8 +58,7 @@ func (p *commandProtocol) takePendingExecution(id string) (pendingExecution, boo
 // reclaimAbandonedExecution is the session OnClose hook: an exec_command
 // whose session closed without a final write_stdin poll (turn release,
 // timeout, capacity eviction) must not leak its isolated workspace — the
-// worktree and scratch copy are discarded. Abandoned verification evidence
-// is dropped; it never observed a final exit status.
+// worktree and scratch copy are discarded.
 func (p *commandProtocol) reclaimAbandonedExecution(id string) {
 	pending, ok := p.takePendingExecution(id)
 	if !ok {
@@ -90,10 +82,18 @@ func (p *commandProtocol) beginIsolatedCommand(
 	shadow bool,
 ) (isolatedCommand, bool, error) {
 	trees := existingWriteTrees(p.workspace, writePaths)
-	if tool.WriteIsolationRequired(ctx) && (len(trees) == 0 || tool.IsolatorFrom(ctx) == nil) {
+	// Guardian already prepared a private copy for the exact original scopes,
+	// including files. Consume that copy without expanding grants to a tree.
+	reviewed := tool.ReviewedExecutionFrom(ctx)
+	isolator := tool.IsolatorFrom(ctx)
+	if reviewed != nil {
+		isolator = reviewed
+	}
+	hasScopes := len(trees) != 0 || (reviewed != nil && len(writePaths) != 0)
+	if tool.WriteIsolationRequired(ctx) && (!hasScopes || isolator == nil) {
 		return isolatedCommand{}, false, errors.New("required write tree isolation is no longer available")
 	}
-	if len(trees) == 0 {
+	if !hasScopes {
 		if shadow {
 			return isolatedCommand{}, false, errors.New(
 				"settle=discard requires write_paths to include an existing " +
@@ -103,7 +103,6 @@ func (p *commandProtocol) beginIsolatedCommand(
 		}
 		return isolatedCommand{}, false, nil
 	}
-	isolator := tool.IsolatorFrom(ctx)
 	if isolator == nil {
 		if shadow {
 			return isolatedCommand{}, false, errors.New(
@@ -260,12 +259,7 @@ func (p *commandProtocol) settlePendingExecution(
 	return settleTakenPending(ctx, p.workspace.Root(), pending, result, wait)
 }
 
-// settleTakenPending finalizes one taken pending execution: verification
-// evidence first reaches its terminal status from the final wait, then the
-// isolated workspace settles, then covered-path invalidation re-judges
-// passing evidence against settled writes. Callers that must take the
-// pending state before closing the session (the write_stdin close path,
-// where OnClose would otherwise reclaim it) use this directly.
+// settleTakenPending applies the final isolated workspace settlement.
 func settleTakenPending(
 	ctx context.Context,
 	workspaceRoot string,
@@ -273,14 +267,8 @@ func settleTakenPending(
 	result *tool.Result,
 	wait process.SessionWait,
 ) error {
-	if pending.evidence != nil {
-		attachVerification(result, pending.evidence, wait)
-	}
 	if err := settleIsolated(ctx, pending.isolated, result); err != nil {
 		return err
-	}
-	if pending.evidence != nil {
-		invalidateVerificationOnCoveredWrites(result, pending.evidence, workspaceRoot)
 	}
 	return nil
 }

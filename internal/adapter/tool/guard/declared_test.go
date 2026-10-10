@@ -20,13 +20,10 @@ func TestPreparationResolvesDeclaredFacts(t *testing.T) {
 		},
 	}
 	verify := tool.TrustedBinding{
-		Capability:                   tool.CapabilityProcess,
-		ResourceResolver:             tool.ResourceResolver{ReadPathsField: "covered_paths"},
-		ProducesVerificationEvidence: true,
-		VerificationField:            "verification",
+		Capability:       tool.CapabilityProcess,
+		ResourceResolver: tool.ResourceResolver{ReadPathsField: "covered_paths"},
 	}
 	undeclared := verify
-	undeclared.VerificationField = ""
 	tests := []struct {
 		name      string
 		binding   tool.TrustedBinding
@@ -40,7 +37,7 @@ func TestPreparationResolvesDeclaredFacts(t *testing.T) {
 		{
 			"verification with coverage", verify,
 			`{"command":"go test ./...","verification":"test","covered_paths":["a.go"]}`,
-			securitymodel.Declared{Verification: true},
+			securitymodel.Declared{},
 		},
 		{"verification without coverage", verify, `{"verification":"test"}`, securitymodel.Declared{}},
 		{"blank verification", verify, `{"verification":" ","covered_paths":["a.go"]}`, securitymodel.Declared{}},

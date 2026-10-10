@@ -95,7 +95,7 @@ func (s *EvidenceSet) RetainedDelta(
 	result := EvidenceDelta{Turn: full.Turn, Facts: snapshot.Facts}
 	verified := 0
 	for _, change := range full.Changes {
-		mandatory := !change.Verified || change.Diagnostics || change.Stale
+		mandatory := change.Diagnostics || change.Stale
 		recent := full.Turn < change.Turn ||
 			full.Turn-change.Turn <= verifiedChangeRetentionTurns
 		if !mandatory && (!recent || factLimit > 0 && verified == factLimit) {

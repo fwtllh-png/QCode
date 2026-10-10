@@ -48,7 +48,7 @@ Runtime；Web、主 Agent 和 Subagent 共享同一组执行与安全语义。
 仓库中有两类用途不同的持久状态：
 
 - **Turn Kernel**：`internal/runtime/agent/turnkernel`，管理一次 Agent Turn 内的
-  Sampling、Tool、Approval、Input、Verification、Commit 和 Terminal。
+  Sampling、Tool、Approval、Input、Commit 和 Terminal。
 - **Agent Graph**：`internal/orchestration/subagent`，记录 Child Agent 的 Spawn、
   Transition、Result、Mailbox、Budget 与 Integration。
 
@@ -83,7 +83,7 @@ Child 的实际执行仍是普通 Runtime Turn，不建立后台 WorkGraph 镜�
 | Environment | `internal/common/environment`、`internal/adapter/envprep` | 前者为仅依赖标准库的声明、校验与结构化事实；后者捕获来源、编译声明、物化目录并生成沙箱配置 |
 | Orchestration | `internal/orchestration` | Subagent、Admission/Budget、Worktree、Workspace Merge、Exec Settle |
 | Persistence | `internal/persist` | SQLite、CAS、Event、Session、Snapshot、Journal |
-| Observability | `internal/observability` | Usage、Trace、Diagnostics、Verification |
+| Observability | `internal/observability` | Usage、Trace、Diagnostics |
 | Platform | `internal/platform` | Process、PTY、Repository Walk、OS 差异 |
 | Config | `internal/config` | Schema、默认值、环境覆盖、Provenance |
 | Web | `web/src` | Browser Runtime Client、Projection、React UI |
@@ -303,7 +303,7 @@ Commit？
 
 按顺序阅读 `internal/runtime/agent/turnkernel`：
 
-1. `state.go`：`State`、Phase、Pending Effect、Completion、Verification、Journal、
+1. `state.go`：`State`、Phase、Pending Effect、Completion、Journal、
    Progress 和 Terminal Decision；
 2. `command.go`：所有可接受输入；
 3. `reducer.go`：命令分派；
@@ -341,12 +341,12 @@ Command
 - `tool_scheduler.go`：Scope 私有的工具并发准入，资源冲突仍由 Guard Claims 串行化；
 - `completion_declaration.go`：结构化完成声明；
 - `progress.go`：进展签名与 No-progress；
-- `verify.go`：Verification Gate；
+- `workspace_paths.go`：从实际工作区差异提取变更路径；
 - `terminal_handler.go`：冻结业务决策、失败 Context、Session Delta、Terminal Material；
 - `cancel_handler.go`、`approval_handler.go`：ControlPort 与恢复后的交互；
 - `provider_retry.go`：Typed Failure、Backoff、Context Overflow Recovery。
 
-正文是 Provisional Output。只有 Kernel 接受 Completion、Verification 和 Journal 结果
+正文是 Provisional Output。只有 Kernel 接受 Completion 和 Journal 结果
 后，输出才进入 Terminal Envelope。`message_stop` 只结束一次 Provider Sample。
 
 最有价值的测试：
@@ -386,7 +386,7 @@ Workspace Reconciliation 仍由 Context Package 定义。
 - `store_world.go`：World Full/Patch Projection；
 - `store_window.go`：Observed Prefill 与 Pending Delta；
 - `working_set.go`：来源合并、衰减和 Critical Path；
-- `evidence.go`：Read、Change、Verification、Diagnostic、Handle；
+- `evidence.go`：Read、Change、Diagnostic、Handle；
 - `history_boundary.go` / `history.go`：Turn 边界、工具调用配对与可安全切分的位置；
 - `continuity.go`：已确认终答与工具位点的 mandatory 胶囊；
 - `compact_failures.go`：有界失败账本；
@@ -405,7 +405,7 @@ Compaction 不是“让模型总结聊天记录”。阅读顺序：
 7. `session_context.go`：Context Rebase Envelope。
 
 Truth Capsule 来自当前 Owner Snapshot，不从旧摘要递归生成。Narrative 可以失败或被
-丢弃，不能证明 Verification、Permission 或 Side Effect。
+丢弃，不能证明测试通过、Permission 或 Side Effect。
 
 ### 7.3 Session Delta 与 Manifest
 
@@ -857,7 +857,7 @@ npm --prefix web test
 - `internal/runtime/app/turn_receipt.go`、`turn_receipt_terminal.go`：私有的执行回执构建、计量冻结与终态校验；
 - `internal/observability/usage`：Sample/Turn/Session 聚合；
 - `internal/observability/trace`：Span 与 Frozen Latency；
-- `internal/observability/verify`：编辑后诊断、验证证据与结论；`diagnostics.go` 负责诊断命令执行和输出解析，`receipt_runner.go` 负责证据归约；
+- `internal/observability/verify`：`diagnostics.go` 负责编辑后诊断命令执行和输出解析，`evidence.go` 仅保留旧工具结果的解码类型；新 Turn 不再运行通用验证门禁；
 - `internal/observability/telemetry`：低基数指标。
 
 三个容易混淆的数据源：
@@ -906,8 +906,8 @@ protocol.StartTurnPayload
 ### 14.2 跟踪一次写文件 Turn
 
 从 `ToolCallsProposed` 开始，沿 `tool_handler.go`、`tool.ExecuteBatch`、
-`Guard.ExecuteBound`、Workspace Journal、Verification、Journal Commit 和 Terminal
-Envelope。重点检查 Mutation Revision 如何使旧 Completion/Verification 失效。
+`Guard.ExecuteBound`、Workspace Journal、Journal Commit 和 Terminal
+Envelope。重点检查 Mutation Revision 如何使旧 Completion 失效。
 
 ### 14.3 跟踪审批暂停与恢复
 

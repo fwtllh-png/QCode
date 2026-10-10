@@ -1,10 +1,49 @@
 package agentcontext
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
 )
+
+func TestWindowLedgerKeepsPredictionErrorAndHistoryFloorSealed(t *testing.T) {
+	ledger, err := NewWindowLedger("window-1", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ledger.Observe(protocol.SampleContextData{EstimatedTokens: 100}, 200, 0)
+	if ledger.LastUnderestimateTokens != 0 {
+		t.Fatal("initial calibration was treated as residual error")
+	}
+	ledger.Observe(protocol.SampleContextData{EstimatedTokens: 200,
+		WindowObserved: true, WindowProjectedTokens: 200}, 210, 0)
+	ledger.RetainHistoryFrom(12)
+	raw, err := json.Marshal(ledger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var restored WindowLedger
+	if err := json.Unmarshal(raw, &restored); err != nil {
+		t.Fatal(err)
+	}
+	if !restored.Valid() || restored.HistoryFloorTurn != 12 || restored.LastUnderestimateTokens != 10 {
+		t.Fatalf("ledger lost observation: %+v", restored)
+	}
+	restored.HistoryFloorTurn++
+	if restored.Valid() {
+		t.Fatal("tampered history floor passed validation")
+	}
+	ledger.Observe(protocol.SampleContextData{EstimatedTokens: 210,
+		WindowObserved: true, WindowProjectedTokens: 220}, 210, 0)
+	if ledger.LastUnderestimateTokens != 0 {
+		t.Fatal("overestimate retained stale positive error")
+	}
+	next, err := ledger.Advance("window-2")
+	if err != nil || !next.Valid() || next.HistoryFloorTurn != 12 || next.LastUnderestimateTokens != 0 {
+		t.Fatalf("advance=%+v err=%v", next, err)
+	}
+}
 
 func TestWindowLedgerUsesObservedPrefillAndPricesOnlyPendingDelta(t *testing.T) {
 	ledger, err := NewWindowLedger("window-1", 1)

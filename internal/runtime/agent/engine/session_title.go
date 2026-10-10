@@ -30,21 +30,36 @@ type SessionTitleResult struct {
 // Title sampling never takes the turn-long Engine mutex. Its seed is frozen at
 // construction/profile/turn boundaries; accounting uses a separate leaf lock.
 type sessionTitleState struct {
-	mu        sync.Mutex
-	options   Options
-	mainUsage provider.Usage
-	mainCost  float64
-	usage     provider.Usage
-	cost      float64
+	mu            sync.Mutex
+	options       Options
+	mainUsage     provider.Usage
+	mainCost      float64
+	usage         provider.Usage
+	cost          float64
+	mainTurnID    string
+	mainTurnUsage provider.Usage
+	turnUsage     map[string]provider.Usage
+	guardianSpent map[string]toolSpend
+	pending       map[*modelBudgetReservation]struct{}
 }
 
 func (e *Engine) syncSessionTitleState(turnUsage provider.Usage) {
+	route := e.activeRoute()
+	options := e.options
+	if routes, err := options.Routes.WithAct(route); err == nil {
+		options.Routes = routes
+	}
+	turnID := ""
+	if scope := e.runningScope(); scope != nil {
+		turnID = scope.spec.Identity.TurnID
+	}
 	e.titleState.mu.Lock()
 	defer e.titleState.mu.Unlock()
-	e.titleState.options = e.options
+	e.titleState.options = options
 	e.titleState.mainUsage = e.usage
 	e.titleState.mainUsage.Add(turnUsage)
-	e.titleState.mainCost = e.costUSD
+	e.titleState.mainCost = e.costUSD + provider.EstimateCost(route.Model().Pricing, turnUsage) + guardianCostAdjustment(e.titleState.guardianSpent[turnID], route.Model().Pricing)
+	e.titleState.mainTurnID, e.titleState.mainTurnUsage = turnID, turnUsage
 }
 
 func (e *Engine) accountedUsage() (provider.Usage, float64) {
@@ -100,24 +115,15 @@ func (e *Engine) GenerateSessionTitle(ctx context.Context, identity, prompt stri
 		request.MaxOutputTokens = min(request.MaxOutputTokens, options.MaxOutputTokens)
 	}
 	input, estimateErr := options.TokenEstimator.Estimate(request.Messages)
+	var settle func(provider.Usage)
 	if estimateErr == nil {
-		e.titleState.mu.Lock()
-		usage := e.titleState.mainUsage
-		usage.Add(e.titleState.usage)
-		cost := e.titleState.mainCost + e.titleState.cost
-		e.titleState.mu.Unlock()
-		request.MaxOutputTokens, estimateErr = agentcontext.CheckBudget(agentcontext.BudgetRequest{
-			ContextTokens: route.Model().Limits.ContextTokens, EstimatedInput: input,
-			OutputReserve: request.MaxOutputTokens, SessionUsage: usage,
-			MaxTokens: options.Budget.MaxTokens, SpentCostUSD: cost,
-			MaxCostUSD: options.Budget.MaxCostUSD, Pricing: route.Model().Pricing,
-			Scope: "session-title",
-		})
+		request.MaxOutputTokens, settle, estimateErr = e.reserveAuxiliaryBudget(options, route, input, request.MaxOutputTokens, "")
 	}
 	backend := options.Provider
 	if estimateErr != nil {
 		return result, estimateErr
 	}
+	defer func() { settle(result.Usage) }()
 	if callCtx.Err() != nil {
 		return result, callCtx.Err()
 	}
@@ -131,10 +137,6 @@ func (e *Engine) GenerateSessionTitle(ctx context.Context, identity, prompt stri
 		}
 		result.CostUSD = provider.EstimateCost(route.Model().Pricing, result.Usage)
 		result.CostKnown = provider.PricingKnown(route.Model().Pricing, result.Usage)
-		e.titleState.mu.Lock()
-		e.titleState.usage.Add(result.Usage)
-		e.titleState.cost += result.CostUSD
-		e.titleState.mu.Unlock()
 	}()
 	stream, err := backend.Stream(callCtx, request)
 	if err != nil {
@@ -159,7 +161,7 @@ func (e *Engine) GenerateSessionTitle(ctx context.Context, identity, prompt stri
 			output.WriteString(event.Text)
 		case provider.EventUsage:
 			if event.Usage != nil {
-				result.Usage.Add(*event.Usage)
+				result.Usage = provider.MergeCumulative(result.Usage, *event.Usage)
 			}
 		case provider.EventMessageStop:
 			if event.StopReason.Incomplete() || event.StopReason == provider.StopReasonToolUse {

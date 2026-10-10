@@ -8,6 +8,7 @@ import (
 
 // ToolExecutionReceipt is the durable projection of one guarded tool execution.
 type ToolExecutionReceipt struct {
+	GuardianReviewID string               `json:"guardian_review_id,omitempty"`
 	Tool             ToolExecutionRef     `json:"tool"`
 	Source           string               `json:"source"`
 	Disposition      string               `json:"disposition"`

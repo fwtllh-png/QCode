@@ -11,6 +11,9 @@ import (
 )
 
 func normalizeEngineOptions(options *Options) error {
+	if err := validateGuardianConfig(options.Guardian, options.Routes); err != nil {
+		return err
+	}
 	summaryBytes := options.SummaryMaxBytes
 	capacity := agentcontext.ResolveCapacity(
 		options.Route,
@@ -135,6 +138,9 @@ func validateReasoningEffort(
 	}
 	entries := []model.ReadyRoute{routes.Act()}
 	for _, purpose := range routes.Slots() {
+		if purpose == model.PurposeJudge {
+			continue // Guardian derives reasoning settings from its own model.
+		}
 		route, err := routes.For(purpose)
 		if err != nil {
 			return err

@@ -12,9 +12,10 @@ func (e *Engine) recentTailTurns() int {
 }
 
 type viewFoldState struct {
-	start  int
-	folded bool
-	folds  []contextview.HistoryFold
+	start            int
+	folded           bool
+	folds            []contextview.HistoryFold
+	headroom, target uint64
 }
 
 func (e *Engine) visibleTailStart(history []provider.Message) int {
@@ -27,11 +28,43 @@ func (e *Engine) contextProjection(history []provider.Message) agentcontext.Proj
 	if operator := e.recentTailMaxTokens(); operator != 0 && budget == operator {
 		reason = agentcontext.OmittedTokenLimit
 	}
+	start := e.viewFold.start
+	if floor := e.currentWindowLedger().HistoryFloorTurn; floor != 0 {
+		// A recovered older request must still retain its own user message.
+		floor = min(floor, agentcontext.LastNonWorldTurn(history))
+		for index, message := range history {
+			if !agentcontext.IsWorldStateMessage(message) && message.Turn >= floor {
+				start = max(start, index)
+				break
+			}
+		}
+	}
 	return contextview.SelectHistory(history, contextview.SelectionPolicy{
-		RecentTurns: e.recentTailTurns(), FoldStart: e.viewFold.start,
+		RecentTurns: e.recentTailTurns(), FoldStart: start,
 		Folds: e.viewFold.folds, MaxTokens: budget, Limited: limited,
 		TokenLimitReason: reason, Estimate: e.estimateTokens,
 	})
+}
+
+func (e *Engine) retainHistoryFloor(history []provider.Message) {
+	selection := e.contextProjection(history)
+	for _, message := range history[selection.TailStart:] {
+		if agentcontext.IsWorldStateMessage(message) {
+			continue
+		}
+		if scope := e.runningScope(); scope != nil {
+			scope.mu.Lock()
+			window := scope.state.context.Window()
+			window.RetainHistoryFrom(message.Turn)
+			scope.state.context.SetWindow(window)
+			scope.mu.Unlock()
+		} else {
+			window := e.context.Window()
+			window.RetainHistoryFrom(message.Turn)
+			e.context.SetWindow(window)
+		}
+		return
+	}
 }
 
 func (e *Engine) foldOldestVisibleTail(
@@ -47,7 +80,7 @@ func (e *Engine) foldOldestVisibleTail(
 	}
 	folds := append([]contextview.HistoryFold(nil), e.viewFold.folds...)
 	folds = append(folds, contextview.HistoryFold{Start: previousStart, End: start, Reason: reason})
-	e.viewFold = viewFoldState{start: start, folded: true, folds: folds}
+	e.viewFold.start, e.viewFold.folded, e.viewFold.folds = start, true, folds
 	return true
 }
 

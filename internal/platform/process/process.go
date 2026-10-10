@@ -21,6 +21,11 @@ import (
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
 )
 
+// POSIXShellPath is the OS-owned POSIX interpreter on the supported macOS
+// platform. Shell commands must not resolve their interpreter through mutable
+// workspace/PATH entries. The system volume supplies the executable identity.
+const POSIXShellPath = "/bin/sh"
+
 type Options struct {
 	Command string
 	Path    string
@@ -250,8 +255,8 @@ func NewCommand(ctx context.Context, options Options) (*exec.Cmd, error) {
 		commandSpec.Path = options.Path
 		commandSpec.Args = append([]string{options.Path}, options.Args...)
 	} else {
-		commandSpec.Path = "sh"
-		commandSpec.Args = []string{"sh", "-c", options.Command}
+		commandSpec.Path = POSIXShellPath
+		commandSpec.Args = []string{POSIXShellPath, "-c", options.Command}
 	}
 	if options.RequireSandbox {
 		required := sandbox.DefaultProcessRequirements()

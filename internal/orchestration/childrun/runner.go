@@ -86,7 +86,6 @@ type childTurn struct {
 	started        bool
 	settling       bool
 	receipt        *protocol.ExecutionReceiptData
-	verify         *protocol.TurnVerificationData
 	text           string
 	notes          []string
 	failure        subagent.SettlementFailure
@@ -613,9 +612,6 @@ func (c *Runner) Observe(event protocol.Event) {
 	case *protocol.ExecutionReceiptData:
 		copied := *data
 		turn.receipt = &copied
-	case *protocol.TurnVerificationData:
-		copied := *data
-		turn.verify = &copied
 	case *protocol.ApprovalRequiredData:
 		waitRequest = data.RequestID
 	case *protocol.ApprovalResolvedData:
@@ -851,7 +847,6 @@ func (t *childTurn) result(threadID protocol.ThreadID, status subagent.Status) s
 	if receipt := t.receipt; receipt != nil {
 		result.Evidence = receipt.Evidence
 		result.Diff = receipt.Changes
-		result.Verification = receipt.Verification
 		result.Unresolved = append(result.Unresolved, receipt.UnresolvedIssues...)
 		result.PermissionDigests = append(
 			[]string(nil),
@@ -865,14 +860,6 @@ func (t *childTurn) result(threadID protocol.ThreadID, status subagent.Status) s
 	} else {
 		// No receipt means the turn never reached its own accounting: say so
 		// instead of reporting an all-zero, all-passed result.
-		result.Verification = protocol.ReceiptVerification{
-			Diagnostics: protocol.ReceiptNotEvaluated,
-			Tests:       protocol.ReceiptNotEvaluated,
-			Verify:      protocol.ReceiptNotEvaluated,
-		}
-	}
-	if t.verify != nil && t.verify.Status != "" {
-		result.Verification.Verify = t.verify.Status
 	}
 	result.ReasonCode, result.Summary, result.Retryable = subagent.ClassifySettlement(
 		status, t.failure, result.Unresolved, result.Summary,

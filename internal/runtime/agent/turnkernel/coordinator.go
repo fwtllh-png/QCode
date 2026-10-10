@@ -402,8 +402,6 @@ func resultEffectID(command Command) string {
 		return value.EffectID
 	case ModelSampleResultReceived:
 		return value.EffectID
-	case VerificationFinished:
-		return value.EffectID
 	case JournalResultReceived:
 		return value.EffectID
 	default:

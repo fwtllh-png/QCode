@@ -862,6 +862,7 @@
             "provider.attempt",
             "tool.state",
             "tool.start",
+            "guardian.review",
             "tool.output",
             "tool.result",
             "tool.catalog.changed",
@@ -3855,6 +3856,9 @@
         "arguments_digest": {
           "type": "string"
         },
+        "binding_digest": {
+          "type": "string"
+        },
         "call_id": {
           "type": "string"
         },
@@ -3942,6 +3946,12 @@
             "summary"
           ],
           "additionalProperties": false
+        },
+        "guardian_reason_code": {
+          "type": "string"
+        },
+        "guardian_review_id": {
+          "type": "string"
         },
         "modifiable_arguments": {
           "type": "array",
@@ -4756,6 +4766,227 @@
       ],
       "additionalProperties": false
     },
+    "guardian.review": {
+      "type": "object",
+      "properties": {
+        "approval_request_id": {
+          "type": "string"
+        },
+        "assessment": {
+          "type": "object",
+          "properties": {
+            "authorization": {
+              "type": "string"
+            },
+            "recommendation": {
+              "type": "string"
+            },
+            "risk": {
+              "type": "string"
+            },
+            "source_ids": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "required": [
+            "authorization",
+            "recommendation",
+            "risk",
+            "source_ids"
+          ],
+          "additionalProperties": false
+        },
+        "call_id": {
+          "type": "string"
+        },
+        "candidate": {
+          "type": "object",
+          "properties": {
+            "arguments_digest": {
+              "type": "string"
+            },
+            "attempt_id": {
+              "type": "string"
+            },
+            "authorization_digest": {
+              "type": "string"
+            },
+            "binding_revision": {
+              "type": "integer"
+            },
+            "candidate_digest": {
+              "type": "string"
+            },
+            "catalog_generation": {
+              "type": "integer"
+            },
+            "catalog_id": {
+              "type": "string"
+            },
+            "execution_digest": {
+              "type": "string"
+            },
+            "permission": {
+              "type": "string"
+            },
+            "policy_revision": {
+              "type": "integer"
+            },
+            "subject_digest": {
+              "type": "string"
+            },
+            "workspace_generation": {
+              "type": "integer"
+            },
+            "workspace_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "arguments_digest",
+            "attempt_id",
+            "authorization_digest",
+            "binding_revision",
+            "candidate_digest",
+            "catalog_generation",
+            "catalog_id",
+            "execution_digest",
+            "permission",
+            "policy_revision",
+            "subject_digest",
+            "workspace_generation",
+            "workspace_id"
+          ],
+          "additionalProperties": false
+        },
+        "configuration_digest": {
+          "type": "string"
+        },
+        "decision": {
+          "type": "object",
+          "properties": {
+            "action": {
+              "type": "string"
+            },
+            "authority": {
+              "type": "string"
+            },
+            "code": {
+              "type": "string"
+            },
+            "layer": {
+              "type": "string"
+            },
+            "policy_revision": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "action",
+            "authority",
+            "layer",
+            "policy_revision"
+          ],
+          "additionalProperties": false
+        },
+        "eligibility": {
+          "type": "string"
+        },
+        "model": {
+          "type": "string"
+        },
+        "original_effect": {
+          "type": "string"
+        },
+        "original_risk": {
+          "type": "string"
+        },
+        "phase": {
+          "type": "string"
+        },
+        "prompt_version": {
+          "type": "string"
+        },
+        "provider": {
+          "type": "string"
+        },
+        "reason_code": {
+          "type": "string"
+        },
+        "review_id": {
+          "type": "string"
+        },
+        "route_digest": {
+          "type": "string"
+        },
+        "schema_version": {
+          "type": "string"
+        },
+        "tool": {
+          "type": "string"
+        },
+        "usage": {
+          "type": "object",
+          "properties": {
+            "attempted": {
+              "type": "boolean"
+            },
+            "cached_tokens": {
+              "type": "integer"
+            },
+            "cost_known": {
+              "type": "boolean"
+            },
+            "cost_usd": {
+              "type": "number"
+            },
+            "duration_ms": {
+              "type": "integer"
+            },
+            "input_tokens": {
+              "type": "integer"
+            },
+            "output_tokens": {
+              "type": "integer"
+            },
+            "reasoning_tokens": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "attempted",
+            "cached_tokens",
+            "cost_known",
+            "cost_usd",
+            "duration_ms",
+            "input_tokens",
+            "output_tokens",
+            "reasoning_tokens"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "call_id",
+        "configuration_digest",
+        "eligibility",
+        "model",
+        "original_effect",
+        "original_risk",
+        "phase",
+        "prompt_version",
+        "provider",
+        "reason_code",
+        "review_id",
+        "route_digest",
+        "schema_version",
+        "tool"
+      ],
+      "additionalProperties": false
+    },
     "host.command": {
       "type": "object",
       "properties": {
@@ -5034,6 +5265,12 @@
             "admission_spilled_items": {
               "type": "integer"
             },
+            "compaction_headroom_tokens": {
+              "type": "integer"
+            },
+            "compaction_target_tokens": {
+              "type": "integer"
+            },
             "context_digest": {
               "type": "string"
             },
@@ -5125,6 +5362,9 @@
               "type": "string"
             },
             "max_item_tokens": {
+              "type": "integer"
+            },
+            "measured_input_tokens": {
               "type": "integer"
             },
             "message_count": {
@@ -5266,6 +5506,9 @@
             "window_body_tokens": {
               "type": "integer"
             },
+            "window_context_tokens": {
+              "type": "integer"
+            },
             "window_full_active_tokens": {
               "type": "integer"
             },
@@ -5273,6 +5516,9 @@
               "type": "integer"
             },
             "window_id": {
+              "type": "string"
+            },
+            "window_limit_source": {
               "type": "string"
             },
             "window_number": {
@@ -6376,6 +6622,9 @@
             "disposition": {
               "type": "string"
             },
+            "guardian_review_id": {
+              "type": "string"
+            },
             "policy_denial": {
               "type": "object",
               "properties": {
@@ -7403,8 +7652,17 @@
             "body_tokens": {
               "type": "integer"
             },
+            "compaction_headroom_tokens": {
+              "type": "integer"
+            },
+            "compaction_target_tokens": {
+              "type": "integer"
+            },
             "compactions": {
               "type": "integer"
+            },
+            "context_digest": {
+              "type": "string"
             },
             "digest": {
               "type": "string"
@@ -7418,14 +7676,23 @@
             "full_active_tokens": {
               "type": "integer"
             },
+            "hard_input_tokens": {
+              "type": "integer"
+            },
             "history_token_ceiling": {
               "type": "integer"
             },
             "keep_recent_tool_results": {
               "type": "integer"
             },
+            "limit_source": {
+              "type": "string"
+            },
             "max_context_tokens": {
               "type": "integer"
+            },
+            "measurement_source": {
+              "type": "string"
             },
             "narrative_mode": {
               "type": "string"
@@ -7435,6 +7702,9 @@
             },
             "output_reserve": {
               "type": "integer"
+            },
+            "output_source": {
+              "type": "string"
             },
             "pending_tokens": {
               "type": "integer"
@@ -7678,6 +7948,12 @@
             "admission_spilled_items": {
               "type": "integer"
             },
+            "compaction_headroom_tokens": {
+              "type": "integer"
+            },
+            "compaction_target_tokens": {
+              "type": "integer"
+            },
             "context_digest": {
               "type": "string"
             },
@@ -7769,6 +8045,9 @@
               "type": "string"
             },
             "max_item_tokens": {
+              "type": "integer"
+            },
+            "measured_input_tokens": {
               "type": "integer"
             },
             "message_count": {
@@ -7910,6 +8189,9 @@
             "window_body_tokens": {
               "type": "integer"
             },
+            "window_context_tokens": {
+              "type": "integer"
+            },
             "window_full_active_tokens": {
               "type": "integer"
             },
@@ -7917,6 +8199,9 @@
               "type": "integer"
             },
             "window_id": {
+              "type": "string"
+            },
+            "window_limit_source": {
               "type": "string"
             },
             "window_number": {
@@ -8153,6 +8438,9 @@
         },
         "diagnostic_count": {
           "type": "integer"
+        },
+        "diagnostics_status": {
+          "type": "string"
         },
         "editor_context": {
           "type": "array",
@@ -8881,8 +9169,7 @@
         "measurement_recorded",
         "model_execution",
         "output_tokens",
-        "tool_execution",
-        "verification"
+        "tool_execution"
       ],
       "additionalProperties": false
     },
@@ -9535,6 +9822,12 @@
             "admission_spilled_items": {
               "type": "integer"
             },
+            "compaction_headroom_tokens": {
+              "type": "integer"
+            },
+            "compaction_target_tokens": {
+              "type": "integer"
+            },
             "context_digest": {
               "type": "string"
             },
@@ -9626,6 +9919,9 @@
               "type": "string"
             },
             "max_item_tokens": {
+              "type": "integer"
+            },
+            "measured_input_tokens": {
               "type": "integer"
             },
             "message_count": {
@@ -9767,6 +10063,9 @@
             "window_body_tokens": {
               "type": "integer"
             },
+            "window_context_tokens": {
+              "type": "integer"
+            },
             "window_full_active_tokens": {
               "type": "integer"
             },
@@ -9774,6 +10073,9 @@
               "type": "integer"
             },
             "window_id": {
+              "type": "string"
+            },
+            "window_limit_source": {
               "type": "string"
             },
             "window_number": {
@@ -9975,6 +10277,13 @@
       "item_owner": "operation",
       "durability": "retained",
       "correlation": "operation",
+      "terminal": false
+    },
+    "guardian.review": {
+      "class": "audit",
+      "item_owner": "tool",
+      "durability": "retained",
+      "correlation": "call",
       "terminal": false
     },
     "host.command": {

@@ -32,12 +32,15 @@ import (
 //     awaiting_input while tool-batch events still project, tool effects
 //     dispatch from sampling, and stream deltas may trail the phase move
 //     back from executing_tools.
+//   - A recovered approval keeps its kernel wait while the bound tool is
+//     re-entered to validate current policy and reconnect the wait. Those
+//     tool-batch events still use RunningTools, just as an input wait does.
 //   - Compacting also covers post-terminal context maintenance receipts
 //     projected after the kernel already reached a terminal phase but
 //     before the terminal event itself is emitted.
 var phaseStates = map[turnkernel.Phase][]State{
-	turnkernel.PhaseCreated:          {Preparing},
-	turnkernel.PhasePreparing:        {Preparing, Compacting},
+	turnkernel.PhaseCreated:   {Preparing},
+	turnkernel.PhasePreparing: {Preparing, Compacting},
 	turnkernel.PhaseSampling: {
 		Preparing, Compacting, CallingModel, Streaming, PreparingTools,
 		RunningTools, FeedingResults, Verifying,
@@ -45,7 +48,7 @@ var phaseStates = map[turnkernel.Phase][]State{
 	turnkernel.PhaseExecutingTools: {
 		Preparing, PreparingTools, RunningTools, FeedingResults, Streaming,
 	},
-	turnkernel.PhaseAwaitingApproval: {Preparing, AwaitingApproval},
+	turnkernel.PhaseAwaitingApproval: {Preparing, AwaitingApproval, RunningTools},
 	turnkernel.PhaseAwaitingInput:    {Preparing, AwaitingInput, RunningTools},
 	turnkernel.PhaseVerifying:        {Preparing, Verifying},
 	turnkernel.PhaseCommitting:       {Preparing, AwaitingRecovery},

@@ -15,7 +15,6 @@ import (
 	providerfixture "github.com/fwtllh-png/QCode/internal/adapter/provider/fixture"
 	provideropenai "github.com/fwtllh-png/QCode/internal/adapter/provider/openai"
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
-	"github.com/fwtllh-png/QCode/internal/observability/verify"
 	"github.com/fwtllh-png/QCode/internal/runtime/agent/turnkernel"
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
 )
@@ -30,7 +29,7 @@ func duplicateToolArgumentsStream() provider.Stream {
 }
 
 func TestDuplicateToolArgumentMembersRecoverWithoutReplayingCompletedEdits(t *testing.T) {
-	fixture := newVerifyGateFixture(t, VerifyOptions{}, &scriptedVerifier{receipts: []verify.Receipt{passedReceipt()}}, 0, 4)
+	fixture := newWorkspaceCompletionFixture(t, 0, 4)
 	fixture.engine.options.MaxRetries = 1
 	fixture.provider.streams[2] = duplicateToolArgumentsStream()
 	fixture.provider.streams = append(fixture.provider.streams,
@@ -53,7 +52,7 @@ func TestDuplicateToolArgumentMembersRecoverWithoutReplayingCompletedEdits(t *te
 func TestRejectedToolArgumentRepairBudgetRetainsDraft(t *testing.T) {
 	for _, limit := range []int{0, 2} {
 		t.Run(fmt.Sprint(limit), func(t *testing.T) {
-			fixture := newVerifyGateFixture(t, VerifyOptions{}, &scriptedVerifier{}, 0, 4)
+			fixture := newWorkspaceCompletionFixture(t, 0, 4)
 			fixture.engine.options.MaxRetries = limit
 			fixture.provider.streams = fixture.provider.streams[:2]
 			for range limit + 1 {

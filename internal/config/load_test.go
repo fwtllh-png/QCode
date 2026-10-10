@@ -404,69 +404,6 @@ rate_limit_wait = "90s"
 	}
 }
 
-func TestVerifyGateConfigResolvesAcrossSources(t *testing.T) {
-	defaults, err := Load(LoadOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := Verify{
-		Mode: "soft", Scope: "diagnostics", OnFailure: "fail",
-		MaxRepairSteps: 1, Timeout: 2 * time.Minute,
-	}
-	if defaults.Config.Execution.Verify != want {
-		t.Fatalf("default verify = %+v, want %+v", defaults.Config.Execution.Verify, want)
-	}
-
-	path := writeConfig(t, `
-[execution.verify]
-mode = "soft"
-scope = "repository"
-on_failure = "revert"
-max_repair_steps = 3
-timeout = "45s"
-command = "make verify"
-`)
-	fromFile, err := Load(LoadOptions{Path: path})
-	if err != nil {
-		t.Fatal(err)
-	}
-	verify := fromFile.Config.Execution.Verify
-	if verify.Mode != "soft" || verify.Scope != "repository" || verify.OnFailure != "revert" ||
-		verify.MaxRepairSteps != 3 || verify.Timeout != 45*time.Second ||
-		verify.Command != "make verify" {
-		t.Fatalf("verify from file = %+v", verify)
-	}
-	if fromFile.Provenance[fieldVerifyMode] != SourceFile ||
-		fromFile.Provenance[fieldVerifyTimeout] != SourceFile {
-		t.Fatalf("provenance = %+v", fromFile.Provenance)
-	}
-
-	// The command belongs to the repository scope, so narrowing the scope has to
-	// clear it in the same load.
-	mode, repair, command := "hard", 0, ""
-	timeout := 90 * time.Second
-	fromStartup, err := Load(LoadOptions{
-		Path:      path,
-		LookupEnv: envLookup(map[string]string{"QCODE_VERIFY_SCOPE": "diagnostics"}),
-		Overrides: Overrides{
-			VerifyMode: &mode, VerifyRepair: &repair, VerifyTimeout: &timeout,
-			VerifyCommand: &command,
-		},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	verify = fromStartup.Config.Execution.Verify
-	if verify.Mode != "hard" || verify.Scope != "diagnostics" || verify.MaxRepairSteps != 0 ||
-		verify.Timeout != 90*time.Second {
-		t.Fatalf("verify from env/startup = %+v", verify)
-	}
-	if fromStartup.Provenance[fieldVerifyScope] != SourceEnv ||
-		fromStartup.Provenance[fieldVerifyMode] != SourceStartup {
-		t.Fatalf("provenance = %+v", fromStartup.Provenance)
-	}
-}
-
 func TestIndexConfigResolvesAcrossSourcesAndBoundsItsCeilings(t *testing.T) {
 	defaults, err := Load(LoadOptions{})
 	if err != nil {
@@ -877,6 +814,19 @@ func TestDeletedEventRetentionConfiguration(t *testing.T) {
 		var field *FieldError
 		if !errors.As(err, &field) || field.Field != fieldDeletedEventRetention {
 			t.Fatalf("invalid retention %q: %v", value, err)
+		}
+	}
+}
+
+func TestRetiredVerificationConfigurationDoesNotBlockStartup(t *testing.T) {
+	path := writeConfig(t, "[execution.verify]\nmode = \"hard\"\ncommand = \"false\"\ntimeout = \"invalid\"\n")
+	snapshot, err := Load(LoadOptions{Path: path, LookupEnv: envLookup(map[string]string{"QCODE_VERIFY_MODE": "hard", "QCODE_VERIFY_TIMEOUT": "invalid"})})
+	if err != nil {
+		t.Fatalf("retired configuration blocked startup: %v", err)
+	}
+	for field := range snapshot.Provenance {
+		if strings.HasPrefix(field, "execution.verify.") {
+			t.Fatalf("retired option remains active: %s", field)
 		}
 	}
 }

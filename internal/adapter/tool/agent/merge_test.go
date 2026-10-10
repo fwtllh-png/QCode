@@ -15,7 +15,6 @@ import (
 	filetool "github.com/fwtllh-png/QCode/internal/adapter/tool/file"
 	toolguard "github.com/fwtllh-png/QCode/internal/adapter/tool/guard"
 	"github.com/fwtllh-png/QCode/internal/adapter/tool/handle"
-	"github.com/fwtllh-png/QCode/internal/observability/verify"
 	"github.com/fwtllh-png/QCode/internal/orchestration/subagent"
 	"github.com/fwtllh-png/QCode/internal/persist/contentstore"
 	"github.com/fwtllh-png/QCode/internal/persist/workspacejournal"
@@ -89,12 +88,11 @@ func runGitOutput(t *testing.T, dir string, args ...string) string {
 func openMergeHarness(t *testing.T) (
 	*tool.Registry, *toolguard.Guard, *subagent.Manager, string, string,
 ) {
-	return openMergeHarnessWithVerifier(t, nil)
+	return openMergeHarnessWithVerifier(t)
 }
 
 func openMergeHarnessWithVerifier(
 	t *testing.T,
-	verifier verify.Runner,
 ) (*tool.Registry, *toolguard.Guard, *subagent.Manager, string, string) {
 	t.Helper()
 	workspace, worktree, baseRev := newMergeFixture(t)
@@ -127,7 +125,7 @@ func openMergeHarnessWithVerifier(
 		Manager: manager, Handles: handles,
 		Root: t.TempDir(), Gate: gate, Files: files,
 
-		Sandbox: backend, Budget: subagent.Budget{MaxDepth: 3, MaxParallel: 4}, Verify: verifier, Workspace: workspace, SessionID: "merge-session",
+		Sandbox: backend, Budget: subagent.Budget{MaxDepth: 3, MaxParallel: 4}, Workspace: workspace, SessionID: "merge-session",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -150,17 +148,6 @@ func openMergeHarnessWithVerifier(
 
 type mergeTestBackend struct {
 	policy sandbox.Policy
-}
-
-type fixedVerifier struct {
-	status string
-}
-
-func (v fixedVerifier) Verify(
-	_ context.Context,
-	request verify.Request,
-) (verify.Receipt, error) {
-	return verify.Receipt{Scope: request.Scope, Status: v.status}, nil
 }
 
 func (mergeTestBackend) Capability() sandbox.Capability {
@@ -353,9 +340,9 @@ func TestIntegrateAgentUsesGuardExpansion(t *testing.T) {
 	}
 }
 
-func TestAgentMergeRecordsParentVerificationFailure(t *testing.T) {
+func TestAgentMergeDoesNotFabricateVerification(t *testing.T) {
 	_, guard, manager, _, _ := openMergeHarnessWithVerifier(
-		t, fixedVerifier{status: verify.StatusFailed},
+		t,
 	)
 	agentID := settleWritingChild(t, manager)
 	preview, err := guard.Execute(
@@ -376,8 +363,7 @@ func TestAgentMergeRecordsParentVerificationFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	receipt, ok := applied.Metadata["integration_receipt"].(subagent.IntegrationReceipt)
-	if !ok || receipt.Verification.Verify != protocol.ReceiptFailed ||
-		receipt.Verification.Tests != protocol.ReceiptFailed {
+	if !ok || receipt.Verification != (protocol.ReceiptVerification{}) {
 		t.Fatalf("integration receipt = %#v", applied.Metadata["integration_receipt"])
 	}
 }

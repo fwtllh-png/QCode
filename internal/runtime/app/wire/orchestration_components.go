@@ -53,7 +53,7 @@ func buildChildOrchestration(
 	}
 	output.childToolsets = newChildToolsets(
 		session.content, state.platform.web,
-		execution.Verify, execution.Journal, state.config.diagnosticCommands,
+		execution.Journal, state.config.diagnosticCommands,
 		state.config.diagnosticReadRoots, state.config.diagnosticReadFiles,
 		gitCommonDir, sandbox.BackendManagedProxyPort(state.platform.backend),
 		environmentStateRoot,
@@ -111,7 +111,7 @@ func buildChildOrchestration(
 			state.options.PersistentStore, execution.Workspace, state.config.runtimeSessionID,
 		),
 		Files:   output.parentFiles,
-		Sandbox: state.platform.backend, OnRelease: output.children.Release, Verify: state.security.verify, Workspace: execution.Workspace, SessionID: state.config.runtimeSessionID,
+		Sandbox: state.platform.backend, OnRelease: output.children.Release, Workspace: execution.Workspace, SessionID: state.config.runtimeSessionID,
 	}); err != nil {
 		return fmt.Errorf("agent tool: %w", err)
 	}

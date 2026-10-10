@@ -428,21 +428,6 @@ func applyEnvironment(lookup func(string) (string, bool), config *Config, proven
 		lookup, "QCODE_SUBAGENT_WORKSPACE",
 		fieldSubagentWorkspace, &execution.Subagent.Workspace, provenance,
 	)
-	verify := &execution.Verify
-	applyEnvString(lookup, "QCODE_VERIFY_MODE", fieldVerifyMode, &verify.Mode, provenance)
-	applyEnvString(lookup, "QCODE_VERIFY_SCOPE", fieldVerifyScope, &verify.Scope, provenance)
-	applyEnvString(lookup, "QCODE_VERIFY_ON_FAILURE", fieldVerifyOnFailure, &verify.OnFailure, provenance)
-	applyEnvString(lookup, "QCODE_VERIFY_COMMAND", fieldVerifyCommand, &verify.Command, provenance)
-	if err := applyEnvInt(
-		lookup, "QCODE_VERIFY_MAX_REPAIR_STEPS", fieldVerifyRepair, &verify.MaxRepairSteps, provenance,
-	); err != nil {
-		return err
-	}
-	if err := applyEnvDuration(
-		lookup, "QCODE_VERIFY_TIMEOUT", fieldVerifyTimeout, &verify.Timeout, provenance,
-	); err != nil {
-		return err
-	}
 	if err := applyEnvBool(lookup, "QCODE_VISION_ENABLED", fieldVisionEnabled, &config.Vision.Enabled, provenance); err != nil {
 		return err
 	}

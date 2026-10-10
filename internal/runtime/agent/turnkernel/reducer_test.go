@@ -289,8 +289,10 @@ func TestIncompleteDeclarationWithOpenPlanBecomesBlockedOutcome(t *testing.T) {
 	}
 }
 
-func TestMutationOutputCannotReleaseBeforeCompletionAndVerification(t *testing.T) {
+func TestMutationOutputCannotReleaseBeforeRequiredCompletion(t *testing.T) {
 	state := startSampling(t, protocol.TurnIntentAnswer)
+	state.Policy.CompletionRequired = true
+	state.Policy.StructuredTerminalRequired = true
 	state = apply(t, state, ToolCallsProposed{
 		Calls: []ToolCallState{{ID: "write-1", Name: "file_write"}},
 	}).State
@@ -333,10 +335,6 @@ func TestMutationCompletesThroughDeclarationVerificationAndJournal(t *testing.T)
 			CompletionCall:   "complete-1",
 			BatchSize:        1,
 		},
-	}).State
-	state = apply(t, state, VerificationStarted{}).State
-	state = apply(t, state, VerificationFinished{
-		Status: VerificationPassed, EvidenceCalls: []string{"verify-1"},
 	}).State
 	state = apply(t, state, ModelTextReceived{Text: "done"}).State
 	state = apply(t, state, ReleaseProvisionalOutput{}).State
@@ -408,7 +406,7 @@ func TestReducerOwnsCompletionAcceptanceAndRuntimeBindings(t *testing.T) {
 			state:     mutated,
 			candidate: base,
 			accepted:  true,
-			action:    "await_runtime_verification",
+			action:    "final_answer",
 		},
 		{
 			name:  "same batch mutation",
@@ -436,7 +434,7 @@ func TestReducerOwnsCompletionAcceptanceAndRuntimeBindings(t *testing.T) {
 				return value
 			}(),
 			accepted: true,
-			action:   "await_runtime_verification",
+			action:   "final_answer",
 		},
 		{
 			name:  "answer planning may complete with open plan steps",
@@ -618,9 +616,9 @@ func TestAcceptedCompletionOutranksProviderContinuation(t *testing.T) {
 	state.LastModelContinued = true
 
 	transition := apply(t, state, EvaluateTurnStep{ProgressKey: "accepted"})
-	if transition.State.NextAction != StepActionVerify {
+	if transition.State.NextAction != StepActionComplete {
 		t.Fatalf("next action = %q, want %q",
-			transition.State.NextAction, StepActionVerify)
+			transition.State.NextAction, StepActionComplete)
 	}
 	if transition.State.RepairBudgets[RepairCompletion].Steps != 0 {
 		t.Fatalf("accepted completion spent repair budget: %+v",
@@ -1415,10 +1413,7 @@ func verifiedMutation(t *testing.T) State {
 			BatchSize:        1,
 		},
 	}).State
-	state = apply(t, state, VerificationStarted{}).State
-	return apply(t, state, VerificationFinished{
-		Status: VerificationPassed, EvidenceCalls: []string{"verify-1"},
-	}).State
+	return state
 }
 
 func startSampling(t *testing.T, intent protocol.TurnIntent) State {
@@ -1444,16 +1439,6 @@ func apply(t *testing.T, state State, command Command) Transition {
 	case ApprovalResultReceived:
 		state = startPendingEffect(t, state, value.EffectID)
 	case InputResultReceived:
-		state = startPendingEffect(t, state, value.EffectID)
-	case VerificationFinished:
-		if value.EffectID == "" {
-			value.EffectID = pendingEffectID(
-				state,
-				EffectRunVerification,
-				"",
-			)
-			command = value
-		}
 		state = startPendingEffect(t, state, value.EffectID)
 	}
 	transition, err := (Reducer{}).Apply(state, command)

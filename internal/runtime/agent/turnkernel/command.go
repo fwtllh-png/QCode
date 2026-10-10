@@ -277,20 +277,6 @@ type WorkspaceReconciled struct {
 
 func (WorkspaceReconciled) commandName() string { return "workspace_reconciled" }
 
-type VerificationStarted struct{}
-
-func (VerificationStarted) commandName() string { return "verification_started" }
-
-type VerificationFinished struct {
-	EffectID      string
-	Status        VerificationStatus
-	EvidenceCalls []string
-	Message       string
-	RepairKey     string
-}
-
-func (VerificationFinished) commandName() string { return "verification_finished" }
-
 type CompletionCandidate struct {
 	NoChangeReason    string
 	NoChangeEvidence  []string
@@ -477,3 +463,8 @@ type Transition struct {
 	Events  []Event
 	Effects []Effect
 }
+
+// VerificationRetired records removal of a gate restored from an older runtime.
+type VerificationRetired struct{}
+
+func (VerificationRetired) commandName() string { return "verification_retired" }

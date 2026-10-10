@@ -41,7 +41,6 @@ func (securityModule) Build(
 		state.platform.backend,
 		state.config.diagnosticCommands,
 	)
-	commandRunner := &verify.ReceiptRunner{Root: execution.Workspace, Command: execution.Verify.Command}
 	constitutionBundle, err := securitypolicy.LoadConstitution(execution.Workspace, "")
 	if err != nil {
 		return fmt.Errorf("constitution: %w", err)
@@ -86,7 +85,7 @@ func (securityModule) Build(
 		runtime: securityRuntime, journal: journal,
 		constitution: constitutionBundle, permissions: permissionStore,
 		guardFactory: factory, diagnostics: diagnosticRunner,
-		verify: commandRunner, guard: guard,
+		guard: guard,
 	}
 	return nil
 }

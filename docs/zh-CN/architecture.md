@@ -704,7 +704,7 @@ Route、Policy、Limit、Prompt Prefix、Tool Catalog、Skill 与 MCP Health。E
 Scope Factory 从该 Spec 打开单 Turn `engine.Scope`；Scope 运行期间 Sampling
 不得重新读取这些可变来源。
 
-Scope 独占 Turn 级 Kernel、Trace、Diagnostics、Verification、Tool Spend、Diff 与
+Scope 独占 Turn 级 Kernel、Trace、Diagnostics、Tool Spend、Diff 与
 Control State。Cancel、Steer、Approval、Input 统一进入 `ControlPort`；有界 Mailbox
 拒绝溢出，Request Ledger 拒绝 Late、Duplicate 与 Kind Mismatch Resolution。
 
@@ -749,12 +749,12 @@ Control State。Cancel、Steer、Approval、Input 统一进入 `ControlPort`；�
     `turn_complete` 可以使用 `output_mode=preserve_provisional` 保留正文并追加
     简短收尾；正文为空时该模式被拒绝。Runtime 不根据正文措辞推断必需输入。
     Child Executor 没有 Input Host，不能等待用户输入，但同样可以靠无工具正文停轮。
-11. `EvaluateTurnStep` 由 Reducer 选择 Repair、Verification、Finalize、Block 或
+11. `EvaluateTurnStep` 由 Reducer 选择 Repair、Finalize、Block 或
     Complete。Repair 与连续 No-progress 只会请求类型化 Kernel Convergence，不会由
     Engine 或 Provider 局部循环直接决定终态错误。Provider 输出不完整时没有默认累计
     Sample 上限，只要 Context 与显式 Token/Cost Budget 允许且持续产生结构化进展就继续。
     非零 `MaxSteps` 是连续无进展的 Progress Lease。进展签名仍来自 Kernel Work Item
-    的路径集合（Goal、已读路径、已改路径、验证覆盖、Plan 完成步、接受的
+    的路径集合（Goal、已读路径、已改路径、Plan 完成步、接受的
     Completion、未关闭进程数量），用于续期长任务；停轮不看「同一路径是否
     又改过一次」。No-progress 计数看 Turn 内已见工作状态：观察键未出现才清零。
     换工具身份但内容版本与结果语义 digest 已见时继续累加长租约。同一观察且同一身份
@@ -794,12 +794,11 @@ Control State。Cancel、Steer、Approval、Input 统一进入 `ControlPort`；�
 14. 业务 Terminal Decision 在 Turn 后 Context 维护之前冻结。Compaction、
     Session Delta 应用和非控制事件投影失败只能成为 Secondary Issue 或可重放
     Outbox 工作，不能把已完成 Turn 改写为失败。
-15. Verification Executor 通过 `VerificationFinished` 返回证据；Reducer 选择 Passed、
-    Repair、Reported、Blocked、Failed 或 Reverted，并独占 Repair Budget。
+15. 普通测试和检查命令返回真实执行结果，不经过额外的验证门禁。
 16. Engine 提交 `TerminalRequested`；Reducer 选择 Completed、Failed 或 Canceled。
     随后 Journal Commit/Suspend/Rollback 作为 Durable Effect 执行，并返回
     `JournalResultReceived`。Suspend 会为结构化绑定的 Continue Turn 保留
-    Verification-blocked 或 Convergence-blocked 修改。
+    Convergence-blocked 修改。
 17. Scope 准备带 Revision 与 Digest 的 `SessionDelta`，包含 History、Usage、Cost、
     Working Set、Evidence、Failures 与 Compaction State。
 18. Runtime 为 Usage 与 Latency 冻结同一份带 Digest 的
@@ -943,7 +942,7 @@ Replacement。Surface 缩减对结构化与 Raw（非 Tool Result JSON）结果�
 每个 Turn 在首次 Provider Sample 前冻结一份 Provider 可见的 World Snapshot。Turn
 内后续 Tool Result、Plan 更新、Evidence 与重复调用提醒仍写入权威状态和 Journal，
 但不重复生成 World Patch；它们在下一 Turn、恢复或 Compaction 边界重新投影。该冻结
-不改变 Authority、Workspace Binding、审批、Sandbox 或 Verification 事实。
+不改变 Authority、Workspace Binding、审批、Sandbox 或命令执行事实。
 
 OpenAI-compatible Adapter 的回归测试在最终 JSON 序列化后逐消息进行字节比较；
 Trace 与 Receipt 保留逻辑公共前缀指标和最终 Transport Payload Digest，不记录消息
@@ -956,45 +955,23 @@ Trace 与 Receipt 保留逻辑公共前缀指标和最终 Transport Payload Dige
 终态区分 `completed`、`failed`、`canceled` 和 `timed_out`。
 一次等待窗口结束不代表进程超时，Web 实时视图与历史回放采用同一状态投影。
 
-`exec_command` 可声明验证用途与精确覆盖路径。Runtime 将真实命令、退出码、启动与
-结算调用、声明输入摘要、Workspace Revision 和 Mutation Revision 绑定为证据；
-长命令在 `write_stdin` 结束时结算。ReceiptRunner 只汇总证据和已有 diagnostics，
-不启动进程。Soft 模式如实报告未验证状态，Hard 策略才要求完成前满足覆盖约束。
-验证状态、缺失覆盖和调用 ID 来自同一次筛选与输入复核；相同命令针对不同路径的证据
-分别保留。重复失败不会因新的调用 ID 重置 Repair Budget，失败进程已经产生的文件
-变更也必须进入 Turn Diff。诊断只覆盖部分修改文件时不能声明整体通过。
+`exec_command` 只记录实际执行事实，不接受自报验证用途和覆盖路径。Runtime 不再
+运行通用 Verify Gate，不产生验证修复预算，也不将模型声明视作测试覆盖证明。
+用户要求或仓库约定的测试仍通过普通工具执行，命令失败仍作为工具结果交给模型处理。
 
-完成判断区分历史 Mutation Revision 与有效净变更。每个工具批次全部关闭后，Engine
-以 Journal 的前后存在性和内容摘要对齐净 Turn Diff，通过 `WorkspaceReconciled` 把当前
-Revision 的有效变更写入 Kernel。未纳入 Journal 的工具变更保守保留；Journal 身份不匹配
-不能当作“没有变更”。净快照留存到 Turn 结算后，供完成声明、验证和回执共用。
+完成判断使用 Journal 前后内容确定有效净变更，工具、审批、输入、Effect 与 Journal
+仍各自结算。从未产生修改的 `workspace_change` 可通过 `turn_complete` 的
+`no_change_reason` 和本轮成功读取的 `no_change_evidence` 说明无需修改。
+工作区提交、草稿保留和回滚结果独立记录于 `workspace_outcome`。
 
-新建后删除、修改后恢复原内容都可能没有剩余净变更，历史 Revision 仍保留用于审计和
-证据失效。启用门禁时，这种情况以及只读 Turn 记录 `not_required`，Action 同为
-`not_required`，Workspace 为 `unchanged`，不调用验证器、不生成测试通过证据；测试
-回执仍是 `not_evaluated`。`passed`、`failed`、`unavailable` 表达实际验证事实，
-`reported`、`repair`、`blocked`、`reverted` 等 Action 表达策略处理，不互相替代。
+旧状态中参与摘要计算的 verification 字段与历史事件 DTO 保留供回放读取。
+恢复时先校验原始事实链，再通过 `verification_retired` 持久化转移清理旧门禁和覆盖账本；
+待执行的旧验证 Effect 标记为未执行而结束，不伪造通过结果。新 Turn 不再产生这些证据。
+未声明验证的变更按普通变更保留策略整理，不再自动成为永久必留的“未验证”义务。
 
-步骤选择、最终就绪检查、输出释放和终态校验共享完成策略。阶段各自保留工具、审批、
-输入、Effect 和 Journal 的结算约束。新的文件修改清除净快照、完成声明和旧验证结论。
-从未产生修改的 `workspace_change` 可以通过 `turn_complete` 的 `no_change_reason`
-及 `no_change_evidence` 说明无需修改；后者必须引用本轮成功的文件读取 Call ID。
-这是声明的来源检查，不是对需求已满足的语义证明。普通回答仍不强制调用完成工具，
-Plan 未完成项也不自动变成门禁。
-
-默认继续使用 `soft`。`hard` 的生产验证器要求显式 `execution.verify.command`，
-按现有命令、目录、Revision 和输入摘要约束收集证据。退出码为零与模型声明的覆盖路径
-只证明这些检查执行成功，不证明需求全部满足。缺少命令、检查失败和验证器不可用
-都会保留各自事实；hard 修复预算耗尽后按策略受阻并保留可恢复草稿，或按配置回滚。
-无需修改或修改全部还原的修改类 Turn，终态 Outcome 和回执为 `unchanged`，不再按 Intent 强写为 `changed`。
-Web 分别展示本轮结束、验证结论和任务待办；`not_required` 不显示为测试通过，
-受阻的验证通过 Fault 恢复契约提供继续入口。
-
-`internal/observability/verify` 统一拥有编辑后诊断与验证证据归约。
-`diagnostics.go` 中的 `DiagnosticRunner` 在 Guard 完成文件编辑后采集诊断，
-`DiagnosticCommandRunner` 通过现有沙箱运行配置的检查命令并生成 `DiagnosticReceipt`；
-`FromDiagnostics` 将诊断回执归约为验证结论，`ReceiptRunner` 复用这些回执或命令证据。
-诊断执行器仍由 `runtime/app/wire` 为主 Agent 与子 Agent 按各自工作区和沙箱构造。
+`internal/observability/verify/diagnostics.go` 继续提供编辑后诊断，Guard 在文件编辑后
+按已配置的检查命令收集 `DiagnosticReceipt`，主 Agent 与子 Agent 使用各自工作区和沙箱。
+诊断输出供模型处理，不再归约为强制完成门禁。
 
 Tool Result 在首次准入时定稿，后续 Sample 不改写已发送内容，以便 Provider
 前缀缓存保持 append-only。超限结果第一次就带 Handle，全文留在 ResultStore，
@@ -1249,7 +1226,12 @@ Context Rebase、基线快照、终态和续跑批次在成功、失败及部分
 通过 SQLite 事务串行，避免检查引用后被并发保留的竞态。
 采样路径按公开合同 `context.view.recent_tail_turns` 和剩余硬输入（或显式
 `context.view.history_token_ceiling`）投影原文。轮数默认 0，仅按
-容量选择，正值是包含当前轮的显式上限。超窗时按完整成本逐步缩减 Visible Tail，
+容量选择，正值是包含当前轮的显式上限。超窗时按完整成本缩减 Visible Tail，
+一旦必须改动历史前缀，按当前/最近历史 Turn 工作量、已观测 Pending 增长和最近
+正向预测误差导出软余量，连续移除完整历史组后发一份聚合回执，减少小幅整理
+反复失去缓存。首次未校准请求不把全部输入当作增长；余量受有效输入容量约束，
+不引入固定百分比，无法达到软目标不会触发当前 Turn 降级。接受的边界按 Turn
+持久化在 Window Ledger，跨轮和恢复后沿用，避免重新填回释放的空间。
 仍超硬输入时，对当前 Turn 做钉死用户请求的 working-set 替换：
 已闭合因果组收成一条 Truth Capsule，当前 Turn 的 world patch 收成最新基线；
 若仍超限，已闭合及最新一批工具结果、调用参数、已消费 reasoning 和过长的闭合轮次
@@ -1263,6 +1245,12 @@ ResultStore / Journal，可通过 `result_get` 回读），并推进 Token Windo
 完整调用，不能把截断参数拼接执行。必要前缀加最小可恢复投影仍装不下时，才以
 `resource_exhausted` 失败。
 跨 Turn 的完整 History Replacement 仍留给显式 `thread.compact` 与 Turn 终态维护。
+终态 `context_budget` 的请求量来自最后一次 `InputContext` / `SampleContext`，
+使用同一 Context Digest、冻结的总窗口、输出预留和硬输入容量；后续持久化维护
+不覆盖这些数值。`measurement_source=provider_usage` 表示本次 Provider 实报输入，
+`request_estimate` 表示该请求的投影估算；没有请求时不声明用量。
+`measured_input_tokens` 独立保留实报值，分项仍是估算。观测后先重基准估算，再
+投影该次实报输入，避免校准倍率变化引入虚假增减。
 压缩 digest 二次折叠时并入上一份 Removed History；超出 `max_digest_entries`
 的条数写入 omitted 计数，不静默丢掉。
 默认 `context.view.digest=ledger+narrative`，与 `narrative_mode=post_turn` 同时成立才自动生成摘要。已校验 Digest 在每次实际请求的动态分区选择，`narrative_mode=off` 可复用有效缓存，`digest=ledger` 不使用语义表示。来源失效、过期、重复表示或完整请求放不下时只省略可选摘要。`context` 负责完整来源范围、分块请求预算与覆盖校验；`engine` 负责 summary Provider 调用、总超时、共享调度和用量。
@@ -1356,7 +1344,7 @@ Kernel Usage 绑定为计量快照，并校验回执 Outcome、实际变更与�
 - **Usage**：按 Provider、Model、Session、Thread 和 Turn 聚合 Token 与 Cost；
 - **Receipt**：记录最终变更、验证、预算、缓存和 Measurement Digest；
 - **Telemetry**：本地结构化日志与低基数指标；
-- **Diagnostics/Verification**：提供环境诊断和完成门禁证据。
+- **Diagnostics**：提供编辑后诊断，实际命令执行结果供模型处理。
 
 QCode 不维护第二份 Durable Observation Journal、CAS Payload、Retention Policy
 或 OTLP Exporter。W3C Trace Context 仍跨 Provider HTTP、MCP HTTP/stdio、Process 与
@@ -1469,9 +1457,8 @@ Keep、Resume 或第二次回滚会被拒绝，恢复完成后才从草稿表移
 尚未还原时接管或丢失草稿。
 同一 Workspace Identity 下的 `control`、`sandbox-home` 和 `artifacts` 是互不重叠的
 状态域；只有 `sandbox-home` 可以作为 Sandbox 写目录。
-Execution Receipt 会保留每次 Verification Attempt、命令推导原因、失败分类、Repair
-次数、最终 Gate Action 和最终 Workspace Outcome。Rollback 会区分已恢复路径、冲突和
-无法回滚的非文件副作用；原有 Pass/Fail 聚合字段只作为兼容摘要保留。
+Execution Receipt 保留实际命令结果、失败分类和最终 Workspace Outcome。Rollback
+区分已恢复路径、冲突和无法回滚的非文件副作用；旧验证字段仅用于读取历史记录。
 
 ### 6. OS Sandbox
 

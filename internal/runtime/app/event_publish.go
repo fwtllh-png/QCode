@@ -252,6 +252,8 @@ func (r *EventService) eventOwnedItemID(
 	fallback protocol.ItemID,
 ) protocol.ItemID {
 	switch value := data.(type) {
+	case *protocol.GuardianReviewData:
+		return r.eventOwnedItemID(turnID, &protocol.ToolResultData{CallID: value.CallID}, fallback)
 	case *protocol.ToolResultData:
 		if value.CallID == "" {
 			return fallback

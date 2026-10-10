@@ -115,8 +115,9 @@ func ApplyCapacity(context *protocol.SampleContextData, capacity Capacity) {
 	if context == nil {
 		return
 	}
-	context.WindowHardInputTokens = capacity.HardInputTokens
+	context.WindowHardInputTokens = capacity.ContextTokens - min(capacity.ContextTokens, context.WindowOutputReserve)
 	context.WindowOutputSource = capacity.OutputSource
+	context.WindowLimitSource = string(capacity.LimitSource)
 }
 
 func CheckBudget(request BudgetRequest) (uint64, error) {

@@ -12,7 +12,7 @@ const (
 	PurposeVision Purpose = "vision"
 	// PurposeSummary is semantic context maintenance.
 	PurposeSummary Purpose = "summary"
-	// PurposeJudge is registered but not wired.
+	// PurposeJudge is a tool-free semantic Guardian review.
 	PurposeJudge Purpose = "judge"
 )
 
@@ -27,7 +27,7 @@ func Purposes() []Purpose {
 // Wired reports whether the runtime currently samples for this purpose.
 func (p Purpose) Wired() bool {
 	switch p {
-	case PurposeAct, PurposeVision, PurposeSummary:
+	case PurposeAct, PurposeVision, PurposeSummary, PurposeJudge:
 		return true
 	default:
 		return false

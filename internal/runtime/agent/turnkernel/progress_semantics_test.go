@@ -91,10 +91,6 @@ func TestStructuredResultChangesRenewProgress(t *testing.T) {
 			{Diagnostics: []verify.DiagnosticReceipt{{Path: "a.go", Diagnostics: []verify.Diagnostic{{Path: "a.go", Code: "E1"}}}}},
 			{Diagnostics: []verify.DiagnosticReceipt{{Path: "a.go", Diagnostics: []verify.Diagnostic{{Path: "a.go", Code: "E2"}}}}},
 		},
-		"verification passed": {
-			{Verification: &verify.Evidence{Kind: "test", Status: verify.StatusFailed, InputDigest: "input", ExitCode: 1}},
-			{Verification: &verify.Evidence{Kind: "test", Status: verify.StatusPassed, InputDigest: "input"}},
-		},
 		"process completed": {
 			{ProcessSession: &tool.ProcessSessionFact{Running: true}},
 			{ProcessSession: &tool.ProcessSessionFact{ExitCode: 0}},

@@ -10,7 +10,6 @@ import (
 	"github.com/fwtllh-png/QCode/internal/adapter/provider"
 	providerassembly "github.com/fwtllh-png/QCode/internal/adapter/provider/assembly"
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
-	"github.com/fwtllh-png/QCode/internal/observability/verify"
 	agentcontext "github.com/fwtllh-png/QCode/internal/runtime/agent/context"
 	promptcontext "github.com/fwtllh-png/QCode/internal/runtime/agent/prompt"
 	"github.com/fwtllh-png/QCode/internal/runtime/agent/turnkernel"
@@ -40,7 +39,6 @@ type turnRun struct {
 	transaction             []provider.Message
 	executed                map[string]tool.Result
 	cache                   *toolResultCache
-	gate                    *verifyGate
 	sampled                 provider.Usage
 	toolSpent               toolSpend
 	progress                turnkernel.ProgressObservation
@@ -74,7 +72,6 @@ func newTurnRun(
 		transaction:  transaction,
 		executed:     make(map[string]tool.Result),
 		cache:        &toolResultCache{},
-		gate:         &verifyGate{engine: scope.engine, kernel: kernel},
 		sampleReason: promptcontext.SampleNormal,
 	}
 	run.toolSpent.known = true
@@ -181,6 +178,7 @@ func (r *turnRun) openConversation(
 			}
 			r.e.setPlan(plan)
 		}
+		r.e.restoreContinuationPlanning(continuation)
 		// A restored Turn's accepted conversation already contains its
 		// opening user request; re-appending the submitted prompt would
 		// duplicate the goal the continuation carries.
@@ -604,6 +602,10 @@ func (r *turnRun) persistContinuation(sampleID string, step int) {
 	}
 	plan := e.currentPlan()
 	record.Plan = &plan
+	if e.guard != nil {
+		planning := e.guard.Policy().PlanningSnapshot()
+		record.PlanningPolicy, record.PlanSubmitted = planning.Planning, planning.PlanSubmitted
+	}
 	stageCtx, finishStage := agentcontext.BeginContentStage(r.ctx, blobs)
 	defer func() {
 		if err := finishStage(); err != nil {
@@ -633,13 +635,12 @@ func (r *turnRun) invalidateCompletion(reason string) error {
 }
 
 // advanceTurn asks the kernel what the accepted completion leads to: a
-// repair sample, verification, convergence finalization, or a terminal step.
+// repair sample, convergence finalization, or a terminal step.
 func (r *turnRun) advanceTurn() (bool, error) {
 	e, kernel := r.e, r.kernel
 	if err := e.reconcileWorkspace(kernel); err != nil {
 		return false, err
 	}
-	var outcome verifyOutcome
 	action, actionErr := kernel.EvaluateTurnStep(kernel.RepairProgressKey())
 	if actionErr != nil {
 		var exhausted *turnkernel.RepairBudgetExhaustedError
@@ -692,26 +693,6 @@ func (r *turnRun) advanceTurn() (bool, error) {
 		r.transaction = append(r.transaction, promptcontext.CompletionDeclarationFeedback(e.turn))
 		r.sampleReason = promptcontext.SampleDeclarationRepair
 		return false, nil
-	case turnkernel.StepActionVerify:
-		var err error
-		outcome, err = r.gate.evaluate(r.ctx, r.send)
-		if err != nil {
-			return false, err
-		}
-		r.result.Verification = outcome.receipt
-		switch outcome.action {
-		case verifyActionRepair:
-			if err := kernel.DiscardOutput("verification_repair"); err != nil {
-				return false, err
-			}
-			r.transaction = append(r.transaction, verifyFeedback(outcome.receipt, e.turn))
-			r.sampleReason = promptcontext.SampleVerificationRepair
-			return false, nil
-		case verifyActionBlocked:
-			return false, verificationFailure(outcome.receipt, true)
-		case verifyActionFailed:
-			return false, verificationFailure(outcome.receipt, false)
-		}
 	case turnkernel.StepActionFinalize:
 		if err := kernel.BeginConvergenceFinalization(); err != nil {
 			return false, err
@@ -742,7 +723,7 @@ func (r *turnRun) advanceTurn() (bool, error) {
 			nil,
 		)
 	}
-	return r.completeTurn(outcome)
+	return r.completeTurn()
 }
 
 func (r *turnRun) cost() (float64, bool) {
@@ -756,29 +737,17 @@ func (r *turnRun) cost() (float64, bool) {
 // completeTurn is the completion terminal step. It first closes steering: a
 // steer that is still pending continues the turn instead of being dropped by
 // a completion that never showed it to the model.
-func (r *turnRun) completeTurn(outcome verifyOutcome) (bool, error) {
+func (r *turnRun) completeTurn() (bool, error) {
 	e, kernel := r.e, r.kernel
 	if r.scope.closeSteering(true) {
 		e.appendSteering(&r.transaction)
 		return false, r.invalidateCompletion("turn_steered")
-	}
-	if outcome.receipt != nil {
-		r.result.Verification = outcome.receipt
 	}
 	if err := kernel.ValidateFinalReadiness(); err != nil {
 		return false, err
 	}
 	cost, costKnown := r.cost()
 	r.result.CostUSD = cost
-	journalRevert := outcome.action == verifyActionReverted
-	if e.journal == nil && journalRevert {
-		return false, errors.New(
-			"verification requested rollback without a workspace journal",
-		)
-	}
-	if outcome.receipt != nil && outcome.receipt.Workspace == nil {
-		outcome.receipt.Workspace = &VerificationWorkspace{Status: "changed"}
-	}
 	output, err := kernel.ReleaseOutput()
 	if err != nil {
 		return false, err
@@ -799,12 +768,12 @@ func (r *turnRun) completeTurn(outcome verifyOutcome) (bool, error) {
 		return false, err
 	}
 	r.result.State = Completed
-	if !journalRevert && e.journal != nil {
+	if e.journal != nil {
 		e.turnIDs[r.turnID] = e.turn
 	}
 	if err := r.send(Completed, Event{
 		Text: finalText, Usage: &r.result.Usage, CostUSD: cost,
-		CostKnown: costKnown, Verification: outcome.receipt,
+		CostKnown: costKnown, WorkspaceOutcome: r.result.WorkspaceOutcome,
 		Completion:      kernel.CompletionDeclaration(),
 		SecondaryIssues: append([]TerminalIssue(nil), r.terminal.secondary...),
 	}); err != nil {
@@ -852,15 +821,15 @@ func (r *turnRun) blockTurn() error {
 	convergence = kernel.Convergence()
 	r.result.State = Failed
 	if err := r.send(Failed, Event{
-		ErrorCode:       protocol.CodeConflict,
-		Error:           message,
-		Convergence:     turnkernel.ProtocolConvergence(convergence),
-		Usage:           &r.result.Usage,
-		CostUSD:         cost,
-		CostKnown:       costKnown,
-		Verification:    r.result.Verification,
-		Completion:      kernel.BlockedCompletionDeclaration(),
-		SecondaryIssues: append([]TerminalIssue(nil), r.terminal.secondary...),
+		ErrorCode:        protocol.CodeConflict,
+		Error:            message,
+		Convergence:      turnkernel.ProtocolConvergence(convergence),
+		Usage:            &r.result.Usage,
+		CostUSD:          cost,
+		CostKnown:        costKnown,
+		WorkspaceOutcome: r.result.WorkspaceOutcome,
+		Completion:       kernel.BlockedCompletionDeclaration(),
+		SecondaryIssues:  append([]TerminalIssue(nil), r.terminal.secondary...),
 	}); err != nil {
 		return errors.Join(blocked, err)
 	}
@@ -935,18 +904,19 @@ func (r *turnRun) finalizeKernel(
 		}
 		journal.Suspend = func() error {
 			err := e.journal.Suspend(r.turnID)
-			if r.result.Verification != nil {
-				r.result.Verification.Workspace = &VerificationWorkspace{
-					Status: "draft",
-					Note:   "workspace changes are retained as a resumable, unverified draft",
-				}
+			if err == nil {
+				r.result.WorkspaceOutcome = &protocol.ReceiptWorkspaceOutcome{Status: "draft", Note: "workspace changes are retained for recovery"}
 			}
 			return err
 		}
 		journal.Rollback = func() error {
 			receipt, err := e.journal.Rollback(context.Background(), r.turnID)
-			if r.result.Verification != nil {
-				r.result.Verification.Workspace = verify.WorkspaceFromJournal(receipt)
+			r.result.WorkspaceOutcome = &protocol.ReceiptWorkspaceOutcome{Status: "restored", Restored: append([]string(nil), receipt.Restored...), NonFileSideEffectsReverted: receipt.NonFileSideEffectsReverted, Note: receipt.NonFileSideEffectsNote}
+			for _, conflict := range receipt.Conflicts {
+				r.result.WorkspaceOutcome.Conflicts = append(r.result.WorkspaceOutcome.Conflicts, conflict.Path)
+			}
+			if len(receipt.Conflicts) != 0 {
+				r.result.WorkspaceOutcome.Status = "conflicted"
 			}
 			e.recordRollbackConflicts(receipt)
 			return err

@@ -113,10 +113,9 @@ func planningDecision(
 		// Access preauthorizes it; a separate plan gate would duplicate it.
 		return nil
 	}
-	// Full Access already authorizes ordinary command execution and declared
-	// verification. Repository/user rules are evaluated independently.
+	// Full Access already authorizes ordinary command execution. Repository/user rules are evaluated independently.
 	if r.Permission == PermissionBypass &&
-		(assessment.Facets().FullAccess || assessment.Facets().DeclaredVerification) {
+		assessment.Facets().FullAccess {
 		return nil
 	}
 	required := r.PlanningPolicy == PlanningRequired ||
@@ -126,15 +125,6 @@ func planningDecision(
 		return nil
 	}
 	if !r.PlanSubmitted {
-		if assessment.Facets().DeclaredVerification {
-			// Verification is the checking step of a plan: downgrade the
-			// gate from a hard Hold to one approval instead of forcing a
-			// plan re-submission before every build or test run.
-			return &Decision{
-				Action: ActionAsk, Code: "plan_verification",
-				Reason: "approve this declared verification run, or submit_plan first",
-			}
-		}
 		return &Decision{
 			Action: ActionHold, Code: "plan_required",
 			Reason: "submit a structured Plan before consequential actions",

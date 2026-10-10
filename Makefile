@@ -446,3 +446,36 @@ REPO_TASK_REPORT ?= $(CURDIR)/.tmp/repository-task-report.json
 repository-task-eval:
 	QCODE_REPO_TASK_REPORT='$(REPO_TASK_REPORT)' $(GO) test -count=1 -v \
 		./internal/adapter/tool/search -run '^TestRepositoryTaskEvaluation$$'
+
+.PHONY: guardian-eval guardian-live-eval guardian-observation-eval guardian-runtime-eval guardian-web-eval guardian-safety-check
+GUARDIAN_EVAL_REPORT ?= $(CURDIR)/.tmp/guardian-eval.json
+GUARDIAN_LIVE_REPORT ?= $(CURDIR)/.tmp/guardian-live-eval.json
+GUARDIAN_OBSERVATION_REPORT ?= $(CURDIR)/.tmp/guardian-observations.json
+GUARDIAN_RUNTIME_REPORT ?= $(CURDIR)/.tmp/guardian-runtime-eval.json
+guardian-eval:
+	QCODE_GUARDIAN_EVAL_REPORT='$(GUARDIAN_EVAL_REPORT)' $(GO) test -count=1 -v \
+		./internal/runtime/agent/engine -run '^TestGuardianEvaluation$$'
+
+# Requires an explicit route descriptor and timeout; never reads a live runbook.
+guardian-live-eval:
+	QCODE_GUARDIAN_LIVE=1 QCODE_GUARDIAN_EVAL_REPORT='$(GUARDIAN_LIVE_REPORT)' $(GO) test -count=1 -v \
+		./internal/runtime/agent/engine -run '^TestGuardianLiveEvaluation$$'
+
+guardian-observation-eval:
+	@test -n "$$QCODE_GUARDIAN_OBSERVATION_EVENTS" || { echo 'QCODE_GUARDIAN_OBSERVATION_EVENTS is required'; exit 1; }
+	QCODE_GUARDIAN_OBSERVATION_REPORT='$(GUARDIAN_OBSERVATION_REPORT)' $(GO) test -count=1 -v \
+		./internal/runtime/agent/engine -run '^TestGuardianHistoricalObservation$$'
+
+guardian-runtime-eval:
+	QCODE_GUARDIAN_RUNTIME_REPORT='$(GUARDIAN_RUNTIME_REPORT)' $(GO) test -count=1 -v \
+		./internal/adapter/tool/shell -run '^TestGuardianRuntimeDurableAuditAndApprovalE2E$$'
+
+guardian-web-eval: build
+	QCODE_E2E_BINARY='$(abspath $(BINARY))' $(NPM) --prefix web run test:e2e -- guardian.spec.ts guardian-recovery.spec.ts
+
+guardian-safety-check:
+	$(GO) test -count=1 ./internal/security/guardian ./internal/security/policy \
+		./internal/security/authority ./internal/security/filebroker ./internal/config ./internal/persist/thread
+	$(GO) test -count=1 ./internal/adapter/tool/guard ./internal/adapter/tool/shell \
+		./internal/runtime/agent/context ./internal/runtime/agent/engine ./internal/runtime/app/wire \
+		./internal/runtime/protocol ./internal/persist/state -run 'Guardian|RestoresApproval|ProcessAdmission|Continuation|RejectedRecovered|ApprovalExpiry|StateAllowedForPhase|RecoverableToolFailure'

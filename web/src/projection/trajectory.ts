@@ -206,13 +206,6 @@ export function projectTrajectory(
         break;
       }
       case "turn.verification":
-        put(record(
-          event,
-          "verification",
-          "VERIFY",
-          summary(data.verdict ?? data.status ?? "Verification"),
-          {output: data, failed: data.verdict === "failed" || data.status === "failed"}
-        ));
         break;
       case "turn.receipt":
         put(record(event, "receipt", "RECEIPT", receiptSummary(data), {
@@ -350,6 +343,11 @@ export function projectTrajectory(
         put(record(event, "verification", "VERIFY", eventSummary(event), {
           output: data,
           failed: data.status === "failed"
+        }));
+        break;
+      case "guardian.review":
+        put(record(event, "verification", "REVIEW", `Automatic review · ${text(data.phase)}`, {
+          output: data, failed: data.phase === "failed" || data.phase === "invalidated"
         }));
         break;
       case "tool.catalog.changed":

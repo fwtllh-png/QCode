@@ -11,7 +11,6 @@ import (
 
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
 	toolguard "github.com/fwtllh-png/QCode/internal/adapter/tool/guard"
-	"github.com/fwtllh-png/QCode/internal/observability/verify"
 	"github.com/fwtllh-png/QCode/internal/platform/process"
 	"github.com/fwtllh-png/QCode/internal/security/policy"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
@@ -80,8 +79,8 @@ func TestHostExecutionSessionLifecycleAndEvidence(t *testing.T) {
 	if err != nil || result.IsError || !strings.Contains(result.Content, "received:ok") || result.Metadata["execution_target"] != "host" {
 		t.Fatalf("host interaction: %+v %v", result, err)
 	}
-	result, err = run("owner", "exec_command", map[string]any{"command": "printf changed > output", "execution_target": "host", "verification": "check", "covered_paths": []string{"output"}})
-	if err != nil || result.IsError || result.Metadata[verify.EvidenceMetadataKey].(verify.Evidence).Status != verify.StatusInvalidated {
+	result, err = run("owner", "exec_command", map[string]any{"command": "printf changed > output", "execution_target": "host"})
+	if err != nil || result.IsError || result.Metadata["verification_evidence"] != nil {
 		t.Fatalf("host verified its own mutation: %+v %v", result, err)
 	}
 	runtime.Repository = []policy.Rule{{Tool: "*", Resource: "/protected/location", Action: policy.ActionDeny}}

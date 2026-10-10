@@ -1,6 +1,8 @@
 package guardian
 
 import (
+	"encoding/json"
+	securitymodel "github.com/fwtllh-png/QCode/internal/security/model"
 	"testing"
 )
 
@@ -15,7 +17,9 @@ func validAssessment() Assessment {
 }
 
 func validContext() PolicyContext {
+	c := validCandidate()
 	return PolicyContext{
+		Candidate: &c, GuardianEnabled: true,
 		CurrentAction:  "ask",
 		PermissionAuto: true,
 	}
@@ -28,7 +32,7 @@ func validEvidence() EvidenceInvalidation {
 func TestDecisionTableRow1Cancelled(t *testing.T) {
 	inv := EvidenceInvalidation{Cancelled: true}
 	a := validAssessment()
-	if got := Evaluate(&a, inv, validContext()); got != OutcomeDiscard {
+	if got := Evaluate(testEvidence(a), inv, validContext()); got != OutcomeDiscard {
 		t.Fatalf("cancelled = %s, want discard", got)
 	}
 }
@@ -41,7 +45,7 @@ func TestDecisionTableRow2VersionChanged(t *testing.T) {
 		"surface":       {SurfaceTightened: true},
 	} {
 		a := validAssessment()
-		if got := Evaluate(&a, inv, validContext()); got != OutcomeDiscard {
+		if got := Evaluate(testEvidence(a), inv, validContext()); got != OutcomeDiscard {
 			t.Fatalf("%s changed = %s, want discard", name, got)
 		}
 	}
@@ -51,11 +55,11 @@ func TestDecisionTableRow3PreserveDeny(t *testing.T) {
 	a := validAssessment()
 	ctx := validContext()
 	ctx.CurrentAction = "deny"
-	if got := Evaluate(&a, validEvidence(), ctx); got != OutcomePreserveDeny {
+	if got := Evaluate(testEvidence(a), validEvidence(), ctx); got != OutcomePreserveDeny {
 		t.Fatalf("deny = %s, want preserve_deny", got)
 	}
 	ctx.CurrentAction = "hold"
-	if got := Evaluate(&a, validEvidence(), ctx); got != OutcomePreserveDeny {
+	if got := Evaluate(testEvidence(a), validEvidence(), ctx); got != OutcomePreserveDeny {
 		t.Fatalf("hold = %s, want preserve_deny", got)
 	}
 }
@@ -64,20 +68,22 @@ func TestDecisionTableRow4AlreadyAllowed(t *testing.T) {
 	a := validAssessment()
 	ctx := validContext()
 	ctx.CurrentAction = "allow"
-	if got := Evaluate(&a, validEvidence(), ctx); got != OutcomeDiscard {
+	if got := Evaluate(testEvidence(a), validEvidence(), ctx); got != OutcomeDiscard {
 		t.Fatalf("allow = %s, want discard", got)
 	}
 }
 
 func TestDecisionTableRow5ExplicitConstraints(t *testing.T) {
-	for name, ctx := range map[string]PolicyContext{
-		"explicit_ask":  {CurrentAction: "ask", PermissionAuto: true, HasExplicitAsk: true},
-		"fresh":         {CurrentAction: "ask", PermissionAuto: true, HasFreshRequirement: true},
-		"not_auto":      {CurrentAction: "ask", PermissionAuto: false},
-		"auto_disabled": {CurrentAction: "ask", PermissionAuto: true, DisableAutoReview: true},
+	for name, mutate := range map[string]func(*PolicyContext){
+		"explicit_ask":      func(c *PolicyContext) { c.HasExplicitAsk = true },
+		"fresh":             func(c *PolicyContext) { c.HasFreshRequirement = true },
+		"not_auto":          func(c *PolicyContext) { c.PermissionAuto = false },
+		"auto_disabled":     func(c *PolicyContext) { c.DisableAutoReview = true },
+		"guardian_disabled": func(c *PolicyContext) { c.GuardianEnabled = false },
 	} {
-		a := validAssessment()
-		if got := Evaluate(&a, validEvidence(), ctx); got != OutcomeKeepAsk {
+		ctx := validContext()
+		mutate(&ctx)
+		if got := Evaluate(testEvidence(validAssessment()), validEvidence(), ctx); got != OutcomeKeepAsk {
 			t.Fatalf("%s = %s, want keep_ask", name, got)
 		}
 	}
@@ -98,7 +104,11 @@ func TestDecisionTableRow7HighRiskOrUnknownAuthOrPrompt(t *testing.T) {
 		"prompt_rec":     {RiskLevel: RiskLow, Authorization: AuthSupported, AuthorizationSourceIDs: []string{"s"}, Recommendation: RecommendPrompt},
 		"high_and_allow": {RiskLevel: RiskHigh, Authorization: AuthSupported, AuthorizationSourceIDs: []string{"s"}, Recommendation: RecommendAllow},
 	} {
-		if got := Evaluate(&a, validEvidence(), validContext()); got != OutcomeKeepAsk {
+		a.Rationale = "risk decision fixture"
+		if a.Authorization == AuthSupported {
+			a.AuthorizationSourceIDs = []string{"src-1"}
+		}
+		if got := Evaluate(testEvidence(a), validEvidence(), validContext()); got != OutcomeKeepAsk {
 			t.Fatalf("%s = %s, want keep_ask", name, got)
 		}
 	}
@@ -108,7 +118,7 @@ func TestDecisionTableRow8Allow(t *testing.T) {
 	for _, risk := range []RiskLevel{RiskLow, RiskMedium} {
 		a := validAssessment()
 		a.RiskLevel = risk
-		if got := Evaluate(&a, validEvidence(), validContext()); got != OutcomeAllow {
+		if got := Evaluate(testEvidence(a), validEvidence(), validContext()); got != OutcomeAllow {
 			t.Fatalf("risk=%s = %s, want allow", risk, got)
 		}
 	}
@@ -262,7 +272,7 @@ func TestEvaluateRejectsUnknownCurrentAction(t *testing.T) {
 	for _, action := range []string{"", "unknown", "ALLOW", "Ask", "allow "} {
 		ctx := validContext()
 		ctx.CurrentAction = action
-		if got := Evaluate(&a, validEvidence(), ctx); got != OutcomeKeepAsk {
+		if got := Evaluate(testEvidence(a), validEvidence(), ctx); got != OutcomeKeepAsk {
 			t.Fatalf("CurrentAction=%q produced %s, want keep_ask", action, got)
 		}
 	}
@@ -286,20 +296,26 @@ func TestEvidenceInvalidationInvalid(t *testing.T) {
 }
 
 func TestCandidateDigestStable(t *testing.T) {
-	c1 := ReviewCandidate{ReviewID: "r1", CallID: "c1", Tool: "shell", Command: "echo hi"}
-	c2 := ReviewCandidate{ReviewID: "r1", CallID: "c1", Tool: "shell", Command: "echo hi"}
-	c3 := ReviewCandidate{ReviewID: "r1", CallID: "c1", Tool: "shell", Command: "echo bye"}
+	c1, c2 := validCandidate(), validCandidate()
 	if c1.Digest() != c2.Digest() {
-		t.Fatal("identical candidates produced different digests")
+		t.Fatal("identical candidates differ")
 	}
-	if c1.Digest() == c3.Digest() {
-		t.Fatal("different commands produced same digest")
+	c2.Execution.Command = "echo bye"
+	if c1.Digest() == c2.Digest() {
+		t.Fatal("different commands share a digest")
 	}
+}
+
+func testEvidence(a Assessment) *ReviewEvidence {
+	data, _ := json.Marshal(a)
+	evidence, _ := BindAssessment(validCandidate(), data)
+	return evidence
 }
 
 // validCandidateFacts returns facts satisfying all §2.1 conditions.
 func validCandidateFacts() CandidateFacts {
 	return CandidateFacts{
+		BuiltinBinding: true, RegisteredForReview: true, EffectRule: securitymodel.RuleProcessMutating,
 		Capability:          "process",
 		Stage:               "call",
 		SandboxRequired:     true,
@@ -322,16 +338,30 @@ func TestCheckEligibilityValid(t *testing.T) {
 
 func TestCheckEligibilityMatrix(t *testing.T) {
 	for name, mutate := range map[string]func(*CandidateFacts){
-		"not_process":         func(f *CandidateFacts) { f.Capability = "read" },
-		"egress_stage":        func(f *CandidateFacts) { f.Stage = "egress_target" },
-		"host_execution":      func(f *CandidateFacts) { f.HostExecution = true },
-		"network_access":      func(f *CandidateFacts) { f.NetworkAccess = true },
-		"mcp_or_skill":        func(f *CandidateFacts) { f.MCPOrSkill = true },
-		"critical_risk":       func(f *CandidateFacts) { f.EffectRisk = "critical" },
-		"low_risk":            func(f *CandidateFacts) { f.EffectRisk = "low" },
-		"medium_risk":         func(f *CandidateFacts) { f.EffectRisk = "medium" },
-		"irreversible":        func(f *CandidateFacts) { f.EffectReversibility = "irreversible" },
-		"evidence_incomplete": func(f *CandidateFacts) { f.EvidenceComplete = false },
+		"no_strong_sandbox":     func(f *CandidateFacts) { f.SandboxRequired = false },
+		"fixed":                 func(f *CandidateFacts) { f.EffectRule = securitymodel.RuleFixed },
+		"missing_rule":          func(f *CandidateFacts) { f.EffectRule = "" },
+		"wrong_kind":            func(f *CandidateFacts) { f.EffectKind = "external.mutation" },
+		"empty_kind":            func(f *CandidateFacts) { f.EffectKind = "" },
+		"empty_reversibility":   func(f *CandidateFacts) { f.EffectReversibility = "" },
+		"unknown_reversibility": func(f *CandidateFacts) { f.EffectReversibility = "unknown" },
+		"reversible":            func(f *CandidateFacts) { f.EffectReversibility = "reversible" },
+		"empty_stage":           func(f *CandidateFacts) { f.Stage = "" },
+		"unregistered":          func(f *CandidateFacts) { f.RegisteredForReview = false },
+		"external_binding":      func(f *CandidateFacts) { f.BuiltinBinding = false },
+		"permission_expansion":  func(f *CandidateFacts) { f.PermissionExpansion = true },
+		"protected_paths":       func(f *CandidateFacts) { f.ProtectedPaths = true },
+		"control_plane":         func(f *CandidateFacts) { f.ControlPlaneWrite = true },
+		"not_process":           func(f *CandidateFacts) { f.Capability = "read" },
+		"egress_stage":          func(f *CandidateFacts) { f.Stage = "egress_target" },
+		"host_execution":        func(f *CandidateFacts) { f.HostExecution = true },
+		"network_access":        func(f *CandidateFacts) { f.NetworkAccess = true },
+		"mcp_or_skill":          func(f *CandidateFacts) { f.MCPOrSkill = true },
+		"critical_risk":         func(f *CandidateFacts) { f.EffectRisk = "critical" },
+		"low_risk":              func(f *CandidateFacts) { f.EffectRisk = "low" },
+		"medium_risk":           func(f *CandidateFacts) { f.EffectRisk = "medium" },
+		"irreversible":          func(f *CandidateFacts) { f.EffectReversibility = "irreversible" },
+		"evidence_incomplete":   func(f *CandidateFacts) { f.EvidenceComplete = false },
 	} {
 		facts := validCandidateFacts()
 		mutate(&facts)

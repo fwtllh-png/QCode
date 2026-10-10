@@ -179,16 +179,3 @@ func (a *Authority) ObserveDiagnostics(
 		}
 	}
 }
-
-func (a *Authority) ObserveVerified(
-	workspace string,
-	paths []string,
-) {
-	relative := make([]string, 0, len(paths))
-	for _, path := range paths {
-		if candidate, ok := WorkspaceRelative(workspace, path); ok {
-			relative = append(relative, candidate)
-		}
-	}
-	a.Evidence().MarkVerified(relative)
-}

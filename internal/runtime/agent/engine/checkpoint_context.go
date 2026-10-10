@@ -90,6 +90,7 @@ func (e *Engine) RestoreContextSnapshot(
 	if err != nil {
 		return agentcontext.ReconciliationReceipt{}, err
 	}
+	reconciled.Window.RetainHistoryFrom(snapshot.Window.HistoryFloorTurn)
 	if err := reconciled.Seal(); err != nil {
 		return agentcontext.ReconciliationReceipt{}, err
 	}
@@ -129,6 +130,7 @@ func (e *Engine) ForkFromContextSnapshot(
 	if err != nil {
 		return nil, agentcontext.ReconciliationReceipt{}, err
 	}
+	reconciled.Window.RetainHistoryFrom(snapshot.Window.HistoryFloorTurn)
 	if err := reconciled.Seal(); err != nil {
 		return nil, agentcontext.ReconciliationReceipt{}, err
 	}
@@ -165,6 +167,7 @@ func (e *Engine) currentWorkspaceBinding(
 // applyContextSnapshot changes only live Context state. Usage and cost remain
 // monotonic accounting owned by the receiving Engine.
 func (e *Engine) applyContextSnapshot(snapshot agentcontext.ContextSnapshot) {
+	e.resetViewFold()
 	e.invalidatePendingNarrative()
 	e.history = cloneMessages(snapshot.History)
 	for index, turn := range snapshot.MessageTurns {

@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	reverttool "github.com/fwtllh-png/QCode/internal/adapter/tool/revert"
-	"github.com/fwtllh-png/QCode/internal/observability/verify"
 	"github.com/fwtllh-png/QCode/internal/orchestration/subagent"
 	"github.com/fwtllh-png/QCode/internal/persist/contextstate"
 	persiststate "github.com/fwtllh-png/QCode/internal/persist/state"
@@ -176,15 +175,7 @@ func (agentModule) Build(ctx context.Context, state *buildState) error {
 
 		OnNetworkAllow: state.security.guardFactory.onNetworkAllow,
 
-		Diagnostics: state.security.diagnostics,
-		Verify: agentengine.VerifyOptions{
-			Mode:           execution.Verify.Mode,
-			Scope:          verify.Scope(execution.Verify.Scope),
-			OnFailure:      execution.Verify.OnFailure,
-			MaxRepairSteps: execution.Verify.MaxRepairSteps,
-			Timeout:        execution.Verify.Timeout,
-			Runner:         state.security.verify,
-		},
+		Diagnostics:                  state.security.diagnostics,
 		RequireCompletionDeclaration: execution.Tools,
 
 		ToolCatalogSync: func() error {
@@ -193,6 +184,11 @@ func (agentModule) Build(ctx context.Context, state *buildState) error {
 			}
 			return session.mcpPrewarm.SyncCatalog()
 		}}, SecurityConfig: agentengine.SecurityConfig{Security: state.security.runtime,
+		Guardian: agentengine.GuardianConfig{
+			Enabled:         snapshot.Config.Security.Guardian.Enabled,
+			Timeout:         snapshot.Config.Security.Guardian.Timeout,
+			MaxOutputTokens: snapshot.Config.Security.Guardian.MaxOutputTokens,
+		},
 		ProfilePermissionCeiling: approvalCeiling,
 		Workspace:                execution.Workspace,
 		WorkspaceIdentity:        workspaceID,
@@ -211,6 +207,7 @@ func (agentModule) Build(ctx context.Context, state *buildState) error {
 		InputHost: session.inputHost},
 	}
 	if store := state.options.PersistentStore; store != nil {
+		seedOptions.GuardianSource = guardianSource(store)
 		seedOptions.TurnContexts = contextstate.NewRepository(store)
 		seedOptions.SessionForTurn = func(
 			ctx context.Context,

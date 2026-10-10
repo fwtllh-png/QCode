@@ -9,7 +9,7 @@ import (
 
 func TestFullAccessVerificationPreservesExplicitRestrictions(t *testing.T) {
 	call := planningInvocation("exec_command", tool.CapabilityProcess, []tool.Resource{{Kind: "process", ID: "workspace", Access: tool.AccessRead}})
-	call.Declared = securitymodel.Declared{Verification: true, FullAccess: true}
+	call.Declared = securitymodel.Declared{FullAccess: true}
 	r := DefaultRuntime(ModeAct, PermissionBypass)
 	r.ConfigurePlanning(PlanningRequired)
 	if got := r.Decide(resolveFixture(call)); got.Action != ActionAllow {

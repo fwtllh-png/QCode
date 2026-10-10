@@ -33,8 +33,6 @@ type Declared struct {
 	FullAccess bool
 	// ReadOnly reports that an argument matched the binding's read-only values.
 	ReadOnly bool
-	// Verification reports a declared verification run with covered paths.
-	Verification bool
 }
 
 type AssessmentInput struct {
@@ -65,12 +63,11 @@ type Facets struct {
 	Process         bool
 	Agent           bool
 	// PlanOnly reports that the only effectful resource is the session plan.
-	PlanOnly             bool
-	StrongSandbox        bool
-	Journaled            bool
-	ReadOnlyDeclared     bool
-	DeclaredVerification bool
-	PlanningExempt       bool
+	PlanOnly         bool
+	StrongSandbox    bool
+	Journaled        bool
+	ReadOnlyDeclared bool
+	PlanningExempt   bool
 }
 
 // Assessment is the classified invocation. Rule names the decision-table row
@@ -265,13 +262,12 @@ func (a Assessment) Digest() string {
 
 func facetsOf(input AssessmentInput) Facets {
 	facets := Facets{
-		HostExecution:        input.Declared.HostExecution,
-		FullAccess:           input.Declared.FullAccess,
-		StrongSandbox:        input.Binding.StrongSandbox && !input.Declared.HostExecution,
-		Journaled:            input.Binding.Journaled,
-		ReadOnlyDeclared:     input.Declared.ReadOnly,
-		DeclaredVerification: input.Declared.Verification,
-		PlanningExempt:       input.Binding.PlanningExempt,
+		HostExecution:    input.Declared.HostExecution,
+		FullAccess:       input.Declared.FullAccess,
+		StrongSandbox:    input.Binding.StrongSandbox && !input.Declared.HostExecution,
+		Journaled:        input.Binding.Journaled,
+		ReadOnlyDeclared: input.Declared.ReadOnly,
+		PlanningExempt:   input.Binding.PlanningExempt,
 	}
 	plan := false
 	for _, item := range input.Resources {

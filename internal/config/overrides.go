@@ -178,13 +178,6 @@ func applyOverrides(overrides Overrides, config *Config, provenance map[string]S
 	applyFloat64(overrides.BudgetUSD, &execution.BudgetUSD, fieldBudgetUSD, SourceStartup, provenance)
 	applyString(overrides.ReasoningEffort, &execution.ReasoningEffort, fieldReasoning, SourceStartup, provenance)
 	applyBool(overrides.NativeSearch, &execution.NativeSearch, fieldNativeSearch, SourceStartup, provenance)
-	verify := &execution.Verify
-	applyString(overrides.VerifyMode, &verify.Mode, fieldVerifyMode, SourceStartup, provenance)
-	applyString(overrides.VerifyScope, &verify.Scope, fieldVerifyScope, SourceStartup, provenance)
-	applyString(overrides.VerifyOnFailure, &verify.OnFailure, fieldVerifyOnFailure, SourceStartup, provenance)
-	applyString(overrides.VerifyCommand, &verify.Command, fieldVerifyCommand, SourceStartup, provenance)
-	applyInt(overrides.VerifyRepair, &verify.MaxRepairSteps, fieldVerifyRepair, SourceStartup, provenance)
-	applyDuration(overrides.VerifyTimeout, &verify.Timeout, fieldVerifyTimeout, SourceStartup, provenance)
 	applyBool(overrides.JournalDurable, &execution.Journal.Durable, fieldJournalDurable, SourceStartup, provenance)
 	applyBool(
 		overrides.JournalRecoverOnStart,

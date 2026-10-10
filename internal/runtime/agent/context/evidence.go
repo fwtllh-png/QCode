@@ -300,22 +300,6 @@ func (s *EvidenceSet) MarkChanged(path string, turn uint64, read bool) {
 	}
 }
 
-// MarkVerified records that verification covered paths. Only a passing gate may
-// call it: a failed run proves the opposite of what it would record.
-func (s *EvidenceSet) MarkVerified(paths []string) {
-	if s == nil {
-		return
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for _, path := range paths {
-		if entry, found := s.changes[strings.TrimSpace(path)]; found {
-			entry.verified = true
-			entry.stale = false
-		}
-	}
-}
-
 // MarkDiagnostics records whether path's diagnostics are open. A clean run
 // clears the flag, so a fixed file stops being reported.
 func (s *EvidenceSet) MarkDiagnostics(path string, open bool) {
@@ -475,9 +459,6 @@ func lessByKind(left, right EvidenceFact) bool {
 func (s *EvidenceSet) risks() []EvidenceRisk {
 	var risks []EvidenceRisk
 	for path, entry := range s.changes {
-		if !entry.verified {
-			risks = append(risks, EvidenceRisk{Kind: RiskUnverifiedChange, Path: path, Turn: entry.turn})
-		}
 		if !entry.read {
 			risks = append(risks, EvidenceRisk{Kind: RiskBlindChange, Path: path, Turn: entry.turn})
 		}
@@ -551,25 +532,6 @@ func (s *EvidenceSet) reminders() []EvidenceReminder {
 	return reminders
 }
 
-// UnverifiedPaths returns the changed paths nothing has verified, sorted. A
-// compaction summary carries them: dropping the history is exactly when the
-// thread would otherwise forget what it still owes.
-func (s *EvidenceSet) UnverifiedPaths() []string {
-	if s == nil {
-		return nil
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	var paths []string
-	for path, entry := range s.changes {
-		if !entry.verified {
-			paths = append(paths, path)
-		}
-	}
-	sort.Strings(paths)
-	return paths
-}
-
 // EvidenceChange is one path the thread wrote, as a caller sees it.
 type EvidenceChange struct {
 	Path string
@@ -586,11 +548,6 @@ type EvidenceChange struct {
 
 // Changes returns every path the thread wrote, sorted, with what has since been
 // proved about each.
-//
-// UnverifiedPaths answers a narrower question — what is still owed — which is
-// what the risk list needs. A compaction summary needs the whole picture: a file
-// that was verified is still a file the next turn should know it changed, and one
-// written without being read stays worth flagging after verification passes.
 func (s *EvidenceSet) Changes() []EvidenceChange {
 	if s == nil {
 		return nil

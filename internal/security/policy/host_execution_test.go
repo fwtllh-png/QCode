@@ -9,7 +9,7 @@ import (
 
 func TestHostExecutionApprovalPreservesPolicyRestrictions(t *testing.T) {
 	call := planningInvocation("exec_command", tool.CapabilityProcess, []tool.Resource{{Kind: "process", ID: "workspace", Access: tool.AccessRead}})
-	call.Declared = securitymodel.Declared{Verification: true, HostExecution: true}
+	call.Declared = securitymodel.Declared{HostExecution: true}
 	for _, tc := range []struct {
 		name  string
 		setup func(*Runtime)

@@ -165,6 +165,7 @@ func TestStateAllowedForPhase(t *testing.T) {
 		{RunningTools, turnkernel.PhaseExecutingTools, true},
 		{RunningTools, turnkernel.PhaseSampling, true},
 		{RunningTools, turnkernel.PhaseAwaitingInput, true},
+		{RunningTools, turnkernel.PhaseAwaitingApproval, true},
 		{RunningTools, turnkernel.PhaseVerifying, false},
 		{FeedingResults, turnkernel.PhaseSampling, true},
 		{Verifying, turnkernel.PhaseVerifying, true},

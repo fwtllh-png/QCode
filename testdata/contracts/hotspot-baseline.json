@@ -31,10 +31,6 @@
           "ResolveApproval",
           "ResolveInput"
         ],
-        "verification": [
-          "verifyGate",
-          "evaluate"
-        ],
         "terminal": [
           "turnEmitter",
           "newTurnEmitter",
@@ -60,7 +56,6 @@
         "model_phase": "model_handler.go",
         "tool_phase": "tool_handler.go",
         "approval_and_input": "turn_scope.go",
-        "verification": "verify.go",
         "terminal": "terminal_handler.go",
         "cancel": "turn_scope.go",
         "history_and_recovery": "history_recovery.go",
@@ -100,12 +95,11 @@
         "internal/runtime/agent/engine/model_handler.go",
         "internal/runtime/agent/engine/tool_handler.go",
         "internal/runtime/agent/engine/approval_handler.go",
-        "internal/runtime/agent/engine/verify.go",
         "internal/runtime/agent/engine/terminal_handler.go",
         "internal/runtime/agent/engine/cancel_handler.go",
         "internal/runtime/agent/engine/history_recovery.go",
         "internal/runtime/agent/engine/workspace_turn_gate_test.go",
-        "internal/runtime/agent/engine/verify_gate_test.go",
+        "internal/runtime/agent/engine/workspace_completion_test.go",
         "internal/runtime/agent/engine/toolstream_test.go",
         "internal/runtime/agent/engine/turn_kernel_test.go",
         "internal/runtime/agent/context/session_delta_test.go"

@@ -77,6 +77,7 @@ func continuationFixture() TurnContinuation {
 func TestTurnContinuationRoundtrip(t *testing.T) {
 	store := newContinuationBlobStore()
 	record := continuationFixture()
+	record.ContextCaptured, record.PlanSubmitted, record.PlanningPolicy = true, true, "adaptive"
 	ref, err := StoreTurnContinuation(t.Context(), store, record)
 	if err != nil {
 		t.Fatal(err)
@@ -91,11 +92,27 @@ func TestTurnContinuationRoundtrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	if loaded.TurnID != record.TurnID ||
+		!loaded.PlanSubmitted || loaded.PlanningPolicy != "adaptive" ||
 		loaded.Sequence != record.Sequence ||
 		loaded.TurnNumber != record.TurnNumber ||
 		len(loaded.Messages) != 3 ||
 		loaded.Messages[2].Blocks[0].ToolResult.Content != "package parser" {
 		t.Fatalf("loaded continuation = %+v", loaded)
+	}
+}
+
+func TestContinuationRejectsUnboundPlanningSubmission(t *testing.T) {
+	for _, scenario := range []struct {
+		policy   string
+		captured bool
+	}{
+		{"", true}, {"unknown", true}, {"adaptive", false},
+	} {
+		record := continuationFixture()
+		record.PlanningPolicy, record.ContextCaptured, record.PlanSubmitted = scenario.policy, scenario.captured, true
+		if record.Validate() == nil {
+			t.Fatal("accepted planning state without its current policy and context")
+		}
 	}
 }
 

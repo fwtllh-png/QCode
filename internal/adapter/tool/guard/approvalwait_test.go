@@ -201,16 +201,16 @@ func TestC5GuardRestoresApprovalWaitWithoutDuplicateEmission(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	request := ApprovalRequest{
-		RequestID: "approval-restored",
-		CallID:    "call-restored",
-		Tool:      "write",
-		Arguments: json.RawMessage(`{"path":"a","value":"x"}`),
-		AllowedScopes: []policy.ApprovalScope{
-			policy.ApprovalOnce,
-		},
-		ExpiresAt: time.Now().Add(time.Minute),
+	var request ApprovalRequest
+	guard.SetApprovalHandler(func(_ context.Context, current ApprovalRequest) error {
+		request = current
+		return errors.New("simulate process exit while awaiting approval")
+	})
+	_, _ = guard.Execute(t.Context(), "call-restored", "write", json.RawMessage(`{"path":"a","value":"x"}`))
+	if request.RequestID == "" || request.BindingDigest == "" {
+		t.Fatal("missing real approval request")
 	}
+	guard.SetApprovalHandler(func(context.Context, ApprovalRequest) error { emissions++; return nil })
 	if err := guard.RestoreApproval(request); err != nil {
 		t.Fatal(err)
 	}

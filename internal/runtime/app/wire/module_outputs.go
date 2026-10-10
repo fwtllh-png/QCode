@@ -71,7 +71,6 @@ type securityBuildState struct {
 	permissions  *securitypolicy.PermissionsStore
 	guardFactory guardFactory
 	diagnostics  verify.DiagnosticRunner
-	verify       verify.Runner
 	guard        *toolguard.Guard
 }
 

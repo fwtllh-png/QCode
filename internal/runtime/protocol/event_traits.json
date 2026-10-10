@@ -15,6 +15,7 @@
   "diagnostics.result": {"class":"evidence","item_owner":"turn","durability":"retained","correlation":"turn","terminal":false},
   "extension.control": {"class":"audit","item_owner":"operation","durability":"retained","correlation":"operation","terminal":false},
   "host.command": {"class":"interaction","item_owner":"turn","durability":"retained","correlation":"command","terminal":false},
+  "guardian.review": {"class":"audit","item_owner":"tool","durability":"retained","correlation":"call","terminal":false},
   "input.required": {"class":"interaction","item_owner":"input","durability":"retained","correlation":"request","terminal":false},
   "input.resolved": {"class":"interaction","item_owner":"input","durability":"retained","correlation":"request","terminal":false},
   "mcp.health.changed": {"class":"audit","item_owner":"turn","durability":"retained","correlation":"server","terminal":false},

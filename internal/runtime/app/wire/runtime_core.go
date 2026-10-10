@@ -48,7 +48,6 @@ func (b runtimeCoreBuilder) BuildChild(spec app.ChildSpec) (*app.EngineAdapter, 
 		options.Journal, options.InputHost = toolset.journal, toolset.inputHost
 		options.ReadTracker = workspacejournal.NewReadTracker()
 		options.Diagnostics = toolset.diagnostics
-		options.Verify.Runner = toolset.verify
 		if b.turnProcessReleaser != nil {
 			options.ReleaseTurnResources = b.turnProcessReleaser(toolset.processes, "child")
 		}

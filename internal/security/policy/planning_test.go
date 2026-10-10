@@ -78,9 +78,9 @@ func TestDeclaredVerificationDowngradesPlanGateToApproval(t *testing.T) {
 		invocation.Declared = declared
 		return invocation
 	}
-	verification := build(securitymodel.Declared{Verification: true})
+	verification := build(securitymodel.Declared{})
 	decision := runtime.Decide(resolveFixture(verification))
-	if decision.Action != ActionAsk || decision.Code != "plan_verification" {
+	if decision.Action != ActionHold || decision.Code != "plan_required" {
 		t.Fatalf("declared verification decision = %+v", decision)
 	}
 	// Undeclared process commands still hit the hard plan gate.

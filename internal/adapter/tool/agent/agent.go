@@ -15,7 +15,6 @@ import (
 	filetool "github.com/fwtllh-png/QCode/internal/adapter/tool/file"
 	"github.com/fwtllh-png/QCode/internal/adapter/tool/handle"
 	"github.com/fwtllh-png/QCode/internal/common/contextsnapshot"
-	"github.com/fwtllh-png/QCode/internal/observability/verify"
 	"github.com/fwtllh-png/QCode/internal/orchestration/subagent"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
 )
@@ -39,8 +38,6 @@ type Options struct {
 	Files *filetool.Tools
 	// Workspace is the parent workspace root used for baseline fingerprinting.
 	Workspace string
-	// Verify runs affected parent tests after a candidate has been applied.
-	Verify verify.Runner
 	// Sandbox runs internal merge fingerprinting under the guarded authority.
 	Sandbox sandbox.Backend
 }
@@ -52,7 +49,6 @@ type Tool struct {
 	onRelease func(agentID string)
 	files     *filetool.Tools
 	workspace string
-	verify    verify.Runner
 	sandbox   sandbox.Backend
 }
 
@@ -91,7 +87,7 @@ type Receipt struct {
 	Takeover       bool                    `json:"takeover"`
 	Artifacts      []ArtifactRef           `json:"artifacts"`
 	Usage          Usage                   `json:"usage"`
-	Verification   Verification            `json:"verification"`
+	Verification   Verification            `json:"verification,omitempty,omitzero"`
 	WorkerRecord   map[string]any          `json:"worker_record"`
 	Context        subagent.ContextReceipt `json:"context"`
 }
@@ -162,7 +158,6 @@ func Register(registry *tool.Registry, options Options) error {
 		onRelease: options.OnRelease,
 		files:     options.Files,
 		workspace: workspace,
-		verify:    options.Verify,
 		sandbox:   options.Sandbox,
 	}
 	for _, kind := range []string{
@@ -307,7 +302,6 @@ func (t *Tool) spawn(ctx context.Context, input operationInput) (tool.Result, er
 			"agent_id": child.ID, "thread_id": threadID,
 			"receipt_sequence":  message.Sequence,
 			"transcript_handle": varHandle,
-			"verification":      receipt.Verification.Status,
 			"usage":             receipt.Usage.Status,
 			"status":            string(subagent.StatusRunning),
 			"serialized":        child.Serialized,

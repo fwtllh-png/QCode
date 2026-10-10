@@ -2866,7 +2866,6 @@ textarea:disabled {
 .contextBar {
   display: flex;
   height: 4px;
-  gap: 1px;
   margin: 10px 0 12px;
   overflow: hidden;
   background: var(--ch-panel-subtle);
@@ -2875,7 +2874,17 @@ textarea:disabled {
 
 .contextBar > span {
   height: 100%;
+  flex-shrink: 0;
   background: var(--ch-text-muted);
+}
+
+.contextBar > span[data-tone="remaining"] {
+  background: transparent;
+}
+
+.contextBar > span[data-tone="reserved"] {
+  background: var(--ch-context-framing);
+  opacity: 0.5;
 }
 
 .contextBar > span[data-tone="stable"],

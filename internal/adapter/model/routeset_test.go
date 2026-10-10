@@ -13,7 +13,7 @@ func TestASetWithoutSlotsAnswersEveryPurposeWithAct(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	for _, purpose := range []Purpose{PurposeAct, PurposeSummary, PurposeVision} {
+	for _, purpose := range []Purpose{PurposeAct, PurposeSummary, PurposeVision, PurposeJudge} {
 		route, err := routes.For(purpose)
 		if err != nil {
 			t.Fatalf("For(%q) error = %v", purpose, err)
@@ -109,7 +109,7 @@ func TestLockRefusesToFallBackInsteadOfSubstitutingAct(t *testing.T) {
 	}
 }
 
-func TestSummaryPurposeIsWiredAndJudgeRemainsRefused(t *testing.T) {
+func TestSummaryAndJudgePurposesAreWired(t *testing.T) {
 	act := testRoute(t, "deepseek-v4-flash", "deepseek-v4-flash-vision-exp")
 	summary := testRoute(t, "openai", "gpt-4.1")
 
@@ -126,10 +126,22 @@ func TestSummaryPurposeIsWiredAndJudgeRemainsRefused(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Asking for it is refused too. Answering with the act route would let a
-	// future caller believe a summary model had been configured.
+	if resolved, err := routes.For(PurposeJudge); err != nil || resolved.Model().ID != act.Model().ID {
+		t.Fatal("judge did not fall back to act")
+	}
+	routes, err = NewRouteSet(act, map[Purpose]ReadyRoute{PurposeJudge: summary}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved, err := routes.For(PurposeJudge); err != nil || resolved.Model().ID != summary.Model().ID {
+		t.Fatal("explicit judge was not selected")
+	}
+	routes, err = NewRouteSet(act, nil, true)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if _, err := routes.For(PurposeJudge); err == nil {
-		t.Fatal("For(judge) resolved; want a refusal while nothing samples on it")
+		t.Fatal("locked judge fell back")
 	}
 }
 

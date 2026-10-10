@@ -8,100 +8,6 @@ import (
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
 )
 
-func applyVerificationFinished(
-	transition *Transition,
-	current State,
-	command VerificationFinished,
-) error {
-	if err := requirePhase(current, command, PhaseVerifying); err != nil {
-		return err
-	}
-	switch command.Status {
-	case VerificationNotRequired:
-		if current.Workspace == nil || hasEffectiveChanges(current) || len(command.EvidenceCalls) != 0 {
-			return illegal(current, command, "not_required requires an observed unchanged workspace without checks")
-		}
-	case VerificationPassed, VerificationFailed, VerificationUnavailable:
-	default:
-		return illegal(current, command, "verification status is not terminal")
-	}
-	effectID := command.EffectID
-	if effectID == "" {
-		for _, candidate := range sortedEffectIDs(current.PendingEffects) {
-			if current.PendingEffects[candidate].Kind == EffectRunVerification {
-				effectID = candidate
-				break
-			}
-		}
-	}
-	if effectID == "" {
-		return illegal(current, command, "verification effect is missing")
-	}
-	effect := current.PendingEffects[effectID]
-	if effect.Kind != EffectRunVerification ||
-		effect.Status != EffectRunning {
-		return illegal(current, command, "verification effect is not running")
-	}
-	if err := finishEffect(transition, effectID, true, ""); err != nil {
-		return illegal(current, command, err.Error())
-	}
-	action := VerificationActionPassed
-	needsRepair := command.Status != VerificationPassed && command.Status != VerificationNotRequired &&
-		current.Policy.VerificationMode != "soft"
-	if needsRepair && current.Policy.VerificationRepairLimit != 0 {
-		err := spendRepairBudget(
-			transition,
-			RepairVerification,
-			command.RepairKey,
-			current.Policy.VerificationRepairLimit,
-		)
-		switch {
-		case err == nil:
-			action = VerificationActionRepair
-		case errors.Is(err, ErrRepairBudgetExhausted):
-		default:
-			return err
-		}
-	}
-	if action != VerificationActionRepair {
-		switch {
-		case command.Status == VerificationNotRequired:
-			action = VerificationActionNotRequired
-		case command.Status == VerificationPassed:
-			action = VerificationActionPassed
-		case current.Policy.VerificationMustPass:
-			action = VerificationActionBlocked
-		case current.Policy.VerificationMode == "soft":
-			action = VerificationActionReported
-		case current.Policy.VerificationOnFailure == "revert":
-			action = VerificationActionReverted
-		default:
-			action = VerificationActionFailed
-		}
-	}
-	transition.State.Verification = VerificationState{
-		Status:         command.Status,
-		Action:         action,
-		Mutation:       current.MutationRevision,
-		EvidenceCalls:  append([]string(nil), command.EvidenceCalls...),
-		FailureMessage: command.Message,
-	}
-	if command.Status != VerificationPassed && command.Status != VerificationNotRequired && action != VerificationActionReported {
-		transition.State.Completion = nil
-	} else if command.Status == VerificationPassed {
-		transition.State.WorkItem.Open.UnverifiedPaths = nil
-	}
-	transition.State.WorkItem.RequiredAction = DeriveRequiredAction(
-		transition.State,
-	)
-	transition.State.NextAction = StepActionNone
-	transition.Events = append(transition.Events, Event{
-		Kind: EventVerification, Mutation: current.MutationRevision,
-	})
-	move(transition, PhaseSampling)
-	return nil
-}
-
 func applyCompletion(
 	transition *Transition,
 	current State,
@@ -115,15 +21,14 @@ func applyCompletion(
 		return illegal(current, command, "completion call id is empty")
 	}
 	decision := CompletionDecision{
-		Summary:           candidate.Summary,
-		OutputMode:        candidate.OutputMode,
-		PendingActions:    append([]string(nil), candidate.PendingActions...),
-		Mutation:          current.MutationRevision,
-		ChangedPaths:      changedPaths(effectiveChanges(current)),
-		NoChangeReason:    candidate.NoChangeReason,
-		NoChangeEvidence:  append([]string(nil), candidate.NoChangeEvidence...),
-		VerificationCalls: append([]string(nil), candidate.VerificationCalls...),
-		CompletionCall:    candidate.CompletionCall,
+		Summary:          candidate.Summary,
+		OutputMode:       candidate.OutputMode,
+		PendingActions:   append([]string(nil), candidate.PendingActions...),
+		Mutation:         current.MutationRevision,
+		ChangedPaths:     changedPaths(effectiveChanges(current)),
+		NoChangeReason:   candidate.NoChangeReason,
+		NoChangeEvidence: append([]string(nil), candidate.NoChangeEvidence...),
+		CompletionCall:   candidate.CompletionCall,
 	}
 	switch {
 	case candidate.BatchMutated:
@@ -179,11 +84,7 @@ func applyCompletion(
 		decision.Reason = "provisional_output_unavailable"
 	default:
 		decision.Accepted = true
-		if verificationPending(current) {
-			decision.RequiredAction = "await_runtime_verification"
-		} else {
-			decision.RequiredAction = "final_answer"
-		}
+		decision.RequiredAction = "final_answer"
 	}
 	if !decision.Accepted {
 		decision.RequiredAction = completionRejectionAction(decision.Reason)
@@ -280,4 +181,42 @@ func samePaths(left, right []string) bool {
 	slices.Sort(left)
 	slices.Sort(right)
 	return slices.Equal(left, right)
+}
+
+// Legacy fields remain in State to preserve historical fact digests. They are
+// cleared only by this recorded transition, never while decoding old facts.
+func legacyVerificationActive(state State) bool {
+	return state.Policy.VerificationRequired || state.Policy.VerificationMode != "" ||
+		state.Verification.Status != VerificationNotEvaluated || state.Phase == PhaseVerifying ||
+		len(state.WorkItem.Open.UnverifiedPaths) != 0 || len(state.WorkItem.Open.CoveredPaths) != 0
+}
+
+func retireVerification(t *Transition) error {
+	for _, id := range sortedEffectIDs(t.State.PendingEffects) {
+		if t.State.PendingEffects[id].Kind == EffectRunVerification {
+			if err := finishEffect(t, id, false, "verification gate was removed; no check was executed"); err != nil {
+				return err
+			}
+		}
+	}
+	t.State.Policy.VerificationRequired = false
+	t.State.Policy.VerificationMustPass = false
+	t.State.Policy.VerificationMode = ""
+	t.State.Policy.VerificationOnFailure = ""
+	t.State.Policy.VerificationRepairLimit = 0
+	t.State.Verification = VerificationState{Status: VerificationNotEvaluated}
+	delete(t.State.RepairBudgets, RepairVerification)
+	if t.State.Convergence != nil && t.State.Convergence.RepairKind == RepairVerification {
+		t.State.Convergence = nil
+	}
+	t.State.WorkItem.Open.UnverifiedPaths = nil
+	t.State.WorkItem.Open.CoveredPaths = nil
+	t.State.WorkItem.RequiredAction = DeriveRequiredAction(t.State)
+	if t.State.NextAction == StepActionVerify {
+		t.State.NextAction = StepActionNone
+	}
+	if t.State.Phase == PhaseVerifying {
+		move(t, PhaseSampling)
+	}
+	return nil
 }

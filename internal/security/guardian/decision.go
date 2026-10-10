@@ -1,59 +1,10 @@
 package guardian
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
+
+	securitymodel "github.com/fwtllh-png/QCode/internal/security/model"
 )
-
-// ReviewCandidate is the immutable input bound to one authorization attempt
-// (design §5.1). It carries the invocation identity, tool identity, execution
-// facts, and the policy snapshot that produced the Ask. The candidate is
-// constructed by the trusted Runtime/Guard integration point, never from
-// untrusted tool JSON or model output.
-type ReviewCandidate struct {
-	// ReviewID uniquely identifies this review attempt.
-	ReviewID string
-	// CallID, Tool identify the invocation under review.
-	CallID string
-	Tool   string
-	// Command is the normalized shell command for process tools.
-	Command string
-	// WorkingDir is the resolved cwd.
-	WorkingDir string
-	// OriginalEffect is the pre-review securitymodel effect classification,
-	// preserved for audit; the Guardian does not mutate it.
-	OriginalEffectKind     string
-	OriginalEffectRisk     string
-	OriginalEffectReversib string
-	// AuthorizationDigest fingerprints the user authorization context that
-	// was current when the review began. A mismatch on re-evaluation
-	// invalidates the evidence.
-	AuthorizationDigest string
-	// CatalogVersion identifies the tool binding catalog revision.
-	CatalogVersion string
-	// ContentDigests fingerprint the execution evidence (scripts, configs)
-	// that was reviewed. A mismatch at execution time invalidates the allow.
-	ContentDigests []string
-}
-
-// Digest returns a stable identity for deduplication and evidence binding.
-func (c ReviewCandidate) Digest() string {
-	h := sha256.New()
-	for _, s := range []string{
-		c.ReviewID, c.CallID, c.Tool, c.Command, c.WorkingDir,
-		c.OriginalEffectKind, c.OriginalEffectRisk, c.OriginalEffectReversib,
-		c.AuthorizationDigest, c.CatalogVersion,
-	} {
-		h.Write([]byte(s))
-		h.Write([]byte{0})
-	}
-	for _, d := range c.ContentDigests {
-		h.Write([]byte(d))
-		h.Write([]byte{0})
-	}
-	return hex.EncodeToString(h.Sum(nil))
-}
 
 // EvidenceInvalidation captures what may have changed between the model
 // review and the re-evaluation (design §7). Any non-zero field means
@@ -85,6 +36,11 @@ func (e EvidenceInvalidation) Invalid() bool {
 // table (design §6.2). It is a pure snapshot; the decision table is a
 // pure function of (Assessment, EvidenceInvalidation, PolicyContext).
 type PolicyContext struct {
+	// Candidate is freshly sampled by the trusted caller. Evidence may only
+	// apply to this exact invocation, authorization and execution snapshot.
+	Candidate       *ReviewCandidate
+	GuardianEnabled bool
+
 	// CurrentAction is the policy decision before Guardian evidence
 	// is applied ("allow", "ask", "deny", "hold").
 	CurrentAction string
@@ -124,6 +80,14 @@ const (
 // point in a later phase) constructs these from authoritative sources;
 // the Guardian package only validates them as pure computation.
 type CandidateFacts struct {
+	// Binding eligibility is supplied by the trusted built-in catalog.
+	BuiltinBinding      bool
+	RegisteredForReview bool
+	EffectRule          string
+	PermissionExpansion bool
+	ProtectedPaths      bool
+	ControlPlaneWrite   bool
+
 	// Capability must be CapabilityProcess (shell-family executor).
 	Capability string
 	// Stage must be StageCall (admission, not egress approval).
@@ -158,10 +122,19 @@ type EligibilityResult struct {
 // CheckEligibility applies the §2.1 conditions as a pure function.
 // All conditions must hold; the first failure determines the reason.
 func CheckEligibility(facts CandidateFacts) EligibilityResult {
+	if !facts.BuiltinBinding || !facts.RegisteredForReview {
+		return EligibilityResult{false, "binding is not registered for review"}
+	}
+	if !facts.SandboxRequired {
+		return EligibilityResult{false, "Strong Sandbox is required"}
+	}
+	if facts.PermissionExpansion || facts.ProtectedPaths || facts.ControlPlaneWrite {
+		return EligibilityResult{false, "expanded or protected authority excluded"}
+	}
 	if facts.Capability != "process" {
 		return EligibilityResult{false, "not CapabilityProcess"}
 	}
-	if facts.Stage != "" && facts.Stage != "call" {
+	if facts.Stage != "call" {
 		return EligibilityResult{false, "not StageCall"}
 	}
 	if facts.HostExecution {
@@ -182,8 +155,10 @@ func CheckEligibility(facts CandidateFacts) EligibilityResult {
 	if facts.EffectRisk != "high" {
 		return EligibilityResult{false, "only high-risk bounded process mutations are reviewable"}
 	}
-	if facts.EffectReversibility == "irreversible" {
-		return EligibilityResult{false, "irreversible effect excluded"}
+	if facts.EffectRule != securitymodel.RuleProcessMutating ||
+		facts.EffectKind != string(securitymodel.ProcessMutating) ||
+		facts.EffectReversibility != string(securitymodel.Bounded) {
+		return EligibilityResult{false, "only RuleProcessMutating process.mutating/high/bounded is reviewable"}
 	}
 	if !facts.EvidenceComplete {
 		return EligibilityResult{false, "execution evidence is incomplete"}
@@ -197,7 +172,7 @@ func CheckEligibility(facts CandidateFacts) EligibilityResult {
 // any other value (including empty or unknown) falls through to the
 // deterministic-rule or discard paths.
 func Evaluate(
-	assessment *Assessment,
+	evidence *ReviewEvidence,
 	invalid EvidenceInvalidation,
 	policy PolicyContext,
 ) Outcome {
@@ -224,14 +199,22 @@ func Evaluate(
 	}
 	// Row 5: current rules ask with non-eligible constraints → keep Ask.
 	if policy.HasExplicitAsk || policy.HasFreshRequirement ||
-		!policy.PermissionAuto || policy.DisableAutoReview {
+		!policy.PermissionAuto || !policy.GuardianEnabled || policy.DisableAutoReview {
 		return OutcomeKeepAsk
+	}
+	if policy.Candidate == nil || policy.Candidate.Validate() != nil ||
+		!CheckEligibility(policy.Candidate.Facts).Eligible {
+		return OutcomeKeepAsk
+	}
+	if evidence != nil && evidence.candidateDigest != policy.Candidate.Digest() {
+		return OutcomeDiscard
 	}
 	// Row 6: model unavailable, invalid, or incomplete → Ask.
 	// (The caller passes a nil assessment in this case.)
-	if assessment == nil {
+	if evidence == nil || evidence.candidateDigest == "" {
 		return OutcomeKeepAsk
 	}
+	assessment := &evidence.assessment
 	// Row 7: model risk high/critical, auth unknown/conflicting, or
 	// recommendation prompt → Ask.
 	if assessment.RiskLevel == RiskHigh || assessment.RiskLevel == RiskCritical {

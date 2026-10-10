@@ -137,6 +137,11 @@ func policyDecisionHint(code string) (
 		return "request_approval_again", true,
 			"the approval wait expired; resubmitting the same call asks for " +
 				"approval again", true
+	case "approval_recovery_stale":
+		return "revalidate_and_request_approval", false,
+			"the restored approval no longer covers the current operation. No command was started. " +
+				"Inspect the current resources and permissions, then propose the corrected operation " +
+				"for a new approval or declare the task incomplete; do not replay the old approval", true
 	case "authorization_changed":
 		return "retry_original", true,
 			"tool authorization changed mid-flight; retry the same call to " +

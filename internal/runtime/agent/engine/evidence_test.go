@@ -103,18 +103,13 @@ func TestDiagnosticsCloseAndOpenTheEvidenceGap(t *testing.T) {
 	}
 }
 
-func TestVerifiedPathsClearTheRiskWorkspaceRelative(t *testing.T) {
+func TestChangedPathsRemainWorkspaceRelativeWithoutVerificationRisk(t *testing.T) {
 	engine := evidenceEngine(t)
 	absolute := filepath.Join(engine.options.Workspace, "a.go")
 	engine.observeChangeEvidence(tool.WorkspaceChange{Path: absolute, Kind: tool.WorkspaceModified})
-	if !hasRisk(engine, agentcontext.RiskUnverifiedChange) {
-		t.Fatal("a fresh change is not unverified")
-	}
-	// The gate reports the paths the way the guard spelled them, absolute; the
-	// evidence set keys on workspace-relative paths, so the two must be lined up.
-	engine.observeVerifiedEvidence([]string{absolute})
-	if hasRisk(engine, agentcontext.RiskUnverifiedChange) {
-		t.Fatal("verification did not clear the risk")
+	changes := engine.context.Evidence().Changes()
+	if len(changes) != 1 || changes[0].Path != "a.go" || hasRisk(engine, agentcontext.RiskUnverifiedChange) {
+		t.Fatalf("changes=%+v risks=%+v", changes, engine.EvidenceSnapshot().Risks)
 	}
 }
 
@@ -164,31 +159,31 @@ func TestRereadingAnUnchangedFileReminds(t *testing.T) {
 func TestForkInheritsTheEvidenceWithoutSharingIt(t *testing.T) {
 	parent := evidenceEngine(t)
 	parent.observeChangeEvidence(tool.WorkspaceChange{Path: "a.go", Kind: tool.WorkspaceModified})
+	parent.observeDiagnosticsEvidence([]verify.DiagnosticReceipt{{Path: "a.go", Status: "failed", Diagnostics: []verify.Diagnostic{{Path: "a.go", Message: "broken"}}}})
 	child, err := parent.Fork()
 	if err != nil {
 		t.Fatal(err)
 	}
-	parent.observeVerifiedEvidence([]string{"a.go"})
 
-	if !hasRisk(child, agentcontext.RiskUnverifiedChange) {
-		t.Fatal("the fork lost the inherited risk or shares the parent's verification")
+	parent.observeDiagnosticsEvidence([]verify.DiagnosticReceipt{{Path: "a.go", Status: "passed"}})
+	if !hasRisk(child, agentcontext.RiskOpenDiagnostics) || hasRisk(parent, agentcontext.RiskOpenDiagnostics) {
+		t.Fatal("the fork lost diagnostics or shares the parent evidence set")
 	}
 }
 
 // Compaction is exactly when the model loses the history that said an edit
-// happened, so the summary has to say which edits are still unproved.
-func TestCompactionSummaryCarriesUnverifiedChanges(t *testing.T) {
+// happened, so the summary retains recent edits without claiming validation.
+func TestCompactionSummaryCarriesRecentChanges(t *testing.T) {
 	engine := evidenceEngine(t)
 	engine.observeChangeEvidence(tool.WorkspaceChange{Path: "a.go", Kind: tool.WorkspaceModified})
 	engine.observeChangeEvidence(tool.WorkspaceChange{Path: "b.go", Kind: tool.WorkspaceModified})
-	engine.observeVerifiedEvidence([]string{"b.go"})
 
 	rendered, _, sections := engine.buildCompactSummary(nil).Render(0)
-	if !strings.Contains(rendered, "a.go (turn 1) — nothing verified it") {
-		t.Fatalf("summary = %q, want the unproved change to survive compaction", rendered)
+	if !strings.Contains(rendered, "a.go (turn 1) — changed") {
+		t.Fatalf("summary = %q, want the recent change to survive compaction", rendered)
 	}
-	if !strings.Contains(rendered, "b.go (turn 1) — verified") {
-		t.Fatalf("summary = %q, want the verified change reported as verified", rendered)
+	if !strings.Contains(rendered, "b.go (turn 1) — changed") {
+		t.Fatalf("summary = %q, want the recent change without a verification claim", rendered)
 	}
 	if !slices.Contains(sections, agentcontext.SectionChanges) {
 		t.Fatalf("sections = %v", sections)
@@ -206,8 +201,8 @@ func TestTailRenderCountsRisksAndReminders(t *testing.T) {
 
 	engine.turnContextMessages(t.Context())
 	snapshot := metrics.Snapshot()
-	// Two risks: the change is both unverified and unread.
-	if snapshot.EvidenceRisks != 2 || snapshot.PolicyReminders != 1 {
+	// Writing without a prior read remains a risk; missing coverage is not.
+	if snapshot.EvidenceRisks != 1 || snapshot.PolicyReminders != 1 {
 		t.Fatalf("metrics = %+v", snapshot)
 	}
 }

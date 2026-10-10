@@ -233,7 +233,7 @@ func TestSessionDeltaRestoresLatestDurableSnapshot(t *testing.T) {
 	if target.SessionRevision() != 5 || len(target.History()) != 1 ||
 		usage.InputTokens != 9 || cost != 0.25 ||
 		len(target.context.WorkingSet().Select(5, 10)) != 2 || target.turn != 5 ||
-		len(target.EvidenceSnapshot().Risks) != 1 ||
+		len(target.EvidenceSnapshot().Risks) != 0 || len(target.context.Evidence().Changes()) != 1 ||
 		!strings.Contains(target.planText, "step one") ||
 		targetWindow.ID != sourceWindow.ID ||
 		targetWindow.PrefillTokens != 960 ||
@@ -266,7 +266,7 @@ func TestSessionDeltaRestoresLatestDurableSnapshot(t *testing.T) {
 	targetWindow = target.context.Window()
 	if !strings.Contains(fork.planText, "step one") ||
 		len(fork.WorkingSetEntries(5, 10)) != 2 ||
-		len(fork.EvidenceSnapshot().Risks) != 1 ||
+		len(fork.EvidenceSnapshot().Risks) != 0 || len(fork.context.Evidence().Changes()) != 1 ||
 		forkWindow.ID == targetWindow.ID ||
 		forkWindow.Number != 1 || forkWindow.PrefillObserved {
 		t.Fatalf(

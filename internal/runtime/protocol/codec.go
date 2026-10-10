@@ -47,6 +47,7 @@ var eventData = []struct {
 	{EventProviderAttempt, func() EventData { return &ProviderAttemptData{} }},
 	{EventToolState, func() EventData { return &ToolStateData{} }},
 	{EventToolStart, func() EventData { return &ToolStartData{} }},
+	{EventGuardianReview, func() EventData { return &GuardianReviewData{} }},
 	{EventToolOutput, func() EventData { return &ToolOutputData{} }},
 	{EventToolResult, func() EventData { return &ToolResultData{} }},
 	{EventToolCatalogChanged, func() EventData { return &ToolCatalogChangedData{} }},

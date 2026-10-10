@@ -17,6 +17,10 @@ type throughputGovernor interface {
 	ReserveThroughput(model.ReadyRoute, uint64)
 }
 
+type atomicThroughputGovernor interface {
+	TryReserveThroughput(model.ReadyRoute, uint64, uint64) providerratelimit.Decision
+}
+
 type throughputShrink func() (uint64, bool, error)
 
 func (e *Engine) admitProviderThroughput(
@@ -31,7 +35,12 @@ func (e *Engine) admitProviderThroughput(
 	if !ok {
 		return nil
 	}
-	decision := governor.DecideThroughput(
+	decide := governor.DecideThroughput
+	atomicGovernor, atomic := e.options.Provider.(atomicThroughputGovernor)
+	if atomic {
+		decide = atomicGovernor.TryReserveThroughput
+	}
+	decision := decide(
 		route, required, e.options.TokensPerMinute,
 	)
 	if shrink != nil &&
@@ -42,14 +51,14 @@ func (e *Engine) admitProviderThroughput(
 		}
 		if folded {
 			required = next
-			decision = governor.DecideThroughput(
+			decision = decide(
 				route, required, e.options.TokensPerMinute,
 			)
 		}
 	}
 	switch decision.Status {
 	case providerratelimit.StatusAdmit:
-		if decision.Source != providerratelimit.SourceUnknown {
+		if !atomic && decision.Source != providerratelimit.SourceUnknown {
 			governor.ReserveThroughput(route, required)
 		}
 		return nil
@@ -77,13 +86,15 @@ func (e *Engine) admitProviderThroughput(
 		if err := waitRetryDelay(ctx, decision.Wait); err != nil {
 			return err
 		}
-		retried := governor.DecideThroughput(
+		retried := decide(
 			route, required, e.options.TokensPerMinute,
 		)
 		if retried.Status != providerratelimit.StatusAdmit {
 			return throughputRefusal(retried, retried.Reason, false)
 		}
-		governor.ReserveThroughput(route, required)
+		if !atomic {
+			governor.ReserveThroughput(route, required)
+		}
 		return nil
 	default:
 		return throughputRefusal(decision, decision.Reason, false)

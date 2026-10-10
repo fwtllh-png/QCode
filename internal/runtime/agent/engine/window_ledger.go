@@ -37,6 +37,7 @@ func (e *Engine) prepareTokenWindow(
 		)
 		agentcontext.ApplyWindowProjection(context, projection)
 		agentcontext.ApplyCapacity(context, capacity)
+		context.CompactionHeadroomTokens, context.CompactionTargetTokens = e.viewFold.headroom, e.viewFold.target
 		return projection
 	}
 	scope.mu.Lock()
@@ -48,6 +49,7 @@ func (e *Engine) prepareTokenWindow(
 	scope.mu.Unlock()
 	agentcontext.ApplyWindowProjection(context, projection)
 	agentcontext.ApplyCapacity(context, capacity)
+	context.CompactionHeadroomTokens, context.CompactionTargetTokens = e.viewFold.headroom, e.viewFold.target
 	return projection
 }
 
@@ -57,6 +59,12 @@ func (e *Engine) observeTokenWindow(
 	cachedTokens uint64,
 ) {
 	if context == nil {
+		return
+	}
+	context.MeasuredInputTokens = inputTokens
+	if inputTokens == 0 {
+		// Missing provider input usage must leave the prepared request estimate
+		// intact, even when a previous request has an observed baseline.
 		return
 	}
 	// Calibrate before the plausibility guard below: an overflowing report
@@ -82,8 +90,10 @@ func (e *Engine) observeTokenWindow(
 			window.RebaseEstimates(previousRatio, currentRatio)
 		}
 		e.context.SetWindow(window)
+		observed := *context
+		observed.EstimatedTokens = window.ObservedEstimateTokens
 		projection := window.Prepare(
-			context, context.WindowOutputReserve, e.autoCompactLimit(),
+			&observed, context.WindowOutputReserve, e.autoCompactLimit(),
 			hardLimit,
 		)
 		agentcontext.ApplyWindowProjection(context, projection)
@@ -98,8 +108,10 @@ func (e *Engine) observeTokenWindow(
 		window.RebaseEstimates(previousRatio, currentRatio)
 	}
 	scope.state.context.SetWindow(window)
+	observed := *context
+	observed.EstimatedTokens = window.ObservedEstimateTokens
 	projection := window.Prepare(
-		context, context.WindowOutputReserve, e.autoCompactLimit(),
+		&observed, context.WindowOutputReserve, e.autoCompactLimit(),
 		hardLimit,
 	)
 	scope.mu.Unlock()
@@ -134,6 +146,7 @@ func (e *Engine) advanceTokenWindow() agentcontext.WindowLedger {
 		if err != nil {
 			next = agentcontext.FallbackWindowLedger(current, e.options.SessionID)
 		}
+		next.RetainHistoryFrom(current.HistoryFloorTurn)
 		scope.state.context.SetWindow(next)
 		scope.mu.Unlock()
 		return next
@@ -143,6 +156,7 @@ func (e *Engine) advanceTokenWindow() agentcontext.WindowLedger {
 	if err != nil {
 		next = agentcontext.FallbackWindowLedger(current, e.options.SessionID)
 	}
+	next.RetainHistoryFrom(current.HistoryFloorTurn)
 	e.context.SetWindow(next)
 	return next
 }

@@ -601,9 +601,12 @@ func (e *Engine) modelStep(
 			return nil, nil, totalUsage, lastEstimate, holdErr
 		}
 		// Metadata sampling may have settled usage while this attempt queued.
-		maxOutputTokens, err = e.checkBudget(
-			windowProjection.FullActiveTokens, turnUsage, totalUsage, maxOutputTokens,
-		)
+		currentUsage := turnUsage
+		currentUsage.Add(totalUsage)
+		e.syncSessionTitleState(currentUsage)
+		var settleBudget func(provider.Usage)
+		maxOutputTokens, settleBudget, err = e.reserveModelBudget(e.options, route,
+			windowProjection.FullActiveTokens, maxOutputTokens, scope.spec.Identity.TurnID, false)
 		if err != nil {
 			sampleLease.Release()
 			return nil, nil, totalUsage, lastEstimate, err
@@ -636,6 +639,7 @@ func (e *Engine) modelStep(
 				StartedAt:            attemptStarted,
 			},
 		}); err != nil {
+			settleBudget(provider.Usage{})
 			sampleLease.Release()
 			return nil, nil, totalUsage, lastEstimate, err
 		}
@@ -747,6 +751,7 @@ func (e *Engine) modelStep(
 				},
 			},
 		)
+		settleBudget(transport.ConsumeResult.Usage)
 		blocks, meaningful := transport.Blocks, transport.Meaningful
 		if err != nil && !transport.Opened {
 			if sendErr := send(CallingModel, Event{ModelExecution: &ModelExecution{

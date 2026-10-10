@@ -11,7 +11,6 @@ import (
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
 	completiontool "github.com/fwtllh-png/QCode/internal/adapter/tool/completion"
 	"github.com/fwtllh-png/QCode/internal/adapter/tool/interact"
-	"github.com/fwtllh-png/QCode/internal/observability/verify"
 	"github.com/fwtllh-png/QCode/internal/runtime/agent/turnkernel"
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
 	"github.com/fwtllh-png/QCode/internal/security/policy"
@@ -50,7 +49,7 @@ type declarationCommandTool struct{}
 
 func (declarationCommandTool) Descriptor() tool.Descriptor {
 	return tool.Descriptor{
-		Name: "exec_command", Description: "record fixture verification",
+		Name: "exec_command", Description: "record fixture command execution",
 		Visibility: tool.VisibleModel, Capability: tool.CapabilityProcess,
 		AccessMode: tool.AccessTree, ParallelPolicy: tool.ParallelSerial,
 		SandboxRequirement: tool.SandboxNone,
@@ -58,12 +57,9 @@ func (declarationCommandTool) Descriptor() tool.Descriptor {
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"covered_paths": map[string]any{
-					"type":  "array",
-					"items": map[string]any{"type": "string"},
-				},
+				"cmd": map[string]any{"type": "string"},
 			},
-			"required": []string{"covered_paths"}, "additionalProperties": false,
+			"required": []string{"cmd"}, "additionalProperties": false,
 		},
 	}
 }
@@ -72,7 +68,6 @@ func (declarationCommandTool) TrustedBinding() tool.TrustedBinding {
 	binding := tool.TrustedBindingFromDescriptor(
 		declarationCommandTool{}.Descriptor(),
 	)
-	binding.ProducesVerificationEvidence = true
 	return binding
 }
 
@@ -80,12 +75,12 @@ func (declarationCommandTool) Execute(
 	_ context.Context, raw json.RawMessage,
 ) (tool.Result, error) {
 	var input struct {
-		CoveredPaths []string `json:"covered_paths"`
+		Command string `json:"cmd"`
 	}
 	if err := json.Unmarshal(raw, &input); err != nil {
 		return tool.Result{}, err
 	}
-	return commandEvidenceResult(verify.StatusPassed, input.CoveredPaths), nil
+	return tool.Result{Content: "exit 0"}, nil
 }
 
 func TestSubmittedPlanContinuesCurrentTurn(t *testing.T) {
@@ -192,7 +187,7 @@ func TestSubmittedPlanRetriesPreviouslyRejectedReplayTool(t *testing.T) {
 func TestReadOnlyAnswerCompletesFromEndTurnWithoutDeclarationRepair(t *testing.T) {
 	registry := declarationRegistry(t, false)
 	runtime := &scriptedProvider{streams: []provider.Stream{textStream("Direct answer.")}}
-	engine := declarationEngine(t, runtime, registry, passedReceipt())
+	engine := declarationEngine(t, runtime, registry)
 
 	result, err := engine.RunForTurnWithIntentAndAttachments(
 		t.Context(), "turn-answer-direct", "answer this",
@@ -215,7 +210,7 @@ func TestWorkspaceChangeCompletesFromCapturedText(t *testing.T) {
 		toolCallStream("write-1", "write_fixture", `{}`),
 		textStream("Implemented and verified."),
 	}}
-	engine := declarationEngine(t, runtime, registry, passedReceipt())
+	engine := declarationEngine(t, runtime, registry)
 	var events []Event
 
 	result, err := engine.RunForTurnWithIntentAndAttachments(
@@ -235,17 +230,10 @@ func TestWorkspaceChangeCompletesFromCapturedText(t *testing.T) {
 	if len(runtime.requests) != 2 {
 		t.Fatalf("requests = %d, want 2", len(runtime.requests))
 	}
-	verifyIndex, finalIndex := -1, -1
-	for index, event := range events {
+	for _, event := range events {
 		if event.State == Verifying {
-			verifyIndex = index
+			t.Fatal("completion invoked the retired gate")
 		}
-		if event.Text == "Implemented and verified." {
-			finalIndex = index
-		}
-	}
-	if verifyIndex < 0 || finalIndex < 0 || verifyIndex >= finalIndex {
-		t.Fatalf("verification must precede final answer: %+v", events)
 	}
 }
 
@@ -255,7 +243,7 @@ func TestAnswerMutationCompletesFromCapturedText(t *testing.T) {
 		toolCallStream("write-1", "write_fixture", `{}`),
 		textStream("I changed the file and the review is complete."),
 	}}
-	engine := declarationEngine(t, runtime, registry, passedReceipt())
+	engine := declarationEngine(t, runtime, registry)
 
 	result, err := engine.RunForTurnWithIntentAndAttachments(
 		t.Context(), "turn-answer", "fix a.go",
@@ -282,7 +270,7 @@ func TestReadOnlyToolTurnCompletesFromCapturedText(t *testing.T) {
 		toolCallStream("read-1", "echo", `{"text":"evidence"}`),
 		textStream("The review is complete and the findings are ready."),
 	}}
-	engine := declarationEngine(t, runtime, registry, passedReceipt())
+	engine := declarationEngine(t, runtime, registry)
 
 	result, err := engine.RunForTurnWithIntentAndAttachments(
 		t.Context(), "turn-read-only", "review the evidence",
@@ -305,7 +293,7 @@ func TestNoToolPlanCompletesFromCapturedText(t *testing.T) {
 	runtime := &scriptedProvider{streams: []provider.Stream{
 		textStream("I will now provide the implementation plan."),
 	}}
-	engine := declarationEngine(t, runtime, registry, passedReceipt())
+	engine := declarationEngine(t, runtime, registry)
 
 	result, err := engine.RunForTurnWithIntentAndAttachments(
 		t.Context(), "turn-read-only-plan", "plan the change",
@@ -335,7 +323,7 @@ func TestReadOnlyPlanCompletesOnFirstTextSample(t *testing.T) {
 	runtime := &scriptedProvider{streams: []provider.Stream{
 		textStream("The R3, R4, and R5 evidence review is complete."),
 	}}
-	engine := declarationEngine(t, runtime, registry, passedReceipt())
+	engine := declarationEngine(t, runtime, registry)
 
 	result, err := engine.RunForTurnWithIntentAndAttachments(
 		t.Context(), "turn-progressing-declarations",
@@ -365,7 +353,7 @@ func TestIncompleteDeclarationStopsWithResumableBlockedOutcome(t *testing.T) {
 			"pending_actions":["inspect the second piece of evidence"]
 		}`),
 	}}
-	engine := declarationEngine(t, runtime, registry, passedReceipt())
+	engine := declarationEngine(t, runtime, registry)
 	var events []Event
 
 	result, err := engine.RunForTurnWithIntentAndAttachments(
@@ -415,11 +403,6 @@ func TestCompletionDeclarationBindsExactMutationRevision(t *testing.T) {
 	engine := newEngine(t, &scriptedProvider{}, tool.NewRegistry(nil, nil))
 	scope := attachTestScope(t, engine)
 	scope.state.diff.Record(turnkernel.TurnDiffEntry{Path: "a.go", Kind: "modified"})
-	scope.state.verification = append(scope.state.verification, verify.Evidence{
-		SchemaVersion: 1, Kind: "verify", Status: verify.StatusPassed,
-		CoveredPaths: []string{"a.go"}, CallID: "verify-1",
-		MutationRevision: 1,
-	})
 	declaration := tool.CompletionDeclaration{
 		Status: "complete", Summary: "done",
 	}
@@ -566,86 +549,6 @@ func TestMalformedCompletionResultPreservesSchemaError(t *testing.T) {
 	}
 }
 
-func TestVerificationRepairInvalidatesCompletionDeclaration(t *testing.T) {
-	registry := declarationRegistry(t, true)
-	runtime := &scriptedProvider{streams: []provider.Stream{
-		toolCallStream("write-1", "write_fixture", `{}`),
-		toolCallStream("complete-1", completiontool.Name, `{
-			"status":"complete",
-			"summary":"mutation complete",
-			"pending_actions":[]
-		}`),
-		toolCallStream("verify-1", "exec_command", `{"covered_paths":["a.go"]}`),
-		toolCallStream("complete-2", completiontool.Name, `{
-			"status":"complete",
-			"summary":"Implemented and verified.",
-			"pending_actions":[]
-		}`),
-	}}
-	engine := declarationEngine(t, runtime, registry, verify.Receipt{
-		Scope: verify.ScopeDiagnostics, Status: verify.StatusUnavailable,
-		Message: "no diagnostics covered a.go",
-	})
-	engine.options.Verify.Mode = VerifyModeHard
-	var completion *tool.CompletionDeclaration
-
-	result, err := engine.RunForTurnWithIntentAndAttachments(
-		t.Context(), "turn-1", "change a.go",
-		protocol.TurnIntentWorkspaceChange, nil, func(event Event) error {
-			if event.Completion != nil {
-				copy := *event.Completion
-				completion = &copy
-			}
-			return nil
-		},
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.State != Completed || result.Verification == nil ||
-		result.Verification.Status != verify.StatusPassed {
-		t.Fatalf("result = %+v", result)
-	}
-	if len(runtime.requests) != 4 ||
-		!requestContains(runtime.requests[2], "[verify]") ||
-		completion == nil ||
-		completion.CallID != "complete-2" {
-		t.Fatalf("repair sequence = %+v", runtime.requests)
-	}
-}
-
-func TestHardVerificationRepairCompletesFromLaterText(t *testing.T) {
-	registry := declarationRegistry(t, true)
-	runtime := &scriptedProvider{streams: []provider.Stream{
-		toolCallStream("write-1", "write_fixture", `{}`),
-		toolCallStream("complete-1", completiontool.Name, `{
-			"status":"complete",
-			"summary":"mutation complete",
-			"pending_actions":[]
-		}`),
-		toolCallStream("verify-1", "exec_command", `{"covered_paths":["a.go"]}`),
-		textStream("Implemented and verified."),
-	}}
-	engine := declarationEngine(t, runtime, registry, verify.Receipt{
-		Scope: verify.ScopeDiagnostics, Status: verify.StatusUnavailable,
-		Message: "no diagnostics covered a.go",
-	})
-	engine.options.Verify.Mode = VerifyModeHard
-
-	result, err := engine.RunForTurnWithIntentAndAttachments(
-		t.Context(), "turn-progress", "change a.go",
-		protocol.TurnIntentWorkspaceChange, nil, nil,
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.State != Completed ||
-		result.Text != "Implemented and verified." ||
-		len(runtime.requests) != 4 {
-		t.Fatalf("result=%+v requests=%d", result, len(runtime.requests))
-	}
-}
-
 func batchCallStream(calls ...provider.ToolCall) provider.Stream {
 	events := make([]provider.StreamEvent, 0, len(calls)+1)
 	for index, call := range calls {
@@ -680,7 +583,7 @@ func TestBatchedCompletionDeclarationRecoversFromAnyPosition(t *testing.T) {
 	commandFor := func(id string) provider.ToolCall {
 		return provider.ToolCall{
 			ID: id, Name: "exec_command",
-			Arguments: `{"covered_paths":["a.go"]}`,
+			Arguments: `{"cmd":"go test ./..."}`,
 		}
 	}
 	writeFor := func(id string) provider.ToolCall {
@@ -742,12 +645,7 @@ func TestBatchedCompletionDeclarationRecoversFromAnyPosition(t *testing.T) {
 			runtime := &scriptedProvider{streams: []provider.Stream{
 				batchCallStream(testCase.calls...), retry,
 			}}
-			engine := declarationEngine(t, runtime, declarationRegistry(t, true),
-				verify.Receipt{
-					Scope:   verify.ScopeDiagnostics,
-					Status:  verify.StatusUnavailable,
-					Message: "no diagnostics covered a.go",
-				})
+			engine := declarationEngine(t, runtime, declarationRegistry(t, true))
 			result, err := engine.RunForTurnWithIntentAndAttachments(
 				t.Context(), "turn-batch", testCase.input,
 				testCase.intent, nil, nil,
@@ -784,7 +682,7 @@ func requestToolResultContains(request provider.ModelRequest, value string) bool
 	return false
 }
 
-func declarationRegistry(t *testing.T, withVerification bool) *tool.Registry {
+func declarationRegistry(t *testing.T, withCommand bool) *tool.Registry {
 	t.Helper()
 	registry := tool.NewRegistry(nil, nil)
 	for _, executor := range []tool.Executor{
@@ -794,7 +692,7 @@ func declarationRegistry(t *testing.T, withVerification bool) *tool.Registry {
 			t.Fatal(err)
 		}
 	}
-	if withVerification {
+	if withCommand {
 		if err := registry.Register(declarationCommandTool{}); err != nil {
 			t.Fatal(err)
 		}
@@ -806,7 +704,6 @@ func declarationEngine(
 	t *testing.T,
 	runtime *scriptedProvider,
 	registry *tool.Registry,
-	receipt verify.Receipt,
 ) *Engine {
 	t.Helper()
 	root := t.TempDir()
@@ -815,12 +712,7 @@ func declarationEngine(
 
 		Authorize:                    func(provider.ToolCall) bool { return true },
 		RequireCompletionDeclaration: true,
-
-		Verify: VerifyOptions{
-			Mode: VerifyModeSoft, Scope: verify.ScopeDiagnostics,
-			MaxRepairSteps: 1,
-			Runner:         &scriptedVerifier{receipts: []verify.Receipt{receipt}},
-		}}, SecurityConfig: SecurityConfig{Workspace: root, Journal: newTestWorkspaceJournal(t, root)}, LifecycleConfig: LifecycleConfig{InputHost: interact.NewHost(0)},
+	}, SecurityConfig: SecurityConfig{Workspace: root, Journal: newTestWorkspaceJournal(t, root)}, LifecycleConfig: LifecycleConfig{InputHost: interact.NewHost(0)},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -866,7 +758,7 @@ func TestPreserveProvisionalAppendsClosingSummaryToCapturedText(t *testing.T) {
 			{Type: provider.EventMessageStop, StopReason: provider.StopReasonToolUse},
 		}},
 	}}
-	engine := declarationEngine(t, runtime, registry, passedReceipt())
+	engine := declarationEngine(t, runtime, registry)
 
 	result, err := engine.RunForTurnWithIntentAndAttachments(
 		t.Context(), "turn-preserved-narration",

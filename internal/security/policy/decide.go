@@ -166,7 +166,7 @@ func (r *Runtime) decide(invocation Invocation) Decision {
 			Layer:  LayerAutoReview,
 		}
 	}
-	return decision
+	return r.applyGuardian(invocation, decision)
 }
 
 func inputLayer(invocation Invocation, assessment securitymodel.Assessment) (Decision, bool) {

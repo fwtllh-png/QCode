@@ -49,8 +49,6 @@ type execCommandInput struct {
 	WritePaths      []string                     `json:"write_paths"`
 	NetworkTargets  []tool.DeclaredNetworkTarget `json:"network_targets"`
 	AllowLoopback   bool                         `json:"allow_loopback"`
-	Verification    string                       `json:"verification"`
-	CoveredPaths    []string                     `json:"covered_paths"`
 	Settle          string                       `json:"settle"`
 	Env             map[string]string            `json:"env"`
 }
@@ -80,7 +78,6 @@ type protocolExecutor struct {
 	runtime                    outcomeRuntime
 	expand                     bool
 	validateMissingWriteParent bool
-	verificationField          string
 }
 
 func (e *protocolExecutor) TrustedBinding() tool.TrustedBinding {
@@ -88,11 +85,10 @@ func (e *protocolExecutor) TrustedBinding() tool.TrustedBinding {
 	binding.Capability = tool.CapabilityProcess
 	binding.ValidateMissingWriteParent = e.validateMissingWriteParent
 	binding.IsolatesWriteTrees = e.expand
+	binding.GuardianReview = e.expand
 	binding.SupportsFullAccess = e.expand
 	binding.SupportsHostExecution = e.expand
 	binding.Required.ProcessTree = securitymodel.ProcessTreeGroupKill
-	binding.ProducesVerificationEvidence = true
-	binding.VerificationField = e.verificationField
 	return binding
 }
 
@@ -118,24 +114,10 @@ func registerProcessProtocol(
 	execRuntime, err := typed.Define(typed.Spec[execCommandInput, tool.Result]{
 		Descriptor:  execCommandDescriptor(),
 		Disposition: tool.DispositionDetached,
-		Validate: func(input execCommandInput) error {
-			if err := validateExecutionTarget(input); err != nil {
-				return err
-			}
-			if _, err := processYield(input.YieldTimeMS, defaultExecYield); err != nil {
-				return err
-			}
-			if err := validateVerification(input); err != nil {
-				return err
-			}
-			if err := validateSettleMode(input); err != nil {
-				return err
-			}
-			return validateNetworkTargets(input.NetworkTargets)
-		},
-		Run:     protocol.execCommand,
-		Encode:  identityResult,
-		Outcome: processOutcome,
+		Validate:    validateExecCommandInput,
+		Run:         protocol.execCommand,
+		Encode:      identityResult,
+		Outcome:     processOutcome,
 	})
 	if err != nil {
 		return err
@@ -150,7 +132,6 @@ func registerProcessProtocol(
 			runtime:                    execOutcome,
 			expand:                     true,
 			validateMissingWriteParent: true,
-			verificationField:          "verification",
 		}); err != nil {
 		return err
 	}
@@ -260,17 +241,11 @@ func execCommandDescriptor() tool.Descriptor {
 			"settle=discard uses the scoped isolated sandbox. Full Access supports browsers/PTY; " +
 			"macOS still rejects incompatible nested sandbox profiles. " +
 			"In sandbox mode, protected metadata, credential locations and explicit " +
-			"rules remain enforced. Unscoped Full Access commands and declared verification " +
+			"rules remain enforced. Unscoped Full Access commands " +
 			"need no routine approval or plan gate. When Full Access is active, diagnose " +
 			"failures instead of asking the user to select it again. " +
-			"Verification evidence: declare verification (test, build, lint, " +
-			"or check) with exact workspace-relative covered_paths; any write " +
-			"to a command's own covered_paths invalidates its evidence. " +
-			"settle=discard with write_paths runs the command in a copy and " +
-			"drops its writes (shadow verification). Declared verification " +
-			"runs under POSIX set -e; chain checks with &&. Only a natural " +
-			"exit on unchanged inputs passes; running or terminated " +
-			"processes never count as passed. Scoped network access requires every " +
+			"settle=discard with write_paths runs the command in a copy and drops its writes. " +
+			"Scoped network access requires every " +
 			"destination in network_targets. HTTPS control is at the CONNECT " +
 			"tunnel endpoint only; declared methods are enforced per method " +
 			"for plaintext HTTP. Undeclared egress is denied by the managed " +
@@ -294,7 +269,6 @@ func execCommandDescriptor() tool.Descriptor {
 			PathsField:          "write_paths",
 			NetworkTargetsField: "network_targets",
 			LoopbackField:       "allow_loopback",
-			ReadPathsField:      "covered_paths",
 		},
 		ParallelPolicy:     tool.ParallelConcurrent,
 		SandboxRequirement: tool.SandboxStrong,
@@ -324,13 +298,6 @@ func execCommandDescriptor() tool.Descriptor {
 				"rows":          map[string]any{"type": "integer"},
 				"cols":          map[string]any{"type": "integer"},
 				"description":   map[string]any{"type": "string"},
-				"verification": map[string]any{
-					"type": "string", "enum": []any{"test", "build", "lint", "check"},
-				},
-				"covered_paths": map[string]any{
-					"type": "array", "minItems": 1,
-					"items": map[string]any{"type": "string", "minLength": 1},
-				},
 				"write_paths": map[string]any{
 					"type": "array", "maxItems": sandbox.MaxExactWorkspaceWritePaths,
 					"items":       map[string]any{"type": "string"},
@@ -363,6 +330,32 @@ func execCommandDescriptor() tool.Descriptor {
 
 func validateNetworkTargets(targets []tool.DeclaredNetworkTarget) error {
 	return tool.ValidateDeclaredNetworkTargets(targets)
+}
+
+func validateExecCommandInput(input execCommandInput) error {
+	if err := validateExecutionTarget(input); err != nil {
+		return err
+	}
+	if _, err := processYield(input.YieldTimeMS, defaultExecYield); err != nil {
+		return err
+	}
+	if _, err := processTimeout(input.TimeoutMS); err != nil {
+		return err
+	}
+	if _, err := processOutputTokens(input.OutputTokens); err != nil {
+		return err
+	}
+	if (input.Rows == 0) != (input.Cols == 0) {
+		return errors.New("rows and cols must be supplied together")
+	}
+	if err := validateSettleMode(input); err != nil {
+		return err
+	}
+	if err := validateNetworkTargets(input.NetworkTargets); err != nil {
+		return err
+	}
+	_, err := environmentEntries(input.Env)
+	return err
 }
 
 func validateSettleMode(input execCommandInput) error {
@@ -584,18 +577,12 @@ func (p *commandProtocol) execCommand(
 		}
 	}
 	sandboxBackend, requireStrong := processSandbox(ctx, sandboxBackend)
-	// Apply the covered_paths default before the set -e decision: a defaulted
-	// check is a declared verification and must stop mid-statement on failure.
-	applyVerificationDefaults(&input)
 	command := input.Command
-	if input.Verification != "" {
-		command = "set -e\n" + command
-	}
 	if requireStrong && !fullAccess {
 		command = wrapSandboxTempCommand(command)
 	}
 	if result, denied := p.preflightExecutables(
-		sandboxBackend, command, directory, input.CoveredPaths, input.Env,
+		sandboxBackend, command, directory, nil, input.Env,
 	); denied && !fullAccess {
 		return result, nil
 	}
@@ -609,10 +596,6 @@ func (p *commandProtocol) execCommand(
 	}
 	if threadID == "" {
 		return tool.Result{}, errors.New("exec_command requires a thread identity")
-	}
-	evidence, err := p.prepareVerification(input)
-	if err != nil {
-		return tool.Result{}, err
 	}
 	env, err := environmentEntries(input.Env)
 	if err != nil {
@@ -705,7 +688,6 @@ func (p *commandProtocol) execCommand(
 			result.Content += fmt.Sprintf("\nExecution used Full Access: file writes=%s; network=%s. Explicit write_paths and network declarations restrict only their own dimension. Protected paths and credential services remain restricted; inspect the actual failure before retrying.", execution.EffectiveControls.FilesystemWrite, execution.EffectiveControls.Network)
 		}
 	}
-	attachVerification(&result, evidence, wait)
 	if wait.Running {
 		result.Metadata["error_category"] = "process_still_running"
 		result.Metadata["required_action"] = "write_stdin"
@@ -760,9 +742,6 @@ func (p *commandProtocol) execCommand(
 			p.forgetNetwork(id)
 			return result, settleErr
 		}
-		// Judge verification after settlement so isolated writes that land
-		// on covered paths are visible to the digest comparison.
-		invalidateVerificationOnCoveredWrites(&result, evidence, p.workspace.Root())
 		if closeErr := p.manager.Close(id, threadID); closeErr != nil {
 			if result.Metadata == nil {
 				result.Metadata = make(map[string]any)
@@ -773,10 +752,10 @@ func (p *commandProtocol) execCommand(
 		delete(result.Metadata, "session_id")
 	} else {
 		// The session outlived the yield window: the isolate and the
-		// verification evidence settle on the final write_stdin poll, and
+		// workspace settles on the final write_stdin poll, and
 		// the session's OnClose hook reclaims them if that poll never
 		// comes (turn release, timeout).
-		p.storePendingExecution(id, isolated, evidence)
+		p.storePendingExecution(id, isolated)
 		isolated.session = nil
 	}
 	return result, nil

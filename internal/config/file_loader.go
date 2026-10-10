@@ -11,46 +11,40 @@ import (
 )
 
 type executionFileConfig struct {
-	WorkspaceMergeMaxDiffBytes *int     `toml:"workspace_merge_max_diff_bytes"`
-	Provider                   *string  `toml:"provider"`
-	Model                      *string  `toml:"model"`
-	Protocol                   *string  `toml:"protocol"`
-	BaseURL                    *string  `toml:"base_url"`
-	ModelMetadata              *string  `toml:"model_metadata"`
-	Mode                       *string  `toml:"mode"`
-	Workspace                  *string  `toml:"workspace"`
-	Tools                      *bool    `toml:"tools"`
-	MaxOutputTokens            *uint64  `toml:"max_output_tokens"`
-	MaxSteps                   *int     `toml:"max_steps"`
-	ImplementNoProgressSamples *int     `toml:"implement_no_progress_samples"`
-	Timeout                    *string  `toml:"timeout"`
-	LeaseTimeout               *string  `toml:"lease_timeout"`
-	ApprovalTimeout            *string  `toml:"approval_timeout"`
-	ConnectionTimeout          *string  `toml:"connection_timeout"`
-	TLSHandshakeTimeout        *string  `toml:"tls_handshake_timeout"`
-	ResponseHeaderTimeout      *string  `toml:"response_header_timeout"`
-	IdleTimeout                *string  `toml:"idle_timeout"`
-	MaxConcurrent              *int     `toml:"max_concurrent"`
-	RateLimit                  *float64 `toml:"rate_limit"`
-	ProviderRetryLimit         *int     `toml:"provider_retry_limit"`
-	InfrastructureRetryLimit   *int     `toml:"infrastructure_retry_limit"`
-	RateLimitRetryLimit        *int     `toml:"rate_limit_retry_limit"`
-	RateLimitWait              *string  `toml:"rate_limit_wait"`
-	TokensPerMinute            *uint64  `toml:"tokens_per_minute"`
-	BudgetTokens               *uint64  `toml:"budget_tokens"`
-	TurnBudgetTokens           *uint64  `toml:"turn_budget_tokens"`
-	BudgetUSD                  *float64 `toml:"budget_usd"`
-	ReasoningEffort            *string  `toml:"reasoning_effort"`
-	NativeSearch               *bool    `toml:"native_search"`
-	Verify                     struct {
-		Mode           *string `toml:"mode"`
-		Scope          *string `toml:"scope"`
-		OnFailure      *string `toml:"on_failure"`
-		Command        *string `toml:"command"`
-		MaxRepairSteps *int    `toml:"max_repair_steps"`
-		Timeout        *string `toml:"timeout"`
-	} `toml:"verify"`
-	Subagent struct {
+	// LegacyVerify is decoded only so existing profiles can start after gate removal.
+	LegacyVerify               map[string]any `toml:"verify"`
+	WorkspaceMergeMaxDiffBytes *int           `toml:"workspace_merge_max_diff_bytes"`
+	Provider                   *string        `toml:"provider"`
+	Model                      *string        `toml:"model"`
+	Protocol                   *string        `toml:"protocol"`
+	BaseURL                    *string        `toml:"base_url"`
+	ModelMetadata              *string        `toml:"model_metadata"`
+	Mode                       *string        `toml:"mode"`
+	Workspace                  *string        `toml:"workspace"`
+	Tools                      *bool          `toml:"tools"`
+	MaxOutputTokens            *uint64        `toml:"max_output_tokens"`
+	MaxSteps                   *int           `toml:"max_steps"`
+	ImplementNoProgressSamples *int           `toml:"implement_no_progress_samples"`
+	Timeout                    *string        `toml:"timeout"`
+	LeaseTimeout               *string        `toml:"lease_timeout"`
+	ApprovalTimeout            *string        `toml:"approval_timeout"`
+	ConnectionTimeout          *string        `toml:"connection_timeout"`
+	TLSHandshakeTimeout        *string        `toml:"tls_handshake_timeout"`
+	ResponseHeaderTimeout      *string        `toml:"response_header_timeout"`
+	IdleTimeout                *string        `toml:"idle_timeout"`
+	MaxConcurrent              *int           `toml:"max_concurrent"`
+	RateLimit                  *float64       `toml:"rate_limit"`
+	ProviderRetryLimit         *int           `toml:"provider_retry_limit"`
+	InfrastructureRetryLimit   *int           `toml:"infrastructure_retry_limit"`
+	RateLimitRetryLimit        *int           `toml:"rate_limit_retry_limit"`
+	RateLimitWait              *string        `toml:"rate_limit_wait"`
+	TokensPerMinute            *uint64        `toml:"tokens_per_minute"`
+	BudgetTokens               *uint64        `toml:"budget_tokens"`
+	TurnBudgetTokens           *uint64        `toml:"turn_budget_tokens"`
+	BudgetUSD                  *float64       `toml:"budget_usd"`
+	ReasoningEffort            *string        `toml:"reasoning_effort"`
+	NativeSearch               *bool          `toml:"native_search"`
+	Subagent                   struct {
 		Delegation  *string  `toml:"delegation"`
 		MaxDepth    *int     `toml:"max_depth"`
 		MaxParallel *int     `toml:"max_parallel"`
@@ -82,6 +76,7 @@ type routeFileConfig struct {
 	Lock    *bool                `toml:"lock"`
 	Vision  *routeSlotFileConfig `toml:"vision"`
 	Summary *routeSlotFileConfig `toml:"summary"`
+	Judge   *routeSlotFileConfig `toml:"judge"`
 }
 
 type routeSlotFileConfig struct {
@@ -95,6 +90,13 @@ type diagnosticCommandFileConfig struct {
 }
 
 type fileConfig struct {
+	Security struct {
+		Guardian struct {
+			Enabled         *bool   `toml:"enabled"`
+			Timeout         *string `toml:"timeout"`
+			MaxOutputTokens *uint64 `toml:"max_output_tokens"`
+		} `toml:"guardian"`
+	} `toml:"security"`
 	Runtime struct {
 		OperationBuffer  *int `toml:"operation_buffer"`
 		EventHistory     *int `toml:"event_history"`
@@ -230,6 +232,18 @@ func applyFile(
 		return fmt.Errorf("decode config %q: %w", path, err)
 	}
 	applyInt(input.Runtime.OperationBuffer, &config.Runtime.OperationBuffer, fieldOperationBuffer, source, provenance)
+	// A repository file cannot enable or redirect semantic approval review.
+	if trusted {
+		applyBool(input.Security.Guardian.Enabled, &config.Security.Guardian.Enabled, fieldGuardianEnabled, source, provenance)
+		if raw := input.Security.Guardian.Timeout; raw != nil {
+			value, err := time.ParseDuration(*raw)
+			if err != nil {
+				return fmt.Errorf("%s: %w", fieldGuardianTimeout, err)
+			}
+			applyDuration(&value, &config.Security.Guardian.Timeout, fieldGuardianTimeout, source, provenance)
+		}
+		applyUint64(input.Security.Guardian.MaxOutputTokens, &config.Security.Guardian.MaxOutputTokens, fieldGuardianMaxOutput, source, provenance)
+	}
 	applyInt(input.Runtime.EventHistory, &config.Runtime.EventHistory, fieldEventHistory, source, provenance)
 	applyInt(input.Runtime.SubscriberBuffer, &config.Runtime.SubscriberBuffer, fieldSubscriberBuffer, source, provenance)
 	applyString(input.State.DataDir, &config.State.DataDir, fieldStateDataDir, source, provenance)
@@ -470,13 +484,6 @@ func applyExecutionFile(
 	applyFloat64(input.BudgetUSD, &execution.BudgetUSD, fieldBudgetUSD, source, provenance)
 	applyString(input.ReasoningEffort, &execution.ReasoningEffort, fieldReasoning, source, provenance)
 	applyBool(input.NativeSearch, &execution.NativeSearch, fieldNativeSearch, source, provenance)
-	verify := &execution.Verify
-	applyString(input.Verify.Mode, &verify.Mode, fieldVerifyMode, source, provenance)
-	applyString(input.Verify.Scope, &verify.Scope, fieldVerifyScope, source, provenance)
-	applyString(input.Verify.OnFailure, &verify.OnFailure, fieldVerifyOnFailure, source, provenance)
-	applyString(input.Verify.Command, &verify.Command, fieldVerifyCommand, source, provenance)
-	applyInt(input.Verify.MaxRepairSteps, &verify.MaxRepairSteps, fieldVerifyRepair, source, provenance)
-	applyDurationString(input.Verify.Timeout, &verify.Timeout, fieldVerifyTimeout, source, provenance)
 	child := &execution.Subagent
 	applyString(input.Subagent.Delegation, &child.Delegation, fieldSubagentDelegation, source, provenance)
 	applyInt(input.Subagent.MaxDepth, &child.MaxDepth, fieldSubagentMaxDepth, source, provenance)
@@ -530,6 +537,7 @@ func applyRouteFile(
 	}{
 		{purpose: "vision", input: input.Vision},
 		{purpose: "summary", input: input.Summary},
+		{purpose: "judge", input: input.Judge},
 	}
 	for _, slot := range slots {
 		if slot.input == nil {

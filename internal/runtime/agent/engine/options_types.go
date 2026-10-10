@@ -64,10 +64,6 @@ type ToolConfig struct {
 	GuardFactory   func(context.Context) (*toolguard.Guard, error)
 	OnNetworkAllow toolguard.NetworkAllow
 	Diagnostics    verify.DiagnosticRunner
-	Verify         VerifyOptions
-	// VerificationOnly restricts verifier-role process launches to declared,
-	// workspace-read-only verification commands.
-	VerificationOnly bool
 
 	RequireCompletionDeclaration bool
 	MaxToolConcurrent            int
@@ -78,6 +74,8 @@ type ToolConfig struct {
 }
 
 type SecurityConfig struct {
+	GuardianSource           agentcontext.GuardianSource
+	Guardian                 GuardianConfig
 	Security                 *policy.Runtime
 	ProfilePermissionCeiling policy.Permission
 	Workspace                string

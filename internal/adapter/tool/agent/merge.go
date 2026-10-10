@@ -17,11 +17,9 @@ import (
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
 	filetool "github.com/fwtllh-png/QCode/internal/adapter/tool/file"
 	"github.com/fwtllh-png/QCode/internal/adapter/tool/typed"
-	"github.com/fwtllh-png/QCode/internal/observability/verify"
 	"github.com/fwtllh-png/QCode/internal/orchestration/subagent"
 	"github.com/fwtllh-png/QCode/internal/persist/workspacejournal"
 	"github.com/fwtllh-png/QCode/internal/platform/process"
-	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
 	"github.com/fwtllh-png/QCode/internal/security/authority"
 	"github.com/fwtllh-png/QCode/internal/security/filebroker"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
@@ -469,15 +467,11 @@ func (t *Tool) applyMergeAuthorized(
 		return tool.Result{}, t.failMergeCandidate(candidate, err, true)
 	}
 	changedPaths := appliedPaths(current.Changes)
-	verification, verifyMessage := t.verifyParent(ctx, changedPaths)
 	candidate.Status = subagent.IntegrationApplied
-	candidate.Verification = verification
 	candidate.Receipt = &subagent.IntegrationReceipt{
 		ChangedPaths: changedPaths,
-		Verification: verification,
 		AppliedAt:    time.Now().UTC(),
 	}
-	candidate.Message = verifyMessage
 	if err := t.control.SaveIntegration(candidate); err != nil {
 		_ = t.control.FinishIntegration(agentID, err)
 		return tool.Result{}, err
@@ -489,8 +483,8 @@ func (t *Tool) applyMergeAuthorized(
 		current.Changes, current.Diff, false,
 	)
 	result.Content = fmt.Sprintf(
-		"%s\npreview_digest=%s\nparent_verification=%s",
-		result.Content, candidate.PreviewDigest, verification.Verify,
+		"%s\npreview_digest=%s",
+		result.Content, candidate.PreviewDigest,
 	)
 	addIntegrationMetadata(&result, candidate)
 	result.Metadata["op"] = mergeApply
@@ -583,46 +577,6 @@ func (t *Tool) loadMergeCandidate(
 	return candidate, nil
 }
 
-func (t *Tool) verifyParent(
-	ctx context.Context,
-	paths []string,
-) (protocol.ReceiptVerification, string) {
-	outcome := protocol.ReceiptUnavailable
-	message := "parent verification unavailable"
-	if t.verify != nil {
-		receipt, err := t.verify.Verify(ctx, verify.Request{
-			Scope: verify.ScopeAffected, Paths: paths,
-		})
-		if err != nil {
-			message = "parent verification unavailable: " + err.Error()
-		} else {
-			outcome = protocolVerificationStatus(receipt.Status)
-			message = "parent verification " + outcome
-			if detail := strings.TrimSpace(receipt.Message); detail != "" {
-				message += ": " + detail
-			}
-		}
-	}
-	return protocol.ReceiptVerification{
-		Diagnostics: protocol.ReceiptNotEvaluated,
-		Tests:       outcome,
-		Verify:      outcome,
-	}, message
-}
-
-func protocolVerificationStatus(status string) string {
-	switch status {
-	case verify.StatusPassed:
-		return protocol.ReceiptPassed
-	case verify.StatusFailed:
-		return protocol.ReceiptFailed
-	case verify.StatusUnavailable:
-		return protocol.ReceiptUnavailable
-	default:
-		return protocol.ReceiptNotEvaluated
-	}
-}
-
 func normalizeMergeOp(op string) (string, error) {
 	switch normalized := strings.ToLower(strings.TrimSpace(op)); normalized {
 	case "", mergePreview:
@@ -650,11 +604,6 @@ func candidateFromMergePlan(
 		Paths:     append([]string(nil), plan.paths...),
 		Changes:   integrationChanges(plan.changes),
 		Conflicts: append([]string(nil), plan.conflicts...),
-		Verification: protocol.ReceiptVerification{
-			Diagnostics: protocol.ReceiptNotEvaluated,
-			Tests:       protocol.ReceiptNotEvaluated,
-			Verify:      protocol.ReceiptNotEvaluated,
-		},
 	}
 }
 
@@ -751,7 +700,6 @@ func addIntegrationMetadata(
 	result.Metadata["integration_status"] = string(candidate.Status)
 	result.Metadata["paths"] = append([]string(nil), candidate.Paths...)
 	result.Metadata["conflicts"] = append([]string(nil), candidate.Conflicts...)
-	result.Metadata["verification"] = candidate.Verification
 	if candidate.Receipt != nil {
 		result.Metadata["integration_receipt"] = *candidate.Receipt
 	}

@@ -1,0 +1,40 @@
+{
+  "version": 1,
+  "origin": "local_runtime_event_snapshot",
+  "source_sha256": "cd320727174b08b65bc3cce7edff7764b5d67ef3d68b4ad9a08b832c23b672e5",
+  "snapshot_bytes": 111252303,
+  "events": 9307,
+  "tool_calls": 1371,
+  "ask_count": 120,
+  "resolved_count": 120,
+  "guardian_facts": 0,
+  "first_event_at": "2026-09-20T09:12:38.844313Z",
+  "last_event_at": "2026-10-10T00:47:30.267389Z",
+  "asks_by_tool": {
+    "exec_command": 93,
+    "other": 27
+  },
+  "asks_by_effect": {
+    "network.mutating": 3,
+    "network.read": 30,
+    "other": 10,
+    "process.mutating": 77
+  },
+  "asks_by_risk": {
+    "high": 76,
+    "medium": 44
+  },
+  "exec_ask_content_checks": {
+    "cwd_needs_snapshot": 28,
+    "dependencies_or_syntax_need_evidence": 16,
+    "host_execution_excluded": 49
+  },
+  "production_reviewable_fraction": null,
+  "unmeasured": [
+    "current_policy_eligibility",
+    "prepared_snapshot_coverage",
+    "authorization_source_completeness",
+    "counterfactual_model_quality",
+    "success_notifications"
+  ]
+}

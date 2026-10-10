@@ -11,6 +11,7 @@ import (
 
 func Defaults() Config {
 	return Config{
+		Security: Security{Guardian: Guardian{Enabled: false}},
 		Runtime: Runtime{
 			OperationBuffer:  64,
 			EventHistory:     256,
@@ -98,16 +99,11 @@ func Defaults() Config {
 			Timeout:                    2 * time.Minute,
 			LeaseTimeout:               2 * time.Minute,
 			IdleTimeout:                60 * time.Second, MaxConcurrent: 8,
-			ProviderRetryLimit:         3,
-			InfrastructureRetryLimit:   -1,
-			RateLimitRetryLimit: 0,
-			RateLimitWait:       10 * time.Minute,
-			TokensPerMinute:     0,
-
-			Verify: Verify{
-				Mode: "soft", Scope: "diagnostics", OnFailure: "fail",
-				MaxRepairSteps: 1, Timeout: 2 * time.Minute,
-			},
+			ProviderRetryLimit:       3,
+			InfrastructureRetryLimit: -1,
+			RateLimitRetryLimit:      0,
+			RateLimitWait:            10 * time.Minute,
+			TokensPerMinute:          0,
 
 			Subagent: Subagent{
 				Delegation: SubagentDelegationAdaptive,

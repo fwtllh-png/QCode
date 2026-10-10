@@ -180,16 +180,17 @@ type ConvergencePolicy struct {
 }
 
 type Policy struct {
-	CompletionRequired         bool   `json:"completion_required"`
-	StructuredTerminalRequired bool   `json:"structured_terminal_required"`
-	VerificationRequired       bool   `json:"verification_required"`
-	VerificationMustPass       bool   `json:"verification_must_pass"`
-	VerificationMode           string `json:"verification_mode,omitempty"`
-	VerificationOnFailure      string `json:"verification_on_failure,omitempty"`
-	CompletionRepairLimit      uint32 `json:"completion_repair_limit"`
-	WorkspaceRepairLimit       uint32 `json:"workspace_repair_limit"`
-	DeclarationRepairLimit     uint32 `json:"declaration_repair_limit"`
-	VerificationRepairLimit    uint32 `json:"verification_repair_limit"`
+	CompletionRequired         bool `json:"completion_required"`
+	StructuredTerminalRequired bool `json:"structured_terminal_required"`
+	// Legacy verification policy fields preserve historical state digests; they no longer gate completion.
+	VerificationRequired    bool   `json:"verification_required"`
+	VerificationMustPass    bool   `json:"verification_must_pass"`
+	VerificationMode        string `json:"verification_mode,omitempty"`
+	VerificationOnFailure   string `json:"verification_on_failure,omitempty"`
+	CompletionRepairLimit   uint32 `json:"completion_repair_limit"`
+	WorkspaceRepairLimit    uint32 `json:"workspace_repair_limit"`
+	DeclarationRepairLimit  uint32 `json:"declaration_repair_limit"`
+	VerificationRepairLimit uint32 `json:"verification_repair_limit"`
 	// ExecutionStepLimit is an explicit no-progress lease. Structured progress
 	// renews it; zero leaves execution to context and token/cost budgets.
 	ExecutionStepLimit uint32            `json:"execution_step_limit,omitempty"`
@@ -220,15 +221,10 @@ func ConvergencePolicyForStepLimit(limit uint32) ConvergencePolicy {
 
 func DefaultPolicy() Policy {
 	return Policy{
-		CompletionRequired:      true,
-		VerificationRequired:    true,
-		VerificationMustPass:    true,
-		VerificationMode:        "hard",
-		VerificationOnFailure:   "fail",
-		CompletionRepairLimit:   2,
-		WorkspaceRepairLimit:    1,
-		DeclarationRepairLimit:  1,
-		VerificationRepairLimit: 1,
+		CompletionRequired:     true,
+		CompletionRepairLimit:  2,
+		WorkspaceRepairLimit:   1,
+		DeclarationRepairLimit: 1,
 	}
 }
 

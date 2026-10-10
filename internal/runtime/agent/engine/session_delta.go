@@ -60,6 +60,7 @@ func (e *Engine) applyDurableSessionDelta(
 		return err
 	}
 	e.history = restore.History
+	e.resetViewFold()
 	e.historyTurns = restore.State.HistoryTurns
 	e.turn = max(e.turn, restore.State.Turn)
 	e.usage.Add(restore.Accounting.Usage)

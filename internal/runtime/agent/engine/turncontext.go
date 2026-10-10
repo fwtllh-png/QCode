@@ -131,27 +131,12 @@ func SnapshotTurnSpec(
 	// StructuredTerminalRequired stays off for the main agent and children.
 	// A no-tool assistant body is the stop signal; turn_complete is optional.
 	kernelPolicy.StructuredTerminalRequired = false
-	kernelPolicy.VerificationRequired = options.Verify.Enabled()
-	kernelPolicy.VerificationMustPass = options.Verify.Enabled() &&
-		options.Verify.Mode == VerifyModeHard &&
-		options.Verify.OnFailure != VerifyOnFailureRevert
-	kernelPolicy.VerificationMode = options.Verify.Mode
-	kernelPolicy.VerificationOnFailure = options.Verify.OnFailure
-	kernelPolicy.VerificationRepairLimit =
-		uint32(max(options.Verify.MaxRepairSteps, 0))
 	kernelPolicy.ExecutionStepLimit = uint32(max(options.MaxSteps, 0))
 	progressLease := kernelPolicy.ExecutionStepLimit
 	if progressLease > 0 {
 		progressLease += kernelPolicy.CompletionRepairLimit +
 			kernelPolicy.WorkspaceRepairLimit +
 			kernelPolicy.DeclarationRepairLimit
-		// Verification repairs only consume samples on workspace-change
-		// turns. Explore/answer children inherit soft verify options but
-		// cannot spend that reserve, so it must not stretch their lease.
-		if kernelPolicy.VerificationRequired &&
-			request.Intent == protocol.TurnIntentWorkspaceChange {
-			progressLease += kernelPolicy.VerificationRepairLimit
-		}
 	}
 	kernelPolicy.Convergence = turnkernel.ConvergencePolicyForStepLimit(
 		progressLease,

@@ -312,12 +312,7 @@ func (s Summary) renderChanges() string {
 // have to decode a struct.
 func (c CompactionChange) state() string {
 	var notes []string
-	switch {
-	case c.Verified:
-		notes = append(notes, "verified")
-	default:
-		notes = append(notes, "nothing verified it")
-	}
+	notes = append(notes, "changed")
 	if !c.Read {
 		notes = append(notes, "written without being read first")
 	}

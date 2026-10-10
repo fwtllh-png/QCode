@@ -100,20 +100,6 @@ func (f *Failures) NoteToolCall(turn uint64, tool, callID, reason string) {
 	f.note(KindTool, turn, tool, callID, reason)
 }
 
-// NoteVerify records that a verification did not pass. scope is what ran,
-// status is the verdict, message is whatever detail came with it.
-func (f *Failures) NoteVerify(turn uint64, scope, status, message string) {
-	reason := strings.TrimSpace(status)
-	if detail := strings.TrimSpace(message); detail != "" {
-		if reason == "" {
-			reason = detail
-		} else {
-			reason += ": " + detail
-		}
-	}
-	f.note(KindVerify, turn, scope, "", reason)
-}
-
 func (f *Failures) note(kind string, turn uint64, name, callID, reason string) {
 	if f == nil {
 		return

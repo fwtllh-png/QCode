@@ -52,7 +52,7 @@ func TestMandatorySessionStateDropsRefreshableFacts(t *testing.T) {
 			sawFact = true
 		}
 	}
-	if !sawGoal || !sawOpen || sawDone || !sawChange || sawFact {
+	if !sawGoal || !sawOpen || sawDone || sawChange || sawFact {
 		t.Fatalf("session state = %+v", state.Entities)
 	}
 }

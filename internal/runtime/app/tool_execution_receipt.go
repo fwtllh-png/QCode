@@ -12,6 +12,7 @@ func ProjectToolExecutionReceipt(
 		return nil
 	}
 	projected := &protocol.ToolExecutionReceipt{
+		GuardianReviewID: source.GuardianReviewID,
 		Tool: protocol.ToolExecutionRef{
 			Name: source.Tool.Name, Source: source.Tool.Source,
 			CatalogID: source.Tool.CatalogID, Generation: source.Tool.Generation,

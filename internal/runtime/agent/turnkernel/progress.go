@@ -98,12 +98,6 @@ func ResultObservationDigest(result tool.Result) string {
 				parts = append(parts, fmt.Sprintf("diagnostic:%q:%v:%q:%q:%q", diagnostic.Path, diagnostic.Range, diagnostic.Severity, diagnostic.Code, diagnostic.Source))
 			}
 		}
-		if verification := facts.Verification; verification != nil {
-			parts = append(parts, fmt.Sprintf("verification:%q:%q:%q:%d", verification.Kind, verification.Status, verification.InputDigest, verification.ExitCode))
-			for _, path := range verification.CoveredPaths {
-				parts = append(parts, fmt.Sprintf("covered:%q", path))
-			}
-		}
 		if failure := facts.Failure; failure != nil {
 			parts = append(parts, fmt.Sprintf("failure:%q", failure.Category))
 		}

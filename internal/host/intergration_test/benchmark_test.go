@@ -616,7 +616,6 @@ func executeTask(ctx context.Context, task benchmarkTask) (observation, error) {
 	if m := os.Getenv("QCODE_BENCH_MODE"); m != "" {
 		overrides.Mode = &m
 	}
-	applyVerifyOverrides(task.Verify, &overrides)
 	applyIndexOverrides(task.Index, &overrides)
 	applyContextOverrides(task.Context, &overrides)
 	if settings := task.Subagent; settings != nil {
@@ -686,35 +685,6 @@ func executeTask(ctx context.Context, task benchmarkTask) (observation, error) {
 
 // applyVerifyOverrides pushes a task's gate settings through the same config
 // path an operator would use, so a benchmark measures the shipped wiring.
-func applyVerifyOverrides(settings *benchmarkTaskVerify, overrides *config.Overrides) {
-	if settings == nil {
-		return
-	}
-	if settings.Mode != "" {
-		mode := settings.Mode
-		overrides.VerifyMode = &mode
-	}
-	if settings.Scope != "" {
-		scope := settings.Scope
-		overrides.VerifyScope = &scope
-	}
-	if settings.OnFailure != "" {
-		onFailure := settings.OnFailure
-		overrides.VerifyOnFailure = &onFailure
-	}
-	if settings.Command != "" {
-		command := settings.Command
-		overrides.VerifyCommand = &command
-	}
-	if settings.MaxRepairSteps != nil {
-		repairs := *settings.MaxRepairSteps
-		overrides.VerifyRepair = &repairs
-	}
-	if settings.TimeoutMS > 0 {
-		timeout := time.Duration(settings.TimeoutMS) * time.Millisecond
-		overrides.VerifyTimeout = &timeout
-	}
-}
 
 // applyIndexOverrides pushes a task's index settings through the same config
 // path an operator would use. A task that turns the index off is measuring the

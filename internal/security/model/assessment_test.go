@@ -219,7 +219,7 @@ func TestFacets(t *testing.T) {
 			Capability: CapabilityProcess, Access: Read,
 			SandboxDeclared: true, StrongSandbox: true, PlanningExempt: true,
 		},
-		Declared: Declared{Verification: true},
+		Declared: Declared{},
 		Resources: []Resource{
 			{Class: ClassLoopback, Access: Write},
 			network("http", "mirror.example.com", 80, Read, "GET"),
@@ -230,8 +230,7 @@ func TestFacets(t *testing.T) {
 	}).Facets()
 	want := Facets{
 		Egress: EgressMutating, Network: true, LoopbackReach: true,
-		HostLocalTarget: true, Process: true, StrongSandbox: true,
-		DeclaredVerification: true, PlanningExempt: true,
+		HostLocalTarget: true, Process: true, StrongSandbox: true, PlanningExempt: true,
 	}
 	if got != want {
 		t.Fatalf("facets = %+v, want %+v", got, want)
@@ -279,7 +278,7 @@ func TestDigestBindsEffectAndFacets(t *testing.T) {
 		t.Fatal("digest is not deterministic")
 	}
 	verified := input
-	verified.Declared.Verification = true
+	verified.Declared.ReadOnly = true
 	if Assess(verified).Digest() == base.Digest() {
 		t.Fatal("digest ignores facets")
 	}

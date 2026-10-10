@@ -28,19 +28,16 @@ func (e *Engine) callNarrative(ctx context.Context, options Options, request pro
 	result.Provider, result.Model = route.ProviderID(), route.Model().ID
 	result.ModelMetadata = *modelMetadataProvenance(route.Model().MetadataProvenance)
 	result.RouteDigest = input.RouteDigest
-	e.titleState.mu.Lock()
-	usage := e.titleState.mainUsage
-	usage.Add(e.titleState.usage)
-	cost := e.titleState.mainCost + e.titleState.cost
-	e.titleState.mu.Unlock()
 	estimated, err := options.TokenEstimator.Estimate(request.Messages)
 	if err != nil {
 		return result, err
 	}
-	request.MaxOutputTokens, err = agentcontext.CheckBudget(agentcontext.BudgetRequest{ContextTokens: route.Model().Limits.ContextTokens, EstimatedInput: estimated, OutputReserve: request.MaxOutputTokens, SessionUsage: usage, MaxTokens: options.Budget.MaxTokens, SpentCostUSD: cost, MaxCostUSD: options.Budget.MaxCostUSD, Pricing: route.Model().Pricing, Scope: "narrative"})
+	var settle func(provider.Usage)
+	request.MaxOutputTokens, settle, err = e.reserveAuxiliaryBudget(options, route, estimated, request.MaxOutputTokens, "")
 	if err != nil {
 		return result, err
 	}
+	defer func() { settle(result.Usage) }()
 	if err = ctx.Err(); err != nil {
 		return result, err
 	}
@@ -48,12 +45,6 @@ func (e *Engine) callNarrative(ctx context.Context, options Options, request pro
 	defer func() {
 		result.CostUSD = provider.EstimateCost(route.Model().Pricing, result.Usage)
 		result.CostKnown = provider.PricingKnown(route.Model().Pricing, result.Usage)
-		// Reuse the independently locked maintenance accounting already read by
-		// foreground budgets, without acquiring the turn-long engine mutex.
-		e.titleState.mu.Lock()
-		e.titleState.usage.Add(result.Usage)
-		e.titleState.cost += result.CostUSD
-		e.titleState.mu.Unlock()
 	}()
 	stream, err := options.Provider.Stream(ctx, request)
 	if err != nil {
@@ -86,7 +77,7 @@ func (e *Engine) callNarrative(ctx context.Context, options Options, request pro
 
 		case provider.EventUsage:
 			if event.Usage != nil {
-				result.Usage.Add(*event.Usage)
+				result.Usage = provider.MergeCumulative(result.Usage, *event.Usage)
 			}
 		case provider.EventMessageStop:
 			if event.StopReason.Incomplete() || event.StopReason == provider.StopReasonToolUse {

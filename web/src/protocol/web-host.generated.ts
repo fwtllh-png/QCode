@@ -91,6 +91,7 @@ export const webEventKinds = [
   "provider.attempt",
   "tool.state",
   "tool.start",
+  "guardian.review",
   "tool.output",
   "tool.result",
   "tool.catalog.changed",

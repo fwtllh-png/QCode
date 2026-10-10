@@ -33,6 +33,9 @@ func TestSessionStatePartitionSurvivesProjectedTailWithoutCompact(t *testing.T) 
 		Path: "parser/lex.go", Kind: tool.WorkspaceModified,
 	})
 
+	// An unresolved diagnostic remains mandatory across projected history tails.
+	engine.context.Evidence().MarkDiagnostics("parser/lex.go", true)
+
 	var compacted int
 	for _, prompt := range []string{"first", "second", "third"} {
 		if _, err := engine.Run(t.Context(), prompt, func(event Event) error {

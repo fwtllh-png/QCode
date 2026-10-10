@@ -78,7 +78,6 @@ func freezeTerminalMeasurement(
 			Provider:     durationMeasurement(frozen.Latency.Provider),
 			Tool:         durationMeasurement(frozen.Latency.Tool),
 			ApprovalWait: durationMeasurement(frozen.Latency.ApprovalWait),
-			Verification: durationMeasurement(frozen.Latency.Verify),
 		}
 		if frozen.Latency.FirstToken != nil {
 			latency.FirstOutput = durationMeasurement(

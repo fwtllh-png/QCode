@@ -223,6 +223,9 @@ func (a *EngineAdapter) StartTurn(
 		editorContext,
 	)
 	emit := func(event agentengine.Event) error {
+		if event.Guardian != nil {
+			return sink.Emit(event.Guardian)
+		}
 		if event.Commentary != nil {
 			return sink.Emit(event.Commentary)
 		}
@@ -363,7 +366,9 @@ func (a *EngineAdapter) StartTurn(
 				}
 			}
 			return sink.Emit(&protocol.ApprovalRequiredData{
-				RequestID: event.Approval.RequestID, CallID: event.Approval.CallID,
+				GuardianReviewID: event.Approval.GuardianReviewID, GuardianReasonCode: event.Approval.GuardianReasonCode,
+				BindingDigest: event.Approval.BindingDigest,
+				RequestID:     event.Approval.RequestID, CallID: event.Approval.CallID,
 				Tool: event.Approval.Tool, Arguments: event.Approval.Arguments,
 				ArgumentsDigest: event.Approval.ArgumentsDigest, Resources: resources,
 				AllowedScopes: scopes, ExpiresAt: event.Approval.ExpiresAt,
@@ -514,11 +519,6 @@ func (a *EngineAdapter) StartTurn(
 				}
 				return nil
 			}
-		case agentengine.Verifying:
-			if event.Verification == nil {
-				return nil
-			}
-			return sink.Emit(turnVerificationData(event.Verification))
 		case agentengine.Streaming:
 			return emitRichEngineEvent(sink, event)
 		case agentengine.CallingModel:
@@ -898,23 +898,35 @@ func FormatCompactionSummary(receipt *agentengine.CompactionReceipt) string {
 	if receipt.Status == "fallback" {
 		return "semantic narrative unavailable; retained deterministic truth and raw tail"
 	}
-	if receipt.RemovedMessages == 0 && receipt.PrunedToolResults != 0 {
-		return fmt.Sprintf(
-			"pruned %d tool result surfaces (%d→%d bytes)",
-			receipt.PrunedToolResults,
-			receipt.OriginalBytes,
-			receipt.RetainedBytes,
-		)
+	summary := ""
+	if receipt.RemovedMessages > 0 {
+		switch receipt.Mode {
+		case "view":
+			summary = fmt.Sprintf("folded %d history messages out of context", receipt.RemovedMessages)
+		case "current_turn":
+			summary = fmt.Sprintf("compacted current turn: removed %d messages", receipt.RemovedMessages)
+		default:
+			summary = fmt.Sprintf("compacted history: removed %d messages", receipt.RemovedMessages)
+		}
 	}
-	return fmt.Sprintf(
-		"compacted history: removed %d messages and pruned %d tool results "+
-			"(%d→%d bytes); removed turns=%v",
-		receipt.RemovedMessages,
-		receipt.PrunedToolResults,
-		receipt.OriginalBytes,
-		receipt.RetainedBytes,
-		receipt.RemovedTurns,
-	)
+	if receipt.PrunedToolResults > 0 {
+		if summary != "" {
+			summary += " and "
+		}
+		summary += fmt.Sprintf("pruned %d tool result bodies", receipt.PrunedToolResults)
+	}
+	if summary == "" {
+		summary = "context maintenance completed"
+	}
+	if receipt.OriginalBytes > 0 {
+		summary += fmt.Sprintf(" (%d→%d bytes)", receipt.OriginalBytes, receipt.RetainedBytes)
+	} else if receipt.PrunedBytes > 0 {
+		summary += fmt.Sprintf(" (%d bytes removed)", receipt.PrunedBytes)
+	}
+	if receipt.Mode == "view" && receipt.RemovedMessages > 0 {
+		summary += "; original history remains available"
+	}
+	return summary
 }
 
 func (a *EngineAdapter) ForkThread(

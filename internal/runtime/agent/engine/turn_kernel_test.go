@@ -351,7 +351,7 @@ func TestEngineMutationTurnHasNoKernelDecisionDrift(t *testing.T) {
 			"pending_actions":[]
 		}`),
 	}}
-	engine := declarationEngine(t, runtime, registry, passedReceipt())
+	engine := declarationEngine(t, runtime, registry)
 	var records []turnkernel.TransitionRecord
 	engine.options.TurnKernelObserver = func(record turnkernel.TransitionRecord) {
 		records = append(records, record)
@@ -384,8 +384,6 @@ func TestEngineMutationTurnHasNoKernelDecisionDrift(t *testing.T) {
 	}
 	for _, command := range []string{
 		"completion_evaluated",
-		"verification_started",
-		"verification_finished",
 		"model_sample_result_received",
 		"evaluate_turn_step",
 		"release_provisional_output",
@@ -454,14 +452,6 @@ func TestTurnKernelC2ToolResultsBypassObserver(t *testing.T) {
 		Summary:          "implemented",
 		CompletionCall:   complete.ID,
 		BatchSize:        1,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if err := kernel.BeginVerification(); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := kernel.FinishVerification(turnkernel.VerificationFinished{
-		Status: turnkernel.VerificationPassed,
 	}); err != nil {
 		t.Fatal(err)
 	}

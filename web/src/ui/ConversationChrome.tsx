@@ -105,14 +105,6 @@ export function MessageActions({
   );
 }
 
-export interface ContextAttribution {
-  estimatedTokens: number;
-  stableTokens: number;
-  toolTokens: number;
-  messageTokens: number;
-  framingTokens: number;
-}
-
 function formatMessageTime(value: string): string {
   const parsed = Date.parse(value);
   if (!Number.isFinite(parsed)) return "";

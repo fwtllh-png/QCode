@@ -18,6 +18,7 @@ type turnEmitter struct {
 	emitted         bool
 	recoveryPending bool
 	contextBudget   *ContextBudgetSnapshot
+	contextSample   *protocol.SampleContextData
 	primaryCode     protocol.ErrorCode
 	primaryError    string
 	primaryFault    *protocol.FaultMetadata
@@ -70,6 +71,14 @@ func (h *turnEmitter) checkStatePhase(state State) {
 
 func (h *turnEmitter) send(state State, event Event) error {
 	h.checkStatePhase(state)
+	if event.InputContext != nil {
+		value := *event.InputContext
+		h.contextSample = &value
+	}
+	if event.SampleContext != nil {
+		value := *event.SampleContext
+		h.contextSample = &value
+	}
 	event.State, event.Turn = state, h.turn
 	terminal := state == Completed || state == Failed || state == Canceled
 	if terminal {
@@ -86,6 +95,12 @@ func (h *turnEmitter) send(state State, event Event) error {
 		event.ContextBudget = h.contextBudget
 	}
 	if err := h.emitFunc(event); err != nil {
+		// Guardian's caller decides whether this fact is required for
+		// authorization. It must see persistence failure before using evidence;
+		// ordinary best-effort running telemetry may still be suppressed below.
+		if event.Guardian != nil {
+			return err
+		}
 		if !terminal &&
 			state != Preparing &&
 			state != AwaitingApproval &&
@@ -131,7 +146,10 @@ func (h *turnEmitter) send(state State, event Event) error {
 	return nil
 }
 
-func (h *turnEmitter) setContextBudget(snapshot ContextBudgetSnapshot) { h.contextBudget = &snapshot }
+func (h *turnEmitter) setContextBudget(snapshot ContextBudgetSnapshot) {
+	value := contextBudgetFromSample(snapshot, h.contextSample)
+	h.contextBudget = &value
+}
 
 func (h *turnEmitter) setCommitted(apply func() error) { h.committed = apply }
 

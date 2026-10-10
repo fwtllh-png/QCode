@@ -16,7 +16,7 @@ func TestOnlyExecCommandDeclaresVerification(t *testing.T) {
 	); err != nil {
 		t.Fatal(err)
 	}
-	for name, want := range map[string]string{
+	for name := range map[string]string{
 		"exec_command": "verification",
 		"write_stdin":  "",
 	} {
@@ -28,8 +28,8 @@ func TestOnlyExecCommandDeclaresVerification(t *testing.T) {
 		if binding.IsolatesWriteTrees != (name == "exec_command") {
 			t.Fatalf("%s isolation contract = %v", name, binding.IsolatesWriteTrees)
 		}
-		if binding.VerificationField != want {
-			t.Fatalf("%s verification field = %q, want %q", name, binding.VerificationField, want)
+		if binding.GuardianReview != (name == "exec_command") {
+			t.Fatalf("%s Guardian registration = %v", name, binding.GuardianReview)
 		}
 		if err := binding.Validate(); err != nil {
 			t.Fatalf("%s binding: %v", name, err)

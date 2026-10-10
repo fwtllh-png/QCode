@@ -19,6 +19,14 @@ func (e *Engine) checkBudget(
 	current.Add(stepUsage)
 	e.syncSessionTitleState(current)
 	sessionUsage, cost := e.accountedUsage()
+	turnID := ""
+	if scope := e.runningScope(); scope != nil {
+		turnID = scope.spec.Identity.TurnID
+	}
+	pending, auxiliaryTurn, pendingCost := e.auxiliaryBudgetUsage(turnID)
+	cost += e.guardianTurnCostAdjustment(turnID, route.Model().Pricing)
+	sessionUsage.Add(pending)
+	cost += pendingCost
 	request := agentcontext.BudgetRequest{
 		ContextTokens:  route.Model().Limits.ContextTokens,
 		EstimatedInput: estimatedInput, OutputReserve: outputReserve,
@@ -30,6 +38,7 @@ func (e *Engine) checkBudget(
 	if e.options.Budget.MaxTurnTokens > 0 {
 		turnRequest := request
 		turnRequest.SessionUsage = provider.Usage{}
+		turnRequest.TurnUsage.Add(auxiliaryTurn)
 		turnRequest.MaxTokens = e.options.Budget.MaxTurnTokens
 		turnRequest.MaxCostUSD = 0
 		var err error

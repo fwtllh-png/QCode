@@ -45,7 +45,7 @@ type CompletionEnvelope struct {
 	ResultRef        string                       `json:"result_ref"`
 	ReceiptRef       string                       `json:"receipt_ref,omitempty"`
 	ChangedPaths     []string                     `json:"changed_paths,omitempty"`
-	Verification     protocol.ReceiptVerification `json:"verification"`
+	Verification     protocol.ReceiptVerification `json:"verification,omitempty,omitzero"`
 	Usage            ResultUsage                  `json:"usage"`
 	IntegrationReady bool                         `json:"integration_ready"`
 }

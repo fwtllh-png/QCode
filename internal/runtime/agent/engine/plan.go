@@ -97,6 +97,21 @@ func (e *Engine) setPlan(plan agentcontext.Plan) {
 	e.planMu.Unlock()
 }
 
+// Restore only the successful submission fact captured by the accepted
+// continuation. Plan text alone (including update_plan or a deliverable) does
+// not satisfy the planning gate. Environment/profile validation precedes this
+// call, and a different current planning policy remains authoritative.
+func (e *Engine) restoreContinuationPlanning(continuation agentcontext.TurnContinuation) {
+	if !continuation.PlanSubmitted || continuation.PlanningPolicy == "" || e.guard == nil {
+		return
+	}
+	runtime := e.guard.Policy()
+	current := runtime.PlanningSnapshot()
+	if current.Planning == continuation.PlanningPolicy && !current.PlanSubmitted {
+		runtime.SubmitPlan()
+	}
+}
+
 // planFromTool takes ownership of the tool payload before context admission.
 func planFromTool(input interact.Plan) agentcontext.Plan {
 	var steps []agentcontext.PlanStep

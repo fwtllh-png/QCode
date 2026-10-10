@@ -126,6 +126,28 @@ func TestAutoReviewDoesNotOverrideForceEditPlanApproval(t *testing.T) {
 	}
 }
 
+// Fresh on a non-journaled typed grant reaches the final auto-review gate.
+// Once and journaled calls are excluded earlier and cannot cover this gate.
+func TestAutoReviewDoesNotOverrideNonJournaledFresh(t *testing.T) {
+	for _, userAsk := range []bool{false, true} {
+		t.Run(fmt.Sprintf("user_ask=%t", userAsk), func(t *testing.T) {
+			runtime := DefaultRuntime(ModeAct, PermissionAuto)
+			runtime.ForceEditPlanApproval = true
+			if userAsk {
+				runtime.User = []Rule{{Tool: "fetch_page", Action: ActionAsk}}
+			}
+			call := resolveFixture(networkReadCall("example.com"))
+			if call.Journaled() {
+				t.Fatal("fixture must be non-journaled")
+			}
+			decision := runtime.Decide(call)
+			if decision.Action != ActionAsk || decision.Approval != ApprovalFresh {
+				t.Fatalf("want Ask/Fresh, got %+v", decision)
+			}
+		})
+	}
+}
+
 // TestAutoReviewDoesNotOverrideRepositoryAsk verifies that a Repository
 // approval requirement prevents auto review.
 func TestAutoReviewDoesNotOverrideRepositoryAsk(t *testing.T) {

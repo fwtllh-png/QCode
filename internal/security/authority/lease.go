@@ -91,6 +91,7 @@ type Settlement struct {
 }
 
 type leaseRecord struct {
+	started    bool
 	lease      ExecutionLease
 	state      LeaseState
 	settlement Settlement

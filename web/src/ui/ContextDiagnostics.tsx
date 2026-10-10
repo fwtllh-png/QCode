@@ -29,6 +29,10 @@ export function ContextDiagnostics({receipt}: {receipt?: Readonly<Record<string,
         <Row label="Input / output reserve" value={`${value(projection.input_tokens)} / ${value(projection.output_reserve)} tokens`} />
         <Row label="Raw history / ceiling" value={`${value(projection.raw_tokens)} / ${projection.raw_token_limited ? value(projection.raw_token_limit) : "No additional limit"}`} />
         <Row label="Calibration" value={sample?.window_observed ? "Provider usage baseline + estimated pending input" : "Token estimator"} />
+        {sample?.compaction_headroom_tokens !== undefined && <>
+          <Row label="Compaction headroom" value={`${value(sample.compaction_headroom_tokens)} tokens`} />
+          <Row label="Compaction input target" value={`${value(sample.compaction_target_tokens ?? 0)} tokens (soft)`} />
+        </>}
         <Row label="Recovery calls / failed" value={`${value(recovery?.calls)} / ${value(recovery?.failed)}`} />
         <Row label="Recovered bytes" value={value(recovery?.bytes)} />
         {[...reasons].map(([reason, count]) => <Row key={reason} label={reason} value={`${count} messages omitted`} />)}

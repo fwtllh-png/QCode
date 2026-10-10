@@ -27,7 +27,7 @@ type IntegrationChange struct {
 
 type IntegrationReceipt struct {
 	ChangedPaths []string                     `json:"changed_paths"`
-	Verification protocol.ReceiptVerification `json:"verification"`
+	Verification protocol.ReceiptVerification `json:"verification,omitempty,omitzero"`
 	AppliedAt    time.Time                    `json:"applied_at"`
 }
 
@@ -46,7 +46,7 @@ type IntegrationCandidate struct {
 	Paths         []string                     `json:"paths"`
 	Changes       []IntegrationChange          `json:"changes"`
 	Conflicts     []string                     `json:"conflicts,omitempty"`
-	Verification  protocol.ReceiptVerification `json:"verification"`
+	Verification  protocol.ReceiptVerification `json:"verification,omitempty,omitzero"`
 	Receipt       *IntegrationReceipt          `json:"receipt,omitempty"`
 	Message       string                       `json:"message,omitempty"`
 	Revision      uint64                       `json:"revision"`

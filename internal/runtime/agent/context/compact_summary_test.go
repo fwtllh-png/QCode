@@ -42,7 +42,7 @@ func TestRenderKeepsSectionsInPriorityOrder(t *testing.T) {
 		"2 step(s) already done",
 		"update the lexer [in_progress]",
 		"verify affected: failed: go test ./parser (turn 3, 2 times)",
-		"parser/lex.go (turn 3) — nothing verified it",
+		"parser/lex.go (turn 3) — changed",
 		"Critical paths: parser/lex.go",
 		"definition Lex parser/lex.go:41",
 		"user: also handle arrays",
@@ -156,13 +156,13 @@ func TestDigestDropsOldestEntriesUnderPressure(t *testing.T) {
 
 func TestChangeStateNamesEveryGap(t *testing.T) {
 	state := CompactionChange{Path: "a.go", Diagnostics: true}.state()
-	for _, fragment := range []string{"nothing verified it", "written without being read first", "diagnostics still failing"} {
+	for _, fragment := range []string{"changed", "written without being read first", "diagnostics still failing"} {
 		if !strings.Contains(state, fragment) {
 			t.Fatalf("state %q missing %q", state, fragment)
 		}
 	}
-	if got := (CompactionChange{Path: "a.go", Read: true, Verified: true}).state(); got != "verified" {
-		t.Fatalf("state = %q, want verified", got)
+	if got := (CompactionChange{Path: "a.go", Read: true, Verified: true}).state(); got != "changed" {
+		t.Fatalf("state = %q, want changed", got)
 	}
 }
 

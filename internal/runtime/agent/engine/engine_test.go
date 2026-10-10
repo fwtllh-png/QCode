@@ -2687,9 +2687,14 @@ func TestFailedTurnFinalizesDurableHistoryBeforeTerminalEvent(t *testing.T) {
 	}
 	engine.turn = 2
 	var terminalBudget *ContextBudgetSnapshot
+	var lastInput *protocol.SampleContextData
 	var postTurnCompaction bool
 
 	_, err := engine.Run(t.Context(), "new request", func(event Event) error {
+		if event.InputContext != nil {
+			value := *event.InputContext
+			lastInput = &value
+		}
 		if event.Compaction != nil &&
 			event.Compaction.Phase == CompactionPhasePostTurn {
 			postTurnCompaction = true
@@ -2706,8 +2711,10 @@ func TestFailedTurnFinalizesDurableHistoryBeforeTerminalEvent(t *testing.T) {
 	if !postTurnCompaction {
 		t.Fatal("failed turn did not emit post-turn compaction")
 	}
-	if terminalBudget == nil ||
-		terminalBudget.ActiveTokens > terminalBudget.AutoCompactTokens {
+	if terminalBudget == nil || lastInput == nil ||
+		terminalBudget.MeasurementSource != "request_estimate" ||
+		terminalBudget.ActiveTokens != lastInput.WindowFullActiveTokens ||
+		terminalBudget.ContextDigest != lastInput.ContextDigest {
 		t.Fatalf("terminal context budget = %+v", terminalBudget)
 	}
 	if engine.options.Context.Window.AutoTokens != terminalBudget.AutoCompactTokens {
@@ -2774,9 +2781,14 @@ func TestFailedTurnCompactsWithinOversizedDurableLastTurn(t *testing.T) {
 	}
 	engine.turn = 1
 	var terminalBudget *ContextBudgetSnapshot
+	var attemptedInput *protocol.SampleContextData
 	var postTurn *CompactionReceipt
 
 	_, err := engine.Run(t.Context(), "new request", func(event Event) error {
+		if event.InputContext != nil {
+			value := *event.InputContext
+			attemptedInput = &value
+		}
 		if event.Compaction != nil &&
 			event.Compaction.Phase == CompactionPhasePostTurn {
 			postTurn = event.Compaction
@@ -2793,8 +2805,9 @@ func TestFailedTurnCompactsWithinOversizedDurableLastTurn(t *testing.T) {
 	if postTurn == nil || postTurn.OriginalBytes <= postTurn.RetainedBytes {
 		t.Fatalf("post-turn compaction = %+v", postTurn)
 	}
-	if terminalBudget == nil ||
-		terminalBudget.ActiveTokens > terminalBudget.AutoCompactTokens {
+	if terminalBudget == nil || attemptedInput == nil ||
+		terminalBudget.ActiveTokens != attemptedInput.WindowFullActiveTokens ||
+		terminalBudget.ContextDigest != attemptedInput.ContextDigest {
 		t.Fatalf("terminal context budget = %+v", terminalBudget)
 	}
 	assertToolPairs(t, engine.history)

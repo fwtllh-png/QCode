@@ -258,7 +258,6 @@ type Execution struct {
 	ReasoningEffort  string               `json:"reasoning_effort" toml:"reasoning_effort"`
 	NativeSearch     bool                 `json:"native_search" toml:"native_search"`
 	Environment      ExecutionEnvironment `json:"environment" toml:"environment"`
-	Verify           Verify               `json:"verify" toml:"verify"`
 	Subagent         Subagent             `json:"subagent" toml:"subagent"`
 	Journal          Journal              `json:"journal" toml:"journal"`
 	// WorkspaceMergeMaxDiffBytes bounds actual settlement previews, not directory contents. Must be positive.
@@ -380,21 +379,6 @@ const (
 	SubagentWorkspaceSerialized = "same_workspace_serialized"
 )
 
-// Verify configures the gate that runs before a turn commits its edits.
-//
-// Mode off skips the gate; soft reports the verdict without changing the turn
-// outcome; hard applies OnFailure once the repair budget is spent.
-type Verify struct {
-	Mode      string `json:"mode" toml:"mode"`
-	Scope     string `json:"scope" toml:"scope"`
-	OnFailure string `json:"on_failure" toml:"on_failure"`
-	// Command overrides the repository scope's detected commands with one shell
-	// command, for workspaces whose entry point cannot be inferred.
-	Command        string        `json:"command,omitempty" toml:"command"`
-	MaxRepairSteps int           `json:"max_repair_steps" toml:"max_repair_steps"`
-	Timeout        time.Duration `json:"timeout" toml:"-"`
-}
-
 type Vision struct {
 	Enabled  bool   `json:"enabled" toml:"enabled"`
 	Provider string `json:"provider" toml:"provider"`
@@ -438,6 +422,7 @@ type Diagnostics struct {
 }
 
 type Config struct {
+	Security    Security    `json:"security" toml:"security"`
 	Runtime     Runtime     `json:"runtime" toml:"runtime"`
 	State       State       `json:"state" toml:"state"`
 	Memory      Memory      `json:"memory" toml:"memory"`
@@ -449,6 +434,18 @@ type Config struct {
 	Vision      Vision      `json:"vision" toml:"vision"`
 	Web         Web         `json:"web" toml:"web"`
 	Diagnostics Diagnostics `json:"diagnostics" toml:"diagnostics"`
+}
+
+type Security struct {
+	Guardian Guardian `json:"guardian" toml:"guardian"`
+}
+
+// Guardian configures one semantic review attempt. Zero output derives the
+// ceiling from the selected model and remaining shared budget.
+type Guardian struct {
+	Enabled         bool          `json:"enabled" toml:"enabled"`
+	Timeout         time.Duration `json:"timeout" toml:"-"`
+	MaxOutputTokens uint64        `json:"max_output_tokens" toml:"max_output_tokens"`
 }
 
 type Overrides struct {
@@ -550,12 +547,6 @@ type Overrides struct {
 	BudgetUSD                  *float64
 	ReasoningEffort            *string
 	NativeSearch               *bool
-	VerifyMode                 *string
-	VerifyScope                *string
-	VerifyOnFailure            *string
-	VerifyCommand              *string
-	VerifyRepair               *int
-	VerifyTimeout              *time.Duration
 	JournalDurable             *bool
 	JournalRecoverOnStart      *bool
 

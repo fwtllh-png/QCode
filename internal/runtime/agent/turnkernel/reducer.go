@@ -243,32 +243,8 @@ func (Reducer) Apply(current State, command Command) (Transition, error) {
 			return Transition{}, err
 		}
 
-	case VerificationStarted:
-		if err := requirePhase(current, command, PhaseSampling); err != nil {
-			return Transition{}, err
-		}
-		if current.Cancellation.Accepted {
-			return Transition{}, illegal(current, command, "cancellation was accepted")
-		}
-		if len(current.OpenCalls) != 0 {
-			return Transition{}, illegal(current, command, "tool calls remain open")
-		}
-		if current.MutationRevision == 0 && current.Workspace == nil {
-			return Transition{}, illegal(current, command, "verification requires a workspace observation")
-		}
-		move(&transition, PhaseVerifying)
-		requestEffect(
-			&transition,
-			EffectRunVerification,
-			struct {
-				Mutation uint64 `json:"mutation_revision"`
-			}{Mutation: current.MutationRevision},
-			fmt.Sprintf("verification:%d", current.MutationRevision),
-			"",
-		)
-
-	case VerificationFinished:
-		if err := applyVerificationFinished(&transition, current, value); err != nil {
+	case VerificationRetired:
+		if err := retireVerification(&transition); err != nil {
 			return Transition{}, err
 		}
 

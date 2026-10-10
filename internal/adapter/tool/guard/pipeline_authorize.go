@@ -15,6 +15,8 @@ import (
 var errWorkspaceUnchanged = errors.New("workspace edit produces no changes")
 
 type preparedExecution struct {
+	livePolicy *policy.Runtime
+	review     *guardianAttempt
 	invocation Invocation
 	executor   tool.Executor
 	arguments  json.RawMessage
@@ -38,21 +40,29 @@ func (g *Guard) authorize(
 	}
 	var approvalWait time.Duration
 	for {
+		if err := ctx.Err(); err != nil {
+			return preparedExecution{}, err
+		}
 		// An approval wait may change policy or the catalog. Recheck them against
 		// the frozen invocation without resolving paths or assessing it again.
 		if _, err := g.registry.ResolveTrustedBinding(invocation.Ref); err != nil {
 			return preparedExecution{}, err
 		}
 		started := g.now()
-		runtime, err := g.samplePolicy()
+		livePolicy := g.Policy()
+		runtime, err := samplePolicy(livePolicy, g.workspace)
 		if err != nil {
 			return preparedExecution{}, err
 		}
 		invocation = bindProcessAccess(invocation, runtime)
 		policyInvocation := g.policyInput(callID, invocation)
 		decision := runtime.Decide(policyInvocation)
+		if a := guardianAttemptFrom(ctx); a != nil {
+			a.policyRevision = runtime.Revision
+		}
 		reviewLatency := g.now().Sub(started)
 		prepared := preparedExecution{
+			livePolicy: livePolicy,
 			invocation: invocation, executor: executor,
 			arguments: arguments, runtime: runtime,
 			decision: decision, waited: approvalWait,
@@ -60,6 +70,7 @@ func (g *Guard) authorize(
 		g.observeApproval("evaluated", policyInvocation, decision, 0)
 		switch decision.Action {
 		case policy.ActionDeny, policy.ActionHold:
+			_ = guardianAttemptFrom(ctx).report(ctx, "decided", "policy_decision", &decision, "none")
 			g.observeApproval("denied", policyInvocation, decision, 0)
 			return prepared, g.decisionError(decision)
 		case policy.ActionAllow, policy.ActionAsk:
@@ -70,20 +81,51 @@ func (g *Guard) authorize(
 			return prepared, err
 		}
 		if decision.Action == policy.ActionAllow {
+			_ = guardianAttemptFrom(ctx).report(ctx, "decided", "policy_decision", &decision, "policy")
+			if attempt := guardianAttemptFrom(ctx); attempt != nil {
+				attempt.close()
+			}
 			if decision.Code == "auto_review_allowed" {
 				g.observeApproval("auto_allowed", policyInvocation, decision, reviewLatency)
 			}
 			g.grantNetworkHosts(ctx, policyInvocation)
 			return prepared, nil
 		}
-		authorized, replacement, waited, err := g.authorizeAsk(
-			ctx,
-			invocation,
-			executor,
-			policyInvocation,
-			decision,
-			reviewLatency,
-		)
+		authorized := g.matchApproval(policyInvocation, decision)
+		var replacement *preparedExecution
+		var waited time.Duration
+		if !authorized {
+			g.recoveredGuardian(ctx, callID)
+			attempt := guardianAttemptFrom(ctx)
+			if input := attempt.input(ctx, invocation); input != nil {
+				policyInvocation.Guardian = input
+				decision = runtime.Decide(policyInvocation)
+				prepared.decision = decision
+				if decision.Action == policy.ActionAllow {
+					if err := attempt.report(ctx, "decided", "policy_decision", &decision, "guardian"); err == nil {
+						prepared.review = attempt
+						g.observeApproval("auto_allowed", policyInvocation, decision, reviewLatency)
+						return prepared, nil
+					}
+					attempt.reasonCode = "audit_unavailable"
+					attempt.close()
+					policyInvocation.Guardian = nil
+					decision = runtime.Decide(policyInvocation)
+					prepared.decision = decision
+				}
+			}
+			if g.reviewGuardian(ctx, prepared) {
+				continue
+			}
+			if err := ctx.Err(); err != nil {
+				return prepared, err
+			}
+			if attempt != nil {
+				_ = attempt.report(ctx, "decided", "policy_decision", &decision, "none")
+				attempt.close()
+			}
+			authorized, replacement, waited, err = g.authorizeAsk(ctx, invocation, executor, policyInvocation, decision, reviewLatency)
+		}
 		approvalWait += waited
 		prepared.waited = approvalWait
 		if err != nil {
@@ -97,13 +139,19 @@ func (g *Guard) authorize(
 			if err != nil {
 				return prepared, err
 			}
-			if current.Revision != runtime.Revision || current.Permission != runtime.Permission {
+			if g.Policy() != livePolicy || current.Revision != runtime.Revision || current.Permission != runtime.Permission {
 				// A one-shot approval cannot preserve a superseded permission
 				// profile. Rebind session authority before any process starts.
 				continue
 			}
 			if invocation.Binding.Capability == tool.CapabilityNetwork {
 				g.grantNetworkHosts(ctx, policyInvocation)
+			}
+			if a := guardianAttemptFrom(ctx); a != nil && a.approvalID != "" {
+				_ = a.report(ctx, "decided", "human_approved", &decision, "human")
+			}
+			if attempt := guardianAttemptFrom(ctx); attempt != nil {
+				attempt.close()
 			}
 			return prepared, nil
 		}
@@ -140,17 +188,16 @@ func (g *Guard) authorizeAsk(
 	reviewLatency time.Duration,
 ) (authorized bool, replacement *preparedExecution, waited time.Duration, err error) {
 	now := g.now()
-	if decision.Approval == policy.ApprovalReusable &&
-		g.policy.Approvals != nil &&
-		g.policy.Approvals.MatchInvocation(policyInvocation, now) {
-		g.observeApproval("grant_hit", policyInvocation, decision, 0)
-		return true, nil, 0, nil
-	}
 	editPlan, err := g.planApprovalEdit(ctx, invocation, executor)
 	if err != nil {
 		return false, nil, 0, err
 	}
 	ask := networkApprovalAsk(policyInvocation, invocation.Binding.Capability)
+	if attempt := guardianAttemptFrom(ctx); attempt != nil {
+		ask.GuardianReason = attempt.reason
+		ask.GuardianReviewID = attempt.id()
+		ask.GuardianReasonCode = attempt.reasonCode
+	}
 	if ask.Code == "" {
 		ask.Code = decision.Code
 	}
@@ -210,6 +257,14 @@ func (g *Guard) authorizeAsk(
 		return false, nil, waited, err
 	}
 	return false, nil, waited, nil
+}
+
+func (g *Guard) matchApproval(invocation policy.Invocation, decision policy.Decision) bool {
+	if decision.Approval == policy.ApprovalReusable && g.policy.Approvals != nil && g.policy.Approvals.MatchInvocation(invocation, g.now()) {
+		g.observeApproval("grant_hit", invocation, decision, 0)
+		return true
+	}
+	return false
 }
 
 func (g *Guard) planApprovalEdit(

@@ -53,8 +53,10 @@ type Invocation struct {
 	Validated    bool
 	// Workspace is the canonical workspace root; path writes are classified
 	// against it.
-	Workspace string
-	Stage     Stage
+	Workspace          string
+	Stage              Stage
+	GuardianRegistered bool
+	Guardian           *GuardianInput
 }
 
 func (i Invocation) Capability() securitymodel.Capability { return i.Assessment.Binding().Capability }
@@ -104,10 +106,11 @@ type Runtime struct {
 }
 
 type Decision struct {
-	Action       Action
-	Code, Reason string
-	Layer        Layer
-	Approval     ApprovalRequirement
+	GuardianEligible bool
+	Action           Action
+	Code, Reason     string
+	Layer            Layer
+	Approval         ApprovalRequirement
 	// Resource is the canonical location behind a control-plane denial.
 	Resource string
 }

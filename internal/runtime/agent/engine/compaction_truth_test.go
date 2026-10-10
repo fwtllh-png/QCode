@@ -58,11 +58,10 @@ func TestCompactionReceiptReportsModelDownshiftAndDropsNarrative(t *testing.T) {
 	}
 }
 
-func TestTruthCapsuleDowngradesVerifiedChangeWhenWorkspaceCannotBind(t *testing.T) {
+func TestTruthCapsuleDoesNotClaimUnboundChangesAreVerified(t *testing.T) {
 	engine := newEngine(t, &scriptedProvider{}, tool.NewRegistry(nil, nil))
 	path := filepath.Join(t.TempDir(), "outside.go")
 	engine.context.Evidence().MarkChanged(path, 1, true)
-	engine.context.Evidence().MarkVerified([]string{path})
 
 	capsule := engine.buildTruthCapsule(engine.buildCompactSummary(nil), nil)
 	if err := capsule.Validate(); err != nil {
@@ -72,7 +71,7 @@ func TestTruthCapsuleDowngradesVerifiedChangeWhenWorkspaceCannotBind(t *testing.
 		if entity.Kind != agentcontext.EntityChange {
 			continue
 		}
-		if entity.Verified || entity.Retention != agentcontext.RetentionMandatory ||
+		if entity.Verified || entity.Retention != agentcontext.RetentionRefreshable ||
 			entity.WorkspaceClaimStatus != "" {
 			t.Fatalf("unbound change retained an invalid claim: %+v", entity)
 		}

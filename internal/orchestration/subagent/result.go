@@ -60,7 +60,7 @@ type Result struct {
 	Summary           string                       `json:"summary,omitempty"`
 	Evidence          *protocol.ReceiptEvidence    `json:"evidence,omitempty"`
 	Diff              []protocol.ReceiptChange     `json:"diff,omitempty"`
-	Verification      protocol.ReceiptVerification `json:"verification"`
+	Verification      protocol.ReceiptVerification `json:"verification,omitempty,omitzero"`
 	Unresolved        []string                     `json:"unresolved,omitempty"`
 	Usage             ResultUsage                  `json:"usage"`
 	PermissionDigests []string                     `json:"permission_digests,omitempty"`
@@ -101,10 +101,6 @@ func (r Result) Digest() string {
 	}
 	if len(r.Diff) > 0 {
 		parts = append(parts, fmt.Sprintf("changed %d file(s)", len(r.Diff)))
-	}
-	if verdict := strings.TrimSpace(r.Verification.Verify); verdict != "" &&
-		verdict != protocol.ReceiptNotEvaluated {
-		parts = append(parts, "verify="+verdict)
 	}
 	if reason := strings.TrimSpace(r.ReasonCode); reason != "" {
 		parts = append(parts, reason)

@@ -30,29 +30,16 @@ func TestNoChangeCompletionRequiresObservedWorkspaceAndReadEvidence(t *testing.T
 		t.Fatalf("decision: %+v", state.Completion)
 	}
 	state = apply(t, state, EvaluateTurnStep{ProgressKey: "no-change"}).State
-	if state.NextAction != StepActionVerify {
+	if state.NextAction != StepActionComplete {
 		t.Fatalf("action: %s", state.NextAction)
 	}
-	state = apply(t, state, VerificationStarted{}).State
-	state = apply(t, state, VerificationFinished{Status: VerificationNotRequired}).State
 	if err := validateCompletionPolicy(state); err != nil {
 		t.Fatal(err)
 	}
 	state = apply(t, state, ToolCallsProposed{Calls: []ToolCallState{{ID: "write", Name: "file_write"}}}).State
 	state = apply(t, state, ToolResultReceived{CallID: "write", Changes: []ObservedChange{{Path: "a.go", Kind: "modified"}}}).State
-	if state.Workspace != nil || state.Completion != nil || !verificationPending(state) {
+	if state.Workspace != nil || state.Completion != nil {
 		t.Fatal("mutation retained stale readiness")
-	}
-}
-
-func TestNotRequiredCannotApproveRemainingChanges(t *testing.T) {
-	state := verifiedMutation(t)
-	state = apply(t, state, WorkspaceReconciled{Mutation: state.MutationRevision, Changes: []ObservedChange{{Path: "a.go", Kind: "modified"}}}).State
-	state = apply(t, state, VerificationStarted{}).State
-	effectID := pendingEffectID(state, EffectRunVerification, "")
-	state = startPendingEffect(t, state, effectID)
-	if _, err := (Reducer{}).Apply(state, VerificationFinished{EffectID: effectID, Status: VerificationNotRequired}); err == nil {
-		t.Fatal("remaining changes were exempted from verification")
 	}
 }
 

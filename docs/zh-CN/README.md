@@ -43,6 +43,8 @@
 9. [上下文连续性与压缩优化方案（P0–P3 已实施）](./context-continuity-optimization-plan.md)
 10. [上下文连续性契约与阶段回归](./context-continuity-contract.md)
 11. [Turn 受阻与恢复评估](./blocked-recovery-assessment.md)
+12. [Guardian 模型审查式 Auto Review 设计](./guardian-auto-review-design.md)
+13. [Guardian 评估与启用验收](./guardian-evaluation.md)
 
 ## 文档事实来源
 

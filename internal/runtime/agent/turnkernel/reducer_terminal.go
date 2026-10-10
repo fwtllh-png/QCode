@@ -203,15 +203,13 @@ func terminalJournalOutcome(
 	decision TerminalDecision,
 ) (EffectKind, JournalStatus) {
 	switch {
-	case decision.Kind == TerminalCompleted &&
-		state.Verification.Action != VerificationActionReverted:
+	case decision.Kind == TerminalCompleted:
 		return EffectCommitJournal, JournalCommitted
 	case decision.Kind == TerminalCanceled &&
 		CancelSuspendsDraft(decision.Message):
 		return EffectSuspendJournal, JournalSuspended
 	case decision.Kind == TerminalFailed &&
-		(state.Verification.Action == VerificationActionBlocked ||
-			decision.Convergence != nil ||
+		(decision.Convergence != nil ||
 			recoverableTerminalFault(decision.Fault) ||
 			state.RecoveryRelation != nil &&
 				state.RecoveryRelation.DraftResumed):

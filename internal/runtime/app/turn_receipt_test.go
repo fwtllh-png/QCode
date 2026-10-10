@@ -162,9 +162,9 @@ func TestReceiptClassifiesToolExecutions(t *testing.T) {
 		})
 	}
 	receipt := recorder.build(turnReceiptObservations{})
-	if receipt.ToolExecution["business"] != 2 ||
+	if receipt.ToolExecution["business"] != 3 ||
 		receipt.ToolExecution["control"] != 1 ||
-		receipt.ToolExecution["verification"] != 1 ||
+		receipt.ToolExecution["verification"] != 0 ||
 		receipt.ToolExecution["failed"] != 1 {
 		t.Fatalf("tool execution = %+v", receipt.ToolExecution)
 	}
@@ -466,153 +466,9 @@ func TestReceiptBudgetIncludesThisTurn(t *testing.T) {
 // The receipt reports the gate's real verdict. Tests only claim a result when
 // the gate ran the repository's own commands, since the diagnostics scope runs
 // no tests at all.
-func TestReceiptReportsVerificationGateVerdict(t *testing.T) {
-	tests := map[string]struct {
-		receipt   *agentengine.VerificationReceipt
-		wantVerif string
-		wantTests string
-	}{
-		"no gate": {
-			wantVerif: protocol.ReceiptNotEvaluated, wantTests: protocol.ReceiptNotEvaluated,
-		},
-		"diagnostics passed": {
-			receipt: &agentengine.VerificationReceipt{
-				Receipt: verify.Receipt{Scope: verify.ScopeDiagnostics, Status: verify.StatusPassed},
-				Action:  "passed",
-			},
-			wantVerif: protocol.ReceiptPassed, wantTests: protocol.ReceiptNotEvaluated,
-		},
-		"repository failed": {
-			receipt: &agentengine.VerificationReceipt{
-				Receipt: verify.Receipt{Scope: verify.ScopeRepository, Status: verify.StatusFailed},
-				Action:  "failed",
-			},
-			wantVerif: protocol.ReceiptFailed, wantTests: protocol.ReceiptFailed,
-		},
-		"repository unavailable": {
-			receipt: &agentengine.VerificationReceipt{
-				Receipt: verify.Receipt{
-					Scope: verify.ScopeRepository, Status: verify.StatusUnavailable,
-				},
-				Action: "passed",
-			},
-			wantVerif: protocol.ReceiptUnavailable, wantTests: protocol.ReceiptUnavailable,
-		},
-		"affected passed": {
-			receipt: &agentengine.VerificationReceipt{
-				Receipt: verify.Receipt{Scope: verify.ScopeAffected, Status: verify.StatusPassed},
-				Action:  "passed",
-			},
-			wantVerif: protocol.ReceiptPassed, wantTests: protocol.ReceiptPassed,
-		},
-		"repository net-zero gate": {
-			receipt: &agentengine.VerificationReceipt{
-				Receipt:   verify.Receipt{Scope: verify.ScopeRepository, Status: verify.StatusNotRequired},
-				Action:    "not_required",
-				Workspace: &agentengine.VerificationWorkspace{Status: "unchanged"},
-			},
-			wantVerif: protocol.ReceiptNotRequired, wantTests: protocol.ReceiptNotEvaluated,
-		},
-		"affected net-zero gate": {
-			receipt: &agentengine.VerificationReceipt{
-				Receipt:   verify.Receipt{Scope: verify.ScopeAffected, Status: verify.StatusNotRequired},
-				Action:    "not_required",
-				Workspace: &agentengine.VerificationWorkspace{Status: "unchanged"},
-			},
-			wantVerif: protocol.ReceiptNotRequired, wantTests: protocol.ReceiptNotEvaluated,
-		},
-	}
-	for name, test := range tests {
-		t.Run(name, func(t *testing.T) {
-			recorder := newTurnReceiptRecorder("fix add")
-			recorder.observe(agentengine.Event{
-				State: agentengine.Verifying, Verification: test.receipt,
-			})
-			receipt := recorder.build(turnReceiptObservations{})
-			if receipt.Verification.Verify != test.wantVerif ||
-				receipt.Verification.Tests != test.wantTests {
-				t.Fatalf("verification = %+v", receipt.Verification)
-			}
-		})
-	}
-}
 
 // A repair round is followed by another evaluation, and the receipt must report
 // the verdict the turn ended on.
-func TestReceiptReportsFinalVerificationAfterRepair(t *testing.T) {
-	recorder := newTurnReceiptRecorder("fix add")
-	recorder.observe(agentengine.Event{
-		State: agentengine.Verifying,
-		Verification: &agentengine.VerificationReceipt{
-			Receipt: verify.Receipt{Scope: verify.ScopeDiagnostics, Status: verify.StatusFailed},
-			Action:  "repair",
-		},
-	})
-	recorder.observe(agentengine.Event{
-		State: agentengine.Verifying,
-		Verification: &agentengine.VerificationReceipt{
-			Receipt:     verify.Receipt{Scope: verify.ScopeDiagnostics, Status: verify.StatusPassed},
-			Action:      "passed",
-			RepairSteps: 1,
-			Attempts: []verify.Receipt{
-				{
-					Scope: verify.ScopeDiagnostics, Status: verify.StatusFailed,
-					Checks: []verify.Check{{
-						Name: "gopls", Command: "diagnostics calc.go",
-						Reason: "post-edit diagnostics", Category: "diagnostic_failure",
-						Status: verify.StatusFailed,
-					}},
-				},
-				{Scope: verify.ScopeDiagnostics, Status: verify.StatusPassed},
-			},
-			Workspace: &agentengine.VerificationWorkspace{Status: "changed"},
-		},
-	})
-
-	receipt := recorder.build(turnReceiptObservations{
-		changes: []agentengine.TurnDiffEntry{{Path: "calc.go"}},
-	})
-	if receipt.Verification.Verify != protocol.ReceiptPassed {
-		t.Fatalf("verify = %q, want the post-repair verdict", receipt.Verification.Verify)
-	}
-	if receipt.VerificationDetail == nil ||
-		len(receipt.VerificationDetail.Attempts) != 2 ||
-		receipt.VerificationDetail.Attempts[0].Checks[0].Category != "diagnostic_failure" ||
-		receipt.WorkspaceOutcome == nil ||
-		receipt.WorkspaceOutcome.Status != "changed" {
-		t.Fatalf("detailed receipt = %+v workspace = %+v",
-			receipt.VerificationDetail, receipt.WorkspaceOutcome)
-	}
-}
-
-func TestVerificationDataCarriesChecksAndPaths(t *testing.T) {
-	data := turnVerificationData(&agentengine.VerificationReceipt{
-		Receipt: verify.Receipt{
-			Scope: verify.ScopeRepository, Status: verify.StatusFailed, Errors: 1,
-			Checks: []verify.Check{{
-				Name: "go", Command: "go test ./...", Reason: "go.mod",
-				Category: "test_failure", Status: verify.StatusFailed,
-				ExitCode: 1, Stdout: "--- FAIL", Stderr: "exit status 1",
-			}},
-		},
-		Mode: "hard", Action: "failed", RepairSteps: 2, Paths: []string{"calc.py"},
-	})
-
-	if data.Scope != "repository" || data.Status != protocol.ReceiptFailed ||
-		data.Action != "failed" || data.RepairSteps != 2 || data.Errors != 1 {
-		t.Fatalf("verification data = %+v", data)
-	}
-	if len(data.Checks) != 1 || data.Checks[0].Name != "go" ||
-		data.Checks[0].Reason != "go.mod" ||
-		data.Checks[0].Category != "test_failure" ||
-		!strings.Contains(data.Checks[0].Output, "FAIL") ||
-		!strings.Contains(data.Checks[0].Output, "exit status 1") {
-		t.Fatalf("checks = %+v", data.Checks)
-	}
-	if len(data.Paths) != 1 || data.Paths[0] != "calc.py" {
-		t.Fatalf("paths = %v", data.Paths)
-	}
-}
 
 func TestReceiptReportsEvidenceFactsRisksAndReminders(t *testing.T) {
 	recorder := newTurnReceiptRecorder("fix add")
@@ -743,10 +599,10 @@ func TestReceiptDistinguishesUnavailableDiagnostics(t *testing.T) {
 				Diagnostics: []verify.DiagnosticReceipt{{Path: "calc.py", Status: test.status}},
 			})
 			receipt := recorder.build(turnReceiptObservations{})
-			if receipt.Verification.Diagnostics != test.want {
+			if receipt.DiagnosticsStatus != test.want {
 				t.Fatalf(
 					"diagnostics = %q want %q",
-					receipt.Verification.Diagnostics, test.want,
+					receipt.DiagnosticsStatus, test.want,
 				)
 			}
 		})

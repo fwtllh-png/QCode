@@ -464,8 +464,13 @@ type SampleContextData struct {
 	WindowBodyTokens          uint64                  `json:"window_body_tokens,omitempty"`
 	WindowPendingTokens       uint64                  `json:"window_pending_tokens,omitempty"`
 	WindowOutputReserve       uint64                  `json:"window_output_reserve,omitempty"`
+	WindowContextTokens       uint64                  `json:"window_context_tokens,omitempty"`
+	MeasuredInputTokens       uint64                  `json:"measured_input_tokens,omitempty"`
+	CompactionHeadroomTokens  uint64                  `json:"compaction_headroom_tokens,omitempty"`
+	CompactionTargetTokens    uint64                  `json:"compaction_target_tokens,omitempty"`
 	WindowHardInputTokens     uint64                  `json:"window_hard_input_tokens,omitempty"`
 	WindowOutputSource        string                  `json:"window_output_source,omitempty"`
+	WindowLimitSource         string                  `json:"window_limit_source,omitempty"`
 	EconomicRequestedTokens   uint64                  `json:"economic_requested_tokens,omitempty"`
 	EconomicGrantedTokens     uint64                  `json:"economic_granted_tokens,omitempty"`
 	EconomicInputTokens       uint64                  `json:"economic_input_tokens,omitempty"`
@@ -1129,6 +1134,9 @@ type ApprovalSource struct {
 	WorkspaceRoot string `json:"workspace_root"`
 }
 type ApprovalRequiredData struct {
+	GuardianReviewID    string                  `json:"guardian_review_id,omitempty"`
+	GuardianReasonCode  string                  `json:"guardian_reason_code,omitempty"`
+	BindingDigest       string                  `json:"binding_digest,omitempty"`
 	RequestID           string                  `json:"request_id"`
 	CallID              string                  `json:"call_id"`
 	Tool                string                  `json:"tool"`
@@ -1162,6 +1170,12 @@ type NetworkApprovalPayload struct {
 func (*ApprovalRequiredData) eventKind() EventKind { return EventApprovalRequired }
 
 func (d *ApprovalRequiredData) validate() error {
+	if d.BindingDigest != "" && !validSHA256(d.BindingDigest) {
+		return errors.New("invalid approval binding digest")
+	}
+	if d.GuardianReasonCode != "" && !validGuardianReason(d.GuardianReasonCode) {
+		return errors.New("invalid Guardian approval reason")
+	}
 	if d.RequestID == "" || d.CallID == "" || d.Tool == "" || d.ArgumentsDigest == "" {
 		return errors.New("approval request identity and arguments digest are required")
 	}

@@ -38,7 +38,6 @@ type childToolset struct {
 	jobLogs          *joblog.Store
 	inputHost        *interacttool.Host
 	diagnostics      verify.DiagnosticRunner
-	verify           verify.Runner
 	files            *filetool.Tools
 	skillCatalog     *skill.Catalog
 }
@@ -91,7 +90,6 @@ func (t *childToolset) registerResourceClosers() error {
 type childToolsets struct {
 	content             contentstore.Store
 	web                 webtool.Options
-	verify              config.Verify
 	journals            config.Journal
 	diagnosticCommands  map[string]verify.DiagnosticCommand
 	diagnosticReadRoots []string
@@ -146,7 +144,7 @@ func (c *childToolsets) bindInteractions(
 
 func newChildToolsets(
 	content contentstore.Store, web webtool.Options,
-	verifyConfig config.Verify, journals config.Journal,
+	journals config.Journal,
 	diagnosticCommands map[string]verify.DiagnosticCommand,
 	diagnosticReadRoots []string,
 	diagnosticReadFiles []string,
@@ -155,7 +153,7 @@ func newChildToolsets(
 	skillPaths SkillPaths,
 ) *childToolsets {
 	return &childToolsets{
-		content: content, web: web, verify: verifyConfig,
+		content: content, web: web,
 		journals: journals, diagnosticCommands: diagnosticCommands,
 		diagnosticReadRoots: append([]string(nil), diagnosticReadRoots...),
 		diagnosticReadFiles: append([]string(nil), diagnosticReadFiles...),
@@ -299,7 +297,6 @@ func (c *childToolsets) open(
 			return nil, fmt.Errorf("recover interrupted child turns: %w", err)
 		}
 	}
-	runner := &verify.ReceiptRunner{Root: root, Command: c.verify.Command}
 	files, err := filetool.NewWithBackend(root, backend)
 	if err != nil {
 		return nil, fmt.Errorf("child integration files: %w", err)
@@ -308,14 +305,14 @@ func (c *childToolsets) open(
 		if err := agenttool.Register(registry, agenttool.Options{
 			Control: agents, Handles: handles,
 			Files: files, OnRelease: agentRelease,
-			Sandbox: backend, Verify: runner, Workspace: root, SessionID: agentSession,
+			Sandbox: backend, Workspace: root, SessionID: agentSession,
 		}); err != nil {
 			return nil, fmt.Errorf("child agent tools: %w", err)
 		}
 	}
 	toolset.preparationFacts, toolset.inputHost = preparationFacts, inputHost
 	toolset.diagnostics = verify.NewDiagnosticCommandRunner(root, backend, c.diagnosticCommands)
-	toolset.verify, toolset.files = runner, files
+	toolset.files = files
 	// Keep the owner's enablement and lock policy, but discover only this
 	// child's workspace and execution HOME alongside configured/user skills.
 	policy, _ := sandbox.BackendPolicy(backend)

@@ -95,13 +95,38 @@ func (e *Engine) runCompactGate(
 		}
 		return window, err
 	}
-	for overHard || operatorCeiling {
-		reason := agentcontext.OmittedCapacity
-		if !overHard && economicInput != 0 && window.active > economicInput {
-			reason = agentcontext.OmittedEconomicBudget
-		} else if !overHard {
-			reason = agentcontext.OmittedOperatorCeiling
+	beforeFold, beforeFoldWindow := projected, window
+	// Capacity selection may already have removed a prefix before this gate.
+	// Pin that boundary so future samples do not refill the released space.
+	selection := e.contextProjection(*history)
+	floor := e.currentWindowLedger().HistoryFloorTurn
+	capacityTrimmed := false
+	for _, omission := range selection.Omissions {
+		if (omission.Reason == agentcontext.OmittedCapacity || omission.Reason == agentcontext.OmittedTokenLimit) &&
+			omission.Source.Index >= e.viewFold.start &&
+			omission.Source.Turn >= floor {
+			capacityTrimmed = true
+			break
 		}
+	}
+	if capacityTrimmed {
+		e.viewFold.start = selection.TailStart
+		e.viewFold.folded = true
+	}
+	buffering := overHard || operatorCeiling || capacityTrimmed
+	reason := agentcontext.OmittedCapacity
+	if !overHard && economicInput != 0 && window.active > economicInput {
+		reason = agentcontext.OmittedEconomicBudget
+	} else if !overHard && operatorCeiling {
+		reason = agentcontext.OmittedOperatorCeiling
+	} else if capacityTrimmed && selection.LimitingConstraint == agentcontext.OmittedTokenLimit {
+		reason = agentcontext.OmittedTokenLimit
+	}
+	if buffering {
+		e.viewFold.headroom, e.viewFold.target = e.compactionHeadroom(*history, window, outputReserve, economicInput)
+	}
+	foldedAny := false
+	for overHard || operatorCeiling || buffering && window.accounting.FullActiveTokens > e.viewFold.target {
 		before := projected
 		beforeWindow := window
 		var folded bool
@@ -115,13 +140,18 @@ func (e *Engine) runCompactGate(
 		if !folded {
 			break
 		}
-		receipt := viewFoldReceipt(phase, before, projected, beforeWindow, window)
-		if err := send(Compacting, Event{Compaction: receipt}); err != nil {
-			return tokenWindow{}, err
-		}
+		foldedAny = true
 		overHard = window.hardLimit != 0 && window.total > window.hardLimit
 		operatorCeiling = window.compactLimit != 0 &&
 			window.compactLimit < window.hardLimit && window.active > window.compactLimit
+	}
+	if foldedAny {
+		if err := send(Compacting, Event{Compaction: viewFoldReceipt(phase, beforeFold, projected, beforeFoldWindow, window)}); err != nil {
+			return tokenWindow{}, err
+		}
+	}
+	if buffering {
+		e.retainHistoryFloor(*history)
 	}
 	if err == nil && overHard {
 		return e.relieveCurrentTurnPressure(
@@ -520,6 +550,9 @@ func (e *Engine) ReplaceHistory(messages []provider.Message) {
 	e.history = cloneMessages(messages)
 	agentcontext.ReconcileHistoryTurns(&e.historyTurns, e.history, "", 0)
 	e.advanceTokenWindow()
+	window := e.context.Window()
+	window.RetainHistoryFrom(0)
+	e.context.SetWindow(window)
 	e.context.ReconcileWorld(e.history)
 	var maxTurn uint64
 	for _, message := range e.history {
@@ -566,6 +599,7 @@ func (e *Engine) Fork() (*Engine, error) {
 	}
 	e.readResultMu.Unlock()
 	forked.context = e.context.Clone()
+	forkWindow.RetainHistoryFrom(e.context.Window().HistoryFloorTurn)
 	forked.context.SetWindow(forkWindow)
 	forked.historyTurns = agentcontext.CloneHistoryTurns(e.historyTurns)
 	forked.planText = e.planText

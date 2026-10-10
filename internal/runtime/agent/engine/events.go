@@ -19,6 +19,7 @@ import (
 type State string
 
 type Event struct {
+	Guardian      *protocol.GuardianReviewData      `json:"guardian,omitempty"`
 	State         State                             `json:"state"`
 	Turn          uint64                            `json:"turn"`
 	Provider      string                            `json:"provider,omitempty"`
@@ -65,16 +66,16 @@ type Event struct {
 	Input              *interact.Request                  `json:"input,omitempty"`
 	Diagnostics        []verify.DiagnosticReceipt         `json:"diagnostics,omitempty"`
 	FileChanges        []tool.WorkspaceChange             `json:"file_changes,omitempty"`
-	Verification       *VerificationReceipt               `json:"verification,omitempty"`
-	Completion         *tool.CompletionDeclaration        `json:"completion,omitempty"`
-	ProviderRetry      *ProviderRetry                     `json:"provider_retry,omitempty"`
-	ModelExecution     *ModelExecution                    `json:"model_execution,omitempty"`
-	ReasoningCompleted *ModelReasoning                    `json:"reasoning_completed,omitempty"`
-	OutputDiscarded    *ModelOutputDiscarded              `json:"output_discarded,omitempty"`
-	Commentary         *protocol.CommentaryCompletedData  `json:"commentary,omitempty"`
-	ToolOutput         *ToolOutput                        `json:"tool_output,omitempty"`
-	CatalogChanged     *CatalogChanged                    `json:"catalog_changed,omitempty"`
-	MCPHealthChanged   *MCPHealthChanged                  `json:"mcp_health_changed,omitempty"`
+	WorkspaceOutcome   *protocol.ReceiptWorkspaceOutcome
+	Completion         *tool.CompletionDeclaration       `json:"completion,omitempty"`
+	ProviderRetry      *ProviderRetry                    `json:"provider_retry,omitempty"`
+	ModelExecution     *ModelExecution                   `json:"model_execution,omitempty"`
+	ReasoningCompleted *ModelReasoning                   `json:"reasoning_completed,omitempty"`
+	OutputDiscarded    *ModelOutputDiscarded             `json:"output_discarded,omitempty"`
+	Commentary         *protocol.CommentaryCompletedData `json:"commentary,omitempty"`
+	ToolOutput         *ToolOutput                       `json:"tool_output,omitempty"`
+	CatalogChanged     *CatalogChanged                   `json:"catalog_changed,omitempty"`
+	MCPHealthChanged   *MCPHealthChanged                 `json:"mcp_health_changed,omitempty"`
 }
 
 func modelMetadataProvenance(
@@ -203,16 +204,16 @@ func (HeuristicTokenEstimator) EstimateImage(
 }
 
 type Result struct {
-	Turn         uint64                  `json:"turn"`
-	Text         string                  `json:"text"`
-	Reasoning    string                  `json:"reasoning,omitempty"`
-	State        State                   `json:"state"`
-	Usage        provider.Usage          `json:"usage"`
-	CostUSD      float64                 `json:"cost_usd"`
-	Tools        []provider.ToolCall     `json:"tools,omitempty"`
-	Searches     []provider.SearchResult `json:"searches,omitempty"`
-	Citations    []provider.Citation     `json:"citations,omitempty"`
-	Verification *VerificationReceipt    `json:"verification,omitempty"`
+	Turn             uint64                  `json:"turn"`
+	Text             string                  `json:"text"`
+	Reasoning        string                  `json:"reasoning,omitempty"`
+	State            State                   `json:"state"`
+	Usage            provider.Usage          `json:"usage"`
+	CostUSD          float64                 `json:"cost_usd"`
+	Tools            []provider.ToolCall     `json:"tools,omitempty"`
+	Searches         []provider.SearchResult `json:"searches,omitempty"`
+	Citations        []provider.Citation     `json:"citations,omitempty"`
+	WorkspaceOutcome *protocol.ReceiptWorkspaceOutcome
 }
 
 // PendingSource tags why an input was enqueued into the turn-local queue (N1).

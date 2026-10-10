@@ -74,6 +74,9 @@ func TestTokenWindowUsesObservedBaselineForPendingDelta(t *testing.T) {
 	}
 	engine.prepareTokenWindow(&first, 20)
 	engine.observeTokenWindow(&first, 150, 50)
+	if first.MeasuredInputTokens != 150 || first.WindowFullActiveTokens != 150 || first.WindowProjectedTokens != 100 {
+		t.Fatalf("observed sample mixed estimate bases: %+v", first)
+	}
 	// The post-observation estimate arrives on the calibrated basis (the
 	// raw 100 tokens now price at 150), so only the growth beyond it is
 	// pending: 200 - 150 = 50 on top of the observed 150.
@@ -91,6 +94,40 @@ func TestTokenWindowUsesObservedBaselineForPendingDelta(t *testing.T) {
 		float64(actualNextInput)
 	if errorRate > 0.05 {
 		t.Fatalf("compaction trigger error=%f projection=%+v", errorRate, projected)
+	}
+}
+
+func TestTokenWindowSampleCapacityUsesActualRequestOutputReserve(t *testing.T) {
+	e := newEngine(t, &scriptedProvider{}, nil)
+	e.options.Route = mustTestRouteWithContext(t, 4096)
+	e.options.MaxOutputTokens = 1024
+	sample := protocol.SampleContextData{EstimatedTokens: 100}
+	e.prepareTokenWindow(&sample, 128)
+	if sample.WindowContextTokens != 4096 || sample.WindowOutputReserve != 128 || sample.WindowHardInputTokens != 3968 {
+		t.Fatalf("sample mixed output ceiling and actual reserve: %+v", sample)
+	}
+}
+
+func TestTokenWindowMissingInputUsageKeepsRequestEstimate(t *testing.T) {
+	e := newEngine(t, &scriptedProvider{}, nil)
+	for _, scoped := range []bool{false, true} {
+		if scoped {
+			attachTestScope(t, e)
+		}
+		for _, observed := range []bool{false, true} {
+			if observed {
+				prior := protocol.SampleContextData{EstimatedTokens: 100}
+				e.prepareTokenWindow(&prior, 128)
+				e.observeTokenWindow(&prior, 150, 0)
+			}
+			sample := protocol.SampleContextData{EstimatedTokens: 200}
+			e.prepareTokenWindow(&sample, 128)
+			before := sample
+			e.observeTokenWindow(&sample, 0, 0)
+			if !reflect.DeepEqual(sample, before) {
+				t.Fatalf("missing usage changed request estimate: before=%+v after=%+v", before, sample)
+			}
+		}
 	}
 }
 

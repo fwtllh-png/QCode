@@ -63,7 +63,6 @@ func TestContextCheckpointRestoresOwnersAndInvalidatesChangedWorkspace(t *testin
 	}
 	engine.context.Evidence().NoteRead("main.go", "sha256:old")
 	engine.context.Evidence().MarkChanged("main.go", 4, true)
-	engine.context.Evidence().MarkVerified([]string{"main.go"})
 	if err := engine.ApplyPlan(interact.Plan{
 		Objective: "implement parser",
 		Steps: []interact.PlanStep{{
@@ -94,7 +93,7 @@ func TestContextCheckpointRestoresOwnersAndInvalidatesChangedWorkspace(t *testin
 		t.Fatal(err)
 	}
 	usage, cost := engine.Usage()
-	if receipt.BindingMatch != true || receipt.Invalidated != 2 ||
+	if receipt.BindingMatch != true || receipt.Invalidated != 1 ||
 		receipt.Stale != 2 || usage.InputTokens != 100 || cost != 2.5 ||
 		!strings.Contains(engine.planText, "implement parser") ||
 		strings.Contains(engine.planText, "newer unrelated") ||
@@ -110,9 +109,9 @@ func TestContextCheckpointRestoresOwnersAndInvalidatesChangedWorkspace(t *testin
 			engine.planText,
 		)
 	}
-	changes := engine.EvidenceSnapshot().Risks
-	if len(changes) == 0 {
-		t.Fatal("workspace mismatch did not recreate an unverified risk")
+	changes := engine.context.Evidence().Changes()
+	if len(changes) != 1 || !changes[0].Stale {
+		t.Fatalf("workspace mismatch did not invalidate the change claim: %+v", changes)
 	}
 	capsule := engine.buildTruthCapsule(engine.buildCompactSummary(nil), nil)
 	for _, entity := range capsule.Entities {

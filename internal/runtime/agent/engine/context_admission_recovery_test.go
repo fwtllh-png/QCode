@@ -1,45 +1,60 @@
 package engine
 
 import (
-	"encoding/json"
-	"strings"
-	"testing"
-
 	"github.com/fwtllh-png/QCode/internal/adapter/provider"
-	providerfixture "github.com/fwtllh-png/QCode/internal/adapter/provider/fixture"
-	"github.com/fwtllh-png/QCode/internal/observability/verify"
+	"github.com/fwtllh-png/QCode/internal/adapter/tool"
+	"testing"
 )
 
-func TestContextReservationRejectionAllowsSmallerBatch(t *testing.T) {
-	f := newVerifyGateFixture(t, VerifyOptions{}, &scriptedVerifier{receipts: []verify.Receipt{passedReceipt()}}, 0, 8)
-	arguments := `{"path":"value.txt","old":"before","new":"after"}`
-	f.provider.streams = []provider.Stream{f.provider.streams[0], &providerfixture.SliceStream{Events: []provider.StreamEvent{
-		{Type: provider.EventToolCallDelta, ToolCall: &provider.ToolCallFragment{Index: 0, ID: "large-a", Name: "file_edit", Arguments: arguments}},
-		{Type: provider.EventToolCallDelta, ToolCall: &provider.ToolCallFragment{Index: 1, ID: "large-b", Name: "file_edit", Arguments: arguments}},
-		{Type: provider.EventMessageStop},
-	}}, toolCallStream("small", "file_edit", arguments), textStream("done")}
-	var rejected int
-	result, err := f.engine.RunForTurn(t.Context(), "reservation-recovery", "edit value.txt", func(event Event) error {
-		if event.ToolCall == nil || event.Result == nil {
-			return nil
-		}
-		if event.ToolCall.ID == "read" {
-			current := f.engine.ContextAdmission(nil, nil)
-			f.engine.options.Context.TruthRetention.MandatoryMaxEntities = current.ProjectedEntities + 1
-		}
-		if event.ToolCall.ID == "large-a" || event.ToolCall.ID == "large-b" {
-			rejected++
-			if !event.Result.IsError || event.Result.Metadata["error_category"] != "context_reservation_exceeded" || f.contents(t) != "before\n" {
-				t.Fatalf("batch was executed or not rejected: %+v", event.Result)
-			}
-		}
-		return nil
-	})
-	if err != nil || result.State != Completed || rejected != 2 || f.contents(t) != "after\n" {
-		t.Fatalf("state=%s rejected=%d contents=%q err=%v", result.State, rejected, f.contents(t), err)
+func TestContextReservationRejectionAllowsSmallerInputBatch(t *testing.T) {
+	engine := newEngine(t, &scriptedProvider{}, nil)
+	current := engine.ContextAdmission(nil, nil)
+	engine.options.Context.TruthRetention.MandatoryMaxEntities = current.ProjectedEntities + 1
+	calls := []provider.ToolCall{
+		{ID: "input-a", Name: "request_user_input"},
+		{ID: "input-b", Name: "request_user_input"},
 	}
-	encoded, _ := json.Marshal(f.provider.requests[2].Messages)
-	if !strings.Contains(string(encoded), "split_batch_or_resolve_obligations") {
-		t.Fatal("model did not receive actionable batch rejection")
+	rejected, err := engine.admitToolBatch(calls)
+	if err != nil || rejected == nil || !rejected.IsError ||
+		rejected.Metadata["error_category"] != "context_reservation_exceeded" ||
+		rejected.Metadata["required_action"] != "split_batch_or_resolve_obligations" ||
+		rejected.Metadata["executed"] != false {
+		t.Fatalf("missing actionable rejection before execution: result=%+v err=%v", rejected, err)
+	}
+	if result, err := engine.admitToolBatch(calls[:1]); err != nil || result != nil {
+		t.Fatalf("smaller batch still rejected: result=%+v err=%v", result, err)
+	}
+}
+
+func TestWritesDoNotReserveMandatoryVerificationContext(t *testing.T) {
+	fixture := newWorkspaceCompletionFixture(t, 0, 4)
+	engine := fixture.engine
+	current := engine.ContextAdmission(nil, nil)
+	engine.options.Context.TruthRetention.MandatoryMaxEntities = current.ProjectedEntities + 1
+	calls := []provider.ToolCall{
+		{ID: "write-a", Name: "file_write", Arguments: `{"path":"a.go","content":"a"}`},
+		{ID: "write-b", Name: "file_write", Arguments: `{"path":"b.go","content":"b"}`},
+	}
+	snapshot, err := engine.options.Tools.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range calls {
+		binding, ok := snapshot.Binding(calls[i].Name)
+		if !ok {
+			t.Fatal("file_write binding is unavailable")
+		}
+		calls[i].CatalogID = binding.CatalogID
+		calls[i].CatalogGeneration = binding.Generation
+		calls[i].CatalogRevision = binding.Revision
+		calls[i].CatalogAuthority = binding.Authority
+		_, descriptor, _, err := engine.options.Tools.ResolveBound(calls[i].Name, binding)
+		if err != nil || descriptor.AccessMode != tool.AccessWrite {
+			t.Fatalf("fixture did not resolve a workspace write: %v", err)
+		}
+	}
+
+	if result, err := engine.admitToolBatch(calls); err != nil || result != nil {
+		t.Fatalf("writes reserved obsolete coverage obligations: result=%+v err=%v", result, err)
 	}
 }

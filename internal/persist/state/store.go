@@ -48,6 +48,7 @@ type Options struct {
 }
 
 type Store struct {
+	authorizationEvents sync.RWMutex
 	// mu serializes durable writes and guards closed. Event readers hold it
 	// only to freeze committed cursors or identity, never during log I/O.
 	// readers keeps storage open for those reads without blocking appends.
@@ -168,6 +169,8 @@ func (s *Store) Append(ctx context.Context, event protocol.Event) error {
 // Streaming noise advances only event_watermark. It creates neither a
 // reservation row nor a JSONL record.
 func (s *Store) AppendEvents(ctx context.Context, events ...protocol.Event) error {
+	s.authorizationEvents.RLock()
+	defer s.authorizationEvents.RUnlock()
 	for _, event := range events {
 		if err := s.appendOne(ctx, event); err != nil {
 			return err

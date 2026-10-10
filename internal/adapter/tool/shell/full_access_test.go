@@ -14,7 +14,6 @@ import (
 
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
 	toolguard "github.com/fwtllh-png/QCode/internal/adapter/tool/guard"
-	"github.com/fwtllh-png/QCode/internal/observability/verify"
 	"github.com/fwtllh-png/QCode/internal/platform/process"
 	"github.com/fwtllh-png/QCode/internal/security/policy"
 	"github.com/fwtllh-png/QCode/internal/security/sandbox"
@@ -143,8 +142,8 @@ func TestFullAccessCommandsUseSessionAuthority(t *testing.T) {
 	if err != nil || !result.IsError {
 		t.Fatalf("explicit scope was widened: %+v %v", result, err)
 	}
-	result, err = run("exec_command", map[string]any{"command": "printf changed > generated/cache/result", "verification": "check", "covered_paths": []string{"generated/cache/result"}})
-	if err != nil || result.IsError || result.Metadata[verify.EvidenceMetadataKey].(verify.Evidence).Status != verify.StatusInvalidated {
+	result, err = run("exec_command", map[string]any{"command": "printf changed > generated/cache/result"})
+	if err != nil || result.IsError || result.Metadata["verification_evidence"] != nil {
 		t.Fatalf("Full Access verified its own input mutation: %+v %v", result, err)
 	}
 	result, err = run("shell_read", map[string]any{"command": "printf forbidden > readonly-output"})

@@ -7,7 +7,9 @@ import (
 
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
 	"github.com/fwtllh-png/QCode/internal/adapter/tool/interact"
+	agentcontext "github.com/fwtllh-png/QCode/internal/runtime/agent/context"
 	promptcontext "github.com/fwtllh-png/QCode/internal/runtime/agent/prompt"
+	"github.com/fwtllh-png/QCode/internal/security/policy"
 )
 
 func TestApplyPlanPreservesAndOwnsToolPayload(t *testing.T) {
@@ -49,5 +51,38 @@ func TestApplyPlanPreservesAndOwnsToolPayload(t *testing.T) {
 	if expected := promptcontext.PlanReceipt(plan); engine.planReceipt == nil ||
 		!reflect.DeepEqual(*engine.planReceipt, expected) {
 		t.Fatalf("plan receipt = %+v, want %+v", engine.planReceipt, expected)
+	}
+}
+
+func TestContinuationPlanningRestoresOnlyMatchingSubmission(t *testing.T) {
+	for _, scenario := range []struct {
+		name      string
+		policy    string
+		submitted bool
+		want      bool
+	}{
+		{"submitted", "adaptive", true, true},
+		{"plan_text_only", "adaptive", false, false},
+		{"changed_policy", "off", true, false},
+		{"missing_policy", "", true, false},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			engine := newEngine(t, &scriptedProvider{}, tool.NewRegistry(nil, nil))
+			runtime := engine.guard.Policy()
+			runtime.ConfigurePlanning(policy.PlanningAdaptive)
+			runtime.SetPermission(policy.PermissionNever)
+			engine.restoreContinuationPlanning(agentcontext.TurnContinuation{
+				PlanningPolicy: scenario.policy, PlanSubmitted: scenario.submitted,
+				Plan: &agentcontext.Plan{Steps: []agentcontext.PlanStep{{Title: "a plan is not submission evidence"}}},
+			})
+			if runtime.PlanningSnapshot().PlanSubmitted != scenario.want || runtime.PermissionValue() != policy.PermissionNever {
+				t.Fatal("restoration changed the current permission or inferred submission from plan text")
+			}
+			revision := runtime.Revision
+			engine.restoreContinuationPlanning(agentcontext.TurnContinuation{PlanningPolicy: scenario.policy, PlanSubmitted: scenario.submitted})
+			if runtime.Revision != revision {
+				t.Fatal("repeated restoration changed policy revision")
+			}
+		})
 	}
 }

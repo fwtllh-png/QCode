@@ -56,8 +56,6 @@ type scopeState struct {
 	contextLedger         *agentcontext.MessageLedger
 	mcpProjected          bool
 	diagnostics           []verify.DiagnosticReceipt
-	verification          []verify.Evidence
-	pendingVerification   map[string]verify.Evidence
 	rollback              []string
 	budgetStage           uint8
 	toolSurfaceMaxBytes   int
@@ -85,7 +83,6 @@ type ScopeSnapshot struct {
 	Samples        uint32
 	ToolCalls      int
 	Diagnostics    int
-	Verification   int
 	TerminalStaged bool
 }
 
@@ -132,7 +129,6 @@ func (s *Scope) Snapshot() ScopeSnapshot {
 		Identity: s.spec.Identity, PendingInputs: s.state.mailbox.Len(),
 		Samples: s.state.samples, ToolCalls: len(s.state.diff.Snapshot()),
 		Diagnostics:    len(s.state.diagnostics),
-		Verification:   len(s.state.verification),
 		TerminalStaged: s.state.delta != nil,
 	}
 }

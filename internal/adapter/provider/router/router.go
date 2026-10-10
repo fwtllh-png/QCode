@@ -114,6 +114,19 @@ func (r *Router) ReserveThroughput(route model.ReadyRoute, tokens uint64) {
 	source.ReserveThroughput(route, tokens)
 }
 
+func (r *Router) TryReserveThroughput(route model.ReadyRoute, tokens, operatorLimit uint64) providerratelimit.Decision {
+	if source, ok := r.transport.(interface {
+		TryReserveThroughput(model.ReadyRoute, uint64, uint64) providerratelimit.Decision
+	}); ok {
+		return source.TryReserveThroughput(route, tokens, operatorLimit)
+	}
+	status := providerratelimit.StatusAdmit
+	if operatorLimit != 0 {
+		status = providerratelimit.StatusRefuse
+	}
+	return providerratelimit.Decision{Status: status, Source: providerratelimit.SourceUnknown, Reason: providerratelimit.ReasonUnknown, Required: tokens, Limit: operatorLimit}
+}
+
 func (r *Router) Stream(ctx context.Context, request provider.ModelRequest) (provider.Stream, error) {
 	adapter, err := r.registry.resolve(request.Route)
 	if err != nil {
@@ -137,7 +150,7 @@ func (r *Router) Stream(ctx context.Context, request provider.ModelRequest) (pro
 	if call.Adapter != adapter.ID() || call.Protocol != request.Route.Protocol() {
 		return nil, fmt.Errorf("adapter %q prepared a mismatched call", adapter.ID())
 	}
-	if sessionAdapter, ok := adapter.(providerwire.SessionAdapter); ok && request.Route.Model().Capabilities.IncrementalResponses {
+	if sessionAdapter, ok := adapter.(providerwire.SessionAdapter); ok && !request.SingleAttempt && request.Route.Model().Capabilities.IncrementalResponses {
 		sessionTransport, supported := r.transport.(providerwire.SessionTransport)
 		if supported {
 			stream, handled, err := sessionAdapter.TrySession(

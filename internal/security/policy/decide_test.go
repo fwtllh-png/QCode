@@ -327,10 +327,9 @@ func TestDecideModeLayer(t *testing.T) {
 			call: func() invocationFixture {
 				call := invocation("run_command", "v-1", `{"command":"go test ./..."}`)
 				call.Resources = []tool.Resource{{Kind: "file", Path: "coverage.out", Access: tool.AccessWrite}}
-				call.Declared.Verification = true
 				return call
 			},
-			action: ActionAsk, code: "plan_verification", layer: LayerMode,
+			action: ActionHold, code: "plan_required", layer: LayerMode,
 		},
 		{
 			name: "planning outranks the never posture",

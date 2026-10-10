@@ -23,3 +23,7 @@ func (c *Client) DecideThroughput(
 func (c *Client) ReserveThroughput(route model.ReadyRoute, tokens uint64) {
 	c.limits.Reserve(providerratelimit.Key(route), tokens, time.Now())
 }
+
+func (c *Client) TryReserveThroughput(route model.ReadyRoute, tokens, operatorLimit uint64) providerratelimit.Decision {
+	return c.limits.TryReserve(providerratelimit.Key(route), tokens, operatorLimit, time.Now())
+}

@@ -39,7 +39,7 @@ func TestChildEnvironmentInheritsSnapshotAndRebindsPrivateCache(t *testing.T) {
 		t.Fatal(err)
 	}
 	toolsets := newChildToolsets(contentstore.NewMemory(contentstore.Options{}),
-		webtool.Options{}, config.Verify{}, config.Journal{}, nil, nil, nil,
+		webtool.Options{}, config.Journal{}, nil, nil, nil,
 		"", 0, stateRoot, childSkillPaths(t, options.WorkspaceRoot))
 	toolsets.environment = defaults
 	toolsets.bindParentSandbox(parent)

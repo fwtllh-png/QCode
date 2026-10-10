@@ -4,7 +4,6 @@ import (
 	"testing"
 
 	"github.com/fwtllh-png/QCode/internal/adapter/model"
-	"github.com/fwtllh-png/QCode/internal/adapter/tool"
 	agentcontext "github.com/fwtllh-png/QCode/internal/runtime/agent/context"
 )
 
@@ -225,33 +224,5 @@ func TestSummaryBudgetUsesHardInputCapacityUnlessConfigured(t *testing.T) {
 	engine.options.SummaryMaxBytes = 4096
 	if got := engine.summaryBudget(); got != 4096 {
 		t.Fatalf("configured summary budget = %d", got)
-	}
-}
-
-func TestWriteReservationCountTracksDeclaredResources(t *testing.T) {
-	if got := writeReservationCount(tool.Descriptor{}, `{}`); got != 1 {
-		t.Fatalf("unscoped write reservation count = %d, want one call", got)
-	}
-	descriptor := tool.Descriptor{
-		ResourceResolver: tool.ResourceResolver{
-			Templates: []tool.ResourceTemplate{{}, {}, {}},
-		},
-	}
-	if got := writeReservationCount(descriptor, `{}`); got != len(descriptor.ResourceResolver.Templates) {
-		t.Fatalf(
-			"write reservation count = %d, want declared resources %d",
-			got,
-			len(descriptor.ResourceResolver.Templates),
-		)
-	}
-	descriptor.ResourceResolver = tool.ResourceResolver{ChangesField: "changes"}
-	arguments := `{"changes":[{"path":"a.go"},{"path":"b.go","to":"c.go"}]}`
-	if got := writeReservationCount(descriptor, arguments); got != 3 {
-		t.Fatalf("transaction reservation count = %d, want 3 paths", got)
-	}
-	descriptor.ResourceResolver = tool.ResourceResolver{PatchField: "patch"}
-	arguments = `{"patch":"--- a/a.go\n+++ b/a.go\n--- /dev/null\n+++ b/new.go\n"}`
-	if got := writeReservationCount(descriptor, arguments); got != 2 {
-		t.Fatalf("patch reservation count = %d, want 2 paths", got)
 	}
 }

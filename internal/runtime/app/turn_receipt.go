@@ -2,9 +2,7 @@ package app
 
 import (
 	"encoding/json"
-	"strings"
 
-	"github.com/fwtllh-png/QCode/internal/observability/verify"
 	agentcontext "github.com/fwtllh-png/QCode/internal/runtime/agent/context"
 	agentengine "github.com/fwtllh-png/QCode/internal/runtime/agent/engine"
 	promptcontext "github.com/fwtllh-png/QCode/internal/runtime/agent/prompt"
@@ -40,15 +38,12 @@ type turnReceiptRecorder struct {
 	permissionDigests  []string
 	// routes is which model answered for which purpose, in the order the turn
 	// used them.
-	routes        []protocol.ReceiptRoute
-	issues        []string
-	secondary     []protocol.TerminalIssue
-	skills        []protocol.ReceiptSkill
-	editorContext []protocol.EditorContextReceipt
-	// verification is the last gate evaluation of the turn; repair rounds
-	// deliberately overwrite earlier ones so the receipt reports the verdict the
-	// turn ended on.
-	verification *agentengine.VerificationReceipt
+	routes              []protocol.ReceiptRoute
+	issues              []string
+	secondary           []protocol.TerminalIssue
+	skills              []protocol.ReceiptSkill
+	editorContext       []protocol.EditorContextReceipt
+	workspaceSettlement *protocol.ReceiptWorkspaceOutcome
 	// turn is the turn the observed events belong to, which a caller needs to ask
 	// the engine what that turn read. budget is frozen on the terminal event.
 	turn       uint64
@@ -170,8 +165,8 @@ func (r *turnReceiptRecorder) observe(event agentengine.Event) {
 			})
 		}
 	}
-	if event.Verification != nil {
-		r.verification = event.Verification
+	if event.WorkspaceOutcome != nil {
+		r.workspaceSettlement = event.WorkspaceOutcome
 	}
 	if event.Completion != nil {
 		declaration := event.Completion
@@ -229,27 +224,34 @@ func (r *turnReceiptRecorder) observe(event agentengine.Event) {
 	}
 	if event.ContextBudget != nil {
 		r.budget = &protocol.ReceiptContextBudget{
-			WindowID:              event.ContextBudget.WindowID,
-			WindowNumber:          event.ContextBudget.WindowNumber,
-			Observed:              event.ContextBudget.Observed,
-			ActiveTokens:          event.ContextBudget.ActiveTokens,
-			FullActiveTokens:      event.ContextBudget.FullActiveTokens,
-			PrefillTokens:         event.ContextBudget.PrefillTokens,
-			BodyTokens:            event.ContextBudget.BodyTokens,
-			ToolDefinitionTokens:  event.ContextBudget.ToolDefinitionTokens,
-			PendingTokens:         event.ContextBudget.PendingTokens,
-			OutputReserve:         event.ContextBudget.OutputReserve,
-			AutoCompactTokens:     event.ContextBudget.AutoCompactTokens,
-			PrepareTokens:         event.ContextBudget.PrepareTokens,
-			EmergencyTokens:       event.ContextBudget.EmergencyTokens,
-			RecentTailTurns:       event.ContextBudget.RecentTailTurns,
-			KeepRecentToolResults: event.ContextBudget.KeepRecentToolResults,
-			HistoryTokenCeiling:   event.ContextBudget.HistoryTokenCeiling,
-			Digest:                event.ContextBudget.Digest,
-			NarrativeMode:         event.ContextBudget.NarrativeMode,
-			EstimatedTokens:       event.ContextBudget.EstimatedTokens,
-			MaxContextTokens:      event.ContextBudget.MaxContextTokens,
-			Compactions:           event.ContextBudget.Compactions,
+			MeasurementSource:        event.ContextBudget.MeasurementSource,
+			ContextDigest:            event.ContextBudget.ContextDigest,
+			HardInputTokens:          event.ContextBudget.HardInputTokens,
+			LimitSource:              event.ContextBudget.LimitSource,
+			OutputSource:             event.ContextBudget.OutputSource,
+			CompactionHeadroomTokens: event.ContextBudget.CompactionHeadroomTokens,
+			CompactionTargetTokens:   event.ContextBudget.CompactionTargetTokens,
+			WindowID:                 event.ContextBudget.WindowID,
+			WindowNumber:             event.ContextBudget.WindowNumber,
+			Observed:                 event.ContextBudget.Observed,
+			ActiveTokens:             event.ContextBudget.ActiveTokens,
+			FullActiveTokens:         event.ContextBudget.FullActiveTokens,
+			PrefillTokens:            event.ContextBudget.PrefillTokens,
+			BodyTokens:               event.ContextBudget.BodyTokens,
+			ToolDefinitionTokens:     event.ContextBudget.ToolDefinitionTokens,
+			PendingTokens:            event.ContextBudget.PendingTokens,
+			OutputReserve:            event.ContextBudget.OutputReserve,
+			AutoCompactTokens:        event.ContextBudget.AutoCompactTokens,
+			PrepareTokens:            event.ContextBudget.PrepareTokens,
+			EmergencyTokens:          event.ContextBudget.EmergencyTokens,
+			RecentTailTurns:          event.ContextBudget.RecentTailTurns,
+			KeepRecentToolResults:    event.ContextBudget.KeepRecentToolResults,
+			HistoryTokenCeiling:      event.ContextBudget.HistoryTokenCeiling,
+			Digest:                   event.ContextBudget.Digest,
+			NarrativeMode:            event.ContextBudget.NarrativeMode,
+			EstimatedTokens:          event.ContextBudget.EstimatedTokens,
+			MaxContextTokens:         event.ContextBudget.MaxContextTokens,
+			Compactions:              event.ContextBudget.Compactions,
 		}
 	}
 	// Any event that names a purpose contributes to the route summary, not just
@@ -309,10 +311,6 @@ func (r *turnReceiptRecorder) observeTool(event agentengine.Event) {
 	switch event.ToolCall.Name {
 	case "turn_complete", "update_plan", "submit_plan", "request_user_input":
 		kind = "control"
-	}
-	if event.Result.Outcome != nil && event.Result.Outcome.Facts != nil &&
-		event.Result.Outcome.Facts.Verification != nil {
-		kind = "verification"
 	}
 	if r.toolExecution == nil {
 		r.toolExecution = make(map[string]int)
@@ -428,13 +426,8 @@ func (r *turnReceiptRecorder) build(
 		Skills:             append([]protocol.ReceiptSkill(nil), r.skills...),
 		SkillSelection:     observed.skillSelection,
 		ApprovalsRequested: r.approvals,
-		Verification: protocol.ReceiptVerification{
-			Diagnostics: diagnosticsOutcome(r.diagnosticsStatus),
-			Tests:       r.testsOutcome(),
-			Verify:      r.verifyOutcome(),
-		},
-		VerificationDetail: verificationDetail(r.verification),
-		WorkspaceOutcome:   workspaceOutcome(r.verification, observed.changes, observed.conflicts),
+		WorkspaceOutcome:   workspaceOutcome(r.workspaceSettlement, observed.changes, observed.conflicts),
+		DiagnosticsStatus:  diagnosticsOutcome(r.diagnosticsStatus),
 		DiagnosticCount:    r.diagnosticCount,
 		ContextSections:    contextSections(observed.context),
 		ContextSelections:  contextSelections(observed.selections),
@@ -544,7 +537,6 @@ func receiptLatency(
 		ProviderMS:     latency.Provider.Milliseconds,
 		ToolMS:         latency.Tool.Milliseconds,
 		ApprovalWaitMS: latency.ApprovalWait.Milliseconds,
-		VerifyMS:       latency.Verification.Milliseconds,
 	}
 	if latency.FirstOutput.Recorded {
 		first := latency.FirstOutput.Milliseconds
@@ -639,63 +631,8 @@ func receiptEvidence(snapshot agentcontext.EvidenceSnapshot) *protocol.ReceiptEv
 	return rendered
 }
 
-// turnVerificationData renders one gate evaluation as a protocol event. Check output
-// is trimmed to the failing streams so the event stays readable in a log.
-func turnVerificationData(receipt *agentengine.VerificationReceipt) *protocol.TurnVerificationData {
-	data := &protocol.TurnVerificationData{
-		Scope: string(receipt.Scope), Mode: receipt.Mode, Action: receipt.Action,
-		Status: receipt.Status, RepairSteps: receipt.RepairSteps,
-		Errors: receipt.Errors, Warnings: receipt.Warnings,
-		Paths:          append([]string(nil), receipt.Paths...),
-		UncoveredPaths: append([]string(nil), receipt.UncoveredPaths...),
-		Message:        receipt.Message,
-	}
-	for _, check := range receipt.Checks {
-		output := strings.TrimSpace(check.Stdout + "\n" + check.Stderr)
-		data.Checks = append(data.Checks, protocol.VerificationCheck{
-			Name: check.Name, Command: check.Command, Reason: check.Reason, Status: check.Status,
-			Category: check.Category, ExitCode: check.ExitCode, Output: output,
-		})
-	}
-	return data
-}
-
-func verificationDetail(
-	receipt *agentengine.VerificationReceipt,
-) *protocol.ReceiptVerificationDetail {
-	if receipt == nil {
-		return nil
-	}
-	attempts := receipt.Attempts
-	if len(attempts) == 0 {
-		attempts = []verify.Receipt{receipt.Receipt}
-	}
-	detail := &protocol.ReceiptVerificationDetail{
-		Mode: receipt.Mode, FinalStatus: receipt.Status,
-		Action: receipt.Action, RepairSteps: receipt.RepairSteps,
-		UncoveredPaths: append([]string(nil), receipt.UncoveredPaths...),
-		Attempts:       make([]protocol.ReceiptVerificationAttempt, 0, len(attempts)),
-	}
-	for step, attempt := range attempts {
-		rendered := protocol.ReceiptVerificationAttempt{
-			Step: step, Scope: string(attempt.Scope),
-			Status: attempt.Status, Message: attempt.Message,
-		}
-		for _, check := range attempt.Checks {
-			rendered.Checks = append(rendered.Checks, protocol.VerificationCheck{
-				Name: check.Name, Command: check.Command, Reason: check.Reason,
-				Category: check.Category, Status: check.Status,
-				ExitCode: check.ExitCode,
-				Output:   strings.TrimSpace(check.Stdout + "\n" + check.Stderr),
-			})
-		}
-		detail.Attempts = append(detail.Attempts, rendered)
-	}
-	return detail
-}
-
 func workspaceOutcome(
-	verification *agentengine.VerificationReceipt,
+	workspace *protocol.ReceiptWorkspaceOutcome,
 	changes []agentengine.TurnDiffEntry,
 	rollbackConflicts []string,
 ) *protocol.ReceiptWorkspaceOutcome {
@@ -708,13 +645,13 @@ func workspaceOutcome(
 	if len(outcome.Changed) != 0 {
 		outcome.Status = "changed"
 	}
-	if verification != nil && verification.Workspace != nil {
-		outcome.Status = verification.Workspace.Status
-		outcome.Restored = append([]string(nil), verification.Workspace.Restored...)
-		outcome.Conflicts = append([]string(nil), verification.Workspace.Conflicts...)
+	if workspace != nil {
+		outcome.Status = workspace.Status
+		outcome.Restored = append([]string(nil), workspace.Restored...)
+		outcome.Conflicts = append([]string(nil), workspace.Conflicts...)
 		outcome.NonFileSideEffectsReverted =
-			verification.Workspace.NonFileSideEffectsReverted
-		outcome.Note = verification.Workspace.Note
+			workspace.NonFileSideEffectsReverted
+		outcome.Note = workspace.Note
 	}
 	for _, conflict := range rollbackConflicts {
 		outcome.Conflicts = appendUniqueString(outcome.Conflicts, conflict)
@@ -723,40 +660,6 @@ func workspaceOutcome(
 		outcome.Status = "conflicted"
 	}
 	return outcome
-}
-
-// verifyOutcome reports the verification gate's verdict for the turn.
-func (r *turnReceiptRecorder) verifyOutcome() string {
-	if r.verification == nil {
-		return protocol.ReceiptNotEvaluated
-	}
-	switch r.verification.Status {
-	case verify.StatusNotRequired:
-		return protocol.ReceiptNotRequired
-	case verify.StatusPassed:
-		return protocol.ReceiptPassed
-	case verify.StatusFailed:
-		return protocol.ReceiptFailed
-	case verify.StatusUnavailable:
-		return protocol.ReceiptUnavailable
-	default:
-		return protocol.ReceiptNotEvaluated
-	}
-}
-
-// testsOutcome only reports a verdict when the gate actually ran the
-// repository's own commands; the diagnostics scope runs no tests.
-func (r *turnReceiptRecorder) testsOutcome() string {
-	if r.verification == nil ||
-		(r.verification.Scope != verify.ScopeRepository &&
-			r.verification.Scope != verify.ScopeAffected) {
-		return protocol.ReceiptNotEvaluated
-	}
-	// A net-zero gate settles readiness without running repository checks.
-	if r.verification.Status == verify.StatusNotRequired {
-		return protocol.ReceiptNotEvaluated
-	}
-	return r.verifyOutcome()
 }
 
 func diagnosticsOutcome(status string) string {

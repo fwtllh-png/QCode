@@ -462,10 +462,8 @@ func TestChildAgentRunsRealEngineTurn(t *testing.T) {
 	if result.Usage.InputTokens != 11 || result.Usage.OutputTokens != 6 {
 		t.Fatalf("result usage = %+v", result.Usage)
 	}
-	// A read-only child changes nothing, so the gate has nothing to verify. That
-	// follows the no-change contract: verification is not_required, while no
-	// test execution is claimed.
-	if result.Verification.Verify != protocol.ReceiptNotRequired || result.Verification.Tests != protocol.ReceiptNotEvaluated {
+	// New child results do not synthesize verification verdicts.
+	if result.Verification != (protocol.ReceiptVerification{}) {
 		t.Fatalf("result verification = %+v", result.Verification)
 	}
 	if len(result.Diff) != 0 {

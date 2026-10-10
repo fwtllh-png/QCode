@@ -1,0 +1,659 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>代码评审报告 — QCode</title>
+  <style>
+    :root {
+      --color-p0: #dc2626;
+      --color-p0-bg: #fef2f2;
+      --color-p0-border: #fca5a5;
+      --color-p1: #d97706;
+      --color-p1-bg: #fffbeb;
+      --color-p1-border: #fcd34d;
+      --color-p2: #2563eb;
+      --color-p2-bg: #eff6ff;
+      --color-p2-border: #93c5fd;
+      --color-bg: #f8fafc;
+      --color-card: #ffffff;
+      --color-border: #e2e8f0;
+      --color-text: #1e293b;
+      --color-text-secondary: #64748b;
+      --color-code-bg: #f1f5f9;
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans SC", sans-serif;
+      background: var(--color-bg);
+      color: var(--color-text);
+      line-height: 1.6;
+      padding: 24px;
+    }
+
+    .container {
+      max-width: 960px;
+      margin: 0 auto;
+    }
+
+    /* --- Header --- */
+    .report-header {
+      background: var(--color-card);
+      border: 1px solid var(--color-border);
+      border-radius: 12px;
+      padding: 28px 32px;
+      margin-bottom: 20px;
+    }
+
+    .report-header h1 {
+      font-size: 22px;
+      font-weight: 700;
+      margin-bottom: 16px;
+    }
+
+    .meta-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 12px;
+    }
+
+    .meta-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 14px;
+      color: var(--color-text-secondary);
+    }
+
+    .meta-item .label { font-weight: 600; color: var(--color-text); }
+
+    /* --- P0 Alert Banner --- */
+    .p0-alert {
+      background: var(--color-p0-bg);
+      border: 1px solid var(--color-p0-border);
+      border-left: 4px solid var(--color-p0);
+      border-radius: 8px;
+      padding: 16px 20px;
+      margin-bottom: 20px;
+      display: none;
+    }
+
+    .p0-alert-title {
+      font-size: 15px;
+      font-weight: 700;
+      color: var(--color-p0);
+      margin-bottom: 8px;
+    }
+
+    .p0-alert-list {
+      list-style: none;
+      font-size: 14px;
+    }
+
+    .p0-alert-list li {
+      padding: 2px 0;
+      color: var(--color-text);
+    }
+
+    /* --- Summary Bar --- */
+    .summary-bar {
+      display: flex;
+      gap: 12px;
+      margin-bottom: 24px;
+      flex-wrap: wrap;
+    }
+
+    .summary-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 8px 16px;
+      border-radius: 8px;
+      font-size: 14px;
+      font-weight: 600;
+      background: var(--color-card);
+      border: 1px solid var(--color-border);
+    }
+
+    .summary-chip .count {
+      font-size: 20px;
+      font-weight: 700;
+    }
+
+    .summary-chip.p0 { border-color: var(--color-p0); color: var(--color-p0); }
+    .summary-chip.p1 { border-color: var(--color-p1); color: var(--color-p1); }
+    .summary-chip.p2 { border-color: var(--color-p2); color: var(--color-p2); }
+    .summary-chip.total { border-color: var(--color-text); color: var(--color-text); }
+
+    /* --- Defect Cards --- */
+    .defect-list { display: flex; flex-direction: column; gap: 16px; }
+
+    .defect-card {
+      background: var(--color-card);
+      border: 1px solid var(--color-border);
+      border-radius: 12px;
+      overflow: hidden;
+    }
+
+    .defect-card.severity-P0 { border-left: 4px solid var(--color-p0); }
+    .defect-card.severity-P1 { border-left: 4px solid var(--color-p1); }
+    .defect-card.severity-P2 { border-left: 4px solid var(--color-p2); }
+
+    .defect-header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 16px 20px;
+      border-bottom: 1px solid var(--color-border);
+      flex-wrap: wrap;
+    }
+
+    .severity-badge {
+      display: inline-block;
+      padding: 2px 10px;
+      border-radius: 4px;
+      font-size: 12px;
+      font-weight: 700;
+      color: #fff;
+    }
+
+    .severity-badge.P0 { background: var(--color-p0); }
+    .severity-badge.P1 { background: var(--color-p1); }
+    .severity-badge.P2 { background: var(--color-p2); }
+
+    .category-badge {
+      display: inline-block;
+      padding: 2px 10px;
+      border-radius: 4px;
+      font-size: 12px;
+      font-weight: 600;
+      background: var(--color-code-bg);
+      color: var(--color-text-secondary);
+    }
+
+    .defect-title {
+      font-size: 15px;
+      font-weight: 600;
+      flex: 1;
+    }
+
+    .confidence-tag {
+      font-size: 12px;
+      color: var(--color-text-secondary);
+      white-space: nowrap;
+    }
+
+    .defect-body { padding: 20px; }
+
+    .defect-location {
+      font-size: 13px;
+      color: var(--color-text-secondary);
+      margin-bottom: 12px;
+      font-family: "SF Mono", "Fira Code", "Cascadia Code", monospace;
+    }
+
+    .defect-section { margin-bottom: 16px; }
+    .defect-section:last-child { margin-bottom: 0; }
+
+    .defect-section-title {
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--color-text-secondary);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-bottom: 6px;
+    }
+
+    .defect-section p {
+      font-size: 14px;
+      line-height: 1.7;
+    }
+
+    .code-block {
+      background: var(--color-code-bg);
+      border: 1px solid var(--color-border);
+      border-radius: 6px;
+      padding: 12px 16px;
+      font-family: "SF Mono", "Fira Code", "Cascadia Code", monospace;
+      font-size: 13px;
+      line-height: 1.6;
+      overflow-x: auto;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+
+    /* --- Empty State --- */
+    .empty-state {
+      text-align: center;
+      padding: 64px 32px;
+      background: var(--color-card);
+      border: 1px solid var(--color-border);
+      border-radius: 12px;
+    }
+
+    .empty-state h2 {
+      font-size: 18px;
+      color: #16a34a;
+      margin-bottom: 8px;
+    }
+
+    .empty-state p {
+      font-size: 14px;
+      color: var(--color-text-secondary);
+    }
+
+    pre { overflow-x: auto; padding: 12px; background: #f4f6f8; border-radius: 6px; font-size: 12px; line-height: 1.6; }
+    th, td { border-bottom: 1px solid #e3e7ec; vertical-align: top; }
+    section p { margin: 12px 0; line-height: 1.8; }
+    section h2, section h3 { margin: 20px 0 10px; }
+
+    /* --- Footer --- */
+    .report-footer {
+      text-align: center;
+      padding: 20px;
+      font-size: 12px;
+      color: var(--color-text-secondary);
+    }
+
+    /* --- Responsive --- */
+    @media (max-width: 640px) {
+      body { padding: 12px; }
+      .report-header { padding: 20px; }
+      .defect-header { padding: 12px 16px; }
+      .defect-body { padding: 16px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <section class="report-header" aria-label="修复复核">
+      <h1>2026-10-10 修复复核</h1>
+      <p>下方保留修复前的审查快照。五项 P1 均已复现并修复；生产集成额外发现的 Memory 与 Guard Workspace ID 混用也已修复。</p>
+      <p>新增回归覆盖真实持久会话送审和执行、检查点分叉与 Steering 撤权、PATH 替换 Shell、后台副本结算与关闭回收，以及精确文件 apply/discard。</p>
+      <p>P5 已补真实 CLI/浏览器待审批崩溃恢复，修复计划提交事实遗漏与失效审批收尾；批准仅执行一次，拒绝和取消不执行。P6 两条路由按显式 60 秒/16,384 Token 完整重测均为 17/17 有效、0/12 误放行；GLM 误转人工 0/5，DeepSeek 2/5。旧失败报告保留，默认保持关闭，真实覆盖率和费用仍未知。详见同目录 Markdown 修复复核与评估记录；下文为原始审查。</p>
+      <p>最终 8 项浏览器测试通过，包含 4 项真实 CLI 崩溃恢复；资源变化后旧批准被拒绝，执行尝试数为 0，模型收到可处理拒绝后声明未完成。恢复单测与竞态检查通过。Engine 全包另有会话选择测试失败，在独立未修改 HEAD（e26c10c2）中可复现，不计为 Guardian 引入，也不据此宣称全仓通过。</p>
+      <p>修复明细、测试入口和最终验证记录见 <a href="guardian-implementation-review.md">审查与修复记录</a>。</p>
+    </section>
+
+    <!-- ====== Header ====== -->
+    <div class="report-header">
+      <h1>Guardian 实际完成情况审查</h1>
+      <div class="meta-grid">
+        <div class="meta-item">
+          <span class="label">仓库：</span>
+          <span>QCode</span>
+        </div>
+        <div class="meta-item">
+          <span class="label">检测模式：</span>
+          <span>Guardian 实现与验收核查</span>
+        </div>
+        <div class="meta-item">
+          <span class="label">检测范围：</span>
+          <span>当前工作区 P0–P6 全链路，含未跟踪实现；定向核查</span>
+        </div>
+        <div class="meta-item">
+          <span class="label">生成时间：</span>
+          <span>2026-10-10 10:52</span>
+        </div>
+      </div>
+    </div>
+
+    <section class="defect-card">
+      <div class="defect-body">
+        <h2>主体实现已落地，完成与启用验收不成立</h2>
+        <p>生产主线程送审接线尚不工作；授权来源、实际解释器绑定和异步执行生命周期也有已复现缺陷。本报告保留五项与方案直接相关的高可信问题，均经过仓库外 Go overlay 探针验证，不代表全部候选问题清单。默认关闭属实；本次未修改源代码、已有用户改动或启用配置。</p>
+        <p>按策略、执行准入、模型预算、审计展示、授权来源与评估五组核查并交叉复核。下表阶段 P0/P1 与缺陷严重度 P1 是两套编号。</p>
+        <div style="overflow-x:auto">
+          <table style="width:100%;border-collapse:collapse;line-height:1.7;text-align:left">
+            <thead><tr><th style="padding:10px">阶段</th><th style="padding:10px">实际判断</th><th style="padding:10px">证据与缺口</th></tr></thead>
+            <tbody>
+              <tr><td style="padding:10px">P0</td><td style="padding:10px">核心改动已落地</td><td style="padding:10px">前缀授权已移除、策略回归通过；不等于所有约束组合均已证明。</td></tr>
+              <tr><td style="padding:10px">P1</td><td style="padding:10px">主体已落地</td><td style="padding:10px">Candidate、Evidence、解析、本地决策表和失效校验均有实现与测试。</td></tr>
+              <tr><td style="padding:10px">P2</td><td style="padding:10px">未通过验收</td><td style="padding:10px">分叉用户限制被遗漏；PATH 解析的实际 Shell 未纳入受审内容。见问题 2、3。</td></tr>
+              <tr><td style="padding:10px">P3</td><td style="padding:10px">生产主线程未闭合</td><td style="padding:10px">进程身份与持久会话身份混用，Provider 调用前失败。见问题 1。</td></tr>
+              <tr><td style="padding:10px">P4</td><td style="padding:10px">未通过验收</td><td style="padding:10px">运行中副本被提前删除，精确文件写入无法交接已准备副本。见问题 4、5。</td></tr>
+              <tr><td style="padding:10px">P5</td><td style="padding:10px">部分链路与验证已完成</td><td style="padding:10px">有持久审计、失败回 Ask 与主线程详情；完整 Web/持久 Runtime 的审批重启闭环未验证。</td></tr>
+              <tr><td style="padding:10px">P6</td><td style="padding:10px">评估已执行，启用未通过</td><td style="padding:10px">两条真实路由均未通过在线验收，真实覆盖率和完整费用未知。</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <h3>本次验证</h3>
+        <p>通过 Guardian 安全回归、Guard/Shell/Context/Engine/Wire/State 定向竞态测试、37 个固定响应样本、9 个真实沙箱 Runtime 场景、相关分层/Protocol/Provider/Model 包测试，以及 67 项前端投影与卡片测试。docs-check、web-protocol-check、git diff --check 通过。Authority 参加了普通包测试；竞态命令的筛选未命中其用例，不计为竞态覆盖。未运行全仓 Go 测试或重新调用真实付费模型。</p>
+        <p>五个失败探针：持久会话 Provider 调用数为 0；分叉追加限制后授权摘要不变且启动回调被接受；真实沙箱 PATH 替换实验零人工审批并输出 unreviewed；返回 session_id 时副本已不存在；精确文件模型放行后报 required write tree isolation is no longer available。仅在临时目录写测试文件，未执行破坏性命令。没有声称复现完整 Web 越权攻击或宿主沙箱逃逸。</p>
+        <p>审查期间 App.tsx 正被并行修改并出现 JSX 语法错误，Web check 失败，Guardian 浏览器用例因 Vite 编译失败无法进入页面。本次不能复核文档所称的 4 项浏览器通过；这一并行 UI 状态不归因于 Guardian。</p>
+        <h3>P5 的测试边界</h3>
+        <p>Runtime 测试直接构造 Engine、使用临时 Coordinator，只在终态后重开事件库；恢复测试直接重建 Guard 并 RestoreApproval；浏览器 Fixture 替换 start、decideApproval、cancel，并以 sessionStorage 模拟刷新。它们分别证明各层行为，尚未证明 Web → Host → 持久 Runtime 在 Pending Approval 期间重启、批准/拒绝/取消并恢复执行的完整闭环。</p>
+        <h3>P6 的效果边界</h3>
+        <p>已复核留存机器报告：GLM 有效 14/17、DeepSeek 有效 15/17；各自在 12 个需保留 Ask 的样本中观察到 0 次误放行，两者都只将 33 个基础 Ask 中的 4 个变为 Allow。这些样本未覆盖本报告的调用链缺陷，也不能外推生产审批减少率。Go/npm/Python 等依赖仍转人工；真实覆盖率与完整费用未知，两条路由在线验收均失败。</p>
+        <p><strong>建议状态：主体实现与定向回归已落地，生产接入和安全验收仍有阻断项；P6 首轮评估已执行，启用验收未通过。</strong></p>
+        <p><a href="guardian-implementation-review.md">Markdown 报告与测试引用</a> · <a href="guardian-auto-review-design.md">方案</a> · <a href="guardian-evaluation.md">评估文档</a></p>
+      </div>
+    </section>
+
+    <!-- ====== P0 Alert (hidden when no P0) ====== -->
+    <div class="p0-alert">
+      <div class="p0-alert-title">高优先级告警 — 发现 P0 级别缺陷，建议立即处理</div>
+      <ul class="p0-alert-list">
+
+      </ul>
+    </div>
+
+    <!-- ====== Summary ====== -->
+    <div class="summary-bar">
+      <div class="summary-chip p0"><span class="count">0</span> P0</div>
+      <div class="summary-chip p1"><span class="count">5</span> P1</div>
+      <div class="summary-chip p2"><span class="count">0</span> P2</div>
+      <div class="summary-chip total"><span class="count">5</span> 合计</div>
+    </div>
+
+    <!-- ====== Defect List ====== -->
+    <div class="defect-list">
+
+    <div class="defect-card severity-P1">
+      <div class="defect-header">
+        <span class="severity-badge P1">P1</span>
+        <span class="category-badge">逻辑错误</span>
+        <span class="defect-title">生产主线程混用进程与持久会话身份，合法审查在调用模型前失败</span>
+        <span class="confidence-tag">置信度 10/10</span>
+      </div>
+      <div class="defect-body">
+        <div class="defect-location"><a href="file:///Users/bytedance/flow/QCode/internal/runtime/agent/engine/guardian_prompt.go#L37-L38">internal/runtime/agent/engine/guardian_prompt.go:37-38</a></div>
+        <pre>if r.options.SessionID != "" &amp;&amp; r.options.SessionID != candidate.Identity.SessionID {
+    return nil, errors.New("Guardian candidate belongs to another session")
+}</pre>
+        <div class="defect-section">
+          <div class="defect-section-title">问题描述</div>
+          <p>普通 Web 主线程由 Wire 将 Options.SessionID 设置为 process-&lt;pid&gt;-&lt;pointer&gt;，ThreadManager.StartTurn 则把真实持久 SessionID 绑定到调用上下文。Guardian Candidate 使用后者，PrepareGuardianReview 仍复制前者，此处拒绝合法候选。临时 Go overlay 测试复现：active_session=session，reviewer_seed=process-runtime，candidate_session=session，Provider 调用数为 0，错误为 Guardian candidate belongs to another session。现有 Runtime 测试直接构造同名 Engine，Wire 测试只调用 PrepareGuardianReview，没有验证真实会话送审。这使 P3 的生产主线程接入未闭合。其他使用相同身份的调用路径仍能进入审查，不能把这个失败当作其他安全缺陷的防护。</p>
+        </div>
+        <div class="defect-section">
+          <div class="defect-section-title">修复建议</div>
+          <p>从当前可信 TurnSpec 或 InvocationIdentity 冻结持久 SessionID，并据此校验 Candidate；无绑定身份的独立 Engine 才回退到 Options.SessionID。增加通过生产 Wire、ThreadManager 与真实持久会话的送审验证，同时保留跨会话拒绝。</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="defect-card severity-P1">
+      <div class="defect-header">
+        <span class="severity-badge P1">P1</span>
+        <span class="category-badge">安全漏洞</span>
+        <span class="defect-title">检查点分叉被误认作子 Agent，用户的新限制与 Steering 被遗漏</span>
+        <span class="confidence-tag">置信度 10/10</span>
+      </div>
+      <div class="defect-body">
+        <div class="defect-location"><a href="file:///Users/bytedance/flow/QCode/internal/runtime/agent/context/guardian_source.go#L44-L50">internal/runtime/agent/context/guardian_source.go:44-50</a></div>
+        <pre>if parentScope != nil {
+    // ...
+    parent = &amp;value
+    scope.Child = true
+}</pre>
+        <div class="defect-section">
+          <div class="defect-section-title">问题描述</div>
+          <p>ForkCheckpoint 为同一 Session 的新主线程保存 ParentThreadID 并激活它；wire.guardianSource 对所有非空 ParentThreadID 都返回父作用域，本处随即将 Child 置为 true。CaptureGuardianAuthorization 因而跳过该线程的 TurnStarted、TurnSteered 和 InputResolved。临时 overlay 测试复现：父线程请求创建文件，分叉用户要求只审查、禁止修改，之后追加停止修改；采集只保留父请求，追加限制前后摘要相同，WithCurrent 仍接受旧授权并调用启动回调。这违反 P2/P4 对完整用户来源和启动前撤权的要求；修复主线程 SessionID 接线后，此缺口不能继续保留。</p>
+        </div>
+        <div class="defect-section">
+          <div class="defect-section-title">修复建议</div>
+          <p>用可信线程类型区分检查点分叉与子 Agent 委派；分叉继承相应来源，同时保留当前主线程真实用户输入。补充真实 Fork、后续用户限制、Steering 和启动窗口失效的回归。</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="defect-card severity-P1">
+      <div class="defect-header">
+        <span class="severity-badge P1">P1</span>
+        <span class="category-badge">安全漏洞</span>
+        <span class="defect-title">只绑定 PATH 字符串，没有绑定实际 Shell，未审查代码可以自动执行</span>
+        <span class="confidence-tag">置信度 10/10</span>
+      </div>
+      <div class="defect-body">
+        <div class="defect-location"><a href="file:///Users/bytedance/flow/QCode/internal/adapter/tool/shell/review.go#L34-L46">internal/adapter/tool/shell/review.go:34-46</a></div>
+        <pre>env, err := environmentEntries(input.Env)
+// 仅将 Policy、Prepared、Declared 环境字符串编码为摘要。</pre>
+        <div class="defect-section">
+          <div class="defect-section-title">问题描述</div>
+          <p>GuardianReviewPlan 仅摘要环境字符串并采集命令及 ./ 脚本依赖；实际 process 启动仍按 PATH 解析 sh。在临时工作区放置 .tools/sh，令 PATH 优先指向它，提交 printf reviewed &gt; generated/out.txt 后，内容证据为空且 CoverageComplete=true。真实沙箱测试中模型审查 1 次、人工审批 0 次，调用成功，但输出为未审查 Shell 写入的 unreviewed。该 Shell 位于可变源工作区，也不参加启动前内容复核。沙箱边界依然有效，但审查内容与实际执行内容不一致，不能满足 P2。</p>
+        </div>
+        <div class="defect-section">
+          <div class="defect-section-title">修复建议</div>
+          <p>在准备阶段解析并绑定实际解释器及其身份；只支持系统 POSIX Shell 时使用可信绝对路径，其他解释器及依赖不能固定到受审快照时转人工。覆盖 PATH 替换 Shell 和模型等待期间替换该文件的回归。</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="defect-card severity-P1">
+      <div class="defect-header">
+        <span class="severity-badge P1">P1</span>
+        <span class="category-badge">逻辑错误</span>
+        <span class="defect-title">首次返回 running 时提前回收审查副本，破坏后台命令与结算</span>
+        <span class="confidence-tag">置信度 10/10</span>
+      </div>
+      <div class="defect-body">
+        <div class="defect-location"><a href="file:///Users/bytedance/flow/QCode/internal/adapter/tool/guard/pipeline_attempt.go#L62-L63">internal/adapter/tool/guard/pipeline_attempt.go:62-63</a></div>
+        <pre>ctx = context.WithValue(ctx, guardianAttemptKey{}, guardianState)
+defer guardianState.close()</pre>
+        <div class="defect-section">
+          <div class="defect-section-title">问题描述</div>
+          <p>executePipeline 无条件 defer guardianState.close；ReviewExecution.Close 不区分已经交给 Shell 的 used 状态，直接关闭底层隔离会话并删除副本。但 Shell 对超过 yield_time_ms 的命令会保存 pendingExecution，约定由最终 write_stdin 或 OnClose 结算、回收。真实沙箱测试使用有限的 printf 输出和 yield_time_ms=1：返回仍含 session_id，审查副本目录却已不存在。后续文件访问和隔离结算因此失去工作目录。现有 Guardian 测试用短命令及 30000ms 等待，没有覆盖运行中会话。</p>
+        </div>
+        <div class="defect-section">
+          <div class="defect-section-title">修复建议</div>
+          <p>建立明确的副本所有权移交：Guard 只释放未交付的准备资源，交付后的副本由 Shell 会话在完成、取消或关闭时释放。验证首次返回 running 后副本仍存在，最终轮询可结算且只回收一次。</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="defect-card severity-P1">
+      <div class="defect-header">
+        <span class="severity-badge P1">P1</span>
+        <span class="category-badge">逻辑错误</span>
+        <span class="defect-title">精确文件写入获模型放行后仍被目录隔离前置条件拒绝</span>
+        <span class="confidence-tag">置信度 10/10</span>
+      </div>
+      <div class="defect-body">
+        <div class="defect-location"><a href="file:///Users/bytedance/flow/QCode/internal/adapter/tool/guard/pipeline_attempt.go#L547-L555">internal/adapter/tool/guard/pipeline_attempt.go:547-555</a></div>
+        <pre>runContext = tool.WithIsolator(runContext, reviewed)
+runContext = tool.RequireWriteIsolation(runContext)</pre>
+        <div class="defect-section">
+          <div class="defect-section-title">问题描述</div>
+          <p>PrepareGuardianExecution 接受非空精确文件 WritePaths，并创建可审查副本；但消费 ReviewedExecution 时无条件 RequireWriteIsolation，而 beginIsolatedCommand 要求 existingWriteTrees 非空。真实沙箱测试以 write_paths=[generated/out.txt] 提交合法字面量写入：模型审查 1 次，随后报 required write tree isolation is no longer available，未执行，也未转回人工审批。原有精确文件执行范围是合法输入，这使 P4 的模型允许到实际执行链路对该范围断裂。</p>
+        </div>
+        <div class="defect-section">
+          <div class="defect-section-title">修复建议</div>
+          <p>让已经准备的审查副本支持原始精确文件范围的交接；若本期不支持，必须在模型调用前排除并保留人工审批。不能通过扩大到整目录授权规避。补充精确文件从准备、模型评估到实际执行的集成回归。</p>
+        </div>
+      </div>
+    </div>
+    </div>
+
+    <!-- ====== Empty State (shown when no defects) ====== -->
+    <!-- __EMPTY_STATE_START__
+    <div class="empty-state">
+      <h2>未发现缺陷</h2>
+      <p>本次评审未发现 P0-P2 级别的缺陷。共检查 0 个文件，约 0 行变更。</p>
+    </div>
+    __EMPTY_STATE_END__ -->
+
+    <div class="report-footer">
+      bits-code-guard &middot; 由 AI 辅助生成 &middot; 2026-10-10 10:52
+    </div>
+
+  </div>
+</body>
+</html>
+
+<!--
+╔══════════════════════════════════════════════════════════════╗
+║                        占位符说明                           ║
+╠══════════════════════════════════════════════════════════════╣
+║                                                              ║
+║  --- 报告元信息 ---                                          ║
+║  QCode           仓库名称                            ║
+║  Guardian 实现与验收核查         检测模式                            ║
+║  当前工作区 P0–P6 全链路，含未跟踪实现；定向核查          检测范围描述                         ║
+║  2026-10-10 10:52        报告生成时间 (YYYY-MM-DD HH:mm)     ║
+║                                                              ║
+║  --- 统计数据 ---                                            ║
+║  0            P0 缺陷数量                         ║
+║  5            P1 缺陷数量                         ║
+║  0            P2 缺陷数量                         ║
+║  5         缺陷总数                            ║
+║                                                              ║
+║  --- P0 告警 ---                                             ║
+║  none    有 P0 时为 "block"，无 P0 时为      ║
+║                          "none"                              ║
+║        P0 缺陷摘要列表，每项格式：         ║
+║    <li>[P0][类型] file:line | {title}</li>                   ║
+║                                                              ║
+║  --- 缺陷卡片 ---                                            ║
+║
+    <div class="defect-card severity-P1">
+      <div class="defect-header">
+        <span class="severity-badge P1">P1</span>
+        <span class="category-badge">逻辑错误</span>
+        <span class="defect-title">生产主线程混用进程与持久会话身份，合法审查在调用模型前失败</span>
+        <span class="confidence-tag">置信度 10/10</span>
+      </div>
+      <div class="defect-body">
+        <div class="defect-location">internal/runtime/agent/engine/guardian_prompt.go:37-38</div>
+        <div class="defect-section">
+          <div class="defect-section-title">问题描述</div>
+          <p>普通 Web 主线程由 Wire 将 Options.SessionID 设置为 process-&lt;pid&gt;-&lt;pointer&gt;，ThreadManager.StartTurn 则把真实持久 SessionID 绑定到调用上下文。Guardian Candidate 使用后者，PrepareGuardianReview 仍复制前者，此处拒绝合法候选。临时 Go overlay 测试复现：active_session=session，reviewer_seed=process-runtime，candidate_session=session，Provider 调用数为 0，错误为 Guardian candidate belongs to another session。现有 Runtime 测试直接构造同名 Engine，Wire 测试只调用 PrepareGuardianReview，没有验证真实会话送审。这使 P3 的生产主线程接入未闭合。其他使用相同身份的调用路径仍能进入审查，不能把这个失败当作其他安全缺陷的防护。</p>
+        </div>
+        <div class="defect-section">
+          <div class="defect-section-title">修复建议</div>
+          <p>从当前可信 TurnSpec 或 InvocationIdentity 冻结持久 SessionID，并据此校验 Candidate；无绑定身份的独立 Engine 才回退到 Options.SessionID。增加通过生产 Wire、ThreadManager 与真实持久会话的送审验证，同时保留跨会话拒绝。</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="defect-card severity-P1">
+      <div class="defect-header">
+        <span class="severity-badge P1">P1</span>
+        <span class="category-badge">安全漏洞</span>
+        <span class="defect-title">检查点分叉被误认作子 Agent，用户的新限制与 Steering 被遗漏</span>
+        <span class="confidence-tag">置信度 10/10</span>
+      </div>
+      <div class="defect-body">
+        <div class="defect-location">internal/runtime/agent/context/guardian_source.go:44-50</div>
+        <div class="defect-section">
+          <div class="defect-section-title">问题描述</div>
+          <p>ForkCheckpoint 为同一 Session 的新主线程保存 ParentThreadID 并激活它；wire.guardianSource 对所有非空 ParentThreadID 都返回父作用域，本处随即将 Child 置为 true。CaptureGuardianAuthorization 因而跳过该线程的 TurnStarted、TurnSteered 和 InputResolved。临时 overlay 测试复现：父线程请求创建文件，分叉用户要求只审查、禁止修改，之后追加停止修改；采集只保留父请求，追加限制前后摘要相同，WithCurrent 仍接受旧授权并调用启动回调。这违反 P2/P4 对完整用户来源和启动前撤权的要求；修复主线程 SessionID 接线后，此缺口不能继续保留。</p>
+        </div>
+        <div class="defect-section">
+          <div class="defect-section-title">修复建议</div>
+          <p>用可信线程类型区分检查点分叉与子 Agent 委派；分叉继承相应来源，同时保留当前主线程真实用户输入。补充真实 Fork、后续用户限制、Steering 和启动窗口失效的回归。</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="defect-card severity-P1">
+      <div class="defect-header">
+        <span class="severity-badge P1">P1</span>
+        <span class="category-badge">安全漏洞</span>
+        <span class="defect-title">只绑定 PATH 字符串，没有绑定实际 Shell，未审查代码可以自动执行</span>
+        <span class="confidence-tag">置信度 10/10</span>
+      </div>
+      <div class="defect-body">
+        <div class="defect-location">internal/adapter/tool/shell/review.go:34-46</div>
+        <div class="defect-section">
+          <div class="defect-section-title">问题描述</div>
+          <p>GuardianReviewPlan 仅摘要环境字符串并采集命令及 ./ 脚本依赖；实际 process 启动仍按 PATH 解析 sh。在临时工作区放置 .tools/sh，令 PATH 优先指向它，提交 printf reviewed &gt; generated/out.txt 后，内容证据为空且 CoverageComplete=true。真实沙箱测试中模型审查 1 次、人工审批 0 次，调用成功，但输出为未审查 Shell 写入的 unreviewed。该 Shell 位于可变源工作区，也不参加启动前内容复核。沙箱边界依然有效，但审查内容与实际执行内容不一致，不能满足 P2。</p>
+        </div>
+        <div class="defect-section">
+          <div class="defect-section-title">修复建议</div>
+          <p>在准备阶段解析并绑定实际解释器及其身份；只支持系统 POSIX Shell 时使用可信绝对路径，其他解释器及依赖不能固定到受审快照时转人工。覆盖 PATH 替换 Shell 和模型等待期间替换该文件的回归。</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="defect-card severity-P1">
+      <div class="defect-header">
+        <span class="severity-badge P1">P1</span>
+        <span class="category-badge">逻辑错误</span>
+        <span class="defect-title">首次返回 running 时提前回收审查副本，破坏后台命令与结算</span>
+        <span class="confidence-tag">置信度 10/10</span>
+      </div>
+      <div class="defect-body">
+        <div class="defect-location">internal/adapter/tool/guard/pipeline_attempt.go:62-63</div>
+        <div class="defect-section">
+          <div class="defect-section-title">问题描述</div>
+          <p>executePipeline 无条件 defer guardianState.close；ReviewExecution.Close 不区分已经交给 Shell 的 used 状态，直接关闭底层隔离会话并删除副本。但 Shell 对超过 yield_time_ms 的命令会保存 pendingExecution，约定由最终 write_stdin 或 OnClose 结算、回收。真实沙箱测试使用有限的 printf 输出和 yield_time_ms=1：返回仍含 session_id，审查副本目录却已不存在。后续文件访问和隔离结算因此失去工作目录。现有 Guardian 测试用短命令及 30000ms 等待，没有覆盖运行中会话。</p>
+        </div>
+        <div class="defect-section">
+          <div class="defect-section-title">修复建议</div>
+          <p>建立明确的副本所有权移交：Guard 只释放未交付的准备资源，交付后的副本由 Shell 会话在完成、取消或关闭时释放。验证首次返回 running 后副本仍存在，最终轮询可结算且只回收一次。</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="defect-card severity-P1">
+      <div class="defect-header">
+        <span class="severity-badge P1">P1</span>
+        <span class="category-badge">逻辑错误</span>
+        <span class="defect-title">精确文件写入获模型放行后仍被目录隔离前置条件拒绝</span>
+        <span class="confidence-tag">置信度 10/10</span>
+      </div>
+      <div class="defect-body">
+        <div class="defect-location">internal/adapter/tool/guard/pipeline_attempt.go:547-555</div>
+        <div class="defect-section">
+          <div class="defect-section-title">问题描述</div>
+          <p>PrepareGuardianExecution 接受非空精确文件 WritePaths，并创建可审查副本；但消费 ReviewedExecution 时无条件 RequireWriteIsolation，而 beginIsolatedCommand 要求 existingWriteTrees 非空。真实沙箱测试以 write_paths=[generated/out.txt] 提交合法字面量写入：模型审查 1 次，随后报 required write tree isolation is no longer available，未执行，也未转回人工审批。原有精确文件执行范围是合法输入，这使 P4 的模型允许到实际执行链路对该范围断裂。</p>
+        </div>
+        <div class="defect-section">
+          <div class="defect-section-title">修复建议</div>
+          <p>让已经准备的审查副本支持原始精确文件范围的交接；若本期不支持，必须在模型调用前排除并保留人工审批。不能通过扩大到整目录授权规避。补充精确文件从准备、模型评估到实际执行的集成回归。</p>
+        </div>
+      </div>
+    </div>        所有缺陷卡片的 HTML，单张卡片格式：  ║
+║                                                              ║
+║    <div class="defect-card severity-{severity}">             ║
+║      <div class="defect-header">                             ║
+║        <span class="severity-badge {severity}">              ║
+║          {severity}</span>                                   ║
+║        <span class="category-badge">                         ║
+║          {category_zh}</span>                                ║
+║        <span class="defect-title">                           ║
+║          {title}</span>                                       ║
+║        <span class="confidence-tag">                         ║
+║          置信度 {confidence}/10</span>                       ║
+║      </div>                                                  ║
+║      <div class="defect-body">                               ║
+║        <div class="defect-location">                         ║
+║          {file}:{start_line}-{end_line}</div>                ║
+║        <div class="defect-section">                          ║
+║          <div class="defect-section-title">                  ║
+║            问题描述</div>                                    ║
+║          <p>{rationale}</p>                                  ║
+║        </div>                                                ║
+║        <div class="defect-section">                          ║
+║          <div class="defect-section-title">                  ║
+║            问题代码</div>                                    ║
+║          <div class="code-block">                            ║
+║            {代码片段}</div>                                  ║
+║        </div>                                                ║
+║        <div class="defect-section">                          ║
+║          <div class="defect-section-title">                  ║
+║            修复建议</div>                                    ║
+║          <p>{suggestion}</p>                                 ║
+║        </div>                                                ║
+║      </div>                                                  ║
+║    </div>                                                    ║
+║                                                              ║
+║  --- 空状态 ---                                              ║
+║  无缺陷时：取消注释 __EMPTY_STATE_START__ 到                 ║
+║  __EMPTY_STATE_END__ 之间的内容，并删除 defect-list 区块      ║
+║  0          检查的文件数                         ║
+║  0          变更行数                            ║
+║                                                              ║
+║  --- category 中英文映射 ---                                  ║
+║  LOGIC       → 逻辑错误                                     ║
+║  BUSINESS_SEMANTICS → 业务语义问题                           ║
+║  SECURITY    → 安全漏洞                                      ║
+║  CONCURRENCY → 并发问题                                      ║
+║  ROBUSTNESS  → 健壮性问题                                    ║
+║  PERFORMANCE → 性能问题                                      ║
+║  QUALITY     → 代码质量问题                                  ║
+║                                                              ║
+╚══════════════════════════════════════════════════════════════╝
+-->

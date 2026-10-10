@@ -47,7 +47,20 @@ func (g *Guard) executePipeline(
 	callID, name string,
 	raw json.RawMessage,
 	binding tool.CatalogBinding,
-) (tool.Result, error) {
+) (result tool.Result, executionErr error) {
+	leave, err := g.enterGuardianCall(ctx, callID)
+	if err != nil {
+		return tool.Result{}, err
+	}
+	defer leave()
+	guardianState := &guardianAttempt{}
+	defer func() {
+		if result.Execution != nil {
+			result.Execution.GuardianReviewID = guardianState.id()
+		}
+	}()
+	ctx = context.WithValue(ctx, guardianAttemptKey{}, guardianState)
+	defer guardianState.close()
 	ctx, closeNetworkScope := egress.WithScope(ctx)
 	defer closeNetworkScope()
 	mode := SandboxModeStrong
@@ -88,8 +101,6 @@ func (g *Guard) executePipeline(
 					receipt.Tool = authorized.invocation.Ref
 					receipt.Source = authorized.invocation.Source
 					receipt.Disposition = authorized.invocation.Disposition
-					receipt.VerificationEvidenceAuthorized =
-						authorized.invocation.Binding.ProducesVerificationEvidence
 					switch authorized.decision.Action {
 					case policy.ActionDeny, policy.ActionHold:
 						receipt.PolicyDenial = policyDecisionReceipt(authorized.decision)
@@ -114,8 +125,6 @@ func (g *Guard) executePipeline(
 			receipt.Tool = prepared.invocation.Ref
 			receipt.Source = prepared.invocation.Source
 			receipt.Disposition = prepared.invocation.Disposition
-			receipt.VerificationEvidenceAuthorized =
-				prepared.invocation.Binding.ProducesVerificationEvidence
 		}
 		attempt := g.runAttempt(
 			ctx,
@@ -525,7 +534,24 @@ func (g *Guard) runAttempt(
 		)
 		return run
 	}
-	runContext = tool.WithIsolator(runContext, g.isolator)
+	if prepared.review != nil {
+		runContext = tool.WithReviewedExecution(runContext, prepared.review.execution)
+	}
+	if invocation.Binding.GuardianReview && invocation.Binding.Capability == tool.CapabilityProcess {
+		runContext = g.withProcessStart(runContext, prepared, lease)
+	}
+	if reviewed := tool.ReviewedExecutionFrom(runContext); reviewed != nil {
+		if err := reviewed.ValidateInvocation(runContext, invocation); err != nil {
+			release()
+			run.err = tool.Precondition(err)
+			run.receipt = attemptReceipt(sequence, mode, started, g.now(), tool.OutcomeRejected, "guardian_snapshot", run.profile)
+			return run
+		}
+		runContext = tool.WithIsolator(runContext, reviewed)
+		runContext = tool.RequireWriteIsolation(runContext)
+	} else {
+		runContext = tool.WithIsolator(runContext, g.isolator)
+	}
 	if g.isolatesWrites(invocation) {
 		runContext = tool.RequireWriteIsolation(runContext)
 	}

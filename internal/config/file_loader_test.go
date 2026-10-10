@@ -334,9 +334,9 @@ model = "gpt-4.1"
 	}
 }
 
-func TestAnUnwiredPurposeCannotBeConfigured(t *testing.T) {
+func TestAnUnknownPurposeCannotBeConfigured(t *testing.T) {
 	path := writeConfig(t, `
-[route.judge]
+[route.unknown]
 provider = "openai"
 model = "gpt-4.1"
 `)

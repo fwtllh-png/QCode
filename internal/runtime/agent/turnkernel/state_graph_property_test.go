@@ -77,13 +77,6 @@ func TestStateGraphCanonicalPathsCoverEveryPhaseAndTerminal(t *testing.T) {
 			BatchSize:        1,
 		},
 	}).State)
-	verified = record(apply(t, verified, VerificationStarted{}).State)
-	_ = record(apply(t, verified, VerificationFinished{
-		Status: VerificationPassed,
-		EvidenceCalls: []string{
-			"verify-1",
-		},
-	}).State)
 
 	wantPhases := []Phase{
 		PhaseCreated,
@@ -92,7 +85,6 @@ func TestStateGraphCanonicalPathsCoverEveryPhaseAndTerminal(t *testing.T) {
 		PhaseExecutingTools,
 		PhaseAwaitingApproval,
 		PhaseAwaitingInput,
-		PhaseVerifying,
 		PhaseCommitting,
 		PhaseCompleted,
 		PhaseFailed,
@@ -441,8 +433,8 @@ func assertTerminalRejectsEveryLateCommand(t *testing.T, state State) {
 		InputRequired{RequestID: "late-input"},
 		InputResolved{RequestID: "late-input"},
 		ToolResultReceived{CallID: "late-call"},
-		VerificationStarted{},
-		VerificationFinished{Status: VerificationPassed},
+		VerificationRetired{},
+		VerificationRetired{},
 		CompletionEvaluated{Candidate: CompletionCandidate{
 			CompletionCall: "late-completion",
 		}},

@@ -1,7 +1,7 @@
 import {X} from "lucide-react";
 import {useEffect, useId, useLayoutEffect, useRef, useState} from "react";
 import type {UsageRollup} from "../protocol";
-import type {ContextAttribution} from "./ConversationChrome";
+import {contextFromReceipt, type ContextAttribution} from "./contextUsage";
 import {ContextDiagnostics} from "./ContextDiagnostics";
 
 interface Props {
@@ -70,19 +70,26 @@ export function ComposerStats({attribution, capacity, receipt, usage, running, p
     };
   }, [open, openMode]);
 
-  const budget = object(receipt?.context_budget);
-  const used = number(attribution?.estimatedTokens) ?? number(budget?.active_tokens);
-  const maximum = number(capacity) ?? number(budget?.max_context_tokens);
+  const context = attribution ?? contextFromReceipt(receipt);
+  const used = context?.inputTokens;
+  const maximum = context ? context.capacity : number(capacity);
+  const reserve = context?.outputReserve;
+  const hardInput = context?.hardInputTokens ?? (
+    maximum !== undefined && reserve !== undefined ? Math.max(0, maximum - reserve) : undefined
+  );
+  const remaining = hardInput !== undefined && used !== undefined ? Math.max(0, hardInput - used) : undefined;
   const share = used !== undefined && maximum !== undefined && maximum > 0
     ? used / maximum : undefined;
   const percent = share === undefined ? undefined : Math.round(share * 100);
   const fill = share === undefined ? 0 : Math.min(1, share) * 100;
-  const contextRows = attribution ? [
-    {label: "Stable / system", value: attribution.stableTokens, tone: "stable"},
-    {label: "Tools", value: attribution.toolTokens, tone: "tools"},
-    {label: "Messages", value: attribution.messageTokens, tone: "messages"},
-    {label: "Provider framing", value: attribution.framingTokens, tone: "framing"}
+  const reserveFill = maximum && reserve !== undefined ? Math.min(100 - fill, reserve / maximum * 100) : 0;
+  const contextRows = context?.estimatedTokens !== undefined ? [
+    {label: "Stable / system", value: context.stableTokens ?? 0, tone: "stable"},
+    {label: "Tools", value: context.toolTokens ?? 0, tone: "tools"},
+    {label: "Messages", value: context.messageTokens ?? 0, tone: "messages"},
+    {label: "Provider framing", value: context.framingTokens ?? 0, tone: "framing"}
   ] : [];
+  const attributedTokens = contextRows.reduce((sum, row) => sum + row.value, 0);
   const measured = receipt?.measurement_recorded !== false;
   const latency = object(receipt?.latency);
   const input = measured ? number(receipt?.input_tokens) : undefined;
@@ -154,21 +161,28 @@ export function ComposerStats({attribution, capacity, receipt, usage, running, p
         >
           <section aria-label="Context usage">
             <div className="composerStatsHeading">
-              <h3>Context used</h3>
+              <h3>Input context used</h3>
               <span>{running ? "Running · " : ""}{percent === undefined ? "Not available" : `${percent}%`}</span>
             </div>
             <p className="composerStatsContextTotal">
-              {used === undefined ? "—" : `${attribution ? "~" : ""}${compactTokens(used)}`}
+              {used === undefined ? "—" : `${context?.observed ? "" : "~"}${compactTokens(used)}`}
               {" / "}{maximum ? compactTokens(maximum) : "—"} tokens
             </p>
             <div className="contextBar" aria-hidden="true">
-              {contextRows.length === 0
+              {attributedTokens === 0
                 ? <span style={{width: `${fill}%`}} />
                 : contextRows.filter((row) => row.value > 0).map((row) => (
                   <span key={row.tone} data-tone={row.tone}
-                    style={{width: `${used ? fill * row.value / used : 0}%`}} />
+                    style={{width: `${fill * row.value / attributedTokens}%`}} />
                 ))}
+              <span data-tone="remaining" style={{width: `${Math.max(0, 100 - fill - reserveFill)}%`}} />
+              {reserveFill > 0 && <span data-tone="reserved" style={{width: `${reserveFill}%`}} />}
             </div>
+            <dl>
+              <Stat label="Input limit" value={count(hardInput)} />
+              <Stat label="Reserved for output" value={count(reserve)} />
+              <Stat label="Input remaining" value={count(remaining)} />
+            </dl>
             {contextRows.length > 0 && <dl className="contextRows">
               {contextRows.map((row) => <div key={row.tone}>
                 <dt><span data-tone={row.tone} aria-hidden="true" />{row.label}</dt>
@@ -176,8 +190,8 @@ export function ComposerStats({attribution, capacity, receipt, usage, running, p
               </div>)}
             </dl>}
             <p className="composerStatsNote">
-              {attribution ? "Last model sample · estimated context"
-                : used !== undefined ? "Last recorded context" : "Context usage has not been recorded yet."}
+              {context?.observed ? "Last model sample · measured input; breakdown estimated"
+                : used !== undefined ? "Last model request · estimated input" : "Context usage has not been recorded yet."}
             </p>
           </section>
           <ContextDiagnostics receipt={receipt} />
@@ -231,11 +245,10 @@ export function ComposerStats({attribution, capacity, receipt, usage, running, p
           <footer className="composerStatsFooter">
             <details>
               <summary>About these numbers</summary>
-              <p className="composerStatsNote">The ring shows context used / model context capacity from the latest available sample; unsent text is excluded. Total turn tokens = input + output across model calls. The input/output bar shows their share of that total. Reasoning is part of output; cache is part of input. 1K = 1,024 tokens.</p>
+              <p className="composerStatsNote">The ring shows input used / context capacity from the same model request; unsent text is excluded. Output space is reserved separately. Input remaining = input limit − input used; the runtime may compact before the ring reaches 100%. Total turn tokens = input + output across model calls. Reasoning is part of output; cache is part of input. 1K = 1,024 tokens.</p>
               <p className="composerStatsNote">First response includes text, reasoning or tool-call fragments. Parallel tool times are summed and include approval waits; times do not add up to elapsed time.</p>
               {receipt && <dl>
                 <Stat label="Approval wait" value={duration(latency?.approval_wait_ms)} />
-                <Stat label="Verification" value={duration(latency?.verify_ms)} />
               </dl>}
               <p className="composerStatsNote">Session totals cover all history, including subagents, failed and canceled turns. Tool counts include control calls and failures; unfinished calls are excluded. Usage includes auxiliary model calls.{running ? " Refreshes when the turn ends." : ""}</p>
             </details>

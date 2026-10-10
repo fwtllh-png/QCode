@@ -18,7 +18,6 @@ import (
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
 	interacttool "github.com/fwtllh-png/QCode/internal/adapter/tool/interact"
 	"github.com/fwtllh-png/QCode/internal/observability/telemetry"
-	"github.com/fwtllh-png/QCode/internal/observability/verify"
 	agentengine "github.com/fwtllh-png/QCode/internal/runtime/agent/engine"
 	"github.com/fwtllh-png/QCode/internal/runtime/agent/turnkernel"
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
@@ -143,12 +142,7 @@ func TestWorkspaceChangeReceiptMatchesTerminalOutcome(t *testing.T) {
 		}
 		worker, err := newTestAgentEngine(agentengine.Options{ProviderConfig: agentengine.ProviderConfig{Provider: &runtimeApprovalProvider{}, Route: runtimeTestRoute(t),
 
-			MaxOutputTokens: 128}, ToolConfig: agentengine.ToolConfig{Tools: registry,
-
-			Verify: agentengine.VerifyOptions{
-				Mode: agentengine.VerifyModeHard, Scope: verify.ScopeDiagnostics,
-				Runner: passingVerifier{},
-			}}, SecurityConfig: agentengine.SecurityConfig{Security: policy.DefaultRuntime(
+			MaxOutputTokens: 128}, ToolConfig: agentengine.ToolConfig{Tools: registry}, SecurityConfig: agentengine.SecurityConfig{Security: policy.DefaultRuntime(
 			policy.ModeAct,
 			policy.PermissionBypass,
 		),
@@ -172,16 +166,6 @@ func TestWorkspaceChangeReceiptMatchesTerminalOutcome(t *testing.T) {
 			t.Fatalf("completed receipt = %+v", receipt)
 		}
 	})
-}
-
-type passingVerifier struct{}
-
-func (passingVerifier) Verify(
-	context.Context, verify.Request,
-) (verify.Receipt, error) {
-	return verify.Receipt{
-		Scope: verify.ScopeDiagnostics, Status: verify.StatusPassed,
-	}, nil
 }
 
 func runWorkspaceChangeTurn(

@@ -106,37 +106,6 @@ func TestSnapshotLimitKeepsRecentFactsAndReportsTheRest(t *testing.T) {
 	}
 }
 
-func TestChangeIsRiskyUntilVerified(t *testing.T) {
-	set := NewEvidenceSet()
-	set.BeginTurn(1)
-	set.MarkChanged("a.go", 1, true)
-	risks := set.Snapshot(0).Risks
-	if len(risks) != 1 || risks[0].Kind != RiskUnverifiedChange || risks[0].Path != "a.go" {
-		t.Fatalf("expected one unverified change, got %+v", risks)
-	}
-	if paths := set.UnverifiedPaths(); len(paths) != 1 || paths[0] != "a.go" {
-		t.Fatalf("expected a.go unverified, got %v", paths)
-	}
-	set.MarkVerified([]string{"a.go"})
-	if risks := set.Snapshot(0).Risks; len(risks) != 0 {
-		t.Fatalf("verification left risks %+v", risks)
-	}
-	if paths := set.UnverifiedPaths(); len(paths) != 0 {
-		t.Fatalf("verification left unverified paths %v", paths)
-	}
-}
-
-func TestWritingAgainInvalidatesAnEarlierVerification(t *testing.T) {
-	set := NewEvidenceSet()
-	set.MarkChanged("a.go", 1, true)
-	set.MarkVerified([]string{"a.go"})
-	set.MarkChanged("a.go", 2, true)
-	risks := set.Snapshot(0).Risks
-	if len(risks) != 1 || risks[0].Kind != RiskUnverifiedChange || risks[0].Turn != 2 {
-		t.Fatalf("expected the new write to be unverified, got %+v", risks)
-	}
-}
-
 func TestChangeWithoutReadAndOpenDiagnosticsAreSeparateRisks(t *testing.T) {
 	set := NewEvidenceSet()
 	set.MarkChanged("a.go", 1, false)
@@ -145,7 +114,7 @@ func TestChangeWithoutReadAndOpenDiagnosticsAreSeparateRisks(t *testing.T) {
 	for _, risk := range set.Snapshot(0).Risks {
 		kinds[risk.Kind] = true
 	}
-	for _, want := range []string{RiskUnverifiedChange, RiskBlindChange, RiskOpenDiagnostics} {
+	for _, want := range []string{RiskBlindChange, RiskOpenDiagnostics} {
 		if !kinds[want] {
 			t.Fatalf("missing risk %q in %+v", want, set.Snapshot(0).Risks)
 		}
@@ -285,8 +254,8 @@ func TestCloneIsIndependent(t *testing.T) {
 	if len(snapshot.Facts) != 1 {
 		t.Fatalf("the clone saw the parent's later fact: %+v", snapshot.Facts)
 	}
-	if len(snapshot.Risks) != 1 {
-		t.Fatalf("the clone saw the parent's later verification: %+v", snapshot.Risks)
+	if len(clone.Changes()) != 1 || clone.Changes()[0].Verified {
+		t.Fatalf("the clone saw the parent's later legacy flag: %+v", clone.Changes())
 	}
 	if snapshot.Turn != 2 {
 		t.Fatalf("clone turn is %d, want 2", snapshot.Turn)
@@ -316,5 +285,18 @@ func TestPassingVerificationClearsRestoredStaleChange(t *testing.T) {
 	changes := set.Changes()
 	if len(changes) != 1 || !changes[0].Verified || changes[0].Stale {
 		t.Fatalf("changes=%+v", changes)
+	}
+}
+
+func TestChangesDoNotCreatePermanentVerificationObligations(t *testing.T) {
+	set := NewEvidenceSet()
+	set.BeginTurn(1)
+	set.MarkChanged("a.go", 1, true)
+	if risks := set.Snapshot(0).Risks; len(risks) != 0 {
+		t.Fatalf("invented verification risk: %+v", risks)
+	}
+	set.BeginTurn(3)
+	if delta := set.RetainedDelta(1, 1, 1); len(delta.Changes) != 0 {
+		t.Fatalf("ordinary old changes bypass retention: %+v", delta.Changes)
 	}
 }

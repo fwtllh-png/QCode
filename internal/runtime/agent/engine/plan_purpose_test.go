@@ -7,7 +7,6 @@ import (
 	"github.com/fwtllh-png/QCode/internal/adapter/model"
 	"github.com/fwtllh-png/QCode/internal/adapter/provider"
 	"github.com/fwtllh-png/QCode/internal/adapter/tool/interact"
-	"github.com/fwtllh-png/QCode/internal/observability/verify"
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
 )
 
@@ -42,7 +41,10 @@ func TestDeliverablePlanCompletionPreservesExecutionObligations(t *testing.T) {
 					`{"status":"complete","summary":"Plan delivered.","pending_actions":[]}`),
 			)
 			runtime := &scriptedProvider{streams: streams}
-			engine = declarationEngine(t, runtime, registry, passedReceipt())
+			engine = declarationEngine(t, runtime, registry)
+			// Leave capacity for the plan lifecycle rather than testing context pressure.
+			engine.options.Route = mustTestRouteWithContext(t, 8192)
+			engine.options.Routes, _ = model.NewRouteSet(engine.options.Route, nil, false)
 			var rejection string
 			result, err := engine.RunForTurnWithIntentAndAttachments(
 				t.Context(), "turn-deliverable", "write the plan document",
@@ -97,7 +99,7 @@ func TestDeliverableWithoutExecutionPlanCompletesAfterMutation(t *testing.T) {
 		toolCallStream("complete", "turn_complete",
 			`{"status":"complete","summary":"Plan delivered.","pending_actions":[]}`),
 	}}
-	engine = declarationEngine(t, runtime, registry, passedReceipt())
+	engine = declarationEngine(t, runtime, registry)
 	result, err := engine.RunForTurnWithIntentAndAttachments(t.Context(),
 		"turn-plan-only", "write the plan document", protocol.TurnIntentAnswer, nil, nil)
 	if err != nil || result.State != Completed || len(runtime.requests) != 3 {
@@ -108,7 +110,7 @@ func TestDeliverableWithoutExecutionPlanCompletesAfterMutation(t *testing.T) {
 	}
 }
 
-func TestDeliverablePlanDoesNotBypassVerification(t *testing.T) {
+func TestDeliverablePlanCompletesWithoutVerificationGate(t *testing.T) {
 	registry := declarationRegistry(t, true)
 	var engine *Engine
 	if err := interact.Register(registry, interact.Options{
@@ -123,26 +125,17 @@ func TestDeliverablePlanDoesNotBypassVerification(t *testing.T) {
 			`{"purpose":"deliverable","steps":[{"title":"Future project","status":"pending"}]}`),
 		toolCallStream("complete-before-check", "turn_complete",
 			`{"status":"complete","summary":"Plan delivered.","pending_actions":[]}`),
-		toolCallStream("verify-document", "exec_command", `{"covered_paths":["a.go"]}`),
-		toolCallStream("complete-after-check", "turn_complete",
-			`{"status":"complete","summary":"Plan verified.","pending_actions":[]}`),
 	}}
-	engine = declarationEngine(t, runtime, registry, verify.Receipt{
-		Scope: verify.ScopeDiagnostics, Status: verify.StatusUnavailable,
-		Message: "document not verified",
-	})
-	// This fixture tests verification gating, not capacity exhaustion. Keep
-	// room for the complete tool surface and verification feedback.
+	engine = declarationEngine(t, runtime, registry)
+	// Keep room for the complete tool surface; this test checks completion policy.
 	engine.options.Route = mustTestRouteWithContext(t, 8192)
 	engine.options.Routes, _ = model.NewRouteSet(engine.options.Route, nil, false)
-	engine.options.Verify.Mode = VerifyModeHard
 	result, err := engine.RunForTurnWithIntentAndAttachments(t.Context(),
 		"turn-plan-verify", "write and verify a plan", protocol.TurnIntentAnswer, nil, nil)
-	if err != nil || result.State != Completed || result.Verification == nil ||
-		result.Verification.Status != verify.StatusPassed || result.Text != "Plan verified." {
+	if err != nil || result.State != Completed || result.Text != "Plan delivered." {
 		t.Fatalf("result=%+v err=%v", result, err)
 	}
-	if len(runtime.requests) != 5 || !requestContains(runtime.requests[3], "[verify]") {
-		t.Fatalf("deliverable skipped verification: requests=%d", len(runtime.requests))
+	if len(runtime.requests) != 3 {
+		t.Fatalf("unexpected implicit verification requests=%d", len(runtime.requests))
 	}
 }

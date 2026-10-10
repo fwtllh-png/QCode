@@ -48,27 +48,6 @@ func workspaceCompletionMissing(state State) bool {
 			!validNoChange(state, state.Completion.NoChangeReason, state.Completion.NoChangeEvidence))
 }
 
-func verificationPending(state State) bool {
-	if !state.Policy.VerificationRequired || (state.MutationRevision == 0 && state.Workspace == nil) {
-		return false
-	}
-	if state.Verification.Mutation != state.MutationRevision {
-		return true
-	}
-	switch state.Verification.Action {
-	case VerificationActionNotRequired:
-		return state.Verification.Status != VerificationNotRequired || state.Workspace == nil || hasEffectiveChanges(state)
-	case VerificationActionPassed:
-		return state.Verification.Status != VerificationPassed
-	case VerificationActionReported:
-		return state.Policy.VerificationMustPass || state.Policy.VerificationMode != "soft"
-	case VerificationActionReverted:
-		return state.Policy.VerificationMustPass || state.Policy.VerificationOnFailure != "revert"
-	default:
-		return true
-	}
-}
-
 // Shared by step selection, output release, final readiness and terminal
 // validation. Journal/effect settlement remains specific to each phase.
 func validateCompletionPolicy(state State) error {
@@ -82,9 +61,6 @@ func validateCompletionPolicy(state State) error {
 		if state.Completion.Mutation != state.MutationRevision {
 			return errors.New("completion decision is stale")
 		}
-	}
-	if verificationPending(state) {
-		return errors.New("workspace has no current policy-accepted verification")
 	}
 	return nil
 }

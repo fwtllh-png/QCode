@@ -168,6 +168,18 @@ func TestRecoverableToolFailureClassification(t *testing.T) {
 			},
 			wantRecoverable: true, wantContains: "required_action=request_approval_again",
 		},
+		"stale recovered approval needs a new proposal": {
+			err: &policy.DecisionError{
+				Code: "approval_recovery_stale", Reason: "resources changed",
+			},
+			wantRecoverable: true, wantContains: "required_action=revalidate_and_request_approval",
+		},
+		"stale recovered approval cannot replay": {
+			err: &policy.DecisionError{
+				Code: "approval_recovery_stale", Reason: "resources changed",
+			},
+			wantRecoverable: true, wantContains: "retry_original=false",
+		},
 		"edit plan mismatch reproposes": {
 			err: &policy.DecisionError{
 				Code:   "edit_plan_mismatch",

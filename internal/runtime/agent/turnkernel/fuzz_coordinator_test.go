@@ -124,9 +124,9 @@ func fuzzCoordinatorCommand(state State, index int, value byte) Command {
 		}
 		return nil
 	case 4:
-		return VerificationStarted{}
+		return VerificationRetired{}
 	case 5:
-		return VerificationFinished{Status: VerificationPassed}
+		return VerificationRetired{}
 	case 6:
 		return CompletionEvaluated{Candidate: CompletionCandidate{
 			DeclarationValid: true,

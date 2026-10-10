@@ -302,9 +302,6 @@ func childEngineOptions(
 		// Read-only child roles enforce their authority through policy.
 		options.Security.SetPermission(policy.PermissionNever)
 	}
-	if slices.Contains(spec.AllowedTools, "verify") {
-		options.VerificationOnly = true
-	}
 	if options.Security != nil {
 		options.ProfilePermissionCeiling = options.Security.PermissionValue()
 	}

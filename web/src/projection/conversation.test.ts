@@ -6,6 +6,41 @@ import {
 } from "./conversation";
 
 describe("ConversationProjection", () => {
+  it("replays Guardian facts without treating an assessment as execution or adding success notices", () => {
+    const projection = new ConversationProjection();
+    const started = event(1, "tool.start", {call_id: "call", tool: "exec_command", arguments: {command: "./build.sh"}});
+    const assessed = event(2, "guardian.review", {call_id: "call", review_id: "review", phase: "assessed",
+      reason_code: "assessment_complete", assessment: {risk: "low", authorization: "supported", recommendation: "allow"}});
+    const decided = event(3, "guardian.review", {...assessed.data, phase: "decided", reason_code: "policy_decision",
+      decision: {action: "allow", authority: "guardian", code: "guardian_allowed"}});
+    // A late tool.start still picks up the newest audit snapshot. Repeated and
+    // older review deliveries cannot regress it or complete the tool.
+    projection.applyAll([decided, assessed, started, decided]);
+    const pending = projection.snapshot();
+    expect(pending.order).toEqual(["tool-call"]);
+    expect(pending.nodes.get("tool-call")).toMatchObject({state: "running", guardianReviews: [
+      {reviewID: "review", phase: "decided", authority: "guardian"}
+    ]});
+    const result = event(4, "tool.result", {call_id: "call", output: "done", execution: {guardian_review_id: "review"}});
+    projection.apply(result);
+    const replay = projectConversation([started, assessed, decided, result]);
+    expect(projection.snapshot().nodes.get("tool-call")).toEqual(replay.nodes.get("tool-call"));
+    expect(replay.nodes.get("tool-call")).toMatchObject({state: "completed", execution: {guardian_review_id: "review"}});
+  });
+
+  it.each(["approve", "deny", "cancel"])("restores a Guardian approval and projects %s separately", (decision) => {
+    const projection = new ConversationProjection();
+    projection.applyAll([
+      event(1, "tool.start", {call_id: "call", tool: "exec_command"}),
+      event(2, "guardian.review", {call_id: "call", review_id: "review", phase: "failed", reason_code: "review_timed_out"}),
+      event(3, "approval.required", {request_id: "approval", call_id: "call", guardian_review_id: "review", guardian_reason_code: "review_timed_out"})
+    ]);
+    expect(projection.snapshot().pendingApproval?.data.request_id).toBe("approval");
+    projection.apply(event(4, "approval.resolved", {request_id: "approval", decision}));
+    expect(projection.snapshot().pendingApproval).toBeUndefined();
+    expect(projection.snapshot().nodes.get("tool-call")).toMatchObject({state: "running", approvalDecision: decision,
+      guardianReviews: [{phase: "failed", reasonCode: "review_timed_out"}]});
+  });
 	 it("attaches late summary diagnostics without rewriting terminal receipt usage", () => {
     const projection = new ConversationProjection();
     projection.apply(event(1, "turn.receipt", {input_tokens: 10, output_tokens: 2}));
@@ -145,7 +180,7 @@ describe("ConversationProjection", () => {
     });
   });
 
-  it("replaces intermediate verification with the final verdict", () => {
+  it("ignores retired verification events", () => {
     const snapshot = projectConversation([
       event(1, "turn.verification", {status: "unavailable", action: "repair"}),
       event(2, "turn.verification", {status: "passed", action: "passed"})
@@ -154,13 +189,7 @@ describe("ConversationProjection", () => {
       .map((id) => snapshot.nodes.get(id))
       .filter((node) => node?.kind === "status");
 
-    expect(verification).toMatchObject([
-      {
-        title: "Checks passed",
-        text: "Recorded checks passed for the current changes.",
-        failed: false
-      }
-    ]);
+    expect(verification).toEqual([]);
   });
 
   it("explains an unavailable verification without internal terminology", () => {
@@ -171,22 +200,14 @@ describe("ConversationProjection", () => {
       })
     ]);
 
-    expect(snapshot.nodes.get(snapshot.order[0])).toMatchObject({
-      title: "Verification unavailable",
-      text: "structured quality evidence does not cover every changed path",
-      failed: false
-    });
+    expect(snapshot.order).toEqual([]);
   });
 
   it("reports unchanged completion without claiming tests passed", () => {
     const snapshot = projectConversation([
       event(1, "turn.verification", {status: "not_required", action: "not_required"})
     ]);
-    expect(snapshot.nodes.get(snapshot.order[0])).toMatchObject({
-      title: "No verification required",
-      text: "No net workspace changes remain. No checks were run.",
-      failed: false
-    });
+    expect(snapshot.order).toEqual([]);
   });
 
   it("derives recovery actions and side effects from Runtime facts", () => {
@@ -493,7 +514,6 @@ describe("ConversationProjection", () => {
     expect(deliverables).toMatchObject([
       {
         turnID: "turn-one",
-        verification: "passed",
         files: [{
           path: "main.go",
           callID: "edit-one",
@@ -503,7 +523,6 @@ describe("ConversationProjection", () => {
       },
       {
         turnID: "turn-two",
-        verification: "unverified",
         files: [{path: "main.go", stale: false}]
       }
     ]);

@@ -251,8 +251,6 @@ func TestExecCommandShadowDiscardKeepsWorkspaceUntouched(t *testing.T) {
 			"mkdir -p stub; printf 'package stub\\n' > stub/stub.go; " +
 			"test -f fence_test.go",
 		"write_paths":   []string{"eds_metaserver"},
-		"covered_paths": []string{"eds_metaserver/fence_test.go"},
-		"verification":  "test",
 		"settle":        "discard",
 		"cwd":           "eds_metaserver",
 		"yield_time_ms": 10000,
@@ -278,10 +276,8 @@ func TestExecCommandShadowDiscardKeepsWorkspaceUntouched(t *testing.T) {
 		len(facts.WorkspaceChanges) != 0 {
 		t.Fatalf("discarded writes leaked into facts: %+v", facts.WorkspaceChanges)
 	}
-	// Evidence passed: covered input never changed in the real workspace.
-	evidence := result.Outcome.Facts.Verification
-	if evidence == nil || evidence.Status != "passed" {
-		t.Fatalf("shadow evidence = %+v", evidence)
+	if result.Outcome.Facts.Verification != nil {
+		t.Fatal("ordinary command produced coverage evidence")
 	}
 	// The workspace stays byte-identical.
 	if body, err := os.ReadFile(filepath.Join(module, "go.mod")); err != nil ||

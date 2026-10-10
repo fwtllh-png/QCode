@@ -26,6 +26,9 @@ func (e *FieldError) Error() string {
 }
 
 func (s Snapshot) Validate() error {
+	if g := s.Config.Security.Guardian; g.Timeout < 0 || (g.Enabled && g.Timeout == 0) {
+		return fieldError(fieldGuardianTimeout, s.Provenance, "must be positive when Guardian is enabled and cannot be negative")
+	}
 	checkRange := func(field string, value, maximum int) error {
 		if value < 1 || value > maximum {
 			return fieldError(field, s.Provenance, fmt.Sprintf("must be between 1 and %d", maximum))
@@ -404,9 +407,6 @@ func (s Snapshot) Validate() error {
 			return fieldError(fieldCredentialName, s.Provenance, "must be a non-secret reference name")
 		}
 	}
-	if err := s.validateVerify(); err != nil {
-		return err
-	}
 	if err := s.validateSubagent(); err != nil {
 		return err
 	}
@@ -527,45 +527,6 @@ func (s Snapshot) validateSubagent() error {
 	return nil
 }
 
-// validateVerify is fail-closed: the two values the roadmap names but that have
-// no implementation yet (affected scope, ask on failure) are rejected at load
-// time with a pointer at the missing work, instead of silently degrading into a
-// different meaning.
-func (s Snapshot) validateVerify() error {
-	verify := s.Config.Execution.Verify
-	switch verify.Mode {
-	case "off", "soft", "hard":
-	default:
-		return fieldError(fieldVerifyMode, s.Provenance, "must be off, soft, or hard")
-	}
-	switch verify.Scope {
-	case "diagnostics", "repository", "affected":
-	default:
-		return fieldError(fieldVerifyScope, s.Provenance,
-			"must be diagnostics, repository, or affected")
-	}
-	switch verify.OnFailure {
-	case "fail", "revert":
-	case "ask":
-		return fieldError(fieldVerifyOnFailure, s.Provenance,
-			"ask needs an interactive input request every host can render; use fail or revert")
-	default:
-		return fieldError(fieldVerifyOnFailure, s.Provenance, "must be fail or revert")
-	}
-	if strings.TrimSpace(verify.Command) != "" &&
-		verify.Scope != "repository" && verify.Scope != "affected" {
-		return fieldError(fieldVerifyCommand, s.Provenance,
-			"only the repository and affected scopes run commands; set scope = \"repository\"")
-	}
-	if verify.MaxRepairSteps < 0 || verify.MaxRepairSteps > 8 {
-		return fieldError(fieldVerifyRepair, s.Provenance, "must be between 0 and 8")
-	}
-	if verify.Timeout <= 0 {
-		return fieldError(fieldVerifyTimeout, s.Provenance, "must be positive")
-	}
-	return nil
-}
-
 func (s Snapshot) validateVision() error {
 	vision := s.Config.Vision
 	if !vision.Enabled {
@@ -582,7 +543,7 @@ func (s Snapshot) validateVision() error {
 
 // routeSlotPurposes are the wired purposes a slot may be configured for, in the
 // order they are reported. It matches routeFileConfig.
-var routeSlotPurposes = []string{"vision", "summary"}
+var routeSlotPurposes = []string{"vision", "summary", "judge"}
 
 // validateRoute checks the slots configuration named. A half-named slot is the
 // error worth catching here: a provider without a model resolves to nothing, and

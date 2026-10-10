@@ -529,8 +529,7 @@ func applyObserveProgress(
 		// MaxSteps-derived lease so A/B cycles cannot reset the clock.
 		repairReserve := current.Policy.CompletionRepairLimit +
 			current.Policy.WorkspaceRepairLimit +
-			current.Policy.DeclarationRepairLimit +
-			current.Policy.VerificationRepairLimit
+			current.Policy.DeclarationRepairLimit
 		limit = max(lease+1, lease+repairReserve)
 		// The implement lease is a tighter identical-call bound, not a way
 		// to outrun an explicit MaxSteps-derived ceiling. Child budgets
@@ -696,7 +695,7 @@ func spendRepairBudget(
 
 func validRepairKind(kind RepairKind) bool {
 	switch kind {
-	case RepairCompletion, RepairWorkspace, RepairDeclaration, RepairVerification:
+	case RepairCompletion, RepairWorkspace, RepairDeclaration:
 		return true
 	default:
 		return false

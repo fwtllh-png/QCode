@@ -110,10 +110,13 @@ type ModelRequest struct {
 	NativeSearch     bool              `json:"native_search,omitempty"`
 	Tools            []ToolDefinition  `json:"tools,omitempty"`
 	Idempotent       bool              `json:"idempotent,omitempty"`
-	PromptCacheKey   string            `json:"prompt_cache_key,omitempty"`
-	Store            *bool             `json:"store,omitempty"`
-	ParallelTools    *bool             `json:"parallel_tools,omitempty"`
-	Include          []string          `json:"include,omitempty"`
+	// SingleAttempt forbids replay, session recovery and transport resends.
+	// Callers must also refrain from resubmitting a failed logical request.
+	SingleAttempt  bool     `json:"-"`
+	PromptCacheKey string   `json:"prompt_cache_key,omitempty"`
+	Store          *bool    `json:"store,omitempty"`
+	ParallelTools  *bool    `json:"parallel_tools,omitempty"`
+	Include        []string `json:"include,omitempty"`
 }
 
 func StickyPromptCacheKey(key string, route model.ReadyRoute) string {

@@ -75,9 +75,9 @@ func fuzzCommand(state State, index int, value byte) Command {
 		}
 		return ToolResultReceived{CallID: callID}
 	case 5:
-		return VerificationStarted{}
+		return VerificationRetired{}
 	case 6:
-		return VerificationFinished{Status: VerificationPassed}
+		return VerificationRetired{}
 	case 7:
 		return CompletionEvaluated{Candidate: CompletionCandidate{
 			DeclarationValid: true,

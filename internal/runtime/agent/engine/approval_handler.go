@@ -300,3 +300,52 @@ func (e *Engine) takeRecoveredApproval(
 	defer e.scopeMu.Unlock()
 	return e.approvalRecovery.Take(requestID)
 }
+
+// A restored tool can fail before Guard reconnects its wait (for example when
+// policy or the binding changed). Retire that wait as denied before recording
+// the failed tool result. An early human reply is discarded, never converted
+// into execution authority, and its already published resolution is not emitted
+// twice. Other calls' waits remain untouched.
+func (e *Engine) rejectUnresumedApproval(callID string) error {
+	scope := e.runningScope()
+	if scope == nil {
+		return nil
+	}
+	kernel, err := scope.kernel()
+	if err != nil {
+		return err
+	}
+	for requestID, approval := range kernel.Snapshot().PendingApprovals {
+		if approval.CallID != callID {
+			continue
+		}
+		if err := scope.state.requests.Register(turnkernel.RequestApproval, requestID); err != nil {
+			return err
+		}
+		if err := scope.state.requests.Resolve(turnkernel.RequestApproval, requestID); err != nil {
+			return err
+		}
+		if err := kernel.ResolveApproval(requestID, false); err != nil {
+			return err
+		}
+		if e.guard != nil {
+			e.guard.DiscardRecoveredApproval(callID)
+		}
+		_, queued := e.takeRecoveredApproval(requestID)
+		if queued {
+			continue
+		}
+		scope.mu.Lock()
+		emit := scope.state.approvalEmit
+		scope.mu.Unlock()
+		if emit == nil {
+			return errors.New("approval host is not connected to an active turn")
+		}
+		if err := emit(Event{ApprovalResolution: &ApprovalResolution{
+			RequestID: requestID, Decision: "deny", Reason: "approval_recovery_invalidated",
+		}}); err != nil {
+			return err
+		}
+	}
+	return nil
+}

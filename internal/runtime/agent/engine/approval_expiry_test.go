@@ -32,6 +32,57 @@ func TestScopeCloseReleasesTurnResourcesOnce(t *testing.T) {
 	}
 }
 
+func TestRejectedRecoveredApprovalClosesOnlyItsWait(t *testing.T) {
+	for _, early := range []bool{false, true} {
+		t.Run(map[bool]string{false: "unanswered", true: "early_approve"}[early], func(t *testing.T) {
+			engine := newEngine(t, &scriptedProvider{}, tool.NewRegistry(nil, nil))
+			scope := attachTestScope(t, engine)
+			kernel := newEngineTurnKernel(protocol.TurnIntentAnswer, "act", nil, 0, nil, nil)
+			scope.state.kernel = kernel
+			var resolutions []Event
+			scope.state.approvalEmit = func(event Event) error { resolutions = append(resolutions, event); return nil }
+			calls := []provider.ToolCall{{ID: "stale-call", Name: "write"}, {ID: "other-call", Name: "write"}}
+			if err := kernel.StartTools(calls); err != nil {
+				t.Fatal(err)
+			}
+			for _, call := range calls {
+				if err := kernel.StartTool(call.ID); err != nil {
+					t.Fatal(err)
+				}
+				if err := kernel.RequireApproval(call.ID, call.ID); err != nil {
+					t.Fatal(err)
+				}
+				if err := engine.RestoreApprovalRequest(toolguard.ApprovalRequest{RequestID: call.ID, CallID: call.ID}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if early && !engine.queueRecoveredApproval(toolguard.ApprovalDecision{RequestID: calls[0].ID, Approved: true}) {
+				t.Fatal("early decision was not queued")
+			}
+			if err := engine.rejectUnresumedApproval(calls[0].ID); err != nil {
+				t.Fatal(err)
+			}
+			pending := kernel.Snapshot().PendingApprovals
+			if len(pending) != 1 || pending[calls[1].ID].CallID != calls[1].ID {
+				t.Fatal("unrelated approval was retired")
+			}
+			if early {
+				if len(resolutions) != 0 {
+					t.Fatal("early user resolution was duplicated")
+				}
+			} else if len(resolutions) != 1 || resolutions[0].ApprovalResolution.Reason != "approval_recovery_invalidated" {
+				t.Fatalf("invalidated wait resolution = %+v", resolutions)
+			}
+			if engine.queueRecoveredApproval(toolguard.ApprovalDecision{RequestID: calls[0].ID, Approved: true}) {
+				t.Fatal("retired approval accepted another decision")
+			}
+			if err := kernel.CloseTool(calls[0], tool.Result{IsError: true}, nil); err != nil {
+				t.Fatalf("rejected result could not close: %v", err)
+			}
+		})
+	}
+}
+
 func TestApprovalExpiryResolvesKernelBeforeToolResult(t *testing.T) {
 	engine := newEngine(t, &scriptedProvider{}, tool.NewRegistry(nil, nil))
 	scope := attachTestScope(t, engine)

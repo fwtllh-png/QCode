@@ -11,7 +11,6 @@ import (
 	"github.com/fwtllh-png/QCode/internal/adapter/tool"
 	completiontool "github.com/fwtllh-png/QCode/internal/adapter/tool/completion"
 	filetool "github.com/fwtllh-png/QCode/internal/adapter/tool/file"
-	"github.com/fwtllh-png/QCode/internal/observability/verify"
 	agentengine "github.com/fwtllh-png/QCode/internal/runtime/agent/engine"
 	"github.com/fwtllh-png/QCode/internal/runtime/protocol"
 	securitymodel "github.com/fwtllh-png/QCode/internal/security/model"
@@ -68,7 +67,7 @@ func TestWorkspaceChangeCanCompleteUnchanged(t *testing.T) {
 			}
 			worker, err := newTestAgentEngine(agentengine.Options{
 				ProviderConfig: agentengine.ProviderConfig{Provider: runtime, Route: runtimeTestRoute(t), MaxOutputTokens: 128},
-				ToolConfig:     agentengine.ToolConfig{Tools: registry, Verify: agentengine.VerifyOptions{Mode: agentengine.VerifyModeHard, Scope: verify.ScopeRepository, Runner: verify.UnavailableRunner{}}},
+				ToolConfig:     agentengine.ToolConfig{Tools: registry},
 				SecurityConfig: agentengine.SecurityConfig{Workspace: root, Journal: newTestWorkspaceJournal(t, root), Security: policy.DefaultRuntime(policy.ModeAct, policy.PermissionBypass)},
 			})
 			if err != nil {
@@ -79,7 +78,7 @@ func TestWorkspaceChangeCanCompleteUnchanged(t *testing.T) {
 			if !ok || completed.Outcome != protocol.TurnOutcomeUnchanged || receipt.Outcome != protocol.TurnOutcomeUnchanged || len(receipt.Changes) != 0 || receipt.WorkspaceOutcome.Status != "unchanged" {
 				t.Fatalf("receipt=%+v terminal=%+v", receipt, terminal)
 			}
-			if receipt.Verification.Verify != protocol.ReceiptNotRequired || receipt.Verification.Tests != protocol.ReceiptNotEvaluated {
+			if receipt.Verification != (protocol.ReceiptVerification{}) {
 				t.Fatalf("verification=%+v", receipt.Verification)
 			}
 			if !restore && (receipt.Completion == nil || receipt.Completion.NoChangeReason == "" || len(receipt.Completion.NoChangeEvidence) != 1) {

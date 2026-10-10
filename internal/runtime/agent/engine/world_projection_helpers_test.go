@@ -88,10 +88,6 @@ func (e *Engine) observeDiagnosticsEvidence(
 	)
 }
 
-func (e *Engine) observeVerifiedEvidence(paths []string) {
-	e.contextAuthority().ObserveVerified(e.options.Workspace, paths)
-}
-
 func (e *Engine) frozenWorldSections(
 	spec TurnSpec,
 	turn uint64,

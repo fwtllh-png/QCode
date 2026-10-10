@@ -514,8 +514,8 @@ func TestImplementLeaseExhaustsAtLeasePlusRepairReserve(t *testing.T) {
 		want    ProgressStage
 	}{
 		{samples: 6, want: ProgressStageFinishOnly},
-		{samples: 10, want: ProgressStageFinishOnly},
-		{samples: 11, want: ProgressStageExhausted},
+		{samples: 9, want: ProgressStageFinishOnly},
+		{samples: 10, want: ProgressStageExhausted},
 	} {
 		state = apply(t, state, ObserveProgress{
 			Signature:        signature,

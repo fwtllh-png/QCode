@@ -49,7 +49,6 @@ describe("conversation navigation", () => {
       kind: "deliverables",
       turnID: "turn-b",
       sequence: 4,
-      verification: "passed",
       files: [{
         path: "internal/parser_test.go",
         tool: "file_edit",

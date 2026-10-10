@@ -219,15 +219,6 @@ func New(options Options) (*Engine, error) {
 	if options.TurnCoordinatorRuntime == nil {
 		return nil, errors.New("turn coordinator runtime is required")
 	}
-	if options.Verify.Mode == "" {
-		options.Verify.Mode = VerifyModeSoft
-	}
-	if options.Verify.OnFailure == "" {
-		options.Verify.OnFailure = VerifyOnFailureFail
-	}
-	if options.Verify.Scope == "" {
-		options.Verify.Scope = verify.ScopeDiagnostics
-	}
 	if err := policy.Validate(options.Security); err != nil {
 		return nil, err
 	}

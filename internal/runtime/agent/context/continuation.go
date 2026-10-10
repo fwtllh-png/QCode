@@ -48,6 +48,8 @@ type TurnContinuation struct {
 	ContextCaptured       bool               `json:"context_captured,omitempty"`
 	Conversation          *ConversationState `json:"conversation,omitempty"`
 	Plan                  *Plan              `json:"plan,omitempty"`
+	PlanningPolicy        string             `json:"planning_policy,omitempty"`
+	PlanSubmitted         bool               `json:"plan_submitted,omitempty"`
 }
 
 type storedContinuation struct {
@@ -82,6 +84,14 @@ func (c TurnContinuation) Validate() error {
 		strings.TrimSpace(c.Provider) == "" ||
 		strings.TrimSpace(c.Model) == "" {
 		return errors.New("turn continuation environment is incomplete")
+	}
+	switch c.PlanningPolicy {
+	case "", "off", "adaptive", "required":
+	default:
+		return errors.New("turn continuation planning policy is invalid")
+	}
+	if c.PlanSubmitted && (!c.ContextCaptured || c.PlanningPolicy == "") {
+		return errors.New("turn continuation planning submission has no captured policy")
 	}
 	if len(c.Messages) == 0 {
 		return errors.New("turn continuation has no accepted messages")

@@ -1,5 +1,6 @@
 import type {RuntimeEvent} from "../protocol";
 import {failurePresentation} from "./failurePresentation";
+import {projectGuardian, type GuardianReview} from "./guardian";
 
 export type ToolVariant =
   | "read"
@@ -105,6 +106,7 @@ export type ConversationNode =
       readonly output: string;
       readonly errorSummary: string;
       readonly execution?: Record<string, unknown>;
+      readonly guardianReviews?: readonly GuardianReview[];
       readonly command?: {
         readonly executionTarget?: string;
         readonly command: string;
@@ -152,7 +154,6 @@ export type ConversationNode =
       readonly turnID: string;
       readonly sequence: number;
       readonly files: readonly ProjectedDeliverable[];
-      readonly verification: "passed" | "failed" | "unverified";
     }
   | {
       readonly id: string;
@@ -236,6 +237,7 @@ export class ConversationProjection {
   // events carry no sample and always append.
   private readonly outputSegments = new Map<string, {sampleID: string; text: string}[]>();
   private readonly ids = new Map<string, string>();
+  private readonly guardianReviews = new Map<string, Map<string, GuardianReview>>();
   private readonly activeTurns = new Set<string>();
   private readonly readOnlyTurns = new Set<string>();
   private latestTurnID = "";
@@ -366,6 +368,9 @@ export class ConversationProjection {
       case "tool.output":
         this.appendToolOutput(event);
         break;
+      case "guardian.review":
+        this.applyGuardian(event);
+        break;
       case "tool.result":
         this.finishTool(event);
         this.runningTools.get(event.turn_id)?.delete(stringValue(data.call_id));
@@ -433,33 +438,7 @@ export class ConversationProjection {
         });
         break;
       case "turn.verification":
-        {
-          const status = stringValue(data.verdict ?? data.status);
-          const label = status === "not_required"
-            ? "No verification required"
-            : status === "passed"
-              ? "Checks passed"
-              : status === "failed"
-                ? "Checks failed"
-                : status === "unavailable"
-                  ? "Verification unavailable"
-                  : "Verification not evaluated";
-          const message = status === "not_required"
-            ? "No net workspace changes remain. No checks were run."
-            : status === "passed"
-              ? "Recorded checks passed for the current changes."
-              : stringValue(data.message) || "No structured check covered every changed file.";
-          this.put({
-            id: `verification-${event.turn_id}`,
-            kind: "status",
-            turnID: event.turn_id,
-            sequence: event.sequence,
-            title: label,
-            text: message,
-            failed: status === "failed",
-            recoverable: false
-          });
-        }
+        // Historical events remain readable in raw history; the gate is retired.
         break;
       case "turn.receipt":
         this.receipts.set(event.turn_id, Object.freeze({...data,
@@ -688,6 +667,7 @@ export class ConversationProjection {
       errorSummary: "",
       truncated: false,
       changes: [],
+      guardianReviews: [...(this.guardianReviews.get(`${event.turn_id}:${callID}`)?.values() ?? [])],
       ...(editPlan ? {editPlan} : {})
     });
   }
@@ -749,6 +729,21 @@ export class ConversationProjection {
       variant: editPlan ? "diff" : node.variant,
       ...(editPlan ? {editPlan} : {})
     });
+  }
+
+  private applyGuardian(event: RuntimeEvent): void {
+    const review = projectGuardian(event.data, event.sequence);
+    if (!review) return;
+    const callID = stringValue(event.data.call_id);
+    const key = `${event.turn_id}:${callID}`;
+    const reviews = this.guardianReviews.get(key) ?? new Map<string, GuardianReview>();
+    if ((reviews.get(review.reviewID)?.sequence ?? -1) >= event.sequence) return;
+    reviews.set(review.reviewID, review);
+    this.guardianReviews.set(key, reviews);
+    const node = this.toolNodeForCall(callID);
+    if (node && node.turnID === event.turn_id) {
+      this.put({...node, guardianReviews: [...reviews.values()]});
+    }
   }
 
   private toolNodeForCall(callID: string) {
@@ -1237,8 +1232,7 @@ export class ConversationProjection {
       kind: "deliverables",
       turnID: event.turn_id,
       sequence: event.sequence,
-      files: Object.freeze(files),
-      verification: verificationState(receipt.verification)
+      files: Object.freeze(files)
     });
     for (const file of files) {
       const key = deliverablePathKey(event.thread_id, file.path);
@@ -1499,16 +1493,7 @@ function recoveryOptions(
   });
 }
 
-function verificationState(
-  value: unknown
-): "passed" | "failed" | "unverified" {
-  if (!isRecord(value)) return "unverified";
-  const states = ["diagnostics", "tests", "verify"]
-    .map((key) => stringValue(value[key]))
-    .filter(Boolean);
-  if (states.includes("failed")) return "failed";
-  return states.includes("passed") ? "passed" : "unverified";
-}
+
 
 export function projectEditPlan(value: unknown): ProjectedEditPlan | undefined {
   if (!isRecord(value) || !Array.isArray(value.files)) return undefined;
