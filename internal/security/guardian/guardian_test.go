@@ -202,6 +202,72 @@ func TestParseAssessmentRejectsNonObject(t *testing.T) {
 	}
 }
 
+// TestParseAssessmentRejectsDuplicateKeys verifies that a JSON object
+// with the same key appearing twice is rejected, even if both values
+// are individually valid.
+func TestParseAssessmentRejectsDuplicateKeys(t *testing.T) {
+	data := []byte(`{"risk_level":"critical","risk_level":"low","authorization":"unknown","recommendation":"prompt","rationale":"r"}`)
+	if _, err := ParseAssessment(data, nil); err == nil {
+		t.Fatal("duplicate risk_level accepted (critical then low would silently win)")
+	}
+	data = []byte(`{"risk_level":"low","authorization":"unknown","recommendation":"allow","recommendation":"prompt","rationale":"r"}`)
+	if _, err := ParseAssessment(data, nil); err == nil {
+		t.Fatal("duplicate recommendation accepted")
+	}
+}
+
+// TestParseAssessmentRejectsTrailingContent verifies that extra JSON
+// objects, plain text, or unclosed JSON after the primary object are
+// all rejected.
+func TestParseAssessmentRejectsTrailingContent(t *testing.T) {
+	for _, data := range []string{
+		`{"risk_level":"low","authorization":"unknown","recommendation":"prompt","rationale":"r"}{"risk_level":"high"}`,
+		`{"risk_level":"low","authorization":"unknown","recommendation":"prompt","rationale":"r"} extra text`,
+		`{"risk_level":"low","authorization":"unknown","recommendation":"prompt","rationale":"r"`,
+	} {
+		if _, err := ParseAssessment([]byte(data), nil); err == nil {
+			t.Fatalf("trailing content accepted: %.40s...", data)
+		}
+	}
+}
+
+// TestParseAssessmentRejectsNullRationale verifies that a null or missing
+// rationale is rejected.
+func TestParseAssessmentRejectsNullRationale(t *testing.T) {
+	data := []byte(`{"risk_level":"low","authorization":"unknown","recommendation":"prompt","rationale":null}`)
+	if _, err := ParseAssessment(data, nil); err == nil {
+		t.Fatal("null rationale accepted")
+	}
+	data = []byte(`{"risk_level":"low","authorization":"unknown","recommendation":"prompt"}`)
+	if _, err := ParseAssessment(data, nil); err == nil {
+		t.Fatal("missing rationale accepted")
+	}
+}
+
+// TestParseAssessmentNilSourcesRejectsAllCitations verifies that a nil
+// validSourceIDs map (no known sources) rejects every citation, not
+// just skips validation.
+func TestParseAssessmentNilSourcesRejectsAllCitations(t *testing.T) {
+	data := []byte(`{"risk_level":"low","authorization":"supported","authorization_source_ids":["invented-user-source"],"recommendation":"allow","rationale":"r"}`)
+	if _, err := ParseAssessment(data, nil); err == nil {
+		t.Fatal("invented source accepted with nil validSourceIDs")
+	}
+}
+
+// TestEvaluateRejectsUnknownCurrentAction verifies that an empty or
+// unrecognized CurrentAction falls through to KeepAsk rather than
+// potentially allowing.
+func TestEvaluateRejectsUnknownCurrentAction(t *testing.T) {
+	a := validAssessment()
+	for _, action := range []string{"", "unknown", "ALLOW", "Ask", "allow "} {
+		ctx := validContext()
+		ctx.CurrentAction = action
+		if got := Evaluate(&a, validEvidence(), ctx); got != OutcomeKeepAsk {
+			t.Fatalf("CurrentAction=%q produced %s, want keep_ask", action, got)
+		}
+	}
+}
+
 func TestEvidenceInvalidationInvalid(t *testing.T) {
 	if (EvidenceInvalidation{}).Invalid() {
 		t.Fatal("zero invalidation should be valid")

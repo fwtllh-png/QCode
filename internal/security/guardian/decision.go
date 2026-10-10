@@ -121,6 +121,9 @@ const (
 
 // Evaluate applies the local decision table from design §6.2. It is a
 // pure function; no side effects, no network, no provider calls.
+// CurrentAction must be exactly "ask" for Guardian to potentially allow;
+// any other value (including empty or unknown) falls through to the
+// deterministic-rule or discard paths.
 func Evaluate(
 	assessment *Assessment,
 	invalid EvidenceInvalidation,
@@ -141,6 +144,11 @@ func Evaluate(
 	// Row 4: current rules already allow → discard model evidence.
 	if policy.CurrentAction == "allow" {
 		return OutcomeDiscard
+	}
+	// Guard: CurrentAction must be exactly "ask"; empty or unknown
+	// values cannot proceed to model-evidence evaluation.
+	if policy.CurrentAction != "ask" {
+		return OutcomeKeepAsk
 	}
 	// Row 5: current rules ask with non-eligible constraints → keep Ask.
 	if policy.HasExplicitAsk || policy.HasFreshRequirement ||

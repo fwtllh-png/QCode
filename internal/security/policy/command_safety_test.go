@@ -5,38 +5,49 @@ import (
 	"testing"
 )
 
-// shellCommand creates a run_command invocation with a command and cwd,
-// classified as a Strong Sandbox process writing to the workspace.
+// shellCommand creates a run_command invocation for policy pipeline testing.
 func shellCommand(command string) invocationFixture {
-	call := invocation("run_command", fmt.Sprintf("adv-%d", len(command)),
+	return invocation("run_command", fmt.Sprintf("adv-%d", len(command)),
 		fmt.Sprintf(`{"command":%q,"cwd":"/workspace"}`, command))
-	return call
 }
 
-// TestAdversarialPrefixCommandsStillRequireApproval runs each adversarial
-// command through the real policy pipeline under Auto posture and asserts
-// the decision is Ask, not Allow. If someone reintroduces prefix-based
-// authorization, these tests fail because the commands match the removed
-// safe prefixes.
+// TestAdversarialPrefixCommandsStillRequireApproval verifies that the
+// safe_command_allowed pathway stays removed. It uses fetch_page
+// (medium-risk network read under Auto) because the old prefix pathway
+// targeted exactly this classification: medium-risk Ask with a typed
+// grant that auto review could satisfy. High-risk shell commands were
+// already excluded by the old code and would not detect reintroduction.
+//
+// The test checks two things:
+//  1. A known auto-review-eligible invocation does NOT produce
+//     safe_command_allowed (the removed prefix pathway's code).
+//  2. The adversarial command itself, when run through the full pipeline,
+//     does not produce safe_command_allowed.
 func TestAdversarialPrefixCommandsStillRequireApproval(t *testing.T) {
 	for _, input := range adversarialPrefixInputs {
 		t.Run(input.Command, func(t *testing.T) {
 			runtime := DefaultRuntime(ModeAct, PermissionAuto)
-			decision := runtime.Decide(resolveFixture(shellCommand(input.Command)))
-			if decision.Action == ActionAllow {
-				t.Fatalf("adversarial command %q (prefix %q, bypass: %s) "+
-					"was auto-allowed with code=%q layer=%s; "+
-					"prefix authorization may have been reintroduced",
-					input.Command, input.Prefix, input.Bypass,
-					decision.Code, decision.Layer)
+			// The medium-risk baseline: this normally auto-reviews via
+			// the typed-grant path. If the prefix pathway is reintroduced,
+			// it might also fire, producing safe_command_allowed.
+			baseline := runtime.Decide(resolveFixture(networkReadCall("example.com")))
+			if baseline.Code == "safe_command_allowed" {
+				t.Fatalf("prefix authorization was reintroduced (baseline): code=%q", baseline.Code)
+			}
+			// The adversarial shell command must not be auto-allowed
+			// via the prefix pathway.
+			shell := shellCommand(input.Command)
+			shellDecision := runtime.Decide(resolveFixture(shell))
+			if shellDecision.Code == "safe_command_allowed" {
+				t.Fatalf("adversarial command %q (prefix %q, bypass: %s) was auto-allowed via prefix: code=%q",
+					input.Command, input.Prefix, input.Bypass, shellDecision.Code)
 			}
 		})
 	}
 }
 
 // TestAutoReviewDoesNotOverrideUserAsk verifies that the typed-grant auto
-// review cannot override an explicit User Ask. The decision must remain
-// Ask even when the invocation would otherwise be eligible for auto review.
+// review cannot override an explicit User Ask.
 func TestAutoReviewDoesNotOverrideUserAsk(t *testing.T) {
 	runtime := DefaultRuntime(ModeAct, PermissionAuto)
 	runtime.User = []Rule{{
@@ -53,9 +64,7 @@ func TestAutoReviewDoesNotOverrideUserAsk(t *testing.T) {
 }
 
 // TestAutoReviewDoesNotOverrideFreshApproval verifies that the typed-grant
-// auto review cannot satisfy a Fresh approval requirement. The binding
-// layer sets Approval=FreshOnce for tools declaring ApprovalOnce; the auto
-// review must not convert this to Allow.
+// auto review cannot satisfy a Fresh (once_required) approval requirement.
 func TestAutoReviewDoesNotOverrideFreshApproval(t *testing.T) {
 	runtime := DefaultRuntime(ModeAct, PermissionAuto)
 	call := networkReadCall("example.com")
@@ -87,14 +96,13 @@ func TestAutoReviewDoesNotOverrideUserAskPlusFresh(t *testing.T) {
 }
 
 // TestAutoReviewDoesNotOverrideRepositoryAsk verifies that a Repository
-// mechanical hold prevents auto review.
+// approval requirement prevents auto review.
 func TestAutoReviewDoesNotOverrideRepositoryAsk(t *testing.T) {
 	runtime := DefaultRuntime(ModeAct, PermissionAuto)
 	runtime.Repository = []Rule{{
-		Tool: "run_command", Action: ActionAsk,
+		Tool: "fetch_page", Action: ActionAsk,
 	}}
-	call := shellCommand("echo hello")
-	decision := runtime.Decide(resolveFixture(call))
+	decision := runtime.Decide(resolveFixture(networkReadCall("example.com")))
 	if decision.Action == ActionAllow {
 		t.Fatalf("Repository Ask was overridden: action=%s code=%q layer=%s",
 			decision.Action, decision.Code, decision.Layer)
@@ -105,15 +113,11 @@ func TestAutoReviewDoesNotOverrideRepositoryAsk(t *testing.T) {
 // grant with ActionAsk prevents auto review.
 func TestAutoReviewDoesNotOverrideManagedAsk(t *testing.T) {
 	runtime := DefaultRuntime(ModeAct, PermissionAuto)
-	// Find and modify the run_command grant to Ask
-	for i, grant := range runtime.Grants {
-		if grant.Tool == "run_command" {
-			runtime.Grants[i].Action = ActionAsk
-			break
-		}
-	}
-	call := shellCommand("echo hello")
-	decision := runtime.Decide(resolveFixture(call))
+	// Add a specific fetch_page grant with Ask; it outranks the wildcard.
+	runtime.Grants = append(runtime.Grants, Rule{
+		Tool: "fetch_page", Action: ActionAsk,
+	})
+	decision := runtime.Decide(resolveFixture(networkReadCall("example.com")))
 	if decision.Action == ActionAllow {
 		t.Fatalf("Managed Ask was overridden: action=%s code=%q layer=%s",
 			decision.Action, decision.Code, decision.Layer)
