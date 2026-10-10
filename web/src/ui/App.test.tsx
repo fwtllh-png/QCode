@@ -189,7 +189,7 @@ describe("projectTranscript", () => {
     ));
   });
 
-  it("projects verification, receipt, and rejection evidence", () => {
+  it("ignores retired verification while projecting receipts and rejection", () => {
     const entries = projectTranscript([
       event(1, "turn.verification", {verdict: "passed"}),
       event(2, "turn.receipt", {outcome: "changed"}),
@@ -197,12 +197,6 @@ describe("projectTranscript", () => {
     ]);
 
     expect(entries).toMatchObject([
-      {
-        kind: "status",
-        title: "Checks passed",
-        text: "Recorded checks passed for the current changes.",
-        failed: false
-      },
       {kind: "receipt", data: {outcome: "changed"}},
       {kind: "status", title: "Rejected", text: "stale request", failed: true}
     ]);
@@ -808,6 +802,24 @@ describe("projectTranscript", () => {
     expect(client.decideApproval).toHaveBeenCalledWith(
       "host-approval", decision, "", decision === "approve" ? "once" : "", undefined
     );
+  });
+
+  it.each(["approve", "deny"])("shows Guardian failure on a replayed approval and permits %s", (decision) => {
+    const client = mockClient(snapshot([event(1, "approval.required", {
+      request_id: "guardian-approval", call_id: "call", tool: "exec_command",
+      arguments: {command: "./build.sh", write_paths: ["generated"]},
+      allowed_scopes: ["once"], replacement_allowed: false, effect: "process.mutating",
+      resources: [{kind: "file", id: "generated", access: "write"}],
+      guardian_review_id: "review", guardian_reason_code: "review_timed_out",
+      guardian_reason: "SECRET_SENTINEL"
+    })]));
+    render(<App client={client} />);
+    expect(screen.getByText("Automatic review could not complete. Your confirmation is required.")).toBeTruthy();
+    expect(screen.getByText("./build.sh")).toBeTruthy();
+    expect(screen.getByLabelText("Execution scope").textContent).toContain("write · generated");
+    expect(screen.queryByText("SECRET_SENTINEL")).toBeNull();
+    fireEvent.click(screen.getByRole("button", {name: decision === "approve" ? "Approve once" : "Deny"}));
+    expect(client.decideApproval).toHaveBeenCalledWith("guardian-approval", decision, "", decision === "approve" ? "once" : "", undefined);
   });
 
   it("offers Full Access and removes the retired suggest command", async () => {
@@ -2896,8 +2908,6 @@ describe("projectTranscript", () => {
     expect(screen.getByText("Loading")).toBeTruthy();
     expect(screen.getByPlaceholderText("Ask QCode"))
       .toHaveProperty("disabled", true);
-    expect(screen.getByRole("button", {name: "Attach files"}))
-      .toHaveProperty("disabled", true);
     expect(screen.queryByRole("button", {name: "Export session"})).toBeNull();
     expect(screen.queryByRole("button", {name: "Session inspector"})).toBeNull();
   });
@@ -2974,31 +2984,29 @@ describe("projectTranscript", () => {
 
   it("opens slash commands with search, argument hints, keyboard selection, and recents", async () => {
     const client = mockClient(snapshot());
-    const inputClick = vi.spyOn(HTMLInputElement.prototype, "click");
     render(<App client={client} />);
 
     const composer = screen.getByPlaceholderText("Ask QCode");
-    fireEvent.change(composer, {target: {value: "/att"}});
+    fireEvent.change(composer, {target: {value: "/cont"}});
 
     let search = await screen.findByRole("searchbox", {name: "Search commands"});
-    expect(search).toHaveProperty("value", "att");
-    expect(screen.getByRole("menuitem", {name: /\/attach file/})).toBeTruthy();
+    expect(search).toHaveProperty("value", "cont");
+    expect(screen.getByRole("menuitem", {name: /\/context/})).toBeTruthy();
     expect(screen.queryByRole("menuitem", {name: /\/compact/})).toBeNull();
 
     fireEvent.keyDown(search, {key: "Escape"});
     expect(composer).toHaveProperty("value", "");
     expect(document.activeElement).toBe(composer);
 
-    fireEvent.change(composer, {target: {value: "/att"}});
+    fireEvent.change(composer, {target: {value: "/cont"}});
     search = await screen.findByRole("searchbox", {name: "Search commands"});
     fireEvent.keyDown(search, {key: "ArrowDown"});
     fireEvent.keyDown(search, {key: "Enter"});
-    expect(inputClick).toHaveBeenCalled();
     expect(composer).toHaveProperty("value", "");
 
     fireEvent.click(screen.getByRole("button", {name: "Commands"}));
     expect(screen.getByText("Recent")).toBeTruthy();
-    expect(screen.getAllByRole("menuitem")[0]?.textContent).toContain("/attach");
+    expect(screen.getAllByRole("menuitem")[0]?.textContent).toContain("/context");
     fireEvent.change(screen.getByRole("searchbox", {name: "Search commands"}), {
       target: {value: "missing-command"}
     });
@@ -3007,111 +3015,6 @@ describe("projectTranscript", () => {
       key: "Escape"
     });
     expect(screen.queryByRole("menu", {name: "Commands"})).toBeNull();
-  });
-
-  it("normalizes picker, paste, and drop files through one attachment pipeline", async () => {
-    const value = snapshot();
-    const client = mockClient(value);
-    const {container} = render(<App client={client} />);
-    const picker = container.querySelector<HTMLInputElement>(
-      'input[type="file"][aria-label="Attach files"]'
-    );
-    const composer = screen.getByPlaceholderText("Ask QCode");
-    const surface = container.querySelector<HTMLElement>(".composer");
-    expect(picker).toBeTruthy();
-    expect(surface).toBeTruthy();
-
-    fireEvent.change(picker!, {
-      target: {files: [fixtureFile("picker.txt", "text/plain", "picker")]}
-    });
-    expect(await screen.findByText("Text · 6 B · picker")).toBeTruthy();
-
-    fireEvent.paste(composer, {
-      clipboardData: {
-        files: [fixtureFile("paste.md", "text/markdown", "paste")]
-      }
-    });
-    expect(await screen.findByText("Text · 5 B · paste")).toBeTruthy();
-
-    fireEvent.dragEnter(surface!, {
-      dataTransfer: {types: ["Files"], files: []}
-    });
-    expect(surface?.getAttribute("data-dragging")).toBe("true");
-    fireEvent.drop(surface!, {
-      dataTransfer: {
-        types: ["Files"],
-        files: [fixtureFile("drop.json", "application/json", "{}")]
-      }
-    });
-    expect(await screen.findByText("Text · 2 B · drop")).toBeTruthy();
-    expect(client.addAttachmentContext).toHaveBeenCalledTimes(3);
-
-    fireEvent.click(screen.getByRole("button", {
-      name: "Remove attachment paste.md"
-    }));
-    expect(client.removeAttachmentContext).toHaveBeenCalledWith(
-      expect.stringMatching(/^[0-9a-f]{64}$/)
-    );
-  });
-
-  it("keeps failed attachments explicit and blocks accidental omission", async () => {
-    const client = mockClient(snapshot());
-    const {container} = render(<App client={client} />);
-    const picker = container.querySelector<HTMLInputElement>(
-      'input[type="file"][aria-label="Attach files"]'
-    );
-    fireEvent.change(picker!, {
-      target: {
-        files: [fixtureBytes("archive.zip", "application/zip", Uint8Array.of(1))]
-      }
-    });
-
-    expect(await screen.findByText(/not a supported text or image attachment/))
-      .toBeTruthy();
-    const composer = screen.getByPlaceholderText("Ask QCode");
-    fireEvent.change(composer, {target: {value: "Inspect this archive"}});
-    expect(screen.getByRole("button", {name: "Send"}))
-      .toHaveProperty("disabled", true);
-
-    fireEvent.click(screen.getByRole("button", {
-      name: "Remove attachment archive.zip"
-    }));
-    expect(screen.getByRole("button", {name: "Send"}))
-      .toHaveProperty("disabled", false);
-  });
-
-  it("discards an attachment that finishes after switching Sessions", async () => {
-    let resolveFile: ((value: ArrayBuffer) => void) | undefined;
-    const delayed = {
-      name: "delayed.txt",
-      type: "text/plain",
-      size: 7,
-      arrayBuffer: vi.fn(() => new Promise<ArrayBuffer>((resolve) => {
-        resolveFile = resolve;
-      }))
-    } as unknown as File;
-    const value = snapshot();
-    const client = mockClient(value);
-    const view = render(<App client={client} />);
-    const picker = view.container.querySelector<HTMLInputElement>(
-      'input[type="file"][aria-label="Attach files"]'
-    );
-
-    fireEvent.change(picker!, {target: {files: [delayed]}});
-    expect(screen.getByText("Processing · picker")).toBeTruthy();
-
-    value.sessions = [
-      ...value.sessions,
-      {...value.sessions[0]!, session_id: "session-2", thread_id: "thread-2"}
-    ];
-    value.selectedSessionID = "session-2";
-    view.rerender(<App client={client} />);
-    resolveFile?.(new TextEncoder().encode("delayed").buffer);
-
-    await waitFor(() => {
-      expect(screen.queryByText("delayed.txt")).toBeNull();
-    });
-    expect(client.addAttachmentContext).not.toHaveBeenCalled();
   });
 
   it("does not submit while an IME composition is active", async () => {
@@ -3182,6 +3085,9 @@ describe("projectTranscript", () => {
       event(1, "usage", {
         context: {
           estimated_tokens: 32_000,
+          window_context_tokens: 128_000,
+          window_output_reserve: 32_000,
+          window_hard_input_tokens: 96_000,
           stable_tokens: 2_000,
           dynamic_tokens: 1_000,
           continuation_tokens: 500,
