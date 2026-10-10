@@ -1,3 +1,4 @@
+import {guardianReason} from "../projection/guardian";
 import {
   AlertTriangle,
   ArrowDown,
@@ -18,7 +19,6 @@ import {
   KeyRound,
   MessageSquarePlus,
   MoreHorizontal,
-  Paperclip,
   PanelLeftClose,
   PanelLeftOpen,
   Menu,
@@ -49,6 +49,7 @@ import {
 } from "react";
 import {ExecutionStages} from "./ExecutionStages";
 import {ComposerStats} from "./ComposerStats";
+import {latestContextAttribution} from "./contextUsage";
 import {Collapse} from "./primitives/Collapse";
 import {IconButton} from "./primitives/IconButton";
 import {Skeleton} from "./primitives/Skeleton";
@@ -78,7 +79,6 @@ import {
   compactCatalogSelectWidth,
   compactSelectWidth,
   MessageActions,
-  type ContextAttribution,
   type MessageChrome,
   type MessageFeedbackRating
 } from "./ConversationChrome";
@@ -102,15 +102,6 @@ import {
   ReasoningDisclosure,
   ToolDisclosure
 } from "./TranscriptCards";
-import {
-  maxComposerAttachmentBytes,
-  maxComposerAttachments,
-  composerAttachmentAccept
-} from "./attachmentLimits";
-import type {
-  ComposerAttachment,
-  ComposerAttachmentSource
-} from "./attachmentPipeline";
 import {
   adjacentQuestion,
   projectConversationNavigation,
@@ -140,9 +131,6 @@ const SettingsDialog = lazy(async () => ({
 }));
 const WorkspaceContextDialog = lazy(async () => ({
   default: (await import("./WorkspaceContextDialog")).WorkspaceContextDialog
-}));
-const ComposerAttachments = lazy(async () => ({
-  default: (await import("./ComposerAttachments")).ComposerAttachments
 }));
 const ComposerCommandMenu = lazy(async () => ({
   default: (await import("./ComposerCommandMenu")).ComposerCommandMenu
@@ -2031,144 +2019,20 @@ function Composer({
 }: ComposerProps) {
   const [draft, setDraft] = useState("");
   const [submitting, setSubmitting] = useState(false);
-  const [composerAttachments, setComposerAttachments] =
-    useState<ComposerAttachment[]>([]);
-  const [draggingAttachment, setDraggingAttachment] = useState(false);
   const [commandMenuOpen, setCommandMenuOpen] = useState(false);
   const [commandQuery, setCommandQuery] = useState("");
   const [commandMenuSource, setCommandMenuSource] =
     useState<"button" | "slash">("button");
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const attachmentInputRef = useRef<HTMLInputElement>(null);
   const composingRef = useRef(false);
-  const attachmentGenerationRef = useRef(0);
-  const removedAttachmentIDs = useRef(new Set<string>());
-  const attachmentsRef = useRef(composerAttachments);
   const selectedSessionRef = useRef(snapshot.selectedSessionID);
   const draftRef = useRef(draft);
   selectedSessionRef.current = snapshot.selectedSessionID;
   draftRef.current = draft;
-  attachmentsRef.current = composerAttachments;
 
-  const attachmentBusy = composerAttachments.some(
-    (attachment) => attachment.status === "processing"
-  );
-  const attachmentFailed = composerAttachments.some(
-    (attachment) => attachment.status === "error"
-  );
-
-  const attachFiles = (
-    values: FileList | readonly File[],
-    source: ComposerAttachmentSource
-  ) => {
-    const files = Array.from(values);
-    if (
-      files.length === 0 ||
-      !snapshot.selectedSessionID ||
-      snapshot.hydratingSessionID ||
-      submitting
-    ) {
-      return;
-    }
-    setLocalError("");
-    const processing = composerAttachments.filter(
-      (attachment) => attachment.status === "processing"
-    ).length;
-    const available = Math.max(
-      0,
-      maxComposerAttachments - snapshot.contextResources.length - processing
-    );
-    const countAccepted = files.slice(0, available);
-    let reservedBytes = composerAttachments
-      .filter((attachment) => attachment.status !== "error")
-      .reduce((total, attachment) => total + attachment.bytes, 0);
-    const accepted = countAccepted.filter((file) => {
-      if (reservedBytes + file.size > maxComposerAttachmentBytes) return false;
-      reservedBytes += file.size;
-      return true;
-    });
-    if (countAccepted.length < files.length) {
-      setLocalError(`A prompt accepts at most ${maxComposerAttachments} context items`);
-    } else if (accepted.length < countAccepted.length) {
-      setLocalError("Attachments exceed the 5 MiB total prompt limit");
-    }
-    const generation = attachmentGenerationRef.current;
-    const sessionID = snapshot.selectedSessionID;
-    const pending = accepted.map((file) => ({
-      file,
-      attachment: {
-        id: crypto.randomUUID(),
-        name: file.name || "Pasted image",
-        mediaType: file.type || "application/octet-stream",
-        bytes: file.size,
-        source,
-        status: "processing" as const
-      }
-    }));
-    setComposerAttachments((current) => [
-      ...current,
-      ...pending.map(({attachment}) => attachment)
-    ]);
-    const pipeline = import("./attachmentPipeline");
-    for (const {file, attachment} of pending) {
-      void pipeline.then(({prepareComposerAttachment}) =>
-        prepareComposerAttachment(file)
-      ).then((context) => {
-        if (
-          generation !== attachmentGenerationRef.current ||
-          sessionID !== selectedSessionRef.current ||
-          removedAttachmentIDs.current.has(attachment.id)
-        ) {
-          return;
-        }
-        if (client.getSnapshot().contextResources.some(
-          (resource) => resource.digest === context.digest
-        )) {
-          throw new Error(`${context.label || attachment.name} is already attached`);
-        }
-        client.addAttachmentContext(context);
-        setComposerAttachments((current) => current.map((value) =>
-          value.id === attachment.id
-            ? {
-                ...value,
-                name: context.label || value.name,
-                mediaType: context.media_type || value.mediaType,
-                digest: context.digest,
-                status: "ready",
-                error: undefined
-              }
-            : value
-        ));
-      }).catch((error) => {
-        if (generation !== attachmentGenerationRef.current) return;
-        setComposerAttachments((current) => current.map((value) =>
-          value.id === attachment.id
-            ? {
-                ...value,
-                status: "error",
-                error: error instanceof Error ? error.message : String(error)
-              }
-            : value
-        ));
-      });
-    }
-  };
-
-  const removeAttachment = (id: string) => {
-    removedAttachmentIDs.current.add(id);
-    const attachment = attachmentsRef.current.find((value) => value.id === id);
-    if (attachment?.digest) client.removeAttachmentContext(attachment.digest);
-    setComposerAttachments((current) => current.filter((value) => value.id !== id));
-  };
-
-  // 会话切换时丢弃未提交的附件与命令菜单状态（与 App 的 transcript
-  // 重置在同一个提交内生效）。
+  // 会话切换时丢弃命令菜单状态。
   useLayoutEffect(() => {
-    attachmentGenerationRef.current += 1;
-    removedAttachmentIDs.current.clear();
-    setComposerAttachments([]);
-    setDraggingAttachment(false);
     setCommandMenuOpen(false);
     setCommandQuery("");
     setCommandMenuSource("button");
@@ -2184,14 +2048,6 @@ function Composer({
   };
 
   const composerCommands: ComposerCommand[] = [
-    {
-      id: "attach",
-      label: "attach",
-      description: "Attach local text files or images",
-      argumentHint: "file",
-      icon: Paperclip,
-      run: () => attachmentInputRef.current?.click()
-    },
     {
       id: "context",
       label: "context",
@@ -2281,9 +2137,7 @@ function Composer({
 
   const submit = async (activeAction: "queue" | "steer" = "queue") => {
     const prompt = draft.trim();
-    if (!prompt || submitting || profilePending || permissionRequired || snapshot.hydratingSessionID ||
-        attachmentBusy || attachmentFailed ||
-        (resumableTurnID && composerAttachments.length)) return;
+    if (!prompt || submitting || profilePending || permissionRequired || snapshot.hydratingSessionID) return;
     const submittedSessionID = snapshot.selectedSessionID;
     const submittedTurnID = activeTurn;
     setSubmitting(true);
@@ -2299,8 +2153,6 @@ function Composer({
         await client.submitPrompt(prompt);
       }
       if (selectedSessionRef.current === submittedSessionID) {
-        setComposerAttachments([]);
-        removedAttachmentIDs.current.clear();
         if (draftRef.current.trim() === prompt) {
           updateDraft("");
         }
@@ -2318,54 +2170,9 @@ function Composer({
   }, [commandMenuOpen, onCommandMenuOpenChange]);
 
   return (
-    <div
-      className="composer"
-      data-dragging={draggingAttachment || undefined}
-      onDragEnter={(event) => {
-        if (!event.dataTransfer.types.includes("Files")) return;
-        event.preventDefault();
-        setDraggingAttachment(true);
-      }}
-      onDragOver={(event) => {
-        if (!event.dataTransfer.types.includes("Files")) return;
-        event.preventDefault();
-        event.dataTransfer.dropEffect = "copy";
-      }}
-      onDragLeave={(event) => {
-        if (event.currentTarget.contains(event.relatedTarget as Node)) return;
-        setDraggingAttachment(false);
-      }}
-      onDrop={(event) => {
-        event.preventDefault();
-        setDraggingAttachment(false);
-        attachFiles(event.dataTransfer.files, "drop");
-      }}
-    >
-      <input
-        ref={attachmentInputRef}
-        className="srOnly"
-        type="file"
-        multiple
-        accept={composerAttachmentAccept}
-        aria-label="Attach files"
-        disabled={Boolean(snapshot.hydratingSessionID) || submitting}
-        onChange={(event) => {
-          if (event.target.files) {
-            attachFiles(event.target.files, "picker");
-          }
-          event.target.value = "";
-        }}
-      />
-      {composerAttachments.length > 0 && (
-        <Suspense fallback={null}>
-          <ComposerAttachments
-            attachments={composerAttachments}
-            onRemove={removeAttachment}
-          />
-        </Suspense>
-      )}
+    <div className="composer">
       <div className="composerInputRow">
-        <textarea
+          <textarea
           ref={textareaRef}
           value={draft}
           rows={1}
@@ -2392,10 +2199,8 @@ function Composer({
             composingRef.current = false;
           }}
           onPaste={(event) => {
-            const files = Array.from(event.clipboardData.files);
-            if (files.length === 0) return;
+            if (event.clipboardData.files.length === 0) return;
             event.preventDefault();
-            attachFiles(files, "paste");
           }}
           onKeyDown={(event) => {
             if (event.nativeEvent.isComposing || composingRef.current) return;
@@ -2432,8 +2237,7 @@ function Composer({
           {(!activeTurn || Boolean(draft.trim())) && (
             <>
               {activeTurn &&
-                snapshot.contextResources.length === 0 &&
-                composerAttachments.length === 0 && (
+                snapshot.contextResources.length === 0 && (
                 <IconButton
                   label="Steer current turn"
                   disabled={submitting || Boolean(profilePending)}
@@ -2453,10 +2257,7 @@ function Composer({
                   !draft.trim() ||
                   submitting ||
                   Boolean(profilePending) ||
-                  permissionRequired ||
-                  attachmentBusy ||
-                  attachmentFailed ||
-                  Boolean(resumableTurnID && composerAttachments.length)
+                  permissionRequired
                 }
                 icon={submitting
                   ? <LoaderCircle className="spin" size={18} />
@@ -2476,17 +2277,6 @@ function Composer({
       )}
       <div className="composerControls">
         <div>
-          <IconButton
-            label="Attach files"
-            icon={<Paperclip size={16} />}
-            disabled={
-              Boolean(snapshot.hydratingSessionID) ||
-              submitting ||
-              Boolean(resumableTurnID) ||
-              snapshot.contextResources.length >= maxComposerAttachments
-            }
-            onClick={() => attachmentInputRef.current?.click()}
-          />
           <Suspense fallback={null}>
             <ComposerCommandMenu
               commands={composerCommands}
@@ -3424,6 +3214,18 @@ function ApprovalComposer({
         {approvalCommand(data.arguments) && (
           <code className="approvalCommand">{approvalCommand(data.arguments)}</code>
         )}
+        {Boolean(data.guardian_reason_code) && (
+          <div className="approvalReason" role="note">
+            {guardianReason(data.guardian_reason_code)}
+          </div>
+        )}
+        {Boolean(data.guardian_reason_code) && Array.isArray(data.resources) && (
+          <div className="approvalReason" aria-label="Execution scope">
+            {data.resources.filter(isObject).map((resource, index) => (
+              <div key={index}>{String(resource.access ?? "")} · {String(resource.path || resource.id || resource.kind || "")}</div>
+            ))}
+          </div>
+        )}
         {editPlan && (
           <EditPlanPreview files={editPlan.files} diff={editPlan.diff} />
         )}
@@ -4207,32 +4009,6 @@ export function projectMessageChrome(
     });
   }
   return result;
-}
-
-export function latestContextAttribution(
-  events: readonly RuntimeEvent[]
-): ContextAttribution | undefined {
-  for (let index = events.length - 1; index >= 0; index -= 1) {
-    const event = events[index];
-    if (event?.kind !== "usage" || !isObject(event.data.context)) continue;
-    const context = event.data.context;
-    return {
-      estimatedTokens: numberValue(context.estimated_tokens),
-      stableTokens:
-        numberValue(context.stable_tokens) +
-        numberValue(context.dynamic_tokens) +
-        numberValue(context.continuation_tokens),
-      toolTokens:
-        numberValue(context.tool_definition_tokens) +
-        numberValue(context.history_tool_tokens),
-      messageTokens:
-        numberValue(context.history_user_tokens) +
-        numberValue(context.history_assistant_tokens) +
-        numberValue(context.history_other_tokens),
-      framingTokens: numberValue(context.provider_framing_tokens)
-    };
-  }
-  return undefined;
 }
 
 function pendingRequestKey(sessionID: string, event?: RuntimeEvent): string {
