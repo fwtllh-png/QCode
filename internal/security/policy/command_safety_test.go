@@ -3,6 +3,8 @@ package policy
 import (
 	"fmt"
 	"testing"
+
+	"github.com/fwtllh-png/QCode/internal/adapter/tool"
 )
 
 // shellCommand creates a run_command invocation for policy pipeline testing.
@@ -11,36 +13,50 @@ func shellCommand(command string) invocationFixture {
 		fmt.Sprintf(`{"command":%q,"cwd":"/workspace"}`, command))
 }
 
-// TestAdversarialPrefixCommandsStillRequireApproval verifies that the
-// safe_command_allowed pathway stays removed. It uses fetch_page
-// (medium-risk network read under Auto) because the old prefix pathway
-// targeted exactly this classification: medium-risk Ask with a typed
-// grant that auto review could satisfy. High-risk shell commands were
-// already excluded by the old code and would not detect reintroduction.
-//
-// The test checks two things:
-//  1. A known auto-review-eligible invocation does NOT produce
-//     safe_command_allowed (the removed prefix pathway's code).
-//  2. The adversarial command itself, when run through the full pipeline,
-//     does not produce safe_command_allowed.
+// mediumRiskShellCommand creates a run_command invocation with a command
+// argument and an explicit fixed medium-risk effect. This is the exact
+// classification the old safe_command_allowed pathway targeted: a shell
+// command classified as medium risk under Auto that posture converts to
+// Ask. If the old prefix pathway is restored, it would auto-allow this
+// invocation because the command matches a known prefix and the risk is
+// medium (not high, which the old code excluded).
+func mediumRiskShellCommand(command string) invocationFixture {
+	call := invocation("run_command", fmt.Sprintf("med-%d", len(command)),
+		fmt.Sprintf(`{"command":%q}`, command))
+	call.Effect = tool.EffectContract{
+		Mode:          tool.EffectFixed,
+		Kind:          tool.EffectProcessMutating,
+		Risk:          tool.RiskMedium,
+		Reversibility: tool.Bounded,
+	}
+	call.Resources = nil
+	return call
+}
+
+// TestAdversarialPrefixCommandsStillRequireApproval uses medium-risk shell
+// commands that the old safe_command_allowed pathway would have auto-allowed.
+// If the prefix pathway is restored, these tests fail because the commands
+// match the removed safe prefixes AND have medium risk AND are under Auto.
 func TestAdversarialPrefixCommandsStillRequireApproval(t *testing.T) {
+	t.Run("baseline medium risk produces Ask", func(t *testing.T) {
+		runtime := DefaultRuntime(ModeAct, PermissionAuto)
+		decision := runtime.Decide(resolveFixture(mediumRiskShellCommand("some arbitrary command")))
+		if decision.Action != ActionAsk {
+			t.Fatalf("medium-risk shell command should Ask under Auto: action=%s code=%q layer=%s",
+				decision.Action, decision.Code, decision.Layer)
+		}
+	})
 	for _, input := range adversarialPrefixInputs {
 		t.Run(input.Command, func(t *testing.T) {
 			runtime := DefaultRuntime(ModeAct, PermissionAuto)
-			// The medium-risk baseline: this normally auto-reviews via
-			// the typed-grant path. If the prefix pathway is reintroduced,
-			// it might also fire, producing safe_command_allowed.
-			baseline := runtime.Decide(resolveFixture(networkReadCall("example.com")))
-			if baseline.Code == "safe_command_allowed" {
-				t.Fatalf("prefix authorization was reintroduced (baseline): code=%q", baseline.Code)
+			decision := runtime.Decide(resolveFixture(mediumRiskShellCommand(input.Command)))
+			if decision.Code == "safe_command_allowed" {
+				t.Fatalf("prefix authorization was reintroduced for %q (prefix %q, bypass: %s): code=%q",
+					input.Command, input.Prefix, input.Bypass, decision.Code)
 			}
-			// The adversarial shell command must not be auto-allowed
-			// via the prefix pathway.
-			shell := shellCommand(input.Command)
-			shellDecision := runtime.Decide(resolveFixture(shell))
-			if shellDecision.Code == "safe_command_allowed" {
-				t.Fatalf("adversarial command %q (prefix %q, bypass: %s) was auto-allowed via prefix: code=%q",
-					input.Command, input.Prefix, input.Bypass, shellDecision.Code)
+			if decision.Action == ActionAllow && decision.Layer == LayerAutoReview {
+				t.Fatalf("adversarial command %q was auto-allowed: action=%s code=%q layer=%s",
+					input.Command, decision.Action, decision.Code, decision.Layer)
 			}
 		})
 	}
@@ -63,25 +79,24 @@ func TestAutoReviewDoesNotOverrideUserAsk(t *testing.T) {
 	}
 }
 
-// TestAutoReviewDoesNotOverrideFreshApproval verifies that the typed-grant
-// auto review cannot satisfy a Fresh (once_required) approval requirement.
-func TestAutoReviewDoesNotOverrideFreshApproval(t *testing.T) {
+// TestAutoReviewDoesNotOverrideFreshOnce verifies that the typed-grant
+// auto review cannot satisfy an ApprovalOnce binding requirement.
+func TestAutoReviewDoesNotOverrideFreshOnce(t *testing.T) {
 	runtime := DefaultRuntime(ModeAct, PermissionAuto)
 	call := networkReadCall("example.com")
 	call.Effect.Approval = "once_required"
 	decision := runtime.Decide(resolveFixture(call))
 	if decision.Action != ActionAsk {
-		t.Fatalf("Fresh approval was overridden: action=%s code=%q layer=%s approval=%q",
+		t.Fatalf("FreshOnce was overridden: action=%s code=%q layer=%s approval=%q",
 			decision.Action, decision.Code, decision.Layer, decision.Approval)
 	}
 	if decision.Layer == LayerAutoReview {
-		t.Fatalf("auto review fired despite Fresh approval: %+v", decision)
+		t.Fatalf("auto review fired despite FreshOnce: %+v", decision)
 	}
 }
 
-// TestAutoReviewDoesNotOverrideUserAskPlusFresh verifies that the
-// combination of User Ask and Fresh approval is not auto-reviewed.
-func TestAutoReviewDoesNotOverrideUserAskPlusFresh(t *testing.T) {
+// TestAutoReviewDoesNotOverrideUserAskPlusFreshOnce verifies the combination.
+func TestAutoReviewDoesNotOverrideUserAskPlusFreshOnce(t *testing.T) {
 	runtime := DefaultRuntime(ModeAct, PermissionAuto)
 	runtime.User = []Rule{{
 		Tool: "fetch_page", Action: ActionAsk,
@@ -90,7 +105,23 @@ func TestAutoReviewDoesNotOverrideUserAskPlusFresh(t *testing.T) {
 	call.Effect.Approval = "once_required"
 	decision := runtime.Decide(resolveFixture(call))
 	if decision.Action != ActionAsk {
-		t.Fatalf("User Ask + Fresh was overridden: action=%s code=%q layer=%s",
+		t.Fatalf("User Ask + FreshOnce was overridden: action=%s code=%q layer=%s",
+			decision.Action, decision.Code, decision.Layer)
+	}
+}
+
+// TestAutoReviewDoesNotOverrideForceEditPlanApproval verifies that a
+// journaled tool under ForceEditPlanApproval stays Ask even when the
+// auto-review eligibility conditions are otherwise met. The old prefix
+// pathway did not check ForceEditPlanApproval and would have auto-allowed.
+func TestAutoReviewDoesNotOverrideForceEditPlanApproval(t *testing.T) {
+	runtime := DefaultRuntime(ModeAct, PermissionAuto)
+	runtime.ForceEditPlanApproval = true
+	call := mediumRiskShellCommand("git add .")
+	call.Journaled = true
+	decision := runtime.Decide(resolveFixture(call))
+	if decision.Action == ActionAllow {
+		t.Fatalf("ForceEditPlanApproval was overridden: action=%s code=%q layer=%s",
 			decision.Action, decision.Code, decision.Layer)
 	}
 }
@@ -113,7 +144,6 @@ func TestAutoReviewDoesNotOverrideRepositoryAsk(t *testing.T) {
 // grant with ActionAsk prevents auto review.
 func TestAutoReviewDoesNotOverrideManagedAsk(t *testing.T) {
 	runtime := DefaultRuntime(ModeAct, PermissionAuto)
-	// Add a specific fetch_page grant with Ask; it outranks the wildcard.
 	runtime.Grants = append(runtime.Grants, Rule{
 		Tool: "fetch_page", Action: ActionAsk,
 	})

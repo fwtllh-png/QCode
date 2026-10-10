@@ -119,6 +119,78 @@ const (
 	OutcomeAllow Outcome = "allow"
 )
 
+// CandidateFacts captures the §2.1 eligibility inputs from the trusted
+// binding and resolved invocation. The caller (Runtime/Guard integration
+// point in a later phase) constructs these from authoritative sources;
+// the Guardian package only validates them as pure computation.
+type CandidateFacts struct {
+	// Capability must be CapabilityProcess (shell-family executor).
+	Capability string
+	// Stage must be StageCall (admission, not egress approval).
+	Stage string
+	// SandboxRequired is true when the binding declares Strong Sandbox.
+	SandboxRequired bool
+	// HostExecution is true when the resolved prepare requests host execution.
+	HostExecution bool
+	// NetworkAccess is true when the invocation has any network resources
+	// or capabilities.
+	NetworkAccess bool
+	// MCPOrSkill is true when the tool source is an MCP server or skill.
+	MCPOrSkill bool
+	// EffectRisk is the original assessment risk (high, medium, etc.).
+	EffectRisk string
+	// EffectKind is the original assessment effect kind.
+	EffectKind string
+	// EffectReversibility is the original assessment reversibility.
+	EffectReversibility string
+	// EvidenceComplete is true when all required execution evidence
+	// (content digests, environment identity) is present and bound.
+	EvidenceComplete bool
+}
+
+// EligibilityResult reports whether a candidate is eligible for Guardian
+// review, with the first failing condition for auditability.
+type EligibilityResult struct {
+	Eligible bool
+	Reason   string // empty when eligible; names the failing condition otherwise
+}
+
+// CheckEligibility applies the §2.1 conditions as a pure function.
+// All conditions must hold; the first failure determines the reason.
+func CheckEligibility(facts CandidateFacts) EligibilityResult {
+	if facts.Capability != "process" {
+		return EligibilityResult{false, "not CapabilityProcess"}
+	}
+	if facts.Stage != "" && facts.Stage != "call" {
+		return EligibilityResult{false, "not StageCall"}
+	}
+	if facts.HostExecution {
+		return EligibilityResult{false, "host execution excluded"}
+	}
+	if facts.NetworkAccess {
+		return EligibilityResult{false, "network access excluded in first version"}
+	}
+	if facts.MCPOrSkill {
+		return EligibilityResult{false, "MCP/Skill source excluded"}
+	}
+	// §2.2: the reviewable category is high/bounded from RuleProcessMutating.
+	// Other high effects (Fixed, irreversible, network-mutating) and all
+	// critical effects are not eligible.
+	if facts.EffectRisk == "critical" {
+		return EligibilityResult{false, "critical risk excluded"}
+	}
+	if facts.EffectRisk != "high" {
+		return EligibilityResult{false, "only high-risk bounded process mutations are reviewable"}
+	}
+	if facts.EffectReversibility == "irreversible" {
+		return EligibilityResult{false, "irreversible effect excluded"}
+	}
+	if !facts.EvidenceComplete {
+		return EligibilityResult{false, "execution evidence is incomplete"}
+	}
+	return EligibilityResult{Eligible: true}
+}
+
 // Evaluate applies the local decision table from design §6.2. It is a
 // pure function; no side effects, no network, no provider calls.
 // CurrentAction must be exactly "ask" for Guardian to potentially allow;

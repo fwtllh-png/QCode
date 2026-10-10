@@ -297,6 +297,54 @@ func TestCandidateDigestStable(t *testing.T) {
 	}
 }
 
+// validCandidateFacts returns facts satisfying all §2.1 conditions.
+func validCandidateFacts() CandidateFacts {
+	return CandidateFacts{
+		Capability:          "process",
+		Stage:               "call",
+		SandboxRequired:     true,
+		HostExecution:       false,
+		NetworkAccess:       false,
+		MCPOrSkill:          false,
+		EffectRisk:          "high",
+		EffectKind:          "process.mutating",
+		EffectReversibility: "bounded",
+		EvidenceComplete:    true,
+	}
+}
+
+func TestCheckEligibilityValid(t *testing.T) {
+	result := CheckEligibility(validCandidateFacts())
+	if !result.Eligible {
+		t.Fatalf("valid candidate rejected: %s", result.Reason)
+	}
+}
+
+func TestCheckEligibilityMatrix(t *testing.T) {
+	for name, mutate := range map[string]func(*CandidateFacts){
+		"not_process":         func(f *CandidateFacts) { f.Capability = "read" },
+		"egress_stage":        func(f *CandidateFacts) { f.Stage = "egress_target" },
+		"host_execution":      func(f *CandidateFacts) { f.HostExecution = true },
+		"network_access":      func(f *CandidateFacts) { f.NetworkAccess = true },
+		"mcp_or_skill":        func(f *CandidateFacts) { f.MCPOrSkill = true },
+		"critical_risk":       func(f *CandidateFacts) { f.EffectRisk = "critical" },
+		"low_risk":            func(f *CandidateFacts) { f.EffectRisk = "low" },
+		"medium_risk":         func(f *CandidateFacts) { f.EffectRisk = "medium" },
+		"irreversible":        func(f *CandidateFacts) { f.EffectReversibility = "irreversible" },
+		"evidence_incomplete": func(f *CandidateFacts) { f.EvidenceComplete = false },
+	} {
+		facts := validCandidateFacts()
+		mutate(&facts)
+		result := CheckEligibility(facts)
+		if result.Eligible {
+			t.Fatalf("%s: expected ineligible, got eligible", name)
+		}
+		if result.Reason == "" {
+			t.Fatalf("%s: rejection reason must not be empty", name)
+		}
+	}
+}
+
 func TestOutcomeReason(t *testing.T) {
 	a := validAssessment()
 	if OutcomeAllow.Reason(&a) != "routine operation" {
